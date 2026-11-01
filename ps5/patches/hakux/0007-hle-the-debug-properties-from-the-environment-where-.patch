@@ -1,0 +1,68 @@
+From dc18539c7c0a3d9753c7bd92a70187691bee2cc4 Mon Sep 17 00:00:00 2001
+From: Press5elect <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 04:51:42 +0000
+Subject: [PATCH 7/7] hle: the debug properties from the environment where
+ Android's are not (the same change as hakuX-native's ps5-native branch)
+
+---
+ hw/xbox/hle/prop.h | 47 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/hw/xbox/hle/prop.h b/hw/xbox/hle/prop.h
+index 81628b8..adb4019 100644
+--- a/hw/xbox/hle/prop.h
++++ b/hw/xbox/hle/prop.h
+@@ -34,6 +34,53 @@ typedef struct HleProp {
+ } HleProp;
+ 
+ /* True when name holds a new, non-empty value (returned in v). */
++static inline bool hle_prop_new(HleProp *p, const char *name, char v[PROP_VALUE_MAX])
++{
++    hle_prop_get(name, v);
++    bool first = !p->polled;
++    p->polled = true;
++    if (!strcmp(v, p->last)) {
++        return false;
++    }
++    strcpy(p->last, v);
++    return !first && v[0];
++}
++#else
++/* Hosts without Android's system properties (the Linux build, the PS5): a
++ * property is the environment variable of its name upper-cased with dots as
++ * underscores (debug.hakux.fex_x87: DEBUG_HAKUX_FEX_X87). */
++#include <stdbool.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifndef PROP_VALUE_MAX
++#define PROP_VALUE_MAX 92
++#endif
++
++static inline int hle_prop_get(const char *name, char v[PROP_VALUE_MAX])
++{
++    char env[128];
++    size_t i = 0;
++    for (; name[i] && i < sizeof(env) - 1; i++) {
++        const char c = name[i];
++        env[i] = c == '.' ? '_' : (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
++    }
++    env[i] = 0;
++    const char *e = getenv(env);
++    v[0] = 0;
++    if (!e) {
++        return 0;
++    }
++    snprintf(v, PROP_VALUE_MAX, "%s", e);
++    return (int)strlen(v);
++}
++
++typedef struct HleProp {
++    char last[PROP_VALUE_MAX];
++    bool polled;
++} HleProp;
++
+ static inline bool hle_prop_new(HleProp *p, const char *name, char v[PROP_VALUE_MAX])
+ {
+     hle_prop_get(name, v);

@@ -57,12 +57,14 @@ set(hakux_common_options
 	-Wno-unused-parameter -Wno-unused-function -Wno-sign-compare
 	# the console's math.h classifies with _Generic over qualified types: a warning at every isnan()
 	-Wno-unreachable-code-generic-assoc
-	"SHELL:-include ${PSHAKUX_HX}/compat/hakux_ps5.h")
+	"$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-include ${PSHAKUX_HX}/compat/hakux_ps5.h>")
 set(hakux_common_definitions VK_NO_PROTOTYPES CONFIG_VULKAN=1 HAKUX_HLE_GPU=1 HAKUX_NATIVE_CORE=1
 	_DIRECT2DISPLAY PSHAKUX=1)
 
 function(hakux_target name)
 	set_target_properties(${name} PROPERTIES C_STANDARD 11 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+	target_compile_definitions(${name} PRIVATE ${hakux_cpu_definitions})
+	target_compile_options(${name} PRIVATE ${hakux_cpu_options})
 	target_include_directories(${name} BEFORE PRIVATE ${hakux_common_includes})
 	target_compile_options(${name} PRIVATE ${hakux_common_options})
 	target_compile_definitions(${name} PRIVATE ${hakux_common_definitions})
@@ -108,17 +110,61 @@ set(hakux_core_sources
 list(TRANSFORM hakux_core_sources PREPEND ${HAKUX_DIR}/native/)
 list(APPEND hakux_core_sources ${HAKUX_DIR}/hw/xbox/hle/core/xbe.c)
 # The native CPU backend, when the source has it and it is asked for (hakuX-native, branch
-# ps5-native: native/cpu/cpu_native.c, its CMake option NC_CPU=native).
+# ps5-native: native/cpu/cpu_native.c and the files its native/CMakeLists.txt lists in
+# NC_CPU_SOURCES for NC_CPU=native, read from there so the list follows the backend). Its
+# native/cpu/vmhost.c (memfd and mmap) is the console's ps5/hakux/cpu/vmhost_ps5.c (the platform
+# layer's shared memory), as the backend intends; guest VA 0 is host address 0, and the start of
+# the contiguous window is the console's (a system module sits at 0x80000000).
 set(PSHAKUX_CPU "stub")
+# (The console's window start, for a tree that reads it whatever the backend: hakuX-native's vm.c.)
+set(hakux_cpu_definitions NC_WINDOW_HOLE_END=0x80120000u)
+set(hakux_cpu_options)
+set(PSHAKUX_CPU_NOTE "")
 if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
-	list(APPEND hakux_core_sources ${HAKUX_DIR}/native/cpu/cpu_native.c)
-	set(PSHAKUX_CPU "native")
-	file(GLOB cpu_native_extra ${HAKUX_DIR}/native/cpu/cpu_native_*.c ${HAKUX_DIR}/native/cpu/cpu_native*.S)
-	list(APPEND hakux_core_sources ${cpu_native_extra})
-	set_source_files_properties(${cpu_native_extra} PROPERTIES COMPILE_OPTIONS "-xassembler-with-cpp")
+	# The backend is the console's when its signal context knows FreeBSD's mcontext (the PS5's);
+	# until then it is Linux's only, and the stub links instead (the eboot still links).
+	file(STRINGS ${HAKUX_DIR}/native/cpu/cpu_native.c cpu_native_ps5 REGEX "defined\\(__(FreeBSD|PROSPERO)__\\)")
+	if(NOT cpu_native_ps5)
+		set(PSHAKUX_CPU_NOTE " (native/cpu/cpu_native.c is there, but has no PS5 (FreeBSD) signal context yet: the stub links)")
+	endif()
+endif()
+if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
+	enable_language(ASM)
+	file(READ ${HAKUX_DIR}/native/CMakeLists.txt hakux_native_cmake)
+	string(REGEX MATCH "elseif\\(NC_CPU STREQUAL \"native\"\\)[^\n]*\n[^\n]*\n[ \t]*set\\(NC_CPU_SOURCES ([^)]*)\\)" found "${hakux_native_cmake}")
+	if(found)
+		string(REGEX REPLACE "[ \t\n]+" ";" cpu_sources "${CMAKE_MATCH_1}")
+	else()
+		set(cpu_sources cpu/cpu_native.c)
+		file(GLOB cpu_extra RELATIVE ${HAKUX_DIR}/native ${HAKUX_DIR}/native/cpu/*.c ${HAKUX_DIR}/native/cpu/*.S)
+		list(APPEND cpu_sources ${cpu_extra})
+		list(REMOVE_ITEM cpu_sources cpu/cpu.cpp)
+	endif()
+	list(REMOVE_ITEM cpu_sources cpu/vmhost.c)
+	if(PSHAKUX_CPU_NOTE)
+		# Not the console's yet: everything but the CPU itself, which the stubs stand in for.
+		list(REMOVE_ITEM cpu_sources cpu/cpu_native.c cpu/cpu_native_asm.S)
+		list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/cpu_native_stub.c)
+	else()
+		set(PSHAKUX_CPU "native")
+	endif()
+	foreach(source IN LISTS cpu_sources)
+		if(source)
+			list(APPEND hakux_core_sources ${HAKUX_DIR}/native/${source})
+			if(source MATCHES "\\.S$")
+				set_source_files_properties(${HAKUX_DIR}/native/${source} PROPERTIES LANGUAGE ASM)
+			endif()
+		endif()
+	endforeach()
+	if(EXISTS ${HAKUX_DIR}/native/cpu/vmhost.h)
+		list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/vmhost_ps5.c)
+	endif()
+	set(hakux_cpu_definitions NC_CPU_NATIVE=1 NC_WINDOW_HOLE_END=0x80120000u)
+	set(hakux_cpu_options -fno-delete-null-pointer-checks)
+	message(STATUS "PSHakuX: native CPU backend's sources: ${cpu_sources} (cpu/vmhost.c: ps5/hakux/cpu/vmhost_ps5.c)")
 endif()
 list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/cpu_stub.c)
-message(STATUS "PSHakuX: hakuX from ${HAKUX_DIR}; CPU backend ${PSHAKUX_CPU}")
+message(STATUS "PSHakuX: hakuX from ${HAKUX_DIR}; CPU backend ${PSHAKUX_CPU}${PSHAKUX_CPU_NOTE}")
 add_library(hakux_core OBJECT ${hakux_core_sources})
 hakux_target(hakux_core)
 target_include_directories(hakux_core PRIVATE ${PSHAKUX_DEPS}/xxhash ${CMAKE_BINARY_DIR}/slirp

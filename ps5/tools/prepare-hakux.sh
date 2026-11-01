@@ -48,7 +48,12 @@ applied=0 skipped=0
 shopt -s nullglob
 for patch in "$ps5"/patches/hakux/*.patch; do
     name=$(basename "$patch")
-    if git -C "$stage" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
+    # (A tree that has the patch's change already: its reverse applies. Checked first, since a
+    # patch whose context repeats in the file could otherwise apply a second time.)
+    if [[ $vendored == 0 ]] && git -C "$stage" apply --reverse --check --whitespace=nowarn "$patch" 2>/dev/null; then
+        echo "prepare-hakux: $name: $src has it already" >&2
+        skipped=$((skipped + 1))
+    elif git -C "$stage" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
         git -C "$stage" apply --whitespace=nowarn "$patch"
         applied=$((applied + 1))
     elif [[ $vendored == 1 ]]; then

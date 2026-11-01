@@ -97,7 +97,7 @@ int memfd_create(const char *name, unsigned int flags);
 }
 #endif
 
-/* The debug properties and hw/xbox/hle/prop.h's helpers, which hakuX defines for Android only. */
+/* The debug properties (Android's calls, on the environment). */
 #include <sys/system_properties.h>
 
 #endif

@@ -1,7 +1,7 @@
 From 0aa1112a6714bffe1c619c2e01579a5e14b71946 Mon Sep 17 00:00:00 2001
 From: Press5elect <noreply@anthropic.com>
 Date: Sun, 1 Nov 2026 04:33:19 +0000
-Subject: [PATCH 6/6] hle: the profile's clock on the PS5 (prof.h used
+Subject: [PATCH 6/7] hle: the profile's clock on the PS5 (prof.h used
  hle_now_ns without its header)
 
 ---

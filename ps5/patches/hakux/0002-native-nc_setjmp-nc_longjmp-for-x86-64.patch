@@ -1,7 +1,7 @@
 From 51012d042fc78c4825b9808c9ceb0a7dcd563826 Mon Sep 17 00:00:00 2001
 From: Press5elect <noreply@anthropic.com>
 Date: Sun, 1 Nov 2026 04:31:56 +0000
-Subject: [PATCH 2/6] native: nc_setjmp/nc_longjmp for x86-64
+Subject: [PATCH 2/7] native: nc_setjmp/nc_longjmp for x86-64
 
 ---
  native/core/jmp.c | 48 ++++++++++++++++++++++++++++++++++++++++++++++-

@@ -1,7 +1,7 @@
 From 2d02608f5c5f3e3787bc9c7a0d5d8d3e0fe1a745 Mon Sep 17 00:00:00 2001
 From: Press5elect <noreply@anthropic.com>
 Date: Sun, 1 Nov 2026 04:32:18 +0000
-Subject: [PATCH 5/6] net: the wake-up on the console's eventfd stand-in (a
+Subject: [PATCH 5/7] net: the wake-up on the console's eventfd stand-in (a
  pipe)
 
 ---

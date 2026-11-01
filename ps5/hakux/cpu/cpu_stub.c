@@ -17,6 +17,7 @@
 
 #include <string.h>
 #include <time.h>
+#include <ucontext.h>
 
 #define WEAK __attribute__((weak))
 
@@ -256,6 +257,13 @@ WEAK void nc_cpu_fault_resume(NcCpu *cpu, void *ucontext)
 {
     (void)cpu;
     (void)ucontext;
+}
+
+/* (hakuX-native's cpu.h adds it: the host PC of a signal's context, FreeBSD's mcontext here.) */
+uintptr_t nc_cpu_ucontext_pc(const void *ucontext);
+WEAK uintptr_t nc_cpu_ucontext_pc(const void *ucontext)
+{
+    return (uintptr_t)((const ucontext_t *)ucontext)->uc_mcontext.mc_rip;
 }
 
 WEAK bool nc_cpu_fault_is_write(const void *ucontext)

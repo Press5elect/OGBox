@@ -1,7 +1,7 @@
 From 4002efaa665febf22b42e7b65dc57b938dfdc214 Mon Sep 17 00:00:00 2001
 From: Press5elect <noreply@anthropic.com>
 Date: Sun, 1 Nov 2026 04:32:18 +0000
-Subject: [PATCH 4/6] state: the whole-struct size lock is the Android build's
+Subject: [PATCH 4/7] state: the whole-struct size lock is the Android build's
  (the PS5's host types differ)
 
 ---

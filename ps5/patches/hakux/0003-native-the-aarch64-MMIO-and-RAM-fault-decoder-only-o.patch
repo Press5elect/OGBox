@@ -1,7 +1,7 @@
 From fc9f7c76c0fdeffb620b395f0c7551387bab62f4 Mon Sep 17 00:00:00 2001
 From: Press5elect <noreply@anthropic.com>
 Date: Sun, 1 Nov 2026 04:32:18 +0000
-Subject: [PATCH 3/6] native: the aarch64 MMIO and RAM-fault decoder only on
+Subject: [PATCH 3/7] native: the aarch64 MMIO and RAM-fault decoder only on
  aarch64; weak defaults for the CPU backend elsewhere
 
 ---

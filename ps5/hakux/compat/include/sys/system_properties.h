@@ -5,10 +5,11 @@
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
  *
  * Android's system properties, which hakuX reads for its debug switches (debug.hakux.*, through
- * hw/xbox/hle/prop.h and directly): on the console a table the title fills
- * (ps5/hakux/compat/hakux_ps5.c), from boot.txt's "prop NAME=VALUE" lines and props.txt in the
- * title folder; an unset one, as on a phone, reads as empty. hw/xbox/hle/prop.h's helpers are
- * Android-only (__ANDROID__), so they are given here as well, with the same behaviour.
+ * hw/xbox/hle/prop.h and directly). Where Android's are not, hakuX's prop.h reads a property from
+ * the environment variable of its name upper-cased with dots as underscores
+ * (debug.hakux.present: DEBUG_HAKUX_PRESENT; ps5/patches/hakux, as hakuX-native does), and so does
+ * __system_property_get here (ps5/hakux/compat/hakux_ps5.c). The title sets them from boot.txt's
+ * "prop NAME=VALUE" lines and /data/pshakux/props.txt; an unset one, as on a phone, reads as empty.
  */
 #ifndef PSHAKUX_SYS_SYSTEM_PROPERTIES_H
 #define PSHAKUX_SYS_SYSTEM_PROPERTIES_H
@@ -34,40 +35,6 @@ int pshakux_props_load(const char *path);
 
 #ifdef __cplusplus
 }
-#endif
-
-/* hw/xbox/hle/prop.h's helpers, which it defines for Android only. */
-#ifndef __ANDROID__
-#ifndef PSHAKUX_PROP_HELPERS
-#define PSHAKUX_PROP_HELPERS
-static inline int hle_prop_get(const char *name, char v[PROP_VALUE_MAX])
-{
-    static int off = -1;
-    if (off < 0) {
-        const char *e = getenv("HAKUX_NO_PROPS");
-        off = e && e[0] == '1';
-    }
-    v[0] = 0;
-    return off ? 0 : __system_property_get(name, v);
-}
-
-typedef struct HleProp {
-    char last[PROP_VALUE_MAX];
-    bool polled;
-} HleProp;
-
-static inline bool hle_prop_new(HleProp *p, const char *name, char v[PROP_VALUE_MAX])
-{
-    hle_prop_get(name, v);
-    bool first = !p->polled;
-    p->polled = true;
-    if (!strcmp(v, p->last)) {
-        return false;
-    }
-    strcpy(p->last, v);
-    return !first && v[0];
-}
-#endif
 #endif
 
 #endif

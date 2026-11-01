@@ -1,7 +1,7 @@
 From cfa74448635434275de449e192dd573fa1fd3def Mon Sep 17 00:00:00 2001
 From: Press5elect <noreply@anthropic.com>
 Date: Sun, 1 Nov 2026 04:31:56 +0000
-Subject: [PATCH 1/6] native: the host PC of a signal's context on x86-64
+Subject: [PATCH 1/7] native: the host PC of a signal's context on x86-64
  (NC_UC_PC)
 
 ---

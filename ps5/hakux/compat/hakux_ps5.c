@@ -26,57 +26,39 @@
 
 #include "platform/ps5_priority.h"
 
-/* ---- the debug properties ------------------------------------------------------------------ */
+/* ---- the debug properties: environment variables, as hakuX's prop.h reads them off Android ------ */
 
-#define PROPS_MAX 128
-
-static struct {
-    char name[PROP_NAME_MAX * 2];
-    char value[PROP_VALUE_MAX];
-} g_props[PROPS_MAX];
-static int g_prop_count;
-static pthread_mutex_t g_props_lock = PTHREAD_MUTEX_INITIALIZER;
+/* debug.hakux.present -> DEBUG_HAKUX_PRESENT */
+static void env_name(const char *name, char *env, size_t size)
+{
+    size_t i = 0;
+    for (; name[i] && i + 1 < size; i++) {
+        const char c = name[i];
+        env[i] = c == '.' ? '_' : (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+    env[i] = 0;
+}
 
 int __system_property_get(const char *name, char *value)
 {
+    char env[128];
+    env_name(name, env, sizeof(env));
+    const char *e = getenv(env);
     value[0] = 0;
-    pthread_mutex_lock(&g_props_lock);
-    for (int i = 0; i < g_prop_count; i++) {
-        if (!strcmp(g_props[i].name, name)) {
-            snprintf(value, PROP_VALUE_MAX, "%s", g_props[i].value);
-            break;
-        }
+    if (e) {
+        snprintf(value, PROP_VALUE_MAX, "%s", e);
     }
-    pthread_mutex_unlock(&g_props_lock);
     return (int)strlen(value);
 }
 
 int pshakux_prop_set(const char *name, const char *value)
 {
-    if (!name || !name[0] || strlen(name) >= sizeof(g_props[0].name)) {
+    if (!name || !name[0]) {
         return -1;
     }
-    pthread_mutex_lock(&g_props_lock);
-    int i = 0;
-    while (i < g_prop_count && strcmp(g_props[i].name, name)) {
-        i++;
-    }
-    int result = 0;
-    if (!value || !value[0]) {
-        if (i < g_prop_count) {
-            g_props[i] = g_props[--g_prop_count];
-        }
-    } else if (i < g_prop_count || g_prop_count < PROPS_MAX) {
-        if (i == g_prop_count) {
-            g_prop_count++;
-        }
-        snprintf(g_props[i].name, sizeof(g_props[i].name), "%s", name);
-        snprintf(g_props[i].value, sizeof(g_props[i].value), "%s", value);
-    } else {
-        result = -1;
-    }
-    pthread_mutex_unlock(&g_props_lock);
-    return result;
+    char env[128];
+    env_name(name, env, sizeof(env));
+    return value && value[0] ? setenv(env, value, 1) : unsetenv(env);
 }
 
 int pshakux_props_load(const char *path)
