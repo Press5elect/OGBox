@@ -11,6 +11,7 @@
 #include "ps5_takeover.h"
 
 #include <string.h>
+#include <unistd.h>
 
 /* The SDK's libSceSystemService stub: imported, as the template's exit is. A lookup of it by name
  * at run time fails on the console; the import works. */
@@ -66,6 +67,9 @@ int pshakux_relaunch(const char *const *args)
     }
     pshakux_takeover_before_exit("the relaunch");   /* 0.1.4: libc.prx's old entries made safe again */
     pshakux_diag_drain();
+    if (pshakux_log_fd() >= 0) {
+        fsync(pshakux_log_fd());   /* OGBox 0.1.25: the lines up to here on the disk */
+    }
     const int result = sceSystemServiceLoadExec("/app0/eboot.bin", argv);
     pshakux_log("relaunch: sceSystemServiceLoadExec answered 0x%08x: the title goes on", (unsigned)result);
     return result;

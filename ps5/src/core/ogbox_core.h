@@ -96,6 +96,9 @@ bool pshx_core_widescreen(void);
 
 /* Paused: the guest's clock and sound stop, the frame stays (the quick menu, the home screen). */
 void pshx_core_pause(bool on);
+/* OGBox 0.1.25: before the title is replaced (back to the game list): the guest paused, its GPU
+ * work finished. Says each step in the boot log. */
+void pshx_core_quiesce(void);
 
 /* One line about the run, for the boot log's heartbeat and an overlay: the state, frames
  * presented and taken, the guest's position when the CPU backend knows it. */

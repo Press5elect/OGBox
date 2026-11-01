@@ -131,6 +131,19 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.25 (bring-up)
+
+Fixed
+- The console crashing, most of the time, when a game was left with OPTIONS and the touch
+  pad. Before the title restarts into the game list, the emulated Xbox is now paused and the
+  GPU work of the emulator and of the presenter is waited out. Each step of the exit is written
+  to the boot log and forced to storage, so if the console still goes down, the log shows how
+  far it got.
+- Def Jam: Fight for NY freezing after the EA logo (0.1.20 to 0.1.24). 0.1.20's rule redirected
+  a clock read that the decoder had seen only 2 instructions of code before, and it probably
+  wasn't one. A read is now redirected against the byte check only after 8 or more decoded
+  instructions in a row. Def Jam's other one, after 209 instructions, still is.
+
 ### 0.1.24 (bring-up)
 
 Fixed

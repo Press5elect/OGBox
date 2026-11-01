@@ -92,6 +92,7 @@
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_priority.h"
 #include "platform/ps5_relaunch.h"
+#include <unistd.h>
 #include "platform/ps5_sandbox.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
@@ -779,11 +780,35 @@ public:
 	}
 
 	/* Back to the game list from a game: the title starts again with no game named. */
+	/* OGBox 0.1.25: the boot log on the disk now: a console that goes down while a game is left
+	 * keeps the lines that say how far the exit got. */
+	static void syncLog()
+	{
+		const int fd = pshakux_log_fd();
+		if (fd >= 0) {
+			fsync(fd);
+		}
+	}
+
+	/* OGBox 0.1.25: before the title is replaced, nothing of the game left running: the guest
+	 * paused, the emulated GPU's work and the presenter's finished. Leaving a game crashed the
+	 * console most times (0.1.24, Burnout 3: the log stopped before the exit's own lines). */
+	void quiesceForExit()
+	{
+		syncLog();
+		pshx_core_quiesce();
+		syncLog();
+		const VkResult r = vkDeviceWaitIdle(device);
+		pshakux_log("ogbox: the presenter's GPU work done (%d)", static_cast<int>(r));
+		syncLog();
+	}
+
 	void relaunchToLibrary()
 	{
 		relaunchAsked = true;
 		const char *args[] = { nullptr };
 		pshakux_log("ogbox: back to the game list");
+		quiesceForExit();
 		const int r = pshakux_relaunch(args);
 		pshakux_log("ogbox: the relaunch was refused (%#x): quitting", static_cast<unsigned>(r));
 		quit = true;
@@ -806,6 +831,7 @@ public:
 			args.push_back(word.c_str());
 		}
 		args.push_back(nullptr);
+		quiesceForExit();
 		pshakux_relaunch(args.data());
 	}
 
@@ -1296,6 +1322,8 @@ public:
 		if ((first.held & combo) == combo) {
 			if (quitHeldSince < 0.0) {
 				quitHeldSince = now;
+				pshakux_log("ogbox: OPTIONS and the touch pad down");
+				syncLog();
 			} else if (now - quitHeldSince >= kQuitHoldSeconds) {
 				pshakux_log("ogbox: OPTIONS and the touch pad held for %.0f s: back to the game list", kQuitHoldSeconds);
 				quitHeldSince = now + 1e9;   // once

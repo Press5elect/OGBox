@@ -611,3 +611,19 @@ void pshx_core_pause(bool on)
 {
     nc_pause_set(on);
 }
+
+int hle_vk_exit_idle(void); /* hw/xbox/hle/vk/display.c */
+
+void pshx_core_quiesce(void)
+{
+    if (pshx_core_state() == PSHX_CORE_IDLE) {
+        return;
+    }
+    nc_pause_set(true);
+    pshakux_log("core: paused for the exit");
+    /* the guest's CPU parks at its next kernel entry; the decoder and the render thread finish
+     * what they have */
+    usleep(150000);
+    const int r = hle_vk_exit_idle();
+    pshakux_log("core: the emulated GPU's work done (%d)", r);
+}
