@@ -131,6 +131,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.23 (bring-up)
+
+Fixed
+- Game threads getting each other's floating-point state (the test disc's six thread failures,
+  still there in 0.1.22). The emulator took the game's x87 and SSE registers to be live when
+  its signal handler runs. On the console they are not: the handler starts with blank
+  registers, and the game's values are only in the copy the kernel saved, which it loads back
+  when the handler returns. So the emulator saved and switched blank state, and the kernel put
+  the interrupted thread's values back into whichever thread resumed. The emulator now reads
+  and writes the game's floating-point state in the kernel's copy, as it already did on Linux.
+  The boot log's `signal frame FPU:` line says which copy it uses.
+
 ### 0.1.22 (bring-up)
 
 Fixed
@@ -138,7 +150,8 @@ Fixed
   thread's state where the console SDK's header says the kernel keeps it, but the console's
   kernel keeps it elsewhere. The emulator now finds the kernel's copy by matching it against
   the registers, writes there, and says where in a `signal frame FPU:` boot-log line. Until it
-  finds it, it writes nothing (0.1.20's behaviour).
+  finds it, it writes nothing (0.1.20's behaviour). (Corrected in 0.1.23: it never found it,
+  because the registers are blank when the handler starts, so this changed nothing.)
 
 ### 0.1.21 (bring-up)
 
