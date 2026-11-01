@@ -102,6 +102,12 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.2 (bring-up)
+
+Fixed
+- Quitting (OPTIONS and the touch pad) no longer crashes: the picture's descriptor pool was
+  destroyed twice.
+
 ### 0.1.1 (bring-up)
 
 Fixed

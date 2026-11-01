@@ -351,6 +351,9 @@ public:
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+		// The base class owns descriptorPool and destroys it again if it is still set: 0.1.1
+		// crashed at quit there (RADV freeing the pool twice).
+		descriptorPool = VK_NULL_HANDLE;
 	}
 
 	// ---- Vulkan resources (as Kelvin's presenter) -----------------------------------------------
