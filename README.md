@@ -120,6 +120,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.13 (bring-up)
+
+Changed
+- The game's code is now patched the way Cxbx-Reloaded does it: only rdtsc, only in the
+  game's own code, and only the two bytes of the instruction itself. cpuid and pushfd/popfd
+  are no longer patched (`env NC_SWEEP_CPUID=1` and `env NC_SWEEP_FLAGS=1` bring them back
+  for testing).
+
+Fixed
+- Burnout 3: the crash when a movie starts, and the freeze on the loading screen, both
+  caused by patches written into data that looked like code.
+
 ### 0.1.12 (bring-up)
 
 Added

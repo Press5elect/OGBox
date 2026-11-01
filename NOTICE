@@ -52,6 +52,8 @@ OTHER AUTHORS' PARTS
 
 hakuX (rfandango and contributors, GPL-3.0-or-later), the parts of hakuX ported from xemu (the
 MCPX APU: LGPL-2.1-or-later, GPL-2.0-or-later and the other terms in hakuX's LICENSE), and the
+rules for which rdtsc instructions to patch in native/cpu/codepatch.c, taken from Cxbx-Reloaded
+(src/core/kernel/support/PatchRdtsc.cpp, the Cxbx-Reloaded team, GPL-2.0-or-later), and the
 other parts named in ps5/notices/components.json are their authors' work, under their own
 licences and notices, which are kept as they are. The terms above do not apply to them: they
 cover Press5elect's code only. Files made from the PS5 Vulkan Template (Copyright (C) 2026

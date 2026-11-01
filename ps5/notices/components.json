@@ -91,6 +91,23 @@
    }
   },
   {
+   "id": "cxbx-reloaded-rdtsc",
+   "name": "Cxbx-Reloaded's rules for which rdtsc instructions to patch (the sections it leaves alone, the byte after 0F 31 and its known false positives), reimplemented in the native CPU backend's code sweep (hakuX-native native/cpu/codepatch.c)",
+   "licence": "GPL-2.0-or-later",
+   "copyright": "the Cxbx-Reloaded team",
+   "modifications": "reimplemented in C for the native CPU backend by Press5elect, 2026; the patch is ud2 instead of OUT DX,EAX; NOP",
+   "texts": {
+    "Cxbx-Reloaded-COPYING.txt": "ps5/licenses/Cxbx-Reloaded-COPYING.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/Cxbx-Reloaded/Cxbx-Reloaded",
+    "revision": "585c49a50af1255ab155099e06f24505f9c5a800"
+   }
+  },
+  {
    "id": "xemu-apu",
    "name": "The MCPX APU (hakuX's native/dev/apu, ported from xemu): its files under the GNU LGPL 2 or later (apu.c, debug.c, dsp/dsp_dma.c, dsp/gp_ep.c, vp/vp.c and their headers); the DSP56300 emulator adapted from Hatari's DSP M56001 emulation (ARAnyM developer team), GPL-2.0-or-later; vp/svf.h after the SWH LADSPA plugins (Steve Harris), \"GPL\" with no version named (xemu's header says GPLv2), so any version, the 3rd included; vp/adpcm.h, the ADPCM-XQ decoder (David Bryant), BSD-3-Clause",
    "licence": "LGPL-2.1-or-later; GPL-2.0-or-later; GPL (any version); BSD-3-Clause",
