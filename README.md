@@ -44,17 +44,30 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
    `nfs://192.168.1.20/volume1/games/xbox` for NFS. With the payload loader (elfldr, port 9021)
    running, OGBox leaves its sandbox at start, so USB drives and extended storage are visible.
    A file named `elevation-off.txt` in the title folder keeps it inside the sandbox.
-3. Start OGBox from the home screen and pick a game from the list: D-pad to move, CROSS to open
-   a folder or start a game, CIRCLE to go back. In a game, hold **OPTIONS and the touch pad**
-   for two seconds to go back to the list; in the list, the same quits.
+3. Start OGBox from the home screen and pick a game from the list: the places on the left, the
+   folder in the middle, the selected disc on the right (its name, title ID, mods and settings).
+   D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back, TRIANGLE for the
+   settings. In a game, hold **OPTIONS and the touch pad** for two seconds to go back to the
+   list; in the list, the same quits.
+
+**Settings** (TRIANGLE, or Settings on the left) has hakuX's every setting, with hakuX's
+defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
+cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
+timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
+Network (off, LAN, XLink Kai, Insignia) and Interface (the FPS counter, the code rain). CROSS
+picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
+any of the Graphics, Console and Console video ones for that game alone (TRIANGLE: back to the
+app's). They are kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`;
+the network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
+
+**Mods and cheats** (on the right) lists hakuX's for the disc (60 and 120 fps mods, game fixes;
+the `mods` folder is hakuX's own): CROSS turns one on or off, from the game's next start
+(`/data/ogbox/mods.txt`). **Xbox dashboard** (on the left) starts the dashboard from the
+emulated hard disk; OGBox doesn't include one.
 
 `boot.txt` (copy `boot.example.txt`) holds hakuX's options (`scale=2`, `uncap`, ...) for every
-game. Its first line may name a disc image; with an `autoboot` line that image boots straight
-away, without the list.
-
-hakuX's mods and cheats (60 and 120 fps mods, game fixes; the `mods` folder is hakuX's own) are
-off until chosen: add `<key> mod <name>` or `<key> cheat <name>` lines to `/data/ogbox/mods.txt`.
-The boot log lists what the running game has, with the key to use.
+game, over the settings. Its first line may name a disc image; with an `autoboot` line that
+image boots straight away, without the list.
 
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
 L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
@@ -130,6 +143,21 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.26 (bring-up)
+
+Added
+- A new look: black and green, falling code behind the menus, Share Tech Mono for the type, a
+  boot screen with the logo and the start's lines typed out.
+- The game list in three columns: the places with Settings, the Xbox dashboard and Quit; the
+  folder; the selected disc (its name and title ID read from the disc, its mods, cheats and own
+  settings, and Start, Game settings, Mods and cheats).
+- Settings: every one of hakuX's, with its defaults, per game as well (see Using it).
+- FXAA and Snapdragon GSR in the picture (hakuX's shaders), and the aspect ratio (auto, 4:3,
+  16:9, stretch).
+- Mods and cheats turned on and off from the menu.
+- An FPS counter over the game (on, as in hakuX; off in the settings), and a ring that fills while
+  OPTIONS and the touch pad are held.
 
 ### 0.1.25 (bring-up)
 

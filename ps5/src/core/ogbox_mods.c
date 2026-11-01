@@ -19,6 +19,8 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -530,4 +532,193 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
     if (write_manifest(manifest, game_dir)) {
         nc_mods_set_manifest(manifest);
     }
+}
+
+/* ---- OGBox 0.1.26: the game list's questions ---- */
+
+int ps5vfs_is_virtual(const char *path);
+int ps5vfs_disc_open(const char *path);
+void ps5vfs_disc_close(int fd);
+
+/* The catalog of the last ogbox_mods_catalog (or ogbox_mods_prepare), freed. */
+static void catalog_reset(void)
+{
+    for (unsigned i = 0; i < g_nmods; i++) {
+        for (size_t k = 0; k < g_mods[i].npatches; k++) {
+            free(g_mods[i].patches[k].xbe);
+            free(g_mods[i].patches[k].text);
+        }
+        free(g_mods[i].patches);
+    }
+    for (unsigned i = 0; i < g_ncheats; i++) {
+        for (size_t k = 0; k < g_cheats[i].ncode; k++) {
+            free(g_cheats[i].code[k]);
+        }
+        free(g_cheats[i].code);
+    }
+    memset(g_mods, 0, sizeof(g_mods));
+    memset(g_cheats, 0, sizeof(g_cheats));
+    g_nmods = 0;
+    g_ncheats = 0;
+}
+
+/* The title folder's mods/<key> (any case), or false. */
+static bool find_game_dir(const char *key, char *out, size_t n)
+{
+    char mods_dir[1024];
+    snprintf(mods_dir, sizeof(mods_dir), "%s/mods", pshakux_title_dir());
+    size_t nfolders = 0;
+    char **folders = list_dir(mods_dir, &nfolders, true);
+    bool found = false;
+    for (size_t i = 0; i < nfolders && !found; i++) {
+        if (!strcasecmp(folders[i], key)) {
+            snprintf(out, n, "%s/%s", mods_dir, folders[i]);
+            found = true;
+        }
+    }
+    free_names(folders, nfolders);
+    return found;
+}
+
+bool ogbox_game_info(const char *image, OgboxGameInfo *info)
+{
+    memset(info, 0, sizeof(*info));
+    const bool virt = ps5vfs_is_virtual(image) != 0;
+    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    NcDiscFile f;
+    uint8_t h[0x1000];
+    bool ok = nc_disc_open(&disc, fd) && nc_disc_find(&disc, "\\default.xbe", &f) && f.size >= sizeof(h) &&
+              nc_disc_read(&disc, &f, 0, h, sizeof(h));
+    if (ok) {
+        const uint32_t base = le32(h + 0x104), cert_va = le32(h + 0x118);
+        const uint32_t off = cert_va - base;
+        ok = cert_va >= base && off <= sizeof(h) - 0xB0;
+        if (ok) {
+            info->title_id = le32(h + off + 8);
+            info->version = le32(h + off + 0xAC);
+            /* the title's name: 40 UTF-16LE characters at +0x0C; what is not ASCII becomes '?' */
+            size_t n = 0;
+            for (unsigned i = 0; i < 40 && n + 1 < sizeof(info->title); i++) {
+                const uint16_t c = (uint16_t)(h[off + 0x0C + 2 * i] | h[off + 0x0D + 2 * i] << 8);
+                if (!c) {
+                    break;
+                }
+                info->title[n++] = c >= 0x20 && c < 0x7F ? (char)c : '?';
+            }
+            info->title[n] = 0;
+            ok = info->title_id != 0;
+            if (ok) {
+                snprintf(info->key, sizeof(info->key), "%08X.%u", info->title_id, info->version);
+            }
+        }
+    }
+    if (virt) {
+        ps5vfs_disc_close(fd);
+    } else {
+        close(fd);
+    }
+    info->ok = ok;
+    return ok;
+}
+
+int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
+{
+    catalog_reset();
+    char game_dir[1024];
+    if (!key || !key[0] || !find_game_dir(key, game_dir, sizeof(game_dir))) {
+        return 0;
+    }
+    size_t nmods = 0;
+    char **ids = list_dir(game_dir, &nmods, true);
+    for (size_t i = 0; i < nmods; i++) {
+        load_mod(game_dir, ids[i]);
+    }
+    free_names(ids, nmods);
+    char cheats[1100];
+    snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
+    load_cheats(cheats);
+    read_choices(key, pshakux_title_dir());
+    int n = 0;
+    for (unsigned i = 0; i < g_nmods && n < max; i++, n++) {
+        OgboxModEntry *e = &out[n];
+        memset(e, 0, sizeof(*e));
+        copy(e->id, sizeof(e->id), g_mods[i].id);
+        copy(e->name, sizeof(e->name), g_mods[i].name);
+        copy(e->description, sizeof(e->description), g_mods[i].description);
+        e->refresh = g_mods[i].refresh;
+        e->on = g_mods[i].on;
+    }
+    for (unsigned i = 0; i < g_ncheats && n < max; i++, n++) {
+        OgboxModEntry *e = &out[n];
+        memset(e, 0, sizeof(*e));
+        copy(e->id, sizeof(e->id), g_cheats[i].name);
+        copy(e->name, sizeof(e->name), g_cheats[i].name);
+        e->cheat = true;
+        e->once = g_cheats[i].once;
+        e->on = g_cheats[i].on;
+    }
+    catalog_reset();
+    return n;
+}
+
+bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on)
+{
+    const char *path = "/data/ogbox/mods.txt";
+    char *text = read_all(path);
+    char tmp[1100];
+    snprintf(tmp, sizeof(tmp), "%s.new", path);
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        free(text);
+        pshakux_log("mods: %s cannot be written (%s)", tmp, strerror(errno));
+        return false;
+    }
+    const char *kind = cheat ? "cheat" : "mod";
+    if (text) {
+        for (char *save, *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+            char copyline[1024];
+            copy(copyline, sizeof(copyline), line);
+            char *s = content(copyline);
+            bool same = false;
+            if (s) {
+                char *w1 = s, *rest = s;
+                while (*rest && !isspace((unsigned char)*rest)) {
+                    rest++;
+                }
+                if (*rest) {
+                    *rest++ = 0;
+                    rest = trim(rest);
+                    char *w3 = rest;
+                    while (*w3 && !isspace((unsigned char)*w3)) {
+                        w3++;
+                    }
+                    if (*w3) {
+                        *w3++ = 0;
+                    }
+                    w3 = trim(w3);
+                    same = !strcasecmp(w1, key) && !strcasecmp(rest, kind) && !strcasecmp(w3, name);
+                }
+            }
+            if (!same) {
+                fprintf(out, "%s\n", line);
+            }
+        }
+        free(text);
+    } else {
+        fprintf(out, "# OGBox: the mods and cheats that are on, one a line: <game> mod <id> / <game> cheat <name>\n");
+    }
+    if (on) {
+        fprintf(out, "%s %s %s\n", key, kind, name);
+    }
+    if (fclose(out) != 0 || rename(tmp, path) != 0) {
+        pshakux_log("mods: %s cannot be written (%s)", path, strerror(errno));
+        return false;
+    }
+    pshakux_log("mods: %s %s %s: %s", key, kind, name, on ? "on" : "off");
+    return true;
 }

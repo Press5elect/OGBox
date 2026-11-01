@@ -73,6 +73,8 @@
 #include "vulkanexamplebase.h"
 
 #include <algorithm>
+#include <cmath>
+#include <random>
 #include <atomic>
 #include <cerrno>
 #include <memory>
@@ -96,6 +98,8 @@
 #include "platform/ps5_sandbox.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
+#include "core/ogbox_mods.h"
+#include "ogbox_settings.h"
 
 #include "stb_image.h"   // (its implementation is the base class's: base/VulkanglTFModel.cpp)
 
@@ -117,6 +121,7 @@ struct BootConfig {
 	std::string source;
 	std::string bootTxtImage;   // boot.txt's first line (0.1.14: boots only with "autoboot")
 	bool autoboot{ false };
+	std::string gameKey;        // 0.1.26: --game <title ID>.<version> (the game list read it)
 };
 
 std::string trim(const std::string &s)
@@ -238,6 +243,9 @@ bool readArguments(BootConfig &config)
 		} else if (arg == "--loadstate" && next) {
 			config.options.push_back(std::string("loadstate=") + next);
 			i++;
+		} else if (arg == "--game" && next) {
+			config.gameKey = next;
+			i++;
 		} else if (arg == "--relaunch") {
 			config.options.push_back("relaunch");
 		} else if (arg == "--option" && next) {
@@ -307,7 +315,7 @@ const char *stateName(int state)
 // ---- the game list (0.1.14) ------------------------------------------------------------------
 
 struct LibraryEntry {
-	enum Kind { Place, Folder, Image, Up, Quit } kind;
+	enum Kind { Place, Folder, Image, Up, Quit, Settings, Dashboard } kind;
 	std::string name;   // as shown
 	std::string path;   // what it opens
 	int64_t size{ 0 };
@@ -606,7 +614,30 @@ void writeLastFolder(const std::string &folder)
 	}
 }
 
+/* OGBox 0.1.26: one disc read at a time for the game list's details (the share's disc layer has
+ * one disc descriptor; the mods' catalog is the core's one table). */
+std::mutex g_discInfoMutex;
+
 } // namespace
+
+// ---- OGBox 0.1.26: the look (black and green, "the code"), in the overlay's hooks ------------
+
+namespace mx {
+const ImVec4 bright(0.0f, 1.0f, 0.255f, 1.0f);    // #00ff41: titles, values, the selection
+const ImVec4 text(0.49f, 1.0f, 0.61f, 1.0f);      // #7dff9c: the body
+const ImVec4 label(0.24f, 0.78f, 0.40f, 1.0f);    // #3dc766: labels, hints
+const ImVec4 line(0.05f, 0.36f, 0.13f, 1.0f);     // #0d5c22: borders
+const ImVec4 panel(0.0f, 0.03f, 0.01f, 0.86f);    // the panels over the rain
+const ImVec4 head(0.71f, 1.0f, 0.78f, 1.0f);      // #b6ffc8: a drop's head
+const ImVec4 fail(1.0f, 0.45f, 0.38f, 1.0f);
+inline ImU32 u32(const ImVec4 &c, float alpha = 1.0f)
+{
+	return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha));
+}
+} // namespace mx
+
+/* The overlay's colours and typeface: src/ogbox_theme.cpp (at file scope, where the base class
+ * looks for them; this file is compiled inside a namespace, src/wrap.cpp.in). */
 
 class VulkanExample : public VulkanExampleBase
 {
@@ -667,6 +698,56 @@ public:
 	bool shotWanted{ false };
 	unsigned shotsTaken{ 0 };
 
+	// ---- OGBox 0.1.26: the menus (the boot screen, the game list, the settings, the mods) ----
+	enum class Screen { Boot, Library, Settings, Mods };
+	Screen screen{ Screen::Library };
+	double screenSince{ 0.0 };
+	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
+	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
+	std::vector<LibraryEntry> places;         // the left column
+	double placesRead{ -100.0 };
+	// the selected disc's details, read on a thread of their own once the selection rests
+	struct Details {
+		std::mutex mutex;
+		bool done{ false };
+		OgboxGameInfo info{};
+		int mods{ 0 }, modsOn{ 0 }, cheats{ 0 }, cheatsOn{ 0 }, overrides{ 0 };
+	};
+	std::shared_ptr<Details> details;
+	std::string detailsPath, restingPath;
+	double restingSince{ 0.0 };
+	// the settings screen: the app's, or one game's
+	int section{ 0 };
+	bool forGame{ false };
+	std::string forGameKey, forGameTitle;
+	std::string help;
+	bool focusList{ false };
+	bool wantFocus{ true };                   // the next screen's window takes the controller
+	bool modsFocus{ false };
+	bool swallowNav{ false };                 // this frame's CROSS and CIRCLE are not ImGui's
+	// the mods and cheats screen
+	std::vector<OgboxModEntry> modList;
+	std::string modsKey, modsTitle;
+	// the code rain
+	struct Drop {
+		float x, y, speed;
+		int length;
+		std::string glyphs;
+		float alpha;
+	};
+	std::vector<Drop> rain;
+	float rainWidth{ 0.0f }, rainGlyph{ 0.0f };
+	double rainLast{ 0.0 };
+	std::minstd_rand rng{ 1987u };
+	// a run's picture and overlay (the settings' Graphics and Interface)
+	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };
+	std::string aspectMode{ "auto" };
+	bool fxaaOn{ false }, sgsrOn{ false }, showFps{ true }, rainOn{ true };
+	double fpsSince{ -1.0 };
+	uint64_t fpsPictures{ 0 }, fpsDraws{ 0 };
+	float fps{ 0.0f }, drawRate{ 0.0f };
+	std::vector<std::string> bootLines;
+
 	/* Opens a folder ("" for the places), listing it on a thread of its own. */
 	void openFolder(const std::string &path, const std::string &select = std::string())
 	{
@@ -679,7 +760,6 @@ public:
 		listing.reset();
 		if (path.empty()) {
 			entries = listPlaces();
-			entries.push_back({ LibraryEntry::Quit, "Quit OGBox", std::string(), 0, std::string() });
 			pickSelection();
 			return;
 		}
@@ -776,6 +856,13 @@ public:
 			pshakux_log("library: Quit OGBox");
 			quit = true;
 			break;
+		case LibraryEntry::Settings:
+			openSettings(std::string(), std::string());
+			break;
+		case LibraryEntry::Dashboard:
+			startPath = "none";
+			startDelay = 2;
+			break;
 		}
 	}
 
@@ -865,6 +952,17 @@ public:
 		}
 		if (boot.image.empty()) {
 			library = true;
+			prefs.load();
+			rainOn = prefs.on("rain");
+			screen = Screen::Boot;
+			screenSince = now_seconds();
+			bootLines = {
+				std::string("> OGBox ") + pshakux_build_version() + " - hakuX native, for PS5",
+				"> settings: /data/ogbox/settings.txt",
+				"> mods: the title folder's mods/, chosen in /data/ogbox/mods.txt",
+				"> network shares: " + g_networkStatus,
+				"> the game list: " + std::string(readLastFolder().empty() ? "the places" : readLastFolder()),
+			};
 			std::string last = readLastFolder();
 			if (last.empty() && !boot.bootTxtImage.empty()) {
 				last = parentOf(boot.bootTxtImage);
@@ -896,17 +994,35 @@ public:
 		pshakux_log("ogbox: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
 			boot.hdd.c_str(), boot.options.size());
 		std::vector<const char *> argv;
-		/* 0.1.10: hakuX's own defaults, as its release app passes them every run
-		 * (android/.../NativeCoreActivity.kt and AppPrefs.kt): console timing on
-		 * (the DVD drive's and hard disk's real read times: games' streaming and
-		 * movies are paced by them), shaders built asynchronously and the
-		 * recorded ones before the game, 1x scale, and the console's video
-		 * settings: HDTV AV pack with 480p allowed. boot.txt's own options come
-		 * after these and win. */
-		static const char *const kHakuxDefaults[] = { "devtime=1", "asyncpipe=1", "prebuild=1", "scale=1",
-			"video=00080000", "avpack=hdtv" };
-		for (const char *option : kHakuxDefaults) {
-			argv.push_back(option);
+		/* 0.1.26: the settings (src/ogbox_settings.cpp: hakuX's, its defaults as its release app's)
+		 * with the game's own on top, as hakuX's NativeCoreActivity.kt passes them; boot.txt's
+		 * options and the title's arguments after them, and they win. The game is its disc's
+		 * title ID and version: the game list's (--game), else read here. */
+		std::string key = boot.gameKey;
+		if (key.empty() && boot.image != "none") {
+			OgboxGameInfo info{};
+			if (ogbox_game_info(boot.image.c_str(), &info)) {
+				key = info.key;
+			}
+		}
+		prefs.load(key);
+		aspectMode = prefs.value("aspect");
+		fxaaOn = prefs.on("fxaa");
+		sgsrOn = prefs.value("upscale") == "sgsr";
+		showFps = prefs.on("show_fps");
+		static std::vector<std::string> fromSettings;
+		fromSettings = prefs.coreArgs();
+		std::string said;
+		for (const std::string &option : fromSettings) {
+			argv.push_back(option.c_str());
+			said += " " + option;
+		}
+		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s, FXAA %s, upscaling %s, FPS counter %s",
+			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), fxaaOn ? "on" : "off",
+			sgsrOn ? "SGSR" : "bilinear", showFps ? "on" : "off");
+		if (prefs.overrides()) {
+			pshakux_log("ogbox: %s has %d settings of its own (%s)", key.c_str(), prefs.overrides(),
+				ogbox::gameSettingsPath(key).c_str());
 		}
 		for (const std::string &option : boot.options) {
 			argv.push_back(option.c_str());
@@ -936,6 +1052,8 @@ public:
 		}
 		vkDestroySampler(device, sampler, nullptr);
 		vkDestroyPipeline(device, pipeline, nullptr);
+		vkDestroyPipeline(device, pipelineFxaa, nullptr);
+		vkDestroyPipeline(device, pipelineSgsr, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -1143,6 +1261,20 @@ public:
 		pipelineCI.stageCount = static_cast<uint32_t>(stages.size());
 		pipelineCI.pStages = stages.data();
 		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipeline));
+		/* 0.1.26: the settings' FXAA and Snapdragon GSR (hakuX's presenter's shaders,
+		 * shaders/glsl/ogbox/fxaa.frag and sgsr.frag): the same pipeline, another fragment stage */
+		const struct {
+			const char *file;
+			VkPipeline *out;
+		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/sgsr.frag.spv", &pipelineSgsr } };
+		for (const auto &v : variants) {
+			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
+			pipelineCI.pStages = stages.data();
+			if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, v.out) != VK_SUCCESS) {
+				*v.out = VK_NULL_HANDLE;
+				pshakux_log("presenter: %s cannot be made: that filter is off", v.file);
+			}
+		}
 	}
 
 	void prepare() override
@@ -1231,6 +1363,16 @@ public:
 		if (showingLogo) {
 			return aspect;   // the logo at its own shape
 		}
+		/* 0.1.26: the settings' aspect ratio (hakuX's: auto, 4:3, 16:9, stretch) */
+		if (aspectMode == "4:3") {
+			return 4.0f / 3.0f;
+		}
+		if (aspectMode == "16:9") {
+			return 16.0f / 9.0f;
+		}
+		if (aspectMode == "stretch") {
+			return static_cast<float>(width) / static_cast<float>(height);
+		}
 		if (pshx_core_widescreen() && aspect < 1.6f) {
 			aspect = 16.0f / 9.0f;
 		}
@@ -1260,21 +1402,34 @@ public:
 			picture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
 		beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
-		if ((havePicture || showingLogo) && picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+		const bool splash = library && screen == Screen::Boot && showingLogo;
+		if ((havePicture || (showingLogo && (!library || splash))) &&
+			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
 			const float aspect = displayAspect();
-			float w = static_cast<float>(width), h = static_cast<float>(height);
+			/* 0.1.26: the boot screen's logo in a box above its middle */
+			const float boxW = static_cast<float>(width), boxH = splash ? static_cast<float>(height) * 0.46f : static_cast<float>(height);
+			float w = boxW, h = boxH;
 			if (w / h > aspect) {
 				w = std::floor(h * aspect + 0.5f);
 			} else {
 				h = std::floor(w / aspect + 0.5f);
 			}
 			const float x = std::floor((static_cast<float>(width) - w) * 0.5f);
-			const float y = std::floor((static_cast<float>(height) - h) * 0.5f);
+			const float y = splash ? std::floor(static_cast<float>(height) * 0.12f) : std::floor((static_cast<float>(height) - h) * 0.5f);
 			VkViewport viewport{ x, y, w, h, 0.0f, 1.0f };
 			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
 			VkRect2D scissor{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
 			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
-			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			VkPipeline chosen = pipeline;
+			if (havePicture && !showingLogo) {
+				const bool smaller = static_cast<float>(picture.width) < w - 0.5f || static_cast<float>(picture.height) < h - 0.5f;
+				if (fxaaOn && pipelineFxaa != VK_NULL_HANDLE) {
+					chosen = pipelineFxaa;
+				} else if (sgsrOn && smaller && pipelineSgsr != VK_NULL_HANDLE) {
+					chosen = pipelineSgsr;
+				}
+			}
+			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
 			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 		}
@@ -1345,18 +1500,37 @@ public:
 		}
 	}
 
-	/* The game list's own buttons (the D-pad and CROSS go to the list through ImGui's navigation):
-	 * CIRCLE the folder above; OPTIONS and the touch pad held, quit. */
+	/* 0.1.26: the menus' own buttons (the D-pad and CROSS go to the widgets through ImGui's
+	 * navigation): CIRCLE back (the folder above, or out of a screen), TRIANGLE the settings from
+	 * the game list; OPTIONS and the touch pad held, quit. */
 	void libraryControls()
 	{
-		struct pad first{};
-		pad_player(0, &first);
-		if ((first.pressed & PAD_CIRCLE) && startPath.empty()) {
-			goUp();
+		pad_player(0, &menuPad);
+		const uint32_t pressed = menuPad.pressed;
+		if (screen == Screen::Boot) {
+			if ((pressed & (PAD_CROSS | PAD_CIRCLE)) || now_seconds() - screenSince > 3.2) {
+				screen = Screen::Library;
+				screenSince = now_seconds();
+				focusSet = false;
+				wantFocus = true;
+				swallowNav = (pressed & (PAD_CROSS | PAD_CIRCLE)) != 0;   // the skip's press is not the list's
+			}
+		} else if (screen == Screen::Library) {
+			if ((pressed & PAD_CIRCLE) && startPath.empty()) {
+				goUp();
+			}
+			if ((pressed & PAD_TRIANGLE) && startPath.empty()) {
+				openSettings(std::string(), std::string());
+			}
+		} else if (pressed & PAD_CIRCLE) {
+			screen = Screen::Library;
+			screenSince = now_seconds();
+			focusSet = false;
+			wantFocus = true;
 		}
 		const uint32_t combo = PAD_OPTIONS | PAD_TOUCH_PAD;
 		const double now = now_seconds();
-		if ((first.held & combo) == combo) {
+		if ((menuPad.held & combo) == combo) {
 			if (quitHeldSince < 0.0) {
 				quitHeldSince = now;
 			} else if (now - quitHeldSince >= kQuitHoldSeconds) {
@@ -1368,20 +1542,68 @@ public:
 		}
 	}
 
+	/* The settings screen: the app's ("" key), or a game's. */
+	void openSettings(const std::string &key, const std::string &title)
+	{
+		forGame = !key.empty();
+		forGameKey = key;
+		forGameTitle = title;
+		prefs.load(key);
+		section = 0;
+		focusList = false;
+		help.clear();
+		screen = Screen::Settings;
+		screenSince = now_seconds();
+		wantFocus = true;
+		pshakux_log("ogbox: settings%s%s", forGame ? " of " : "", forGame ? key.c_str() : "");
+	}
+
+	void openMods(const std::string &key, const std::string &title)
+	{
+		modsKey = key;
+		modsTitle = title;
+		std::lock_guard<std::mutex> disc(g_discInfoMutex);
+		modList.assign(160, OgboxModEntry{});
+		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 160))));
+		screen = Screen::Mods;
+		screenSince = now_seconds();
+		help.clear();
+		wantFocus = true;
+		modsFocus = false;
+	}
+
 	void renderLibrary()
 	{
 		collectListing();
 		if (!startPath.empty() && --startDelay < 0) {
 			const std::string path = startPath;
 			startPath.clear();
-			const char *args[] = { "--boot", path.c_str(), nullptr };
-			const int r = pshakux_relaunch(args);
+			std::string key;
+			if (details && detailsPath == path) {
+				std::lock_guard<std::mutex> lock(details->mutex);
+				if (details->done && details->info.ok) {
+					key = details->info.key;
+				}
+			}
+			std::vector<const char *> args;
+			if (path == "none") {
+				args = { "--boot", "none", "--option", "dash" };
+			} else {
+				args = { "--boot", path.c_str() };
+				if (!key.empty()) {
+					args.push_back("--game");
+					args.push_back(key.c_str());
+				}
+			}
+			args.push_back(nullptr);
+			quiesceForExit();
+			const int r = pshakux_relaunch(args.data());
 			listError = "The console refused to start the title again (" + std::to_string(r) + ").";
 			pshakux_log("library: the relaunch for %s was refused (%#x)", path.c_str(), static_cast<unsigned>(r));
 		}
 		ui.visible = true;
 		VulkanExampleBase::prepareFrame();
-		upload = false;
+		upload = screen == Screen::Boot && fetchLogo();
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
 		framesDrawn++;
@@ -1393,6 +1615,23 @@ public:
 			return;
 		}
 		feedControllers();
+		/* 0.1.26: SQUARE, TRIANGLE, L1 and R1 are the menus' own (the previous choice, the
+		 * settings, a bigger step), not ImGui's menu layer and window switching */
+		{
+			ImGuiIO &io = ImGui::GetIO();
+			io.NavInputs[ImGuiNavInput_Menu] = 0.0f;
+			io.NavInputs[ImGuiNavInput_Input] = 0.0f;
+			io.NavInputs[ImGuiNavInput_FocusPrev] = 0.0f;
+			io.NavInputs[ImGuiNavInput_FocusNext] = 0.0f;
+			if (!library) {
+				std::memset(io.NavInputs, 0, sizeof(io.NavInputs));   // the game's pad
+			}
+			if (swallowNav) {
+				io.NavInputs[ImGuiNavInput_Activate] = 0.0f;
+				io.NavInputs[ImGuiNavInput_Cancel] = 0.0f;
+				swallowNav = (menuPad.held & (PAD_CROSS | PAD_CIRCLE)) != 0;   // until let go
+			}
+		}
 		if (library) {
 			renderLibrary();
 			return;
@@ -1408,7 +1647,7 @@ public:
 		}
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
 		// template's settings window.
-		ui.visible = !problem.empty() || state == PSHX_CORE_FAILED || state == PSHX_CORE_STOPPED || !havePicture;
+		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
 		VulkanExampleBase::prepareFrame();
 		fetchPicture();
 		if (shotWanted && upload && havePicture) {
@@ -1433,67 +1672,338 @@ public:
 		pshakux_log("ogbox: screenshot %ux%u %s: %s", picture.width, picture.height, path.c_str(), ok ? "saved" : std::strerror(errno));
 	}
 
-	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
+	// ---- 0.1.26: drawing the menus ------------------------------------------------------------
+
+	/* The falling code, in a window's draw list (behind its widgets); none inside `hole`. */
+	void drawRain(ImDrawList *dl, float alpha, const ImVec4 &hole = ImVec4(0, 0, 0, 0))
 	{
-		if (library) {
-			drawLibrary(overlay->scale);
-		} else {
-			drawStatus(overlay->scale);
+		if (!rainOn || alpha <= 0.0f) {
+			return;
+		}
+		static const char kGlyphs[] = "0123456789ABCDEFGHJKLMNPRSTUVWXYZ:=+*<>|$#%&?";
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const float glyph = ImGui::GetFontSize() * 0.8f;
+		const auto pick = [&]() { return kGlyphs[rng() % (sizeof(kGlyphs) - 1)]; };
+		const auto reset = [&](Drop &d, bool anywhere) {
+			d.length = 8 + static_cast<int>(rng() % 22);
+			d.speed = glyph * (5.0f + static_cast<float>(rng() % 1000) / 1000.0f * 13.0f);
+			d.alpha = 0.25f + static_cast<float>(rng() % 1000) / 1000.0f * 0.75f;
+			d.y = anywhere ? static_cast<float>(rng() % static_cast<unsigned>(H + 1.0f))
+				: -static_cast<float>(rng() % static_cast<unsigned>(H * 0.5f + 1.0f));
+			d.glyphs.resize(static_cast<size_t>(d.length));
+			for (char &g : d.glyphs) {
+				g = pick();
+			}
+		};
+		if (rainWidth != W || rainGlyph != glyph || rain.empty()) {
+			rain.clear();
+			rainWidth = W;
+			rainGlyph = glyph;
+			const int columns = static_cast<int>(W / (glyph * 1.15f));
+			for (int i = 0; i < columns; i++) {
+				Drop d{};
+				d.x = static_cast<float>(i) * glyph * 1.15f;
+				reset(d, true);
+				rain.push_back(d);
+			}
+			rainLast = now_seconds();
+		}
+		const double now = now_seconds();
+		const float dt = static_cast<float>(std::min(0.1, std::max(0.0, now - rainLast)));
+		rainLast = now;
+		ImFont *font = ImGui::GetFont();
+		for (Drop &d : rain) {
+			d.y += d.speed * dt;
+			if (d.y - static_cast<float>(d.length) * glyph > H) {
+				reset(d, false);
+			}
+			if (rng() % 24 == 0) {
+				d.glyphs[rng() % d.glyphs.size()] = pick();
+			}
+			for (int k = 0; k < d.length; k++) {
+				const float y = d.y - static_cast<float>(k) * glyph;
+				if (y < -glyph || y > H) {
+					continue;
+				}
+				if (hole.z > 0.0f && d.x + glyph > hole.x && d.x < hole.x + hole.z && y + glyph > hole.y && y < hole.y + hole.w) {
+					continue;
+				}
+				const float fade = 1.0f - static_cast<float>(k) / static_cast<float>(d.length);
+				const ImU32 c = k == 0 ? mx::u32(mx::head, alpha * d.alpha) : mx::u32(mx::bright, alpha * d.alpha * fade * 0.85f);
+				const char *g = &d.glyphs[static_cast<size_t>(k)];
+				dl->AddText(font, glyph, ImVec2(d.x, y), c, g, g + 1);
+			}
 		}
 	}
 
-	void drawLibrary(float s)
+	/* A full-screen window for a menu screen: black, the rain behind. */
+	bool beginScreen(const char *name, float rainAlpha, bool transparent = false, const ImVec4 &hole = ImVec4(0, 0, 0, 0))
 	{
-		const ImVec4 accent(0.42f, 0.78f, 0.25f, 1.0f);   // Xbox green
-		const ImVec4 dim(0.62f, 0.65f, 0.70f, 1.0f);
-		const ImVec4 failure(1.0f, 0.45f, 0.40f, 1.0f);
-		ImGui::SetNextWindowPos(ImVec2(width * 0.5f, height * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(std::min(1300.0f * s, width - 48.0f * s), height - 48.0f * s), ImGuiCond_Always);
-		if (!focusSet) {
+		const float pad = static_cast<float>(height) * 0.03f;
+		ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)), ImGuiCond_Always);
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, transparent ? ImVec4(0, 0, 0, 0) : ImVec4(0, 0, 0, 1));
+		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.4f, pad));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(pad * 0.4f, pad * 0.3f));
+		if (wantFocus || (screen == Screen::Library && !focusSet)) {
 			ImGui::SetNextWindowFocus();
+			wantFocus = false;
 		}
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * s);
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.0f * s, 24.0f * s));
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * s, 6.0f * s));
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.07f, 0.08f, 0.97f));
-		ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(accent.x, accent.y, accent.z, 0.30f));
-		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(accent.x, accent.y, accent.z, 0.45f));
-		ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(accent.x, accent.y, accent.z, 0.60f));
-		ImGui::Begin("OGBox", nullptr,
+		const bool open = ImGui::Begin(name, nullptr,
 			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
-		ImGui::SetWindowFontScale(1.6f);
-		ImGui::TextColored(accent, "OGBox");
-		ImGui::SetWindowFontScale(1.0f);
-		ImGui::TextColored(dim, "%s by Press5elect - built on hakuX, for PS5 (unofficial)", pshakux_build_version());
-		ImGui::Separator();
-		ImGui::Text("%s", folder.empty() ? "Choose where your games are" : folder.c_str());
-		ImGui::Spacing();
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+			ImGuiWindowFlags_NoCollapse);
+		drawRain(ImGui::GetWindowDrawList(), rainAlpha, hole);
+		return open;
+	}
 
-		const float helpHeight = ImGui::GetTextLineHeightWithSpacing() * (listError.empty() ? 2.0f : 3.5f) + 30.0f * s;
-		ImGui::BeginChild("entries", ImVec2(0.0f, ImGui::GetContentRegionAvail().y - helpHeight), false,
-			ImGuiWindowFlags_NavFlattened);
-		if (listing) {
-			ImGui::TextColored(dim, "Reading the folder...");
+	void endScreen()
+	{
+		ImGui::End();
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor(2);
+	}
+
+	/* A title in large letters with a glow (drawn three times, the outer ones faint). */
+	void glowTitle(const char *text, float scale)
+	{
+		ImGui::SetWindowFontScale(scale);
+		const ImVec2 at = ImGui::GetCursorScreenPos();
+		ImDrawList *dl = ImGui::GetWindowDrawList();
+		const float spread = ImGui::GetFontSize() * 0.06f;
+		for (int i = 1; i <= 2; i++) {
+			const float d = spread * static_cast<float>(i);
+			dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x - d, at.y), mx::u32(mx::bright, 0.18f), text);
+			dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + d, at.y), mx::u32(mx::bright, 0.18f), text);
 		}
+		ImGui::TextColored(mx::bright, "%s", text);
+		ImGui::SetWindowFontScale(1.0f);
+	}
+
+	/* A blinking cursor after the last item. */
+	void cursor()
+	{
+		if (std::fmod(now_seconds(), 1.0) < 0.5) {
+			ImGui::SameLine(0.0f, 0.0f);
+			ImGui::TextColored(mx::bright, "_");
+		}
+	}
+
+	/* The hints at the foot of a screen. */
+	void footer(const char *hints, const std::string &second = std::string())
+	{
+		const float lines = second.empty() ? 1.0f : 2.0f;
+		ImGui::SetCursorPosY(static_cast<float>(height) - ImGui::GetStyle().WindowPadding.y -
+			ImGui::GetTextLineHeightWithSpacing() * lines);
+		ImDrawList *dl = ImGui::GetWindowDrawList();
+		const ImVec2 at = ImGui::GetCursorScreenPos();
+		dl->AddLine(ImVec2(at.x, at.y - 4.0f), ImVec2(static_cast<float>(width) - at.x, at.y - 4.0f), mx::u32(mx::line), 2.0f);
+		ImGui::TextColored(mx::label, "%s", hints);
+		ImGui::SameLine(static_cast<float>(width) - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize("OGBox by Press5elect").x);
+		ImGui::TextColored(mx::line, "OGBox by Press5elect");
+		if (!second.empty()) {
+			ImGui::TextColored(mx::label, "%s", second.c_str());
+		}
+	}
+
+	/* The boot screen: the logo (the presenter's, above), a bar filling, the start's lines typed. */
+	void drawBoot()
+	{
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const float logoH = H * 0.46f, logoW = logoH * 1.5f;
+		const ImVec4 hole((W - logoW) * 0.5f, H * 0.12f, logoW, logoH);
+		beginScreen("##boot", 0.9f, true, hole);
+		const double t = now_seconds() - screenSince;
+		ImDrawList *dl = ImGui::GetWindowDrawList();
+		// the bar
+		const float barW = W * 0.34f, barH = H * 0.008f, barX = (W - barW) * 0.5f, barY = H * 0.63f;
+		const float done = static_cast<float>(std::min(1.0, t / 2.6));
+		dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH), mx::u32(ImVec4(0.0f, 0.12f, 0.04f, 1.0f)));
+		dl->AddRect(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH), mx::u32(mx::line), 0.0f, 0, 2.0f);
+		dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW * done, barY + barH), mx::u32(mx::bright));
+		const char *left = "BOOTING THE XBOX";
+		ImGui::SetCursorScreenPos(ImVec2(barX, barY - ImGui::GetTextLineHeightWithSpacing() * 1.2f));
+		ImGui::TextColored(mx::label, "%s", left);
+		const std::string right = std::string("OGBox ") + pshakux_build_version();
+		ImGui::SetCursorScreenPos(ImVec2(barX + barW - ImGui::CalcTextSize(right.c_str()).x,
+			barY - ImGui::GetTextLineHeightWithSpacing() * 1.2f));
+		ImGui::TextColored(mx::label, "%s", right.c_str());
+		// the lines, typed one after another
+		float y = H - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeightWithSpacing() * (static_cast<float>(bootLines.size()) + 0.5f);
+		double start = 0.15;
+		for (const std::string &line : bootLines) {
+			const double shown = (t - start) * 110.0;   // characters a second
+			start += static_cast<double>(line.size()) / 110.0 + 0.06;
+			if (shown <= 0.0) {
+				break;
+			}
+			const size_t n = std::min(line.size(), static_cast<size_t>(shown));
+			ImGui::SetCursorScreenPos(ImVec2(ImGui::GetStyle().WindowPadding.x, y));
+			ImGui::TextColored(mx::text, "%.*s", static_cast<int>(n), line.c_str());
+			if (n < line.size()) {
+				cursor();
+				break;
+			}
+			y += ImGui::GetTextLineHeightWithSpacing();
+		}
+		ImGui::SetCursorScreenPos(ImVec2(W - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize("CROSS: skip").x,
+			H - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeightWithSpacing()));
+		ImGui::TextColored(mx::line, "CROSS: skip");
+		endScreen();
+	}
+
+	/* The selected entry of the list, or nothing. */
+	const LibraryEntry *selectedEntry() const
+	{
+		return selected >= 0 && selected < static_cast<int>(entries.size()) ? &entries[static_cast<size_t>(selected)] : nullptr;
+	}
+
+	/* The selected disc's details, read once the selection has rested a moment. */
+	void ensureDetails()
+	{
+		const LibraryEntry *e = selectedEntry();
+		const std::string path = e && e->kind == LibraryEntry::Image ? e->path : std::string();
+		const double now = now_seconds();
+		if (path != restingPath) {
+			restingPath = path;
+			restingSince = now;
+		}
+		/* (not while a folder is being listed: one request at a time to a share's server) */
+		if (path.empty() || path == detailsPath || now - restingSince < 0.25 || listing) {
+			return;
+		}
+		detailsPath = path;
+		auto job = std::make_shared<Details>();
+		details = job;
+		std::thread([job, path]() {
+			std::lock_guard<std::mutex> disc(g_discInfoMutex);
+			OgboxGameInfo info{};
+			ogbox_game_info(path.c_str(), &info);
+			int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0;
+			if (info.ok) {
+				std::vector<OgboxModEntry> list(160);
+				const int n = ogbox_mods_catalog(info.key, list.data(), 160);
+				for (int i = 0; i < n; i++) {
+					const OgboxModEntry &m = list[static_cast<size_t>(i)];
+					(m.cheat ? cheats : mods)++;
+					if (m.on) {
+						(m.cheat ? cheatsOn : modsOn)++;
+					}
+				}
+				ogbox::Settings s;
+				s.load(info.key);
+				overrides = s.overrides();
+			}
+			std::lock_guard<std::mutex> lock(job->mutex);
+			job->info = info;
+			job->mods = mods;
+			job->modsOn = modsOn;
+			job->cheats = cheats;
+			job->cheatsOn = cheatsOn;
+			job->overrides = overrides;
+			job->done = true;
+		}).detach();
+	}
+
+	/* A row in a list: the text, a note on the right; true when chosen (CROSS). */
+	bool row(const std::string &id, const std::string &text, const std::string &note, bool current, const ImVec4 &color)
+	{
+		ImGui::PushID(id.c_str());
+		const float h = ImGui::GetTextLineHeight() * 1.5f;
+		const ImVec2 at = ImGui::GetCursorScreenPos();
+		const bool chosen = ImGui::Selectable("##row", current, 0, ImVec2(0.0f, h));
+		const bool focused = ImGui::IsItemFocused();
+		ImDrawList *dl = ImGui::GetWindowDrawList();
+		const float ty = at.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+		const float pad = ImGui::GetStyle().FramePadding.x;
+		const ImU32 c = focused ? mx::u32(ImVec4(0, 0, 0, 1)) : mx::u32(color);
+		if (focused) {
+			const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+			const float pulse = 0.75f + 0.25f * static_cast<float>(std::sin(now_seconds() * 4.0));
+			dl->AddRectFilled(at, ImVec2(right, at.y + h), mx::u32(mx::bright, pulse));
+		}
+		dl->AddText(ImVec2(at.x + pad, ty), c, text.c_str());
+		if (!note.empty()) {
+			const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+			const float nw = ImGui::CalcTextSize(note.c_str()).x;
+			dl->AddText(ImVec2(right - nw - pad, ty), focused ? c : mx::u32(mx::label), note.c_str());
+		}
+		ImGui::PopID();
+		return chosen;
+	}
+
+	void drawLibrary()
+	{
+		ensureDetails();
+		if (placesRead < 0.0 || now_seconds() - placesRead > 5.0) {
+			places = listPlaces();
+			placesRead = now_seconds();
+		}
+		beginScreen("##library", 0.35f);
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const ImGuiStyle &style = ImGui::GetStyle();
+		// the head
+		glowTitle("OGBOX", 1.9f);
+		ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.55f);
+		ImGui::TextColored(mx::label, "%s", folder.empty() ? "/ the places" : folder.c_str());
+		cursor();
+		const std::string version = std::string(pshakux_build_version()) + "  hakuX native";
+		ImGui::SameLine(W - style.WindowPadding.x - ImGui::CalcTextSize(version.c_str()).x);
+		ImGui::TextColored(mx::line, "%s", version.c_str());
+
+		const float footH = ImGui::GetTextLineHeightWithSpacing() * 2.6f;
+		const float colH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH;
+		const float leftW = W * 0.19f, rightW = W * 0.29f;
+		const float midW = W - style.WindowPadding.x * 2.0f - leftW - rightW - style.ItemSpacing.x * 2.0f;
+		const ImGuiWindowFlags child = ImGuiWindowFlags_NavFlattened;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(style.WindowPadding.x * 0.5f, style.WindowPadding.y * 0.6f));
+
+		// the places, the settings, the dashboard, quit
+		int chosenPlace = -1;
+		ImGui::BeginChild("places", ImVec2(leftW, colH), true, child);
+		ImGui::TextColored(mx::label, "PLACES");
+		for (size_t i = 0; i < places.size(); i++) {
+			const bool here = !folder.empty() && folder.compare(0, places[i].path.size(), places[i].path) == 0;
+			if (row("p" + std::to_string(i), places[i].name, std::string(), false, here ? mx::bright : mx::text)) {
+				chosenPlace = static_cast<int>(i);
+			}
+		}
+		ImGui::Spacing();
+		ImGui::TextColored(mx::label, "OGBOX");
+		const bool openSet = row("settings", "Settings", "TRIANGLE", false, mx::text);
+		const bool dash = row("dash", "Xbox dashboard", std::string(), false, mx::text);
+		const bool leave = row("quit", "Quit OGBox", std::string(), false, mx::text);
+		ImGui::EndChild();
+
+		// the folder
+		ImGui::SameLine();
 		int chosen = -1;
+		ImGui::BeginChild("entries", ImVec2(midW, colH), true, child);
+		if (listing) {
+			ImGui::TextColored(mx::label, "Reading the folder");
+			cursor();
+		}
+		if (folder.empty()) {
+			ImGui::TextColored(mx::label, "Choose a place on the left: your discs (.iso, .xiso) are in its folders.");
+		}
 		for (size_t i = 0; i < entries.size(); i++) {
 			const LibraryEntry &e = entries[i];
-			ImGui::PushID(static_cast<int>(i));
-			std::string label;
+			std::string label, note;
+			ImVec4 color = mx::text;
 			switch (e.kind) {
-			case LibraryEntry::Place: label = e.name; break;
-			case LibraryEntry::Folder: label = "[" + e.name + "]"; break;
-			case LibraryEntry::Image: label = e.name; break;
-			case LibraryEntry::Up: label = ".. (the folder above)"; break;
-			case LibraryEntry::Quit: label = "Quit OGBox"; break;
+			case LibraryEntry::Folder: label = "> " + e.name; color = mx::label; break;
+			case LibraryEntry::Image: label = e.name; note = e.note; break;
+			case LibraryEntry::Up: label = "< the folder above"; color = mx::label; break;
+			default: label = e.name; break;
 			}
-			if (ImGui::Selectable(label.c_str(), static_cast<int>(i) == selected) && startPath.empty()) {
+			if (row("e" + std::to_string(i), label, note, false, color) && startPath.empty()) {
 				chosen = static_cast<int>(i);
 			}
-			if (!focusSet && static_cast<int>(i) == selected) {
+			if (!focusSet && static_cast<int>(i) == selected && screen == Screen::Library) {
 				ImGui::SetItemDefaultFocus();
-				ImGui::SetNavIDWithRectRel(ImGui::GetID(label.c_str()), 0,
+				ImGui::SetNavIDWithRectRel(ImGui::GetCurrentWindow()->DC.LastItemId, 0,
 					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
 				ImGui::SetScrollHere(0.5f);
 			}
@@ -1501,65 +2011,405 @@ public:
 				selected = static_cast<int>(i);
 				focusSet = true;
 			}
-			if (!e.note.empty() && (e.kind == LibraryEntry::Image || e.kind == LibraryEntry::Place)) {
-				ImGui::SameLine(ImGui::GetWindowWidth() - 220.0f * s);
-				ImGui::TextColored(dim, "%s", e.kind == LibraryEntry::Image ? e.note.c_str() : "");
-			}
-			ImGui::PopID();
 		}
 		if (!listing && entries.size() <= 1 && !folder.empty() && listError.empty()) {
-			ImGui::TextColored(dim, "No folders or Xbox disc images (.iso, .xiso) here.");
-		}
-		ImGui::EndChild();
-		if (chosen >= 0 && chosen < static_cast<int>(entries.size())) {
-			const LibraryEntry entry = entries[static_cast<size_t>(chosen)];
-			activate(entry);
-		}
-
-		ImGui::Separator();
-		if (!startPath.empty()) {
-			ImGui::TextColored(accent, "Starting %s...", baseName(startPath).c_str());
-		} else {
-			ImGui::TextColored(dim, "CROSS open / start   CIRCLE back   Hold OPTIONS + touch pad: quit (in a game: back here)");
-			ImGui::TextColored(dim, "Network shares: %s", g_networkStatus.c_str());
+			ImGui::TextColored(mx::label, "No folders or Xbox disc images (.iso, .xiso) here.");
 		}
 		if (!listError.empty()) {
 			ImGui::PushTextWrapPos(0.0f);
-			ImGui::TextColored(failure, "%s", listError.c_str());
+			ImGui::TextColored(mx::fail, "%s", listError.c_str());
 			ImGui::PopTextWrapPos();
 		}
-		ImGui::End();
-		ImGui::PopStyleColor(4);
-		ImGui::PopStyleVar(3);
+		ImGui::EndChild();
+
+		// the selected disc
+		ImGui::SameLine();
+		ImGui::BeginChild("details", ImVec2(rightW, colH), true, child);
+		drawDetails();
+		ImGui::EndChild();
+		ImGui::PopStyleVar();
+
+		if (!startPath.empty()) {
+			footer(("Starting " + (startPath == "none" ? std::string("the Xbox dashboard") : baseName(startPath)) + " ...").c_str());
+		} else {
+			footer("CROSS open / start    CIRCLE back    TRIANGLE settings    hold OPTIONS + touch pad: quit",
+				"Network shares: " + g_networkStatus);
+		}
+		endScreen();
+
+		if (chosenPlace >= 0) {
+			openFolder(places[static_cast<size_t>(chosenPlace)].path);
+		} else if (chosen >= 0 && chosen < static_cast<int>(entries.size())) {
+			const LibraryEntry entry = entries[static_cast<size_t>(chosen)];
+			activate(entry);
+		} else if (openSet) {
+			openSettings(std::string(), std::string());
+		} else if (dash && startPath.empty()) {
+			startPath = "none";
+			startDelay = 2;
+			pshakux_log("library: starting the Xbox dashboard");
+		} else if (leave) {
+			pshakux_log("library: Quit OGBox");
+			quit = true;
+		}
 	}
 
-	/* While a game starts, or when it could not: what is happening, in a corner. */
-	void drawStatus(float s)
+	/* The right column: what is selected, and what can be done with it. */
+	void drawDetails()
 	{
-		if (!ui.visible) {
+		const LibraryEntry *e = selectedEntry();
+		ImGui::TextColored(mx::label, "SELECTED");
+		if (!e || e->kind != LibraryEntry::Image) {
+			ImGui::Spacing();
+			ImGui::PushTextWrapPos(0.0f);
+			if (!e) {
+				ImGui::TextColored(mx::text, "Nothing yet.");
+			} else if (e->kind == LibraryEntry::Folder) {
+				ImGui::TextColored(mx::text, "Folder %s", e->name.c_str());
+				ImGui::TextColored(mx::label, "CROSS opens it.");
+			} else if (e->kind == LibraryEntry::Up) {
+				ImGui::TextColored(mx::text, "The folder above.");
+			} else {
+				ImGui::TextColored(mx::text, "%s", e->name.c_str());
+			}
+			ImGui::Spacing();
+			ImGui::TextColored(mx::label, "The Xbox dashboard (on the left) starts C:\\xboxdash.xbe from the hard disk; OGBox doesn't include one.");
+			ImGui::PopTextWrapPos();
 			return;
 		}
-		const int state = pshx_core_state();
-		ImGui::SetNextWindowPos(ImVec2(10.0f * s, 10.0f * s), ImGuiCond_Always);
-		ImGui::Begin("OGBox status", nullptr,
-			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
-			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-			ImGuiWindowFlags_NoNav);
-		ImGui::Text("OGBox %s by Press5elect - built on hakuX, for PS5 (unofficial)", pshakux_build_version());
-		if (!problem.empty()) {
-			ImGui::Text("%s", problem.c_str());
+		bool done = false;
+		OgboxGameInfo info{};
+		int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0;
+		if (details && detailsPath == e->path) {
+			std::lock_guard<std::mutex> lock(details->mutex);
+			done = details->done;
+			info = details->info;
+			mods = details->mods;
+			modsOn = details->modsOn;
+			cheats = details->cheats;
+			cheatsOn = details->cheatsOn;
+			overrides = details->overrides;
+		}
+		ImGui::PushTextWrapPos(0.0f);
+		ImGui::SetWindowFontScale(1.25f);
+		ImGui::TextColored(mx::bright, "%s", done && info.ok && info.title[0] ? info.title : e->name.c_str());
+		ImGui::SetWindowFontScale(1.0f);
+		ImGui::Spacing();
+		const auto field = [&](const char *name, const std::string &value) {
+			ImGui::TextColored(mx::label, "%-9s", name);
+			ImGui::SameLine();
+			ImGui::TextColored(mx::text, "%s", value.c_str());
+		};
+		field("FILE", e->name);
+		field("SIZE", e->note);
+		if (!done) {
+			field("DISC", "reading...");
+		} else if (!info.ok) {
+			field("DISC", "no default.xbe certificate read");
 		} else {
-			ImGui::Text("Disc: %s", boot.image.c_str());
-			ImGui::Text("Core: %s", stateName(state));
-			if (pshx_core_message()[0]) {
-				ImGui::Text("%s", pshx_core_message());
-			}
-			if (state == PSHX_CORE_BOOTING || (state == PSHX_CORE_RUNNING && !havePicture)) {
-				ImGui::Text("Waiting for the game's first frame...");
+			field("TITLE ID", info.key);
+			field("MODS", std::to_string(mods) + (mods ? " (" + std::to_string(modsOn) + " on)" : std::string()));
+			field("CHEATS", std::to_string(cheats) + (cheats ? " (" + std::to_string(cheatsOn) + " on)" : std::string()));
+			field("SETTINGS", overrides ? std::to_string(overrides) + " of its own" : std::string("the app's"));
+		}
+		ImGui::PopTextWrapPos();
+		ImGui::Spacing();
+		ImGui::Spacing();
+		const float bw = ImGui::GetContentRegionAvail().x;
+		const float bh = ImGui::GetTextLineHeight() * 1.8f;
+		ImGui::PushStyleColor(ImGuiCol_Button, mx::bright);
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1));
+		const bool start = ImGui::Button("START", ImVec2(bw, bh));
+		ImGui::PopStyleColor(2);
+		const bool own = done && info.ok && ImGui::Button("GAME SETTINGS", ImVec2(bw, bh));
+		const bool modsButton = done && info.ok && ImGui::Button("MODS AND CHEATS", ImVec2(bw, bh));
+		if (start && startPath.empty()) {
+			activate(*e);
+		} else if (own) {
+			openSettings(info.key, info.title[0] ? info.title : e->name);
+		} else if (modsButton) {
+			openMods(info.key, info.title[0] ? info.title : e->name);
+		}
+	}
+
+	/* The settings: the sections on the left, their options on the right, the focused one's words
+	 * below. CROSS the next choice, SQUARE the one before, TRIANGLE (a game's) the app's again. */
+	void drawSettings()
+	{
+		beginScreen("##settings", 0.25f);
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const ImGuiStyle &style = ImGui::GetStyle();
+		glowTitle(forGame ? "GAME SETTINGS" : "SETTINGS", 1.6f);
+		if (forGame) {
+			ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.4f);
+			ImGui::TextColored(mx::label, "%s  %s", forGameTitle.c_str(), forGameKey.c_str());
+		}
+		std::vector<ogbox::Section> sections;
+		for (int i = 0; i < static_cast<int>(ogbox::Section::Count); i++) {
+			const ogbox::Section sec = static_cast<ogbox::Section>(i);
+			for (const ogbox::Option &o : ogbox::options()) {
+				if (o.section == sec && (!forGame || o.perGame)) {
+					sections.push_back(sec);
+					break;
+				}
 			}
 		}
-		ImGui::Text("Hold OPTIONS and the touch pad for two seconds: back to the game list. Log: ogbox-boot.log");
-		ImGui::End();
+		section = std::min(section, static_cast<int>(sections.size()) - 1);
+		const float footH = ImGui::GetTextLineHeightWithSpacing() * 1.6f;
+		const float helpH = ImGui::GetTextLineHeightWithSpacing() * 3.6f;
+		const float colH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH - helpH - style.ItemSpacing.y;
+		const float leftW = W * 0.2f;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(style.WindowPadding.x * 0.5f, style.WindowPadding.y * 0.6f));
+		ImGui::BeginChild("sections", ImVec2(leftW, colH), true, ImGuiWindowFlags_NavFlattened);
+		bool reset = false;
+		for (size_t i = 0; i < sections.size(); i++) {
+			row("s" + std::to_string(i), ogbox::sectionName(sections[i]), std::string(), static_cast<int>(i) == section,
+				static_cast<int>(i) == section ? mx::bright : mx::text);
+			if (!focusList && static_cast<int>(i) == section) {
+				ImGui::SetItemDefaultFocus();
+				ImGui::SetNavIDWithRectRel(ImGui::GetCurrentWindow()->DC.LastItemId, 0,
+					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
+				focusList = true;
+			}
+			if (ImGui::IsItemFocused()) {
+				section = static_cast<int>(i);
+				help = forGame ? "These apply to this game only; the others follow the app's settings. Changes take effect at the game's next start."
+					: "OGBox's settings, hakuX's every one. Changes take effect at the next game start.";
+			}
+		}
+		if (forGame) {
+			ImGui::Spacing();
+			reset = row("reset", "Use the app's for all", std::string(), false, mx::label);
+			if (ImGui::IsItemFocused()) {
+				help = "Every setting of this game back to the app's.";
+			}
+		}
+		ImGui::EndChild();
+		ImGui::SameLine();
+		ImGui::BeginChild("options", ImVec2(0.0f, colH), true, ImGuiWindowFlags_NavFlattened);
+		const ogbox::Section current = sections.empty() ? ogbox::Section::Graphics : sections[static_cast<size_t>(section)];
+		ImGui::TextColored(mx::label, "%s", ogbox::sectionName(current));
+		const uint32_t pressed = menuPad.pressed;
+		for (const ogbox::Option &o : ogbox::options()) {
+			if (o.section != current || (forGame && !o.perGame)) {
+				continue;
+			}
+			const std::string own = forGame ? prefs.override_(o.key) : std::string();
+			const std::string v = forGame ? (own.empty() ? prefs.global(o.key) : own) : prefs.global(o.key);
+			std::string shown = ogbox::Settings::label(o, v);
+			if (forGame && own.empty()) {
+				shown = "App setting: " + shown;
+			}
+			const bool chosen = row(o.key, o.label, shown, false, forGame && !own.empty() ? mx::bright : mx::text);
+			if (ImGui::IsItemFocused()) {
+				help = std::string(o.description) + (o.text ? "" : " Takes effect at the next game start.");
+				int by = 0;
+				if (pressed & PAD_SQUARE) {
+					by = -1;
+				}
+				if (o.choices.empty() && !o.text) {
+					if (pressed & PAD_R1) {
+						by = 30;
+					} else if (pressed & PAD_L1) {
+						by = -30;
+					}
+				}
+				if (chosen) {
+					by = 1;
+				}
+				if (by != 0 && !o.text) {
+					const std::string next = ogbox::Settings::step(o, v, by);
+					if (forGame) {
+						prefs.setOverride(o.key, next == prefs.global(o.key) && own.empty() ? std::string() : next);
+					} else {
+						prefs.setGlobal(o.key, next);
+						if (std::string(o.key) == "rain") {
+							rainOn = next == "1";
+						}
+					}
+				}
+				if (forGame && (pressed & PAD_TRIANGLE)) {
+					prefs.setOverride(o.key, std::string());
+				}
+			}
+		}
+		ImGui::EndChild();
+		ImGui::PopStyleVar();
+		// the focused option's words
+		ImGui::BeginChild("help", ImVec2(0.0f, helpH), true, ImGuiWindowFlags_NoNav);
+		ImGui::PushTextWrapPos(0.0f);
+		ImGui::TextColored(mx::text, "%s", help.c_str());
+		ImGui::PopTextWrapPos();
+		ImGui::EndChild();
+		footer(forGame ? "CROSS next    SQUARE previous    TRIANGLE the app's    CIRCLE back"
+			: "CROSS next    SQUARE previous    L1 / R1 -30 / +30 (days)    CIRCLE back");
+		endScreen();
+		if (reset) {
+			prefs.clearOverrides();
+			pshakux_log("settings: %s: every setting back to the app's", forGameKey.c_str());
+		}
+	}
+
+	/* The game's mods and cheats: CROSS turns one on or off. */
+	void drawMods()
+	{
+		beginScreen("##mods", 0.25f);
+		const float H = static_cast<float>(height);
+		const ImGuiStyle &style = ImGui::GetStyle();
+		glowTitle("MODS AND CHEATS", 1.6f);
+		ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.4f);
+		ImGui::TextColored(mx::label, "%s  %s", modsTitle.c_str(), modsKey.c_str());
+		const float footH = ImGui::GetTextLineHeightWithSpacing() * 1.6f;
+		const float helpH = ImGui::GetTextLineHeightWithSpacing() * 3.6f;
+		const float colH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH - helpH - style.ItemSpacing.y;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(style.WindowPadding.x * 0.5f, style.WindowPadding.y * 0.6f));
+		ImGui::BeginChild("list", ImVec2(0.0f, colH), true, ImGuiWindowFlags_NavFlattened);
+		if (modList.empty()) {
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(mx::text, "No mods or cheats for this game.");
+			ImGui::TextColored(mx::label, "OGBox has hakuX's (the title folder's mods/); a game's are in mods/%s/: a folder a mod, cheats.txt the cheats.", modsKey.c_str());
+			ImGui::PopTextWrapPos();
+		}
+		bool first = true;
+		for (size_t i = 0; i < modList.size(); i++) {
+			OgboxModEntry &m = modList[i];
+			if (first || (i > 0 && modList[i - 1].cheat != m.cheat)) {
+				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : "MODS");
+				first = false;
+			}
+			const std::string text = std::string(m.on ? "[ON]  " : "[OFF] ") + m.name;
+			std::string note = m.cheat ? (m.once ? "once" : std::string()) : (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
+			const bool toggled = row("m" + std::to_string(i), text, note, false, m.on ? mx::bright : mx::text);
+			if (!modsFocus) {
+				ImGui::SetItemDefaultFocus();
+				ImGui::SetNavIDWithRectRel(ImGui::GetCurrentWindow()->DC.LastItemId, 0,
+					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
+				modsFocus = true;
+			}
+			if (toggled) {
+				m.on = !m.on;
+				std::lock_guard<std::mutex> disc(g_discInfoMutex);
+				ogbox_mods_choose(modsKey.c_str(), m.cheat, m.id, m.on);
+				detailsPath.clear();   // the details again, with the change
+			}
+			if (ImGui::IsItemFocused()) {
+				help = m.description[0] ? std::string(m.description) : std::string(m.cheat ? "A cheat." : "A mod.");
+				help += m.cheat ? " Cheats apply while the game runs, from its next start." : " Mods change the game's code and files, from its next start.";
+			}
+		}
+		ImGui::EndChild();
+		ImGui::PopStyleVar();
+		ImGui::BeginChild("help", ImVec2(0.0f, helpH), true, ImGuiWindowFlags_NoNav);
+		ImGui::PushTextWrapPos(0.0f);
+		ImGui::TextColored(mx::text, "%s", help.c_str());
+		ImGui::TextColored(mx::line, "/data/ogbox/mods.txt");
+		ImGui::PopTextWrapPos();
+		ImGui::EndChild();
+		footer("CROSS on / off    CIRCLE back");
+		endScreen();
+	}
+
+	/* In a game: the FPS panel, the quit ring, and what is happening until the first frame. */
+	void drawGame()
+	{
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const float pad = H * 0.02f;
+		const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+			ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+		const int state = pshx_core_state();
+		// the frame rate: the game's frames that reached the screen, each half second
+		const double now = now_seconds();
+		if (fpsSince < 0.0) {
+			fpsSince = now;
+			fpsPictures = picturesTaken;
+		} else if (now - fpsSince >= 0.5) {
+			fps = static_cast<float>(static_cast<double>(picturesTaken - fpsPictures) / (now - fpsSince));
+			fpsSince = now;
+			fpsPictures = picturesTaken;
+		}
+		if (showFps && havePicture) {
+			ImGui::SetNextWindowPos(ImVec2(W - pad, pad), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+			ImGui::SetNextWindowBgAlpha(0.72f);
+			ImGui::Begin("##fps", nullptr, flags);
+			ImGui::SetWindowFontScale(1.4f);
+			ImGui::TextColored(mx::bright, "%.0f", fps);
+			ImGui::SetWindowFontScale(1.0f);
+			ImGui::SameLine();
+			ImGui::TextColored(mx::label, "FPS  %.1f ms", fps > 0.5f ? 1000.0f / fps : 0.0f);
+			ImGui::End();
+		}
+		const bool trouble = !problem.empty() || state == PSHX_CORE_FAILED || state == PSHX_CORE_STOPPED;
+		if (trouble || !havePicture) {
+			ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Always);
+			ImGui::SetNextWindowBgAlpha(0.85f);
+			ImGui::Begin("##status", nullptr, flags);
+			ImGui::TextColored(mx::bright, "OGBox %s", pshakux_build_version());
+			if (!problem.empty()) {
+				ImGui::PushTextWrapPos(W * 0.6f);
+				ImGui::TextColored(mx::fail, "%s", problem.c_str());
+				ImGui::PopTextWrapPos();
+			} else {
+				ImGui::TextColored(mx::label, "DISC  ");
+				ImGui::SameLine();
+				ImGui::TextColored(mx::text, "%s", boot.image == "none" ? "none: the Xbox dashboard" : baseName(boot.image).c_str());
+				ImGui::TextColored(mx::label, "CORE  ");
+				ImGui::SameLine();
+				ImGui::TextColored(state == PSHX_CORE_FAILED ? mx::fail : mx::text, "%s", stateName(state));
+				if (pshx_core_message()[0]) {
+					ImGui::PushTextWrapPos(W * 0.6f);
+					ImGui::TextColored(mx::text, "%s", pshx_core_message());
+					ImGui::PopTextWrapPos();
+				}
+				if (state == PSHX_CORE_BOOTING || (state == PSHX_CORE_RUNNING && !havePicture)) {
+					ImGui::TextColored(mx::label, "Waiting for the game's first frame");
+					cursor();
+				}
+			}
+			ImGui::TextColored(mx::line, "Hold OPTIONS + touch pad: back to the game list");
+			ImGui::End();
+		}
+		// the quit ring, while OPTIONS and the touch pad are held
+		if (quitHeldSince >= 0.0 && quitHeldSince < 1e8) {
+			const float done = static_cast<float>(std::min(1.0, (now - quitHeldSince) / kQuitHoldSeconds));
+			const float r = H * 0.035f;
+			ImGui::SetNextWindowPos(ImVec2(W * 0.5f, H - pad * 3.0f), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+			ImGui::SetNextWindowBgAlpha(0.9f);
+			ImGui::PushStyleColor(ImGuiCol_Border, mx::bright);
+			ImGui::Begin("##quit", nullptr, flags);
+			const ImVec2 at = ImGui::GetCursorScreenPos();
+			ImGui::Dummy(ImVec2(r * 2.2f, r * 2.2f));
+			ImDrawList *dl = ImGui::GetWindowDrawList();
+			const ImVec2 c(at.x + r * 1.1f, at.y + r * 1.1f);
+			dl->AddCircle(c, r, mx::u32(mx::line), 48, r * 0.16f);
+			const float a0 = -3.14159265f * 0.5f;
+			dl->PathArcTo(c, r, a0, a0 + done * 2.0f * 3.14159265f, 48);
+			dl->PathStroke(mx::u32(mx::bright), false, r * 0.16f);
+			ImGui::SameLine();
+			ImGui::BeginGroup();
+			ImGui::TextColored(mx::bright, "Hold OPTIONS + touch pad");
+			ImGui::TextColored(mx::text, "back to the game list in %.1f s", std::max(0.0, kQuitHoldSeconds - (now - quitHeldSince)));
+			ImGui::EndGroup();
+			ImGui::End();
+			ImGui::PopStyleColor();
+		}
+	}
+
+	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
+	{
+		(void)overlay;
+		if (!library) {
+			drawGame();
+			return;
+		}
+		switch (screen) {
+		case Screen::Boot: drawBoot(); break;
+		case Screen::Library: drawLibrary(); break;
+		case Screen::Settings: drawSettings(); break;
+		case Screen::Mods: drawMods(); break;
+		}
 	}
 };
 

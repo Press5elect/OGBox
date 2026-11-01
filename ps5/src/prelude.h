@@ -67,6 +67,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+// OGBox 0.1.26: the settings (a C++ namespace of OGBox's own: at file scope, not the sample's)
+#include "ogbox_settings.h"
+
 // The UI module's glue and, through it, the kit's headers (ps5/ui/, when the
 // title has it)
 #if defined(PS5_UI)

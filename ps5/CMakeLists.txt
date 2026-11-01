@@ -129,6 +129,8 @@ add_library(samples OBJECT
 	src/launcher.cpp
 	src/samples.cpp
 	src/example_ps5.cpp
+	src/ogbox_settings.cpp
+	src/ogbox_theme.cpp
 	src/platform.c)
 target_compile_definitions(samples PRIVATE
 	VK_EXAMPLE_PS5

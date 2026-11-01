@@ -1458,6 +1458,24 @@ extern "C" int ps5vfs_disc_open(const char* path)
   return fd;
 }
 
+/* OGBox 0.1.26: the game list reads a disc's title ID and name (core/ogbox_mods.c,
+ * ogbox_game_info) through the same descriptor, then gives it back here. */
+extern "C" void ps5vfs_disc_close(int fd)
+{
+  if (fd < 0)
+    return;
+  if (fd == s_disc_fd.load(std::memory_order_acquire))
+  {
+    s_disc_fd.store(-1, std::memory_order_release);
+    FILE* const fp = s_disc_fp;
+    s_disc_fp = nullptr;
+    if (fp)
+      ps5vfs_fclose(fp);
+    return;
+  }
+  close(fd);
+}
+
 extern "C" ssize_t __real_pread(int fd, void* buffer, size_t length, off_t offset);
 extern "C" int __real_fstat(int fd, struct stat* st);
 

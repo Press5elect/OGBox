@@ -18,6 +18,9 @@
 #ifndef OGBOX_CORE_MODS_H
 #define OGBOX_CORE_MODS_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +28,31 @@ extern "C" {
 /* After the disc is open (disc_fd), before the core boots: the game's key from its default.xbe,
  * the mods and cheats it has, those chosen, the manifest in work_dir. Said in the boot log. */
 void ogbox_mods_prepare(int disc_fd, const char *work_dir);
+
+/* OGBox 0.1.26: what the game list asks, without the core. */
+
+typedef struct OgboxGameInfo {
+    bool ok;
+    uint32_t title_id, version;
+    char key[32];     /* "%08X.%u": the mods' and the game's settings' key */
+    char title[48];   /* the certificate's title name (ASCII; '?' for other characters) */
+} OgboxGameInfo;
+
+/* A disc image's default.xbe certificate (on a share, through ps5vfs_disc_open). */
+bool ogbox_game_info(const char *image, OgboxGameInfo *info);
+
+typedef struct OgboxModEntry {
+    char id[128];          /* a mod's folder name; a cheat's name */
+    char name[128];
+    char description[256];
+    int refresh;           /* a mod's display refresh (120: a 120 fps mod) */
+    bool cheat, once, on;
+} OgboxModEntry;
+
+/* The game's mods, then its cheats, with which are on (/data/ogbox/mods.txt): how many. */
+int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max);
+/* One mod or cheat on or off in /data/ogbox/mods.txt. */
+bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on);
 
 #ifdef __cplusplus
 }

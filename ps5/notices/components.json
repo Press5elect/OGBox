@@ -77,7 +77,7 @@
    "name": "hakuX: the native core (the reimplemented Xbox kernel, the devices, the network, savestates), the HLE GPU (hw/xbox/hle) and its host interface, its GLib subset (its own reimplementation, not GLib's code)",
    "licence": "GPL-3.0-or-later",
    "copyright": "rfandango and the hakuX contributors",
-   "modifications": "the PS5 port, Copyright (C) 2026 Press5elect: ps5/patches/hakux/*.patch on the pinned revision; FEX, the Android app, the AAudio output (native/dev/apu/out.c) and the Android window's presenter (hw/xbox/hle/vk/swapchain.c, with its FXAA and SGSR filters) are not built; their places are taken by ps5/hakux",
+   "modifications": "the PS5 port, Copyright (C) 2026 Press5elect: ps5/patches/hakux/*.patch on the pinned revision; FEX, the Android app, the AAudio output (native/dev/apu/out.c) and the Android window's presenter (hw/xbox/hle/vk/swapchain.c) is not built; its place is taken by ps5/hakux, and its FXAA and SGSR filters are OGBox's presenter's shaders (shaders/glsl/ogbox/fxaa.frag, sgsr.frag, 0.1.26)",
    "texts": {
     "hakuX-LICENSE.txt": "build/hakux-src/LICENSE",
     "hakuX-COPYING.txt": "build/hakux-src/COPYING"
@@ -88,6 +88,23 @@
    "source": {
     "url": "https://github.com/rfandango/hakuX",
     "revision": "@hakux"
+   }
+  },
+  {
+   "id": "snapdragon-gsr",
+   "name": "Snapdragon Game Super Resolution 1 (Qualcomm's sgsr1_shader_mobile.frag), as hakuX adapts it, in OGBox's presenter (shaders/glsl/ogbox/sgsr.frag)",
+   "licence": "BSD-3-Clause",
+   "copyright": "Copyright (c) 2023, 2025, Qualcomm Innovation Center, Inc.",
+   "modifications": "hakuX's adaptation (its input, output and gamma ramp); OGBox 0.1.26: OGBox's presenter's input and output, no gamma ramp, Copyright (C) 2026 Press5elect",
+   "texts": {
+    "snapdragon-gsr.license.txt": "build/hakux-src/licenses/snapdragon-gsr.license.txt"
+   },
+   "artifacts": [
+    "shaders/"
+   ],
+   "source": {
+    "url": "https://github.com/SnapdragonStudios/snapdragon-gsr",
+    "revision": "as in hakuX @hakux"
    }
   },
   {
