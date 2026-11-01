@@ -1,0 +1,27 @@
+From 4002efaa665febf22b42e7b65dc57b938dfdc214 Mon Sep 17 00:00:00 2001
+From: Press5elect <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 04:32:18 +0000
+Subject: [PATCH 4/6] state: the whole-struct size lock is the Android build's
+ (the PS5's host types differ)
+
+---
+ native/state/def.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/native/state/def.h b/native/state/def.h
+index 664819e..e4694b4 100644
+--- a/native/state/def.h
++++ b/native/state/def.h
+@@ -35,6 +35,12 @@
+  * sizes from the assembly instead) */
+ #ifdef NC_STATE_PROBE
+ #define NC_REC(T, size) const unsigned long nc_probe_size_##T = sizeof(T);
++#elif defined(__PROSPERO__)
++/* The PS5: the recorded sizes are the Android build's, whose host members
++ * (pthread types, pointers to host state, all NC_SKIP) are other sizes here;
++ * the stored members' own checks below still hold, and they are what a
++ * savestate holds. */
++#define NC_REC(T, size)
+ #else
+ #define NC_REC(T, size)                                                                            \
+     _Static_assert(sizeof(T) == (size), #T " changed size: list its new member in its .def (NC_F or " \

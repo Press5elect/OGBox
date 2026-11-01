@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Press5elect
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Additional term (GPL-3.0 section 7(b)): keep the attribution "Crux2 by Press5elect"; see NOTICE.
+# PSHakuX - the third-party sources and libraries the title builds with, for the console.
+# (Crux2's ps5/tools/build-deps.sh, trimmed to what PSHakuX links; PSHakuX by Press5elect.)
+#
+#   ps5/tools/build-deps.sh          fetch and build what is missing into .deps/
+#
+# Where they come from:
+#   - the ps5-payload-dev "pacbrew" ports release (prebuilt static libraries for the console):
+#     zlib's headers (the library itself is the copy inside the RADV archive), libsmb2 for the
+#     SMB shares of the virtual file layer (ps5/src/platform/vfs).
+#   - built here with the SDK's compilers: libnfs, for its NFS shares (as Crux2 builds it: its
+#     8.0.0 release and the fixes after it), and glslang (ps5/tools/build-glslang.sh), for the HLE
+#     GPU's run-time GLSL -> SPIR-V compiles.
+#   - sources the build compiles itself (ps5/cmake/hakux.cmake), at the revisions hakuX's own
+#     build names (its android/README.md): libslirp 4.7.0+ (26be815b), unmodified, the NAT's TCP/IP stack;
+#     nv2a_vsh_cpu, the vertex shader interpreter, at 89315e8, the revision xemu pins
+#     (subprojects/nv2a_vsh_cpu.wrap; hakuX names "561fe80", which neither xemu-project's nor
+#     abaire's repository has). xxHash is its header, v0.8.4, its newest release (hakuX takes FEX's copy, which
+#     PSHakuX does not have).
+#
+# Everything lands in .deps/ (ignored): src/ the sources, ports/ the prefix the build reads,
+# build/ the build trees and their logs. Prints nothing on success but the steps it took.
+set -euo pipefail
+
+ps5=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+root=$(dirname "$ps5")
+sdk=$(bash "$ps5/tools/setup-sdk.sh")
+deps="$root/.deps"
+src="$deps/src"
+sys="$deps/ports"
+bld="$deps/build"
+mkdir -p "$src" "$sys/include" "$sys/lib" "$bld"
+
+step() { echo "==> [deps] $1" >&2; }
+have() { [[ -f $bld/$1.done ]]; }
+mark() { touch "$bld/$1.done"; }
+
+# ---------------------------------------------------------------- prebuilt ports
+# v0.40.2: the release Crux2 builds with (v0.41.1 is newer, 2026-11-01: not taken yet, so the
+# two titles link the same ports).
+pacbrew_version=v0.40.2
+pacbrew_hash=a85f65de418a8e6a898c6c3e3c870d50fff7618a200e4dd59ea9692af6ecec4d
+pacbrew="$deps/pacbrew/user/homebrew"
+if [[ ! -d $pacbrew/lib ]]; then
+    step "prebuilt ports $pacbrew_version (about 346 MB)"
+    archive="$deps/pacbrew-$pacbrew_version.tar.gz"
+    [[ -f $archive ]] || wget -q "https://github.com/ps5-payload-dev/pacbrew-repo/releases/download/$pacbrew_version/ps5-payload-dev.tar.gz" -O "$archive"
+    printf '%s  %s\n' "$pacbrew_hash" "$archive" | sha256sum --check --strict >/dev/null
+    mkdir -p "$deps/pacbrew"
+    tar -xzf "$archive" -C "$deps/pacbrew" --strip-components=3 opt/ps5-payload-sdk/target/user/homebrew
+fi
+if ! have ports-copy; then
+    step "copying the ports the title uses"
+    for header in zlib.h zconf.h; do
+        cp "$pacbrew/include/$header" "$sys/include/"
+    done
+    rm -rf "$sys/include/smb2"
+    cp -r "$pacbrew/include/smb2" "$sys/include/"
+    cp "$pacbrew/lib/libsmb2.a" "$sys/lib/"
+    mark ports-copy
+fi
+
+# --------------------------------------------------------------------- sources
+fetch() {
+    local name=$1 url=$2 revision=$3
+    [[ -d $src/$name/.git && $(cat "$src/$name/.pshakux-revision" 2>/dev/null) == "$revision" ]] && return 0
+    step "fetching $name ($revision)"
+    rm -rf "$src/$name"
+    mkdir -p "$src/$name"
+    git -C "$src/$name" init -q
+    git -C "$src/$name" remote add origin "$url"
+    git -C "$src/$name" fetch -q --depth 1 origin "$revision"
+    git -C "$src/$name" -c advice.detachedHead=false checkout -q FETCH_HEAD
+    echo "$revision" > "$src/$name/.pshakux-revision"
+}
+# hakuX's pins (android/README.md, "NC_DEPS"): libslirp "4.7.0 (26be815b)" is master after the
+# v4.7.0 tag (it reports 4.7.0, and has slirp_ssize_t, which native/net/nat.c uses; v4.8.0 is the
+# first release with it).
+fetch libslirp https://gitlab.freedesktop.org/slirp/libslirp.git 26be815b86e8d49add8c9a8b320239b9594ff03d
+fetch nv2a_vsh_cpu https://github.com/xemu-project/nv2a_vsh_cpu 89315e8eff62605d2a96fe14429ebeac1dacaa8c
+fetch xxhash https://github.com/Cyan4973/xxHash refs/tags/v0.8.4
+# libnfs: Crux2's pin (its 8.0.0 release and the four commits after it on master up to 7613236).
+fetch libnfs https://github.com/sahlberg/libnfs 7613236464317bee2d9636f087f995148de4db27
+
+# ---------------------------------------------------------------- cross builds
+common=(-G Ninja -DCMAKE_TOOLCHAIN_FILE="$sdk/toolchain/prospero.cmake" -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX="$sys" -DCMAKE_PREFIX_PATH="$sys" -DCMAKE_FIND_ROOT_PATH="$sys"
+        -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_VERBOSE_MAKEFILE=OFF
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+build() {
+    local name=$1
+    shift
+    cmake "${common[@]}" -B "$bld/$name" "$@" >"$bld/$name.log" 2>&1 &&
+        cmake --build "$bld/$name" >>"$bld/$name.log" 2>&1 &&
+        cmake --install "$bld/$name" >>"$bld/$name.log" 2>&1 ||
+        { tail -30 "$bld/$name.log" >&2; exit 1; }
+    mark "$name"
+}
+
+# libnfs: NFS versions 3 and 4 with AUTH_SYS, for ps5/src/platform/vfs/ps5_vfs_nfs.cpp, as Crux2
+# builds it (its ps5/tools/build-deps.sh says why each flag).
+if ! have libnfs; then
+    step "libnfs 8.0.0+ (7613236)"
+    rm -rf "$sys/include/nfsc" "$sys/lib/libnfs.a" "$sys/lib/cmake/libnfs"
+    nfs_flags="-ffunction-sections -fdata-sections -fno-omit-frame-pointer -DCLOCK_MONOTONIC_COARSE=CLOCK_MONOTONIC"
+    nfs_flags+=" -DNO_SRV_AUTOSCAN -Dgetservbyport=ps5vfs_nfs_getservbyport -Dgetuid=ps5vfs_nfs_getuid"
+    nfs_flags+=" -Dgetgid=ps5vfs_nfs_getgid"
+    build libnfs -S "$src/libnfs" -DENABLE_TLS=OFF -DENABLE_MULTITHREADING=OFF -DENABLE_UTILS=OFF \
+        -DENABLE_EXAMPLES=OFF -DENABLE_TESTS=OFF -DENABLE_DOCUMENTATION=OFF "-DCMAKE_C_FLAGS=$nfs_flags"
+    rm -rf "$sys/lib/cmake/libnfs" "$sys/lib/pkgconfig/libnfs.pc"
+fi
+
+# glslang (its own script: it is also built for the PC's tests).
+bash "$ps5/tools/build-glslang.sh" ps5 > /dev/null

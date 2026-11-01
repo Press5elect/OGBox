@@ -1,0 +1,27 @@
+From 2d02608f5c5f3e3787bc9c7a0d5d8d3e0fe1a745 Mon Sep 17 00:00:00 2001
+From: Press5elect <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 04:32:18 +0000
+Subject: [PATCH 5/6] net: the wake-up on the console's eventfd stand-in (a
+ pipe)
+
+---
+ native/net/net.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/native/net/net.c b/native/net/net.c
+index 8e8ddc3..0853288 100644
+--- a/native/net/net.c
++++ b/native/net/net.c
+@@ -216,7 +216,12 @@ void nc_net_send(const uint8_t *frame, size_t len)
+     pthread_mutex_unlock(&g_net.lock);
+     if (ok) {
+         const uint64_t one = 1;
++#if defined(__PROSPERO__)
++        /* no eventfd on the console: a pipe, written at its other end */
++        (void)!write(pshakux_eventfd_writer(g_net.wake_fd), &one, sizeof(one));
++#else
+         (void)!write(g_net.wake_fd, &one, sizeof(one));
++#endif
+     }
+ }
+ 
