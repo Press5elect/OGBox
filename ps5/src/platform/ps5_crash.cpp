@@ -567,6 +567,13 @@ extern "C" void pshakux_crash_set_note(pshakux_crash_note_fn note)
   s_note.store(note, std::memory_order_release);
 }
 
+// The native CPU's signal stack (hakuX-native's cpu_native.c, weak import): the sigaltstack found
+// at run time, lent.
+extern "C" int pshakux_sigaltstack(const stack_t* ss, stack_t* old)
+{
+  return AltStack(ss, old);
+}
+
 extern "C" void pshakux_crash_set_guest_cs(uint16_t cs)
 {
   s_guest_cs.store(cs, std::memory_order_relaxed);

@@ -15,13 +15,14 @@ PSHakuX by Press5elect.
 
 ## Where it is
 
-Bring-up. The title builds and links: hakuX's native core, its HLE GPU on the console's RADV, its
-APU on the console's sound output, a bring-up front end and the console's platform code. **The
-guest CPU is not here yet.** hakuX runs the Xbox's x86 code through FEX on Arm phones; on the
-PS5, whose CPU is x86-64 itself, a native backend runs it in compatibility mode on the console's
-own processor, and that backend is being written separately (`cpu_native.c`, built in when the
-hakuX source has it). Until then the build links a stub CPU, and a boot stops at "no CPU
-backend". Nothing has run on the console yet: the first run's results go here when there are any.
+Bring-up. The title builds and links hakuX's native core with its **native CPU backend**: the
+Xbox's x86 code runs on the console's own processor in compatibility mode (hakuX-native's
+`native/cpu/cpu_native.c`, branch `ps5-native`), with kernel calls through a far-call gate, its
+HLE GPU on the console's RADV, its APU on the console's sound output, a bring-up front end and
+the console's platform code. On Linux the same backend runs nxdk's `hello` sample to its main
+loop. **Nothing has run on the console yet**: this build is the first console test. The bring-up
+target is nxdk's `hello` (no push-buffer library: nxdk's pbkit writes to 0x80000000, which on the
+console is the title's own runtime module and can't be touched).
 
 ## Using it
 
@@ -101,13 +102,17 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
-### 0.1.0 (not released)
+### 0.1.0 (bring-up)
 
 **Added**
 - The title (`PPSA99251`) and its build: hakuX's native core, HLE GPU and APU for the console,
   with RADV, the platform layer and Crux2's and Kelvin's console code.
+- The native CPU: the guest's x86 code runs on the console's CPU in compatibility mode (guest
+  CS 0x33, GS the KPCR), kernel calls through a far-call gate, rdtsc scaled to the Xbox's
+  733 MHz, guest memory in 16 KiB pages on direct memory, kept clear of 0x80000000-0x80120000.
 - A bring-up front end: `boot.txt`, the picture on the console's display, four controllers,
-  a boot log with a crash report and a heartbeat, and a quit combination.
+  a boot log with a crash report (the guest's registers too) and a heartbeat, and a quit
+  combination.
 
 **Changed**
 - Nothing yet.

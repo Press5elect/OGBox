@@ -242,7 +242,10 @@ static void *vcpu_thread(void *arg)
     pshakux_install_crash_stack();
     pthread_set_name_np(pthread_self(), "hakux-vcpu");
     pshakux_priority_set(PSHAKUX_ROLE_VCPU);
-    pshakux_log("core: vCPU thread: booting");
+    /* the crash report shows the guest's registers when the fault is in
+     * compat-mode code (the native CPU's 32-bit segment) */
+    pshakux_crash_set_guest_cs(0x33);
+    pshakux_log("core: vCPU thread: booting (guest memory, the kernel, the devices, the XBE, the CPU)");
     if (!nc_core_boot(&g_core, g_disc_fd)) {
         if (!nc_hle_fatal()) {
             nc_hle_set_fatal(NC_FATAL_BOOT, "The game stopped while starting.");
@@ -252,9 +255,10 @@ static void *vcpu_thread(void *arg)
         pshakux_thread_gone();
         return NULL;
     }
-    pshakux_log("core: booted; running");
+    pshakux_log("core: booted; entering the guest (native CPU, cs 0x33)");
     set_state(PSHX_CORE_RUNNING);
     nc_core_run(&g_core);
+    pshakux_log("core: back from the guest");
     const NcKernel *k = &g_core.kernel;
     snprintf(g_message, sizeof(g_message), "%s",
              k->quit ? "The game left (to the dashboard, a reboot or a shutdown)."

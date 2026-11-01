@@ -112,8 +112,8 @@ list(APPEND hakux_core_sources ${HAKUX_DIR}/hw/xbox/hle/core/xbe.c)
 # The native CPU backend, when the source has it and it is asked for (hakuX-native, branch
 # ps5-native: native/cpu/cpu_native.c and the files its native/CMakeLists.txt lists in
 # NC_CPU_SOURCES for NC_CPU=native, read from there so the list follows the backend). Its
-# native/cpu/vmhost.c (memfd and mmap) is the console's ps5/hakux/cpu/vmhost_ps5.c (the platform
-# layer's shared memory), as the backend intends; guest VA 0 is host address 0, and the start of
+# native/cpu/vmhost.c has the console's half itself (__PROSPERO__: the platform layer's shared
+# memory); guest VA 0 is host address 0, and the start of
 # the contiguous window is the console's (a system module sits at 0x80000000).
 set(PSHAKUX_CPU "stub")
 # (The console's window start, for a tree that reads it whatever the backend: hakuX-native's vm.c.)
@@ -140,7 +140,6 @@ if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
 		list(APPEND cpu_sources ${cpu_extra})
 		list(REMOVE_ITEM cpu_sources cpu/cpu.cpp)
 	endif()
-	list(REMOVE_ITEM cpu_sources cpu/vmhost.c)
 	if(PSHAKUX_CPU_NOTE)
 		# Not the console's yet: everything but the CPU itself, which the stubs stand in for.
 		list(REMOVE_ITEM cpu_sources cpu/cpu_native.c cpu/cpu_native_asm.S)
@@ -156,12 +155,9 @@ if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
 			endif()
 		endif()
 	endforeach()
-	if(EXISTS ${HAKUX_DIR}/native/cpu/vmhost.h)
-		list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/vmhost_ps5.c)
-	endif()
 	set(hakux_cpu_definitions NC_CPU_NATIVE=1 NC_WINDOW_HOLE_END=0x80120000u)
 	set(hakux_cpu_options -fno-delete-null-pointer-checks)
-	message(STATUS "PSHakuX: native CPU backend's sources: ${cpu_sources} (cpu/vmhost.c: ps5/hakux/cpu/vmhost_ps5.c)")
+	message(STATUS "PSHakuX: native CPU backend's sources: ${cpu_sources} (cpu/vmhost.c: its __PROSPERO__ half, the platform layer's shm)")
 endif()
 list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/cpu_stub.c)
 message(STATUS "PSHakuX: hakuX from ${HAKUX_DIR}; CPU backend ${PSHAKUX_CPU}${PSHAKUX_CPU_NOTE}")
