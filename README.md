@@ -127,6 +127,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.16 (bring-up)
+
+Added
+- Hold L3 and R3 (both stick buttons) for a second in a game to save a screenshot to
+  `/data/ogbox/shots/`; the boot log notes when.
+- When a game freezes or crashes, the boot log now shows the game's code around each of its
+  threads, so the cause can be found from the log.
+
+Fixed
+- Network shares: `network.cfg` is read from `/data/ogbox/`, the title folder or `/data/`,
+  whichever has a `path =` line (0.1.15 stopped at OGBox's own example, all comments).
+
 ### 0.1.15 (bring-up)
 
 Added

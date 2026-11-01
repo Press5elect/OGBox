@@ -453,6 +453,42 @@ struct Listing {
 
 std::string g_networkStatus;   // at the foot of the game list
 
+/* 0.1.16: a screenshot (L3 + R3 held in a game) as a 24-bit BMP: RGBA rows in, no library. */
+bool writeBmp(const std::string &path, const uint8_t *rgba, uint32_t w, uint32_t h, uint32_t stride)
+{
+	FILE *f = std::fopen(path.c_str(), "wb");
+	if (!f) {
+		return false;
+	}
+	const uint32_t row = (w * 3 + 3) & ~3u;
+	const uint32_t size = 54 + row * h;
+	uint8_t header[54] = { 'B', 'M' };
+	const auto put32 = [&](int at, uint32_t v) {
+		for (int i = 0; i < 4; i++) header[at + i] = static_cast<uint8_t>(v >> (8 * i));
+	};
+	put32(2, size);
+	put32(10, 54);
+	put32(14, 40);
+	put32(18, w);
+	put32(22, h);
+	header[26] = 1;
+	header[28] = 24;
+	put32(34, row * h);
+	std::fwrite(header, 1, sizeof(header), f);
+	std::vector<uint8_t> line(row, 0);
+	for (uint32_t y = 0; y < h; y++) {
+		const uint8_t *src = rgba + size_t(h - 1 - y) * stride;
+		for (uint32_t x = 0; x < w; x++) {
+			line[x * 3 + 0] = src[x * 4 + 2];
+			line[x * 3 + 1] = src[x * 4 + 1];
+			line[x * 3 + 2] = src[x * 4 + 0];
+		}
+		std::fwrite(line.data(), 1, row, f);
+	}
+	std::fclose(f);
+	return true;
+}
+
 void vfsLog(const char *line)
 {
 	pshakux_log("%s", line);   // the layer's lines begin with "vfs: "
@@ -485,9 +521,14 @@ void startFileLayer()
 	 * said, with the reason, in the log and at the foot of the game list (0.1.14 counted it as
 	 * no shares and said nothing: a network.cfg copied in over FTP was not read). One the title
 	 * may not read is made readable when it can be (chmod 0666), then tried again. */
-	const std::string titleFile = std::string(pshakux_title_dir()) + "/network.cfg";
+	/* 0.1.16: every place a network.cfg may be is read, and the shares come from the first that
+	 * has path lines (0.1.15 stopped at /data/ogbox's, OGBox's own example with every line a
+	 * comment, while the user's edited file was elsewhere). */
+	const std::string titleDir = pshakux_title_dir();
 	g_networkStatus = std::string("no shares set up (") + kNetworkFile + ")";
-	for (const std::string &path : { std::string(kNetworkFile), titleFile }) {
+	std::string chosen;
+	for (const std::string &path : { std::string(kNetworkFile), titleDir + "/network.cfg", std::string("/data/network.cfg"),
+			titleDir + "/netfork.cfg" }) {
 		if (stat(path.c_str(), &st) != 0) {
 			continue;
 		}
@@ -510,17 +551,27 @@ void startFileLayer()
 		unsigned lines = 0, paths = 0;
 		while (std::fgets(line, sizeof(line), probe)) {
 			lines++;
-			const std::string text = trim(line);
-			if (text.rfind("path", 0) == 0 && text.find('=') != std::string::npos) {
+			std::string text = trim(line);
+			if (text.compare(0, 3, "\xef\xbb\xbf") == 0) {
+				text = trim(text.substr(3));
+			}
+			if (strncasecmp(text.c_str(), "path", 4) == 0 && text.find('=') != std::string::npos) {
 				paths++;
 			}
 		}
 		std::fclose(probe);
-		const int mounted = ps5vfs_load_network_config(path.c_str());
-		g_networkStatus = std::to_string(mounted < 0 ? 0 : mounted) + " share(s) from " + path;
-		pshakux_log("ogbox: %d network share(s) from %s (%u lines, %u path lines)", mounted < 0 ? 0 : mounted,
-			path.c_str(), lines, paths);
+		pshakux_log("ogbox: %s: %u lines, %u path lines", path.c_str(), lines, paths);
+		if (paths == 0) {
+			g_networkStatus = path + " has no \"path =\" line (lines starting with # are notes)";
+			continue;
+		}
+		chosen = path;
 		break;
+	}
+	if (!chosen.empty()) {
+		const int mounted = ps5vfs_load_network_config(chosen.c_str());
+		g_networkStatus = std::to_string(mounted < 0 ? 0 : mounted) + " share(s) from " + chosen;
+		pshakux_log("ogbox: %s", g_networkStatus.c_str());
 	}
 }
 
@@ -602,6 +653,9 @@ public:
 	std::string startPath;                    // chosen: started on the next frame
 	int startDelay{ 0 };
 	std::string selectName;                   // to select once the listing comes (going up)
+	double shotHeldSince{ -1.0 };             // L3 + R3 held since (a screenshot)
+	bool shotWanted{ false };
+	unsigned shotsTaken{ 0 };
 
 	/* Opens a folder ("" for the places), listing it on a thread of its own. */
 	void openFolder(const std::string &path, const std::string &select = std::string())
@@ -1235,6 +1289,17 @@ public:
 		} else {
 			quitHeldSince = -1.0;
 		}
+		const uint32_t sticks = PAD_L3 | PAD_R3;
+		if ((first.held & sticks) == sticks) {
+			if (shotHeldSince < 0.0) {
+				shotHeldSince = now;
+			} else if (now - shotHeldSince >= 1.0 && shotHeldSince < 1e17) {
+				shotWanted = true;
+				shotHeldSince = 1e18;   // once a hold
+			}
+		} else {
+			shotHeldSince = -1.0;
+		}
 	}
 
 	/* The game list's own buttons (the D-pad and CROSS go to the list through ImGui's navigation):
@@ -1303,9 +1368,26 @@ public:
 		ui.visible = !problem.empty() || state == PSHX_CORE_FAILED || state == PSHX_CORE_STOPPED || !havePicture;
 		VulkanExampleBase::prepareFrame();
 		fetchPicture();
+		if (shotWanted && upload && havePicture) {
+			shotWanted = false;
+			takeShot();
+		}
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
 		framesDrawn++;
+	}
+
+	/* The frame just taken from the core (this frame's staging buffer) to /data/ogbox/shots. */
+	void takeShot()
+	{
+		const std::string folder = std::string(kDataRoot) + "/shots";
+		mkdir(folder.c_str(), 0777);
+		char name[96];
+		std::snprintf(name, sizeof(name), "/shot-%04u-%.0fs.bmp", ++shotsTaken, now_seconds());
+		const std::string path = folder + name;
+		const bool ok = writeBmp(path, static_cast<const uint8_t *>(staging[currentBuffer].mapped), picture.width,
+			picture.height, picture.width * 4);
+		pshakux_log("ogbox: screenshot %ux%u %s: %s", picture.width, picture.height, path.c_str(), ok ? "saved" : std::strerror(errno));
 	}
 
 	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
