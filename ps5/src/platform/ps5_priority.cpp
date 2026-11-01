@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <pthread.h>
 #include <sched.h>
 
@@ -91,8 +92,24 @@ std::atomic<bool> s_enabled{false};
  * thread, processor 1, left empty), every other thread of the title on processors 2-12 (the title
  * has 0-12), so nothing shares the guest CPU's core whatever it does. env OGBOX_THREAD_LAYOUT=0 in
  * boot.txt leaves the console's own placement. */
+/* 0.1.18: the HLE GPU's two threads on cores of their own too, as Crux2's GS: the push-buffer
+ * decoder (hle-pb) on core 1 (processors 2-3), the render thread (hle.render) on core 2 (4-5),
+ * everything else on cores 3-6 (6-12). */
 constexpr uint64_t kVcpuMask = 0x1u;
-constexpr uint64_t kOthersMask = 0x1FFCu;
+constexpr uint64_t kDecoderMask = 0xCu;
+constexpr uint64_t kRenderMask = 0x30u;
+constexpr uint64_t kOthersMask = 0x1FC0u;
+
+uint64_t MaskFor(bool vcpu, const char* name)
+{
+	if (vcpu)
+		return kVcpuMask;
+	if (name && std::strcmp(name, "hle-pb") == 0)
+		return kDecoderMask;
+	if (name && std::strcmp(name, "hle.render") == 0)
+		return kRenderMask;
+	return kOthersMask;
+}
 
 bool LayoutWanted()
 {
@@ -103,11 +120,11 @@ bool LayoutWanted()
 	return wanted;
 }
 
-int Pin(pthread_t thread, bool vcpu)
+int Pin(pthread_t thread, bool vcpu, const char* name = nullptr)
 {
 	if (!LayoutWanted())
 		return 0;
-	return scePthreadSetaffinity(thread, vcpu ? kVcpuMask : kOthersMask);
+	return scePthreadSetaffinity(thread, MaskFor(vcpu, name));
 }
 } // namespace
 
@@ -132,7 +149,7 @@ void SetCurrentThread(Role role)
 		GetPriority(pthread_self(), &after);
 		ps5px_log("priority: a %s thread from %d to %d: %#x (now %d); processors %#llx: %#x", NameOf(role), before,
 			wanted, static_cast<unsigned>(result), after,
-			static_cast<unsigned long long>(!LayoutWanted() ? 0 : role == Role::Emulation ? kVcpuMask : kOthersMask),
+			static_cast<unsigned long long>(!LayoutWanted() ? 0 : MaskFor(role == Role::Emulation, nullptr)),
 			static_cast<unsigned>(pinned));
 	}
 }
@@ -159,9 +176,9 @@ extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const ch
   PS5Priority::GetPriority(thread, &before);
   if (role < 0 || role >= static_cast<int>(sizeof(roles) / sizeof(roles[0])))
   {
-    const int pinned = PS5Priority::Pin(thread, false);
-    ps5px_log("thread %s (%s): no role, stays at priority %d; processors 2-12: %#x", name ? name : "?", how ? how : "",
-      before, static_cast<unsigned>(pinned));
+    const int pinned = PS5Priority::Pin(thread, false, name);
+    ps5px_log("thread %s (%s): no role, stays at priority %d; processors %#llx: %#x", name ? name : "?", how ? how : "",
+      before, static_cast<unsigned long long>(PS5Priority::MaskFor(false, name)), static_cast<unsigned>(pinned));
     return;
   }
   const Role r = roles[role];
@@ -171,11 +188,12 @@ extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const ch
   if (on)
     result = PS5Priority::SetPriority(thread, wanted);
   const bool vcpu = r == Role::Emulation;
-  const int pinned = PS5Priority::Pin(thread, vcpu);
+  const int pinned = PS5Priority::Pin(thread, vcpu, name);
   PS5Priority::GetPriority(thread, &after);
-  ps5px_log("thread %s (%s): %s, priority %d -> %d: %#x (now %d)%s; processors %s: %#x", name ? name : "?",
+  ps5px_log("thread %s (%s): %s, priority %d -> %d: %#x (now %d)%s; processors %#llx: %#x", name ? name : "?",
     how ? how : "", PS5Priority::NameOf(r), before, wanted, static_cast<unsigned>(result), after,
-    on ? "" : " [priorities off]", vcpu ? "0 alone" : "2-12", static_cast<unsigned>(pinned));
+    on ? "" : " [priorities off]", static_cast<unsigned long long>(PS5Priority::MaskFor(vcpu, name)),
+    static_cast<unsigned>(pinned));
 }
 
 extern "C" void pshakux_priority_enable(int on)

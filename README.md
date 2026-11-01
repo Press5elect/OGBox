@@ -127,6 +127,22 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.18 (bring-up)
+
+Changed
+- The HLE GPU's two threads (the push-buffer decoder and the render thread) each run on a
+  processor core of their own, as Crux2's GS does; the boot log shows every thread's processors.
+- `env NC_DUMP_CODE=<addr>:<len>,...` in `boot.txt` adds those ranges of the game's code to the
+  thread dumps, for diagnosing a freeze.
+
+Fixed
+- Wrong, flickering and missing textures that grew worse the longer a game ran (Manhunt: the
+  scene black with only the HUD left; Burnout 3's colour streaks). The emulator watches the
+  game's memory for changes by write-protecting pages; the console refuses a protection change
+  once its memory map is too fragmented, and up to 0.1.17 that failure was silent, so from then
+  on the game's texture updates were never noticed. The failure is now detected, the map is
+  made whole and re-armed, and a page that still cannot be watched counts as always changed.
+
 ### 0.1.17 (bring-up)
 
 Changed
