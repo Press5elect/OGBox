@@ -489,8 +489,17 @@ bool writeBmp(const std::string &path, const uint8_t *rgba, uint32_t w, uint32_t
 	return true;
 }
 
+/* 0.1.17: the share layer's last failure ("connecting to smb://... failed: <the server's reason>"),
+ * shown under the list when a share cannot be listed (it was only in a log a game's start replaced) */
+std::mutex g_vfsErrorMutex;
+std::string g_vfsError;
+
 void vfsLog(const char *line)
 {
+	if (std::strstr(line, "failed") || std::strstr(line, "cannot") || std::strstr(line, "refused")) {
+		std::lock_guard<std::mutex> lock(g_vfsErrorMutex);
+		g_vfsError = line;
+	}
 	pshakux_log("%s", line);   // the layer's lines begin with "vfs: "
 }
 
@@ -718,6 +727,12 @@ public:
 			pshakux_log("library: %s: %zu entries", folder.c_str(), entries.size() - 1);
 		} else {
 			listError = listing->error;
+			{
+				std::lock_guard<std::mutex> lock(g_vfsErrorMutex);
+				if (!g_vfsError.empty() && ps5vfs_is_virtual(folder.c_str())) {
+					listError += " - " + g_vfsError;
+				}
+			}
 			entries = { { LibraryEntry::Up, "..", parentOf(folder), 0, std::string() } };
 			pshakux_log("library: %s cannot be listed: %s", folder.c_str(), listError.c_str());
 		}

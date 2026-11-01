@@ -150,7 +150,7 @@ static const ThreadRole k_names[] = {
     {"hle.render", PSHAKUX_ROLE_HELPER, NULL},    /* the render thread */
     {"hle.timeline", PSHAKUX_ROLE_HELPER, NULL},  /* GPU completion: the guest's fences */
     {"apu.frame", PSHAKUX_ROLE_HELPER, NULL},     /* the APU's frame */
-    {"apu.voice", PSHAKUX_ROLE_SOUND, NULL},      /* 0.1.4: the APU's voice workers (the frame waits on them) */
+    {"apu.voice", PSHAKUX_ROLE_HELPER, NULL},     /* 0.1.4: the APU's voice workers (the frame waits on them); 0.1.17: compute, not sound output */
     {"apu.out", PSHAKUX_ROLE_SOUND, NULL},        /* 0.1.4: the APU's output to the console (ps5/hakux/apu/out_ps5.c) */
     {"hle.hitch", PSHAKUX_ROLE_HELPER, NULL},     /* the hitch monitor: it must see a busy vCPU */
     {"hle-sampler", PSHAKUX_ROLE_HELPER, NULL},   /* the perf sampler: the same */

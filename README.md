@@ -127,6 +127,20 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.17 (bring-up)
+
+Changed
+- Thread priorities as hakuX has them: every emulation thread at the same priority (only the sound
+  output above, shader compiles below). The emulated CPU has a processor core of its own and
+  every other thread runs on the remaining cores, as in Crux2. `env OGBOX_THREAD_LAYOUT=0` in
+  `boot.txt` turns the core layout off.
+- When a network share cannot be opened, the server's reason is shown under the game list.
+
+Fixed
+- Def Jam: Fight for NY: the hang after the THX logo. OGBox's helper threads ran ahead of the
+  emulated CPU and took its processor ("vCPU starved: 4 ms CPU of 59" in the boot log), so the
+  game's 60 Hz timer interrupt came 338 ms late and its logic stopped.
+
 ### 0.1.16 (bring-up)
 
 Added

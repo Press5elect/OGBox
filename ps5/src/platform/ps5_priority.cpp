@@ -14,8 +14,11 @@
 #include "ps5_priority.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <pthread.h>
 #include <sched.h>
+
+#include <ps5platform/kernel.h>   // scePthreadSetaffinity
 
 extern "C" void ps5px_log(const char* format, ...);
 
@@ -50,11 +53,17 @@ int PriorityOf(Role role)
 {
 	switch (role)
 	{
+		/* OGBox 0.1.17: as hakuX has them (it sets no priority but its pipeline compiles', lowered):
+		 * every thread at the title's own 700, the sound output first (it only sleeps and copies),
+		 * background jobs after. Up to 0.1.16 fourteen helpers ran at 690, ahead of the guest's
+		 * CPU at 700, and the console's scheduler keeps a processor for the higher priority
+		 * strictly: Def Jam's boot log showed "vCPU starved: 4 ms CPU of 59 (host)" frame after
+		 * frame from its EA logo on, its 60 Hz interrupt 338 ms late, and the game stopped. */
 		case Role::Sound: return 690;
-		case Role::Input: return 692;
-		case Role::Interface: return 695;
+		case Role::Input: return 700;
+		case Role::Interface: return 700;
 		case Role::Emulation: return 700;
-		case Role::Helper: return 690;
+		case Role::Helper: return 700;
 		case Role::Background: return 730;
 	}
 	return 700;
@@ -76,6 +85,30 @@ const char* NameOf(Role role)
 
 std::atomic<unsigned> s_said{0};
 std::atomic<bool> s_enabled{false};
+
+/* OGBox 0.1.17: where the threads run, after Crux2's thread layout (ps5_thread_layout.h, its
+ * EE/VU/GS cores): the guest's CPU on logical processor 0 alone (core 0; its second hardware
+ * thread, processor 1, left empty), every other thread of the title on processors 2-12 (the title
+ * has 0-12), so nothing shares the guest CPU's core whatever it does. env OGBOX_THREAD_LAYOUT=0 in
+ * boot.txt leaves the console's own placement. */
+constexpr uint64_t kVcpuMask = 0x1u;
+constexpr uint64_t kOthersMask = 0x1FFCu;
+
+bool LayoutWanted()
+{
+	static const bool wanted = [] {
+		const char* e = std::getenv("OGBOX_THREAD_LAYOUT");
+		return !(e && e[0] == '0');
+	}();
+	return wanted;
+}
+
+int Pin(pthread_t thread, bool vcpu)
+{
+	if (!LayoutWanted())
+		return 0;
+	return scePthreadSetaffinity(thread, vcpu ? kVcpuMask : kOthersMask);
+}
 } // namespace
 
 void SetEnabled(bool on)
@@ -91,13 +124,16 @@ void SetCurrentThread(Role role)
 	int before = -1;
 	GetPriority(pthread_self(), &before);
 	const int result = SetPriority(pthread_self(), wanted);
+	const int pinned = Pin(pthread_self(), role == Role::Emulation);
 	const unsigned bit = 1u << static_cast<unsigned>(role);
 	if ((s_said.fetch_or(bit, std::memory_order_relaxed) & bit) == 0)
 	{
 		int after = -1;
 		GetPriority(pthread_self(), &after);
-		ps5px_log("priority: a %s thread from %d to %d: %#x (now %d)", NameOf(role), before, wanted,
-			static_cast<unsigned>(result), after);
+		ps5px_log("priority: a %s thread from %d to %d: %#x (now %d); processors %#llx: %#x", NameOf(role), before,
+			wanted, static_cast<unsigned>(result), after,
+			static_cast<unsigned long long>(!LayoutWanted() ? 0 : role == Role::Emulation ? kVcpuMask : kOthersMask),
+			static_cast<unsigned>(pinned));
 	}
 }
 } // namespace PS5Priority
@@ -123,7 +159,9 @@ extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const ch
   PS5Priority::GetPriority(thread, &before);
   if (role < 0 || role >= static_cast<int>(sizeof(roles) / sizeof(roles[0])))
   {
-    ps5px_log("thread %s (%s): no role, stays at priority %d", name ? name : "?", how ? how : "", before);
+    const int pinned = PS5Priority::Pin(thread, false);
+    ps5px_log("thread %s (%s): no role, stays at priority %d; processors 2-12: %#x", name ? name : "?", how ? how : "",
+      before, static_cast<unsigned>(pinned));
     return;
   }
   const Role r = roles[role];
@@ -132,9 +170,12 @@ extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const ch
   const bool on = PS5Priority::s_enabled.load(std::memory_order_relaxed);
   if (on)
     result = PS5Priority::SetPriority(thread, wanted);
+  const bool vcpu = r == Role::Emulation;
+  const int pinned = PS5Priority::Pin(thread, vcpu);
   PS5Priority::GetPriority(thread, &after);
-  ps5px_log("thread %s (%s): %s, priority %d -> %d: %#x (now %d)%s", name ? name : "?", how ? how : "",
-    PS5Priority::NameOf(r), before, wanted, static_cast<unsigned>(result), after, on ? "" : " [priorities off]");
+  ps5px_log("thread %s (%s): %s, priority %d -> %d: %#x (now %d)%s; processors %s: %#x", name ? name : "?",
+    how ? how : "", PS5Priority::NameOf(r), before, wanted, static_cast<unsigned>(result), after,
+    on ? "" : " [priorities off]", vcpu ? "0 alone" : "2-12", static_cast<unsigned>(pinned));
 }
 
 extern "C" void pshakux_priority_enable(int on)
