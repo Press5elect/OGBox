@@ -120,6 +120,14 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.9 (bring-up)
+
+Fixed
+- A thread the kernel switched to when a game's `popfd` (or its page-fault handler's `iretd`)
+  turned interrupts back on no longer resumes at the wrong address. Burnout 3 stayed on its
+  loading screen because of it: DirectSound's interrupt work went astray and its music stream
+  was never resumed.
+
 ### 0.1.8 (bring-up)
 
 Added
