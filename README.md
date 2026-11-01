@@ -131,6 +131,23 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.20 (bring-up)
+
+Added
+- A test disc, `ogbox-tests.iso` (source in `tests/xbox/ogbox-tests`, built with nxdk): an Xbox
+  program that checks the emulated CPU's floating-point state across thread switches and kernel
+  calls, the clocks and timed waits, memory, and reads of every shape from the disc image. Put
+  it on the share with the games and run it like one; each result is a PASS, FAIL or INFO line in
+  the boot log (`OGBT` lines) and in `/data/ogbox/hdd/Partition1/ogbox-tests.txt`. It takes
+  about 15 seconds.
+
+Fixed
+- A read of the CPU's time-stamp counter that the emulator left on the console's own fast
+  clock, beside the emulated 733 MHz one the others read, when the instruction after it was not
+  one Cxbx-Reloaded's list knows. Code that times a wait with both never stops waiting (the test
+  disc did). Def Jam: Fight for NY has two of these reads; whether they cause its stop at the
+  EA intro isn't known yet.
+
 ### 0.1.19 (bring-up)
 
 Added
@@ -147,14 +164,10 @@ Changed
   `boot.txt`; the emulated CPU still has a core of its own and the other threads the rest.
 - While the emulated CPU waits (a game's `Sleep(1)`, a poll of its GPU) it waits awake for the
   last 20 ms of the wait; `env NC_IDLE_SPIN_MS=0` in `boot.txt` goes back to a plain timed wait.
-
-Fixed
-- Burnout 3 (and other GPU-heavy games) falling from 60 to 20 frames a second in a race, with the
-  emulated CPU sitting idle: the graphics driver waits for the GPU by sleeping a millisecond
-  between looks, and a one-millisecond sleep on the console lasts up to 18. Every wait for the
-  GPU that took over 1.5 ms came back about 18 ms late, so the game, held at its read of an
-  occlusion-test result, flipped its frames a vblank or two behind. The driver's sleeps now wait
-  awake, and so do the emulated CPU's short sleeps (a game's `Sleep(1)` took 18.6 ms).
+- The graphics driver's waits for the GPU look again every 0.1 ms instead of sleeping 1 ms.
+  (Corrected in 0.1.20: these notes first called this the fix for Burnout 3's race slowdown,
+  on the belief that a 1 ms sleep on the console lasts 18 ms. The `timing:` line measured
+  0.1 ms late, so that wasn't the cause, and the slowdown remains.)
 
 ### 0.1.18 (bring-up)
 
