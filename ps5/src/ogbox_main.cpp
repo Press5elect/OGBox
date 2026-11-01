@@ -1853,6 +1853,24 @@ public:
 		endScreen();
 	}
 
+	/* 0.1.27: the controller's focus on the item just drawn. The columns are NavFlattened child
+	 * windows, so the focus belongs to the screen's window (RootWindowForNav), and ImGui 1.65 keeps
+	 * the item's rectangle relative to that window (SetNavIDWithRectRel stores it in NavWindow).
+	 * 0.1.26 gave it relative to the column: right from the restored row went nowhere (the first
+	 * settings section, a game list just opened) until the selection moved up or down once. */
+	void focusLastItem()
+	{
+		ImGuiContext &g = *GImGui;
+		ImGuiWindow *window = ImGui::GetCurrentWindow();
+		ImGuiWindow *root = window->RootWindowForNav ? window->RootWindowForNav : window;
+		if (g.NavWindow != root) {
+			ImGui::FocusWindow(root);
+		}
+		ImGui::SetItemDefaultFocus();
+		ImGui::SetNavIDWithRectRel(window->DC.LastItemId, 0,
+			ImRect(ImGui::GetItemRectMin() - root->Pos, ImGui::GetItemRectMax() - root->Pos));
+	}
+
 	/* The selected entry of the list, or nothing. */
 	const LibraryEntry *selectedEntry() const
 	{
@@ -2002,9 +2020,7 @@ public:
 				chosen = static_cast<int>(i);
 			}
 			if (!focusSet && static_cast<int>(i) == selected && screen == Screen::Library) {
-				ImGui::SetItemDefaultFocus();
-				ImGui::SetNavIDWithRectRel(ImGui::GetCurrentWindow()->DC.LastItemId, 0,
-					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
+				focusLastItem();
 				ImGui::SetScrollHere(0.5f);
 			}
 			if (ImGui::IsItemFocused()) {
@@ -2167,9 +2183,7 @@ public:
 			row("s" + std::to_string(i), ogbox::sectionName(sections[i]), std::string(), static_cast<int>(i) == section,
 				static_cast<int>(i) == section ? mx::bright : mx::text);
 			if (!focusList && static_cast<int>(i) == section) {
-				ImGui::SetItemDefaultFocus();
-				ImGui::SetNavIDWithRectRel(ImGui::GetCurrentWindow()->DC.LastItemId, 0,
-					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
+				focusLastItem();
 				focusList = true;
 			}
 			if (ImGui::IsItemFocused()) {
@@ -2283,9 +2297,7 @@ public:
 			std::string note = m.cheat ? (m.once ? "once" : std::string()) : (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
 			const bool toggled = row("m" + std::to_string(i), text, note, false, m.on ? mx::bright : mx::text);
 			if (!modsFocus) {
-				ImGui::SetItemDefaultFocus();
-				ImGui::SetNavIDWithRectRel(ImGui::GetCurrentWindow()->DC.LastItemId, 0,
-					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
+				focusLastItem();
 				modsFocus = true;
 			}
 			if (toggled) {

@@ -144,6 +144,14 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.27 (bring-up)
+
+Fixed
+- The controller not moving right from a row the menus had selected for you: the first settings
+  section (Graphics) couldn't be entered, and in a game list just opened the selected disc's
+  buttons (Game settings, Mods and cheats) sometimes couldn't be reached. It worked again only
+  after moving up or down once.
+
 ### 0.1.26 (bring-up)
 
 Added
