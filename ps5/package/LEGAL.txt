@@ -1,0 +1,39 @@
+PSHakuX (PPSA99251) - an unofficial port of hakuX, an original Xbox emulator, to the PlayStation 5
+PSHakuX by Press5elect. Copyright (C) 2026 Press5elect.
+
+NO PIRACY. This package contains no games, no Xbox BIOS, boot ROM or EEPROM, no console firmware
+and no keys, and none will ever be provided or linked to. Use only legally obtained backups of
+games you own, made yourself from your own discs. Please do not ask for, or share links to,
+games, BIOS files, firmware or keys.
+
+LICENCE. hakuX is free software under the GNU General Public License, version 3 or (at your
+option) any later version, and so is this port as a whole: it links hakuX with a platform layer
+and a front end under the same licence, and with parts under licences compatible with it. You may
+use it, study it, change it and pass it on under that licence, which means with its complete
+corresponding source: the source archive that comes with this package, and the revisions
+licenses/components.json names for every part. There is no warranty, to the extent permitted by
+law (sections 15 and 16 of the licence, licenses/GPL-3.0.txt).
+
+CREDIT. PSHakuX's own parts (the port layer, the front end, the tools, and the changes to hakuX)
+are Copyright (C) 2026 Press5elect, under the same licence with one additional term that its
+section 7(b) allows: whoever passes them on, or a work based on them, in whole or in part, keeps
+the attribution "PSHakuX by Press5elect" in the source files' notices and in the work's legal
+notices and About page (and "Crux2 by Press5elect" or "Kelvin by Press5elect" for the parts made
+from those projects). That holds however the work is made, with the help of an AI system
+included. NOTICE.txt has the terms in full. They cover Press5elect's code only: hakuX, xemu's
+parts and the other parts stay their authors' work, under their own licences
+(licenses/README.txt).
+
+UNOFFICIAL. This is not a build of the hakuX project and is not supported by it. Please do not
+report its problems to hakuX. Parts of this port were written with an AI system's help.
+
+FREE, AND FROM ONE PLACE. PSHakuX is free. It is published on GitHub only; a copy anyone asks
+money for, or one from elsewhere, is not this release.
+
+TRADEMARKS. "Xbox" is a trademark of Microsoft Corporation; "PlayStation", "PS5" and "DualSense"
+are trademarks of Sony Interactive Entertainment. This project is not affiliated with or endorsed
+by Microsoft, by Sony Interactive Entertainment, or by the hakuX or xemu projects. Vulkan is a
+registered trademark of the Khronos Group; the RADV driver in this package is not a conformant
+product.
+
+The parts, their authors and their licences: licenses/README.txt.

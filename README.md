@@ -1,47 +1,113 @@
 # PSHakuX
 
-A PS5 homebrew title (`PPSA99251`) on RADV, made from the
-[PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate) foundation at
-`91179df7`: Sascha Willems' Vulkan example base class with its PS5 hooks, the PS5 layer
-(the launch, the pad, klog, test runs, the build and the console tools), and one
-program, `examples/pshakux/pshakux.cpp`, grown from the starter sample.
+**An unofficial port of [hakuX](https://github.com/rfandango/hakuX), an original Xbox (2001)
+emulator, to the PlayStation 5, as a homebrew title (`PPSA99251`) for a jailbroken console.**
+PSHakuX by Press5elect.
 
-## Building and running
+> **Unofficial.** This is not the hakuX project's build and it is not supported by hakuX.
+> Please do not report PSHakuX's problems to hakuX: open them here.
+>
+> **Free, and on GitHub only.** PSHakuX costs nothing. A copy anyone asks money for, or one from
+> somewhere else, is not this release.
+>
+> **No piracy.** No games, Xbox BIOS, boot ROM, EEPROM, firmware or keys are in this repository
+> or in any release, and none will be. Use only backups of games you own, made yourself.
 
-It builds against my PS5 stack, checked out beside it: PS5_Vulkan (the RADV release
-archive, the link recipe, the native tool and `libc.prx`) and the payload SDK fork
-(`ps5/tools/setup-sdk.sh` installs it at the pinned revision).
+## Where it is
+
+Bring-up. The title builds and links: hakuX's native core, its HLE GPU on the console's RADV, its
+APU on the console's sound output, a bring-up front end and the console's platform code. **The
+guest CPU is not here yet.** hakuX runs the Xbox's x86 code through FEX on Arm phones; on the
+PS5, whose CPU is x86-64 itself, a native backend runs it in compatibility mode on the console's
+own processor, and that backend is being written separately (`cpu_native.c`, built in when the
+hakuX source has it). Until then the build links a stub CPU, and a boot stops at "no CPU
+backend". Nothing has run on the console yet: the first run's results go here when there are any.
+
+## Using it
+
+1. Copy the `PPSA99251` folder to `/data/homebrew/` on the console.
+2. Copy `boot.example.txt` in it to `boot.txt` and write the path of your Xbox disc image
+   (an XISO) on its first line, with hakuX's options after it (`scale=2`, `uncap`, ...).
+3. Start PSHakuX from the home screen. Hold **OPTIONS and the touch pad** for two seconds to quit.
+
+The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
+L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
+is a player (1-4). The emulated hard disk lives in `/data/pshakux/hdd`, the shader caches in
+`/data/pshakux/cache`, outside the title folder, so an update is just replacing the folder.
+`pshakux-boot.log` in the title folder says what happened (the run before is kept as
+`pshakux-boot.previous.log`).
+
+## Building
+
+It builds on my PS5 stack, checked out beside this repository: `PS5_Vulkan` (the RADV archive,
+the link recipe, the native tool, `libc.prx`), `PS5_PayloadSDK` (the SDK fork, pinned) and,
+to make the RADV archive again, `PS5_Mesa`.
 
 ```bash
-ps5/tools/build.sh              # dist/PPSA99251/: eboot.bin, sce_sys, shaders, assets
-ps5/tools/deploy.sh             # upload what changed, over the console's FTP server
-ps5/tools/run.sh                # a test run: 300 frames, the last one saved and checked
-ps5/tools/run.sh --menu         # no test: the program, until it ends itself
-ps5/tools/host-reference.sh     # the same frames on this PC's Vulkan driver
+PS5_CLANG=/usr/lib/llvm-20/bin/clang bash ps5/tools/build.sh       # dist/PPSA99251/
+PS5_CLANG=/usr/lib/llvm-20/bin/clang HAKUX_SRC=../hakuX-native bash ps5/tools/build.sh
+                                                    # hakuX from a work tree (the native CPU backend)
+python3 ps5/tools/stage-notices.py --check dist/PPSA99251   # the release check
+ps5/tools/deploy.sh                                 # upload over the console's FTP server
 ```
 
-A launch from the home screen starts the program at once. The sticks move the camera,
-OPTIONS or the touch pad shows and hides the settings window, the D-pad and CROSS
-change them, and its Quit ends the title.
+LLVM 20's clang is needed: with clang 18, RADV's weak imports do not link.
 
-## Growing it
+hakuX's source is not kept here. `ps5/tools/fetch-hakux.sh` fetches it at the pinned revision into
+`vendor/hakuX`, untouched; `ps5/tools/prepare-hakux.sh` copies it, or the tree `HAKUX_SRC` names,
+into `build/hakux-src` and lays `ps5/patches/hakux/*.patch` over the copy (a patch a work tree
+already has, or changed, is left out and said). What the console needs instead of hakuX's
+Android parts is in `ps5/hakux/`, not in hakuX:
 
-- **The program** is one class on the base class, `examples/pshakux/pshakux.cpp`, with its
-  shaders in `shaders/glsl/pshakux/` (GLSL beside the SPIR-V it loads: after changing one,
-  `ps5/tools/compile-shaders.sh pshakux`).
-- **A technique from the template's samples** (shadows, deferred lighting, bloom, MSAA,
-  instancing, indirect draws, compute, bindless textures, mesh shaders, ray queries)
-  copies across as it stands: every sample is a class on the same base.
-- **Assets** go in `ps5/assets.json`, each with its origin and licence; only assets
-  with a clear licence are shipped (`ps5/ASSETS.md` is written from it).
-- **More programs**: another `SAMPLE(...)` line in `ps5/src/samples.cpp` turns the
-  title into a menu of them, as Vulkan Template is.
-- How the foundation works, its test runs and its tools: PS5_VulkanTemplate's
-  `ps5/README.md`; the agent skills for this stack are in its `skills/`.
+| hakuX on Android | PSHakuX on the PS5 |
+| --- | --- |
+| FEXCore (the guest CPU, `native/cpu/cpu.cpp`) | the native backend (`native/cpu/cpu_native.c`, `NC_CPU=native`), a weak stub until it is there (`ps5/hakux/cpu/cpu_stub.c`) |
+| AAudio (`native/dev/apu/out.c`) | `sceAudioOut`, 48 kHz, 256-sample blocking writes (`ps5/hakux/apu/out_ps5.c`) |
+| the activity's window and its swapchain (`hw/xbox/hle/vk/swapchain.c`) | a host-owned image: the front frame handed to the title, which draws it on its own display (`ps5/hakux/hle/present_host.c`) |
+| AHardwareBuffer guest RAM (zero copy) | hakuX's own copy fallback |
+| system properties, prctl, eventfd, gettid, memfd | `ps5/hakux/compat` (properties from `boot.txt` and `props.txt`; memfd through the platform layer) |
+| SDL3, JNI, the app (`native/app`) | the bring-up front end, `ps5/src/pshakux_main.cpp`, on the Core seam (`ps5/src/core/pshakux_core.h`) |
 
-## Licences
+The front end talks to the emulator only through the Core (`ps5/src/core/pshakux_core.h`):
+the full front end comes later on the same calls.
 
-The foundation is MIT (`LICENSE.md`, Sascha Willems'; the PS5 layer is mine, under the
-same licence). The assets keep their own (`ps5/ASSETS.md`). The built title links the
-PS5 platform layer of my payload SDK fork, which is GPL-3.0, so the title as
-distributed is under GPL-3.0.
+## Credits
+
+- **hakuX** by rfandango and its contributors (GPL-3.0-or-later): the emulator. Its MCPX APU is
+  xemu's (LGPL-2.1-or-later), with Hatari's DSP56300 emulation (GPL-2.0-or-later); its kernel
+  export table is nxdk's (CC0).
+- **Crux2** and **Kelvin** by Press5elect: the console platform code (the boot log, the crash
+  report, the clock, the thread priorities, the virtual file layer), the build and release tools,
+  and the high-base link.
+- **PS5 Vulkan Template, PS5_Vulkan, PS5_Mesa and the payload SDK fork** by Mihawk: the
+  foundation, RADV on the console and the platform layer.
+- libslirp, nv2a_vsh_cpu, xxHash, glslang, volk, Dear ImGui, libktx, tinygltf, GLM, libsmb2,
+  libnfs, zlib, Mesa, LLVM's runtime: every part, its authors and its licence are in
+  `ps5/notices/components.json`, and in `licenses/README.txt` in the title folder.
+
+## Licence
+
+PSHakuX is GPL-3.0-or-later (`LICENSE`). Press5elect's own code carries an attribution term
+under the GPL's section 7(b): keep "PSHakuX by Press5elect" (and "Crux2 by Press5elect" or
+"Kelvin by Press5elect" for the files made from those projects) in the source notices and the
+legal notices of any work based on it, however it is made, with AI tools included. The term
+covers Press5elect's code only, not hakuX's or xemu's. `NOTICE` has it in full.
+
+"Xbox" is a trademark of Microsoft Corporation; "PlayStation", "PS5" and "DualSense" are
+trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
+
+## Release notes
+
+### 0.1.0 (not released)
+
+**Added**
+- The title (`PPSA99251`) and its build: hakuX's native core, HLE GPU and APU for the console,
+  with RADV, the platform layer and Crux2's and Kelvin's console code.
+- A bring-up front end: `boot.txt`, the picture on the console's display, four controllers,
+  a boot log with a crash report and a heartbeat, and a quit combination.
+
+**Changed**
+- Nothing yet.
+
+**Fixed**
+- Nothing yet.

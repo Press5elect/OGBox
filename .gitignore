@@ -4,3 +4,4 @@ klog/
 .deps/
 imgui.ini
 vendor/
+__pycache__/

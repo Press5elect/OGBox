@@ -1,0 +1,435 @@
+{
+ "components": [
+  {
+   "id": "pshakux",
+   "name": "PSHakuX: the PS5 port of hakuX (the front end, the Core seam, the console's replacements for hakuX's Android parts in ps5/hakux, the patches to hakuX, the build and the tools)",
+   "licence": "GPL-3.0-or-later, with the attribution term of NOTICE.txt (GPL-3.0 section 7(b): keep \"PSHakuX by Press5elect\")",
+   "copyright": "Copyright (C) 2026 Press5elect (PSHakuX by Press5elect)",
+   "modifications": "-",
+   "texts": {
+    "GPL-3.0.txt": "LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin",
+    "sce_sys/param.json",
+    "shaders/"
+   ],
+   "source": {
+    "url": "the source archive that comes with this package",
+    "revision": "@identity"
+   }
+  },
+  {
+   "id": "crux2",
+   "name": "Crux2's console platform code, by way of Kelvin: the boot log, the crash report, the processor-counter clock, the sleep and frame-limiter timing, the thread priorities, the system-module lookup (ps5/src/platform), Crux2's libc additions (ps5_libc.c) and virtual file layer (ps5/src/platform/vfs), and its build and release tools",
+   "licence": "GPL-3.0-or-later, with Crux2's attribution term (GPL-3.0 section 7(b): keep \"Crux2 by Press5elect\"; NOTICE.txt)",
+   "copyright": "Copyright (C) 2026 Press5elect (Crux2 by Press5elect)",
+   "modifications": "adapted to PSHakuX: the boot log's probe lines replaced by the core's status line, the crash report's by the core's note, a helper role in the priorities",
+   "texts": {},
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/Press5elect/Crux2",
+    "revision": "08c3507a3ac3f3f904cb36f02cef1f36335a67bc"
+   }
+  },
+  {
+   "id": "kelvin",
+   "name": "Kelvin's parts: the eboot's high base (ps5/ld, the native tool's high-base patch), the presenter's shaders, the build identity and timing code",
+   "licence": "GPL-3.0-or-later, with Kelvin's attribution term (GPL-3.0 section 7(b): keep \"Kelvin by Press5elect\"; NOTICE.txt)",
+   "copyright": "Copyright (C) 2026 Press5elect (Kelvin by Press5elect); the linker layout is ps5-native-app-boilerplate's (Copyright (C) 2026 BlackBearReloaded, GPL-3.0-or-later)",
+   "modifications": "adapted to PSHakuX",
+   "texts": {},
+   "artifacts": [
+    "eboot.bin",
+    "shaders/"
+   ],
+   "source": {
+    "url": "PS5_Kelvin (Press5elect)",
+    "revision": "3061bf1"
+   }
+  },
+  {
+   "id": "hakux",
+   "name": "hakuX: the native core (the reimplemented Xbox kernel, the devices, the network, savestates), the HLE GPU (hw/xbox/hle) and its host interface, its GLib subset (its own reimplementation, not GLib's code)",
+   "licence": "GPL-3.0-or-later",
+   "copyright": "rfandango and the hakuX contributors",
+   "modifications": "the PS5 port, Copyright (C) 2026 Press5elect: ps5/patches/hakux/*.patch on the pinned revision; FEX, the Android app, the AAudio output (native/dev/apu/out.c) and the Android window's presenter (hw/xbox/hle/vk/swapchain.c, with its FXAA and SGSR filters) are not built; their places are taken by ps5/hakux",
+   "texts": {
+    "hakuX-LICENSE.txt": "build/hakux-src/LICENSE",
+    "hakuX-COPYING.txt": "build/hakux-src/COPYING"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/rfandango/hakuX",
+    "revision": "@hakux"
+   }
+  },
+  {
+   "id": "xemu-apu",
+   "name": "The MCPX APU (hakuX's native/dev/apu, ported from xemu): its files under the GNU LGPL 2 or later (apu.c, debug.c, dsp/dsp_dma.c, dsp/gp_ep.c, vp/vp.c and their headers); the DSP56300 emulator adapted from Hatari's DSP M56001 emulation (ARAnyM developer team), GPL-2.0-or-later; vp/svf.h after the SWH LADSPA plugins (Steve Harris), \"GPL\" with no version named (xemu's header says GPLv2), so any version, the 3rd included; vp/adpcm.h, the ADPCM-XQ decoder (David Bryant), BSD-3-Clause",
+   "licence": "LGPL-2.1-or-later; GPL-2.0-or-later; GPL (any version); BSD-3-Clause",
+   "copyright": "the xemu authors; the ARAnyM developer team (Hatari); Steve Harris; David Bryant",
+   "modifications": "ported to hakuX's native core by hakuX",
+   "texts": {
+    "LGPL-2.1.txt": "build/hakux-src/licenses/LGPL-2.1.txt",
+    "GPL-2.0.txt": "build/hakux-src/licenses/GPL-2.0.txt",
+    "adpcm-xq.license.txt": "build/hakux-src/licenses/adpcm-xq.license.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/rfandango/hakuX (native/dev/apu)",
+    "revision": "@hakux"
+   }
+  },
+  {
+   "id": "nxdk-def",
+   "name": "The Xbox kernel's export table (hakuX's native/kernel/kexports_table.h, generated from nxdk's xboxkrnl.exe.def)",
+   "licence": "CC0-1.0",
+   "copyright": "the nxdk authors",
+   "modifications": "generated into a table by hakuX's tools",
+   "texts": {
+    "CC0-1.0.txt": "/usr/share/common-licenses/CC0-1.0"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/XboxDev/nxdk (by way of hakuX)",
+    "revision": "@hakux"
+   }
+  },
+  {
+   "id": "libslirp",
+   "name": "libslirp (the network's NAT: its TCP/IP stack), 4.7.0 (master after the v4.7.0 tag)",
+   "licence": "BSD-3-Clause (and the other permissive terms of its COPYRIGHT file)",
+   "copyright": "Danny Gasparovski; Kelly Price; the QEMU and libslirp authors",
+   "modifications": "none",
+   "texts": {
+    "libslirp-COPYRIGHT.txt": ".deps/src/libslirp/COPYRIGHT"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://gitlab.freedesktop.org/slirp/libslirp",
+    "revision": "@libslirp"
+   }
+  },
+  {
+   "id": "nv2a_vsh_cpu",
+   "name": "nv2a_vsh_cpu: the NV2A's vertex shader interpreter",
+   "licence": "Unlicense (public domain)",
+   "copyright": "Erik Abair",
+   "modifications": "none",
+   "texts": {
+    "nv2a_vsh_cpu-LICENSE.txt": ".deps/src/nv2a_vsh_cpu/LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/xemu-project/nv2a_vsh_cpu",
+    "revision": "@nv2a_vsh_cpu"
+   }
+  },
+  {
+   "id": "xxhash",
+   "name": "xxHash (its header)",
+   "licence": "BSD-2-Clause",
+   "copyright": "Yann Collet",
+   "modifications": "none",
+   "texts": {
+    "xxHash-LICENSE.txt": ".deps/src/xxhash/LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/Cyan4973/xxHash",
+    "revision": "@xxhash"
+   }
+  },
+  {
+   "id": "glslang",
+   "name": "glslang (the HLE GPU's run-time GLSL to SPIR-V compiles), 16.6.0",
+   "licence": "BSD-3-Clause, MIT, Apache-2.0 and other permissive terms (its LICENSE.txt)",
+   "copyright": "The Khronos Group; LunarG; Google; and its other authors",
+   "modifications": "built without SPIRV-Tools, HLSL or its executables (ps5/tools/build-glslang.sh)",
+   "texts": {
+    "glslang-LICENSE.txt": ".deps/glslang-16.6.0/src/LICENSE.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/KhronosGroup/glslang",
+    "revision": "16.6.0"
+   }
+  },
+  {
+   "id": "volk",
+   "name": "volk (the Vulkan meta-loader: one for the whole title)",
+   "licence": "MIT",
+   "copyright": "Arseny Kapoulkine",
+   "modifications": "as the PS5 Vulkan Template carries it",
+   "texts": {
+    "volk-LICENSE.md": "ps5/third_party/volk/LICENSE.md"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/zeux/volk (by way of the PS5 Vulkan Template)",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "vulkan-headers",
+   "name": "Vulkan headers",
+   "licence": "Apache-2.0 OR MIT",
+   "copyright": "The Khronos Group",
+   "modifications": "none",
+   "texts": {
+    "Apache-2.0.txt": "ps5/licenses/Apache-2.0.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/KhronosGroup/Vulkan-Headers (by way of the PS5 Vulkan Template)",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "template",
+   "name": "PS5 Vulkan Template: the PS5 layer (ps5/src), Sascha Willems' Vulkan example base class (base/) and the tools this build is made from",
+   "licence": "MIT",
+   "copyright": "Copyright (C) 2026 Mihawk; Copyright (c) 2016 Sascha Willems",
+   "modifications": "adapted to this title (Press5elect's changes are marked beside the notices)",
+   "texts": {
+    "MIT-foundation.txt": "ps5/licenses/MIT-foundation.txt"
+   },
+   "artifacts": [
+    "eboot.bin",
+    "shaders/"
+   ],
+   "source": {
+    "url": "https://github.com/mihawk-99/PS5_VulkanTemplate",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "imgui",
+   "name": "Dear ImGui (the base class's overlay)",
+   "licence": "MIT",
+   "copyright": "Omar Cornut and contributors",
+   "modifications": "as the PS5 Vulkan Template carries it",
+   "texts": {
+    "imgui-LICENSE.txt": "external/imgui/LICENSE.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/ocornut/imgui (by way of the PS5 Vulkan Template)",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "ktx",
+   "name": "libktx (the base class's texture loader)",
+   "licence": "Apache-2.0",
+   "copyright": "The Khronos Group and its contributors",
+   "modifications": "as the PS5 Vulkan Template carries it",
+   "texts": {
+    "ktx-LICENSE.md": "external/ktx/LICENSE.md",
+    "ktx-NOTICE.md": "external/ktx/NOTICE.md"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/KhronosGroup/KTX-Software (by way of the PS5 Vulkan Template)",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "tinygltf",
+   "name": "tinygltf, with stb_image (public domain or MIT) and nlohmann/json (MIT) as it bundles them (the base class's glTF loader)",
+   "licence": "MIT",
+   "copyright": "Syoyo Fujita, Aurelien Chatelain and contributors; Sean Barrett; Niels Lohmann",
+   "modifications": "as the PS5 Vulkan Template carries it",
+   "texts": {
+    "tinygltf-LICENSE.txt": "external/tinygltf/LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/syoyo/tinygltf (by way of the PS5 Vulkan Template)",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "glm",
+   "name": "GLM (OpenGL Mathematics), headers",
+   "licence": "MIT (or the Happy Bunny License)",
+   "copyright": "G-Truc Creation",
+   "modifications": "as the PS5 Vulkan Template carries it",
+   "texts": {
+    "glm-LICENSE.txt": "ps5/licenses/glm-LICENSE.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/g-truc/glm (by way of the PS5 Vulkan Template)",
+    "revision": "@template"
+   }
+  },
+  {
+   "id": "assets",
+   "name": "The overlay's font, Roboto Medium (assets/; assets/NOTICES.txt names it)",
+   "licence": "Apache-2.0",
+   "copyright": "Christian Robertson (Google Fonts)",
+   "modifications": "none",
+   "texts": {
+    "Apache-2.0.txt": "ps5/licenses/Apache-2.0.txt"
+   },
+   "artifacts": [
+    "assets/"
+   ],
+   "source": {
+    "url": "https://github.com/SaschaWillems/Vulkan-Assets",
+    "revision": "a27c0e584434d59b7c7a714e9180eefca6f0ec4b"
+   }
+  },
+  {
+   "id": "libsmb2",
+   "name": "libsmb2 (the virtual file layer's SMB shares)",
+   "licence": "LGPL-2.1-or-later",
+   "copyright": "Ronnie Sahlberg",
+   "modifications": "none",
+   "texts": {
+    "libsmb2-LGPL-2.1.txt": "/usr/share/common-licenses/LGPL-2.1"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/ps5-payload-dev/pacbrew-repo (release v0.40.2, prebuilt for the console)",
+    "revision": "v0.40.2"
+   }
+  },
+  {
+   "id": "libnfs",
+   "name": "libnfs (the virtual file layer's NFS shares)",
+   "licence": "LGPL-2.1-or-later (the library); BSD-2-Clause (the protocol code generated from its .x files)",
+   "copyright": "Ronnie Sahlberg",
+   "modifications": "none to its source; built with getservbyport, getuid and getgid bound to the title's own (ps5/tools/build-deps.sh)",
+   "texts": {
+    "libnfs-LGPL-2.1.txt": ".deps/src/libnfs/LICENCE-LGPL-2.1.txt",
+    "libnfs-BSD.txt": ".deps/src/libnfs/LICENCE-BSD.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/sahlberg/libnfs",
+    "revision": "@libnfs"
+   }
+  },
+  {
+   "id": "platform",
+   "name": "PS5 platform layer and payload SDK fork (libps5platform.a, CRT, libc and libc++ link stubs)",
+   "licence": "GPL-3.0-or-later (platform layer); as released upstream for the SDK",
+   "copyright": "Mihawk; John Tornblom and ps5-payload-dev",
+   "modifications": "none",
+   "texts": {
+    "PS5_PayloadSDK-LICENSE.txt": "../PS5_PayloadSDK/LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/mihawk-99/PS5_PayloadSDK",
+    "revision": "@sdk"
+   }
+  },
+  {
+   "id": "ps5-vulkan",
+   "name": "PS5_Vulkan: the link recipe, the CRT, the packaging tool, libc.prx",
+   "licence": "GPL-3.0-or-later",
+   "copyright": "Mihawk",
+   "modifications": "none",
+   "texts": {
+    "PS5_Vulkan-LICENSE.txt": "../PS5_Vulkan/LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin",
+    "sce_module/libc.prx"
+   ],
+   "source": {
+    "url": "https://github.com/mihawk-99/PS5_Vulkan",
+    "revision": "@vulkan"
+   }
+  },
+  {
+   "id": "radv",
+   "name": "RADV, ACO, NIR and Mesa's runtime, with the PS5 winsys and VideoOut WSI (PS5_Mesa), built with Crux2's patches (Mesa 27.0-devel and the PS5 fixes)",
+   "licence": "MIT and other permissive licences (Mesa's notices)",
+   "copyright": "the Mesa authors; Mihawk for the PS5 parts; Press5elect for Crux2's patches",
+   "modifications": "Crux2's ps5/patches/mesa-27 (the same archive as Crux2's and Kelvin's: PS5_Vulkan's .deps/native/radv-crux2)",
+   "texts": {
+    "Mesa-license.rst": "../PS5_Mesa/docs/license.rst"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/mihawk-99/PS5_Mesa",
+    "revision": "@mesa"
+   }
+  },
+  {
+   "id": "zlib",
+   "name": "zlib (inside the RADV archive)",
+   "licence": "Zlib",
+   "copyright": "Jean-loup Gailly and Mark Adler",
+   "modifications": "none",
+   "texts": {
+    "zlib-license.h": ".deps/ports/include/zlib.h"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://zlib.net (as built into PS5_Vulkan's RADV archive)",
+    "revision": "1.3.1"
+   }
+  },
+  {
+   "id": "llvm-runtime",
+   "name": "LLVM's C++ runtime (libc++, libc++abi, libunwind) and compiler-rt's builtins, as the payload SDK links them",
+   "licence": "Apache-2.0 WITH LLVM-exception",
+   "copyright": "the LLVM project",
+   "modifications": "none",
+   "texts": {
+    "LLVM-LICENSE.TXT": "/usr/lib/llvm-20/build/utils/lit/LICENSE.TXT"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/llvm/llvm-project (the payload SDK's and the build machine's LLVM 20)",
+    "revision": "@sdk"
+   }
+  }
+ ]
+}

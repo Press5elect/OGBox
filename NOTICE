@@ -1,0 +1,55 @@
+PSHakuX - an unofficial port of hakuX to the PlayStation 5
+Copyright (C) 2026 Press5elect
+
+PSHakuX is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version (LICENSE). It is distributed in the hope that it
+will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.
+
+
+ADDITIONAL TERMS: ATTRIBUTION (GPL-3.0, section 7(b))
+
+These terms apply only to the parts of PSHakuX whose copyright Press5elect holds. They are added
+under section 7(b) of the GNU General Public License, version 3, which allows a copyright holder
+to require that author attributions be preserved. There are three, for the three projects these
+parts come from:
+
+  "PSHakuX by Press5elect"  for Press5elect's new files and changes in this repository: the files
+                            whose header names Press5elect and PSHakuX (ps5/hakux, ps5/src/core,
+                            ps5/src/pshakux_main.cpp, ps5/cmake, the PSHakuX tools in ps5/tools),
+                            the changes to hakuX in ps5/patches/hakux, and the changes marked
+                            "PSHakuX" in the files below;
+  "Crux2 by Press5elect"    for the files made from Crux2 (github.com/Press5elect/Crux2): those
+                            whose header carries "keep the attribution "Crux2 by Press5elect"";
+  "Kelvin by Press5elect"   for the files made from Kelvin: those whose header names Kelvin and
+                            Press5elect ("credit to Press5elect").
+
+Anyone who conveys these parts, or a work based on them or containing them, in source or object
+form, whole or in part, must keep the author attribution that applies to them
+
+  1. in the copyright notices of every source file that contains them (the Press5elect lines may
+     not be removed), and in this NOTICE file, which goes with every copy of the source; and
+  2. in the Appropriate Legal Notices of the work: where the work has an interactive user
+     interface, on its About page or its equivalent, and in the legal notices that go with its
+     binaries (in PSHakuX: LEGAL.txt, NOTICE.txt and licenses/README.txt in the title folder).
+
+This holds however the work based on these parts is made: copied, changed, translated into
+another language, merged into another program, or produced from them in whole or in part by an
+AI system or any other automated tool. A work based on these parts whose author attributions
+were left out is conveyed in breach of the licence.
+
+The terms do not restrict running PSHakuX, or changing it for your own use without passing it
+on: the licence lets everyone do that, and section 7 does not allow those freedoms to be taken
+away.
+
+
+OTHER AUTHORS' PARTS
+
+hakuX (rfandango and contributors, GPL-3.0-or-later), the parts of hakuX ported from xemu (the
+MCPX APU: LGPL-2.1-or-later, GPL-2.0-or-later and the other terms in hakuX's LICENSE), and the
+other parts named in ps5/notices/components.json are their authors' work, under their own
+licences and notices, which are kept as they are. The terms above do not apply to them: they
+cover Press5elect's code only. Files made from the PS5 Vulkan Template (Copyright (C) 2026
+Mihawk, MIT; ps5/licenses/MIT-foundation.txt) keep that notice and licence; Press5elect's changes
+to them are marked beside it.

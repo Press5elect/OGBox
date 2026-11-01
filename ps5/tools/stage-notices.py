@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
-"""PS5 Vulkan Template - the notices a title folder carries: LEGAL.txt and licenses/.
-
-    stage-notices.py APP_DIR VULKAN_DIR RADV_ARCHIVE
-
-Called by ps5/tools/link-title.sh after it packages the title. It writes, beside
-eboot.bin:
-
-  LEGAL.txt                 no piracy; what the title is licensed under; trademarks
-  licenses/README.txt       the same notice, then every part: its licence, copyright and source
-  licenses/components.json  the same parts as data, each with the revision it was built from
-                            (ps5/tools/source-bundle.py archives the source from it)
-  licenses/<part>/...       the licence texts each part requires
-
-Every text is read at the revision the title was built from (git show), not from a
-working tree, so the notices match the source a release attaches. A part whose
-repository has uncommitted changes is recorded as "dirty": a release refuses it.
-The assets' notices stay in assets/NOTICES.txt (ps5/tools/build-assets.py).
-
-Copyright (C) 2026 Mihawk
-SPDX-License-Identifier: MIT
-"""
+# SPDX-FileCopyrightText: 2026 Press5elect
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Additional term (GPL-3.0 section 7(b)): keep the attribution "Crux2 by Press5elect"; see NOTICE.
+# Crux2 - the notices a title folder carries, and the check before one leaves the machine.
+#
+# PSHakuX: Crux2's ps5/tools/stage-notices.py (08c3507) for PSHakuX: hakuX's parts and pins, and the
+# Xbox's files that must never be in a package. PSHakuX by Press5elect.
+#
+#   ps5/tools/stage-notices.py dist/PPSA99251            write LEGAL.txt, NOTICE.txt and licenses/
+#   ps5/tools/stage-notices.py --check dist/PPSA99251    check a title folder (or an unpacked ZIP)
+#
+# Staging (tools/link-title.sh runs it) writes, from ps5/notices/components.json:
+#   LEGAL.txt                 no piracy, the licence, the credit, unofficial, trademarks
+#   NOTICE.txt                PSHakuX's copyright (Press5elect) and its attribution terms
+#   licenses/README.txt       the same notice, then every part with its author and licence
+#   licenses/components.json  every part: licence, copyright, modifications, the revision and
+#                             address of its source, and the files it is in with their sha256
+#   licenses/*                the licence texts the parts require
+#
+# The check is the gate for anything that is passed on. It fails when
+#   - a file that must never be in a package is there: a disc image, an XBE, the Xbox's BIOS,
+#     MCPX boot ROM, EEPROM or hard disk image, a key, a save or savestate, a console's own
+#     settings, logs or address files (boot.txt, props.txt, network.cfg, .env);
+#   - an executable file is not covered by a part of components.json;
+#   - a notice or a licence text is missing, or a file changed since the notices were written;
+#   - a part's source revision is unknown, or a part was built from a tree with local changes.
+#
+# The shape is PS5_RetroArch's tools/stage-notices.py and check-notices.py (Mihawk-99), made for
+# one emulator by Crux2.
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,173 +40,210 @@ from pathlib import Path
 PS5 = Path(__file__).resolve().parent.parent
 ROOT = PS5.parent
 
-
-def git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
-
-
-def revision(repo):
-    """The repository's HEAD, its remote, and whether its tracked files differ from it."""
-    rev = git(repo, "rev-parse", "HEAD")
-    dirty = bool(git(repo, "status", "--porcelain", "--untracked-files=no"))
-    remotes = git(repo, "remote").split()
-    name = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
-    remote = git(repo, "remote", "get-url", name) if name else "(no remote yet)"
-    return rev, dirty, remote.removesuffix(".git")
-
-
-def pinned(script, name):
-    """A revision a setup script pins ("name=<sha>")."""
-    m = re.search(rf"^{name}=([0-9a-f]{{40}})", (PS5 / script).read_text(), re.M)
-    return m.group(1) if m else None
+# Never in a package. (The names are matched without regard to case.)
+FORBIDDEN_SUFFIXES = {
+    ".iso", ".xiso", ".cci", ".cso", ".chd", ".img", ".qcow2", ".vhd", ".raw", ".gz", ".7z", ".rar",  # disc and disk images
+    ".xbe", ".xex",                                                                               # Xbox executables (games)
+    ".rom", ".eeprom", ".pup", ".bios",                                                           # BIOS, boot ROM, firmware
+    ".key", ".keys", ".xsv", ".sav", ".state", ".hxs",                                            # keys, saves, savestates
+    ".log", ".env", ".ini", ".cfg",                                                               # a console's own files
+}
+FORBIDDEN_NAMES = {"boot.txt", "props.txt", "network.cfg", "test-run.txt", ".env", "eeprom.bin",
+                   "mcpx_1.0.bin", "complex_4627.bin"}
+FORBIDDEN_FOLDERS = {"hdd", "cache", "saves", "states", "logs", "snaps", "games", "hle", "partition0", "partition1",
+                     "partition2", "partition3", "partition4", "partition5"}
+ALLOWED_BIN = {"eboot.bin"}
+EXECUTABLE_SUFFIXES = {".bin", ".prx", ".elf", ".sprx", ".self", ".so", ".xbe"}
 
 
-def write_text(dest, repo, rev, path):
-    """A file of a repository at a revision, into the licenses folder."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    data = subprocess.run(["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True, check=True).stdout
-    dest.write_bytes(data)
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
-def write_tree(dest, repo, rev, path):
-    """A folder of a repository at a revision (Mesa's licenses/)."""
-    dest.mkdir(parents=True, exist_ok=True)
-    tar = subprocess.run(["git", "-C", str(repo), "archive", rev, path], capture_output=True, check=True).stdout
-    subprocess.run(["tar", "-x", "-C", str(dest), "--strip-components", str(len(Path(path).parts))], input=tar, check=True)
+def git_revision(directory: Path) -> str:
+    try:
+        revision = subprocess.run(["git", "-C", str(directory), "rev-parse", "HEAD"], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(directory), "status", "--porcelain", "--untracked-files=no"],
+                               check=True, capture_output=True, text=True).stdout.strip()
+        return revision + (" (with local changes)" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
-LEGAL = """{name} - legal use
-{rule}
-
-PIRACY IS NOT CONDONED. This title contains no games, no BIOS files, no
-console firmware and no decryption keys, and none will ever be provided or
-linked to. Use only games you own and files from hardware you own.
-Downloading or sharing games, BIOS files, firmware or keys you do not own is
-piracy: do not do it, and do not ask for help with it.
-
-Licences: the title's own code and Sascha Willems' Vulkan examples are MIT.
-It links the PS5 platform layer{kit}, which {are} GPL-3.0-or-later, so the
-title as distributed is under GPL-3.0-or-later as a whole, and its complete
-source is offered with it. Every part, its licence and its source are listed
-in licenses/README.txt; the assets and theirs in assets/NOTICES.txt.
-
-Not affiliated with or endorsed by Sony Interactive Entertainment.
-"PlayStation" and "PS5" are trademarks of Sony Interactive Entertainment Inc.
-Vulkan is a registered trademark of the Khronos Group Inc.; the RADV port is
-not a conformant product (its conformanceVersion is 0.0.0.0).
-"""
+def read(path: Path, default="unknown") -> str:
+    return path.read_text().strip() if path.is_file() else default
 
 
-def main():
-    app, vulkan, archive = (Path(a).resolve() for a in sys.argv[1:4])
-    name = json.loads((PS5 / "sce_sys/param.json").read_text())["localizedParameters"]["en-US"]["titleName"]
-    out = app / "licenses"
-    shutil.rmtree(out, ignore_errors=True)
-    out.mkdir(parents=True)
-    parts = []
+def pins() -> dict:
+    """The revisions the '@name' sources stand for."""
+    vulkan = ROOT.parent / "PS5_Vulkan"
+    provenance = read(vulkan / ".deps/native/radv-crux2/PROVENANCE.txt", "") or \
+        read(vulkan / ".deps/native/radv-release/PROVENANCE.txt", "")
+    mesa = next((line.split()[3] for line in provenance.splitlines() if line.startswith("Crux2: PS5 Mesa ")), "") or \
+        next((line.split(": ", 1)[1] for line in provenance.splitlines() if line.startswith("revision: ")), "unknown")
+    patches = re.search(r"with (ps5/patches/[\w.-]+)", provenance)
+    mesa_patches = patches.group(1) if patches else "ps5/patches/mesa-27"
+    # The hakuX source this build compiled (tools/prepare-hakux.sh records it).
+    build = Path(os.environ.get("PSHAKUX_BUILD_DIR", str(ROOT / "build/ps5")))
+    source = read(build.parent / "hakux-src/.pshakux-source.txt", "")
+    hakux_tree = next((line.split(": ", 1)[1] for line in source.splitlines() if line.startswith("source: ")), "")
+    hakux_rev = next((line.split(": ", 1)[1] for line in source.splitlines() if line.startswith("revision: ")), "unknown")
+    patch_names = ", ".join(sorted(p.name for p in (PS5 / "patches/hakux").glob("*.patch")))
+    if hakux_tree and Path(hakux_tree).resolve() != (ROOT / "vendor/hakuX").resolve():
+        hakux = f"{git_revision(Path(hakux_tree))} (the work tree {hakux_tree}) + those of ps5/patches/hakux/ that apply"
+    else:
+        hakux = f"{hakux_rev} + ps5/patches/hakux/ ({patch_names})"
+    deps = ROOT / ".deps/src"
+    return {
+        "@hakux": hakux,
+        "@sdk": read(ROOT / ".deps/native/ps5-payload-sdk/.ps5-sdk-revision"),
+        "@vulkan": git_revision(vulkan),
+        "@mesa": mesa + " + Crux2's " + mesa_patches + "/ (" +
+                 ", ".join(sorted(p.stem for p in (ROOT / mesa_patches).glob("*.patch"))) + ")",
+        "@template": "91179df760df1e6c6f2d4d172bc435319d79ff3c (the foundation this title was made from)",
+        "@identity": read(build / "build-identity.txt"),
+        "@libslirp": read(deps / "libslirp/.pshakux-revision"),
+        "@nv2a_vsh_cpu": read(deps / "nv2a_vsh_cpu/.pshakux-revision"),
+        "@xxhash": read(deps / "xxhash/.pshakux-revision"),
+        "@libnfs": read(deps / "libnfs/.pshakux-revision"),
+    }
 
-    # The title: its own code, the foundation and the libraries in its tree
-    rev, dirty, remote = revision(ROOT)
-    write_text(out / "title/LICENSE.md", ROOT, rev, "LICENSE.md")
-    libraries = [("external/imgui/LICENSE.txt", "imgui-LICENSE.txt"), ("external/ktx/LICENSE.md", "ktx-LICENSE.md"),
-                 ("external/ktx/NOTICE.md", "ktx-NOTICE.md"), ("external/tinygltf/LICENSE", "tinygltf-LICENSE"),
-                 ("ps5/third_party/volk/LICENSE.md", "volk-LICENSE.md")]
-    for path, dest in libraries:
-        write_text(out / "title" / dest, ROOT, rev, path)
-    glm = git(ROOT, "ls-tree", rev, "external/glm").split()[2]
-    parts.append(dict(
-        id="title", name=f"{name}: its program, the foundation (Sascha Willems' Vulkan examples and base class, the PS5 layer) "
-                         "and the libraries in its tree (Dear ImGui, libktx, tinygltf with stb_image and nlohmann json, "
-                         "volk, the Vulkan headers, glm)",
-        licence="MIT (the title, the examples, Dear ImGui, tinygltf, volk, glm); Apache-2.0 (libktx); "
-                "Apache-2.0 OR MIT (the Vulkan headers)",
-        copyright=["Copyright (c) 2016-2026 Sascha Willems", "Copyright (C) 2026 Mihawk", "and each library's authors"],
-        artifacts=["eboot.bin", "shaders/"], texts="licenses/title/",
-        source=dict(kind="git", path=str(ROOT), remote=remote, revision=rev, dirty=dirty,
-                    submodules={"external/glm": dict(remote="https://github.com/g-truc/glm", revision=glm)})))
 
-    # The UI kit, in a title that has the module
-    if (PS5 / "ui/setup-kit.sh").exists():
-        kit = Path(ROOT.parent / "PS5_VKHomebrewUI")
-        kit_rev = pinned("ui/setup-kit.sh", "revision")
-        write_text(out / "ui-kit/LICENSE", kit, kit_rev, "LICENSE")
-        parts.append(dict(
-            id="ui-kit", name="the UI kit: BlackBearReloaded's ps5-homebrew-ui with my Vulkan backend (PS5_VKHomebrewUI), "
-                              "and the UI module that draws with it (ps5/ui/)",
-            licence="GPL-3.0-or-later", copyright=["Copyright (C) 2026 BlackBearReloaded", "Copyright (C) 2026 Mihawk"],
-            artifacts=["eboot.bin", "assets/hui/"], texts="licenses/ui-kit/",
-            source=dict(kind="git", path=str(kit), remote="https://github.com/mihawk-99/PS5_VKHomebrewUI", revision=kit_rev,
-                        dirty=False)))
+def artifact_record(app: Path, name: str) -> dict:
+    path = app / name
+    if name.endswith("/"):
+        files = sorted(p for p in path.rglob("*") if p.is_file())
+        digest = hashlib.sha256("".join(f"{sha256(p)}  {p.relative_to(app).as_posix()}\n" for p in files).encode())
+        return {"path": name, "files": len(files), "sha256_of_listing": digest.hexdigest()}
+    return {"path": name, "sha256": sha256(path)}
 
-    # The payload SDK fork: its platform layer and headers
-    sdk = Path(ROOT.parent / "PS5_PayloadSDK")
-    sdk_rev = pinned("tools/setup-sdk.sh", "sdk_revision")
-    write_text(out / "platform/GPL-3.0.txt", sdk, sdk_rev, "LICENSE")
-    write_text(out / "platform/musl-regex-COPYRIGHT.txt", sdk, sdk_rev, "platform/src/regex/COPYRIGHT.musl")
-    write_text(out / "platform/dlmalloc-SOURCE.txt", sdk, sdk_rev, "platform/src/dlmalloc/SOURCE")
-    parts.append(dict(
-        id="platform", name="the PS5 platform layer (libps5platform.a) and the SDK headers, from my payload SDK fork, "
-                            "with musl's regex and dlmalloc",
-        licence="GPL-3.0-or-later; musl's regex MIT; dlmalloc public domain",
-        copyright=["Copyright (C) John Törnblom and the ps5-payload-dev contributors", "Copyright (C) 2026 Mihawk"],
-        artifacts=["eboot.bin"], texts="licenses/platform/",
-        source=dict(kind="git", path=str(sdk), remote="https://github.com/mihawk-99/PS5_PayloadSDK", revision=sdk_rev,
-                    dirty=False)))
 
-    # PS5_Vulkan: the link recipe, the CRT and its startup, the AGC imports, libc.prx
-    vrev, vdirty, vremote = revision(vulkan)
-    write_text(out / "ps5-vulkan/GPL-3.0.txt", vulkan, vrev, "LICENSE")
-    parts.append(dict(
-        id="ps5-vulkan", name="PS5_Vulkan: the RADV link recipe, the C runtime start-up, the AGC import stubs and "
-                              "sce_module/libc.prx",
-        licence="GPL-3.0-or-later", copyright=["Copyright (C) 2026 Mihawk"],
-        artifacts=["eboot.bin", "sce_module/libc.prx"], texts="licenses/ps5-vulkan/",
-        source=dict(kind="git", path=str(vulkan), remote=vremote, revision=vrev, dirty=vdirty)))
+def stage(app: Path) -> int:
+    components = json.loads((PS5 / "notices/components.json").read_text())["components"]
+    resolved = pins()
+    licenses = app / "licenses"
+    if licenses.exists():
+        shutil.rmtree(licenses)
+    licenses.mkdir(parents=True)
 
-    # RADV: Mesa's Vulkan driver, from my PS5_Mesa fork, built by PS5_Vulkan
-    provenance = (archive.parent.parent / "PROVENANCE.txt").read_text()
-    mesa_rev = re.search(r"^revision: ([0-9a-f]{40})", provenance, re.M).group(1)
-    radv_sdk = re.search(r"^sdk: ([0-9a-f]{40})", provenance, re.M)
-    mesa = Path(ROOT.parent / "PS5_Mesa")
-    write_text(out / "radv/Mesa-license.rst", mesa, mesa_rev, "docs/license.rst")
-    write_tree(out / "radv/licenses", mesa, mesa_rev, "licenses")
-    parts.append(dict(
-        id="radv", name="RADV, Mesa's Vulkan driver (with ACO, NIR and Mesa's Vulkan runtime), from my PS5_Mesa fork",
-        licence="MIT, with other licences stated per file (licenses/radv/Mesa-license.rst)",
-        copyright=["Copyright the Mesa contributors (per-file notices in the source)"],
-        artifacts=["eboot.bin"], texts="licenses/radv/",
-        source=dict(kind="git", path=str(mesa), remote="https://github.com/mihawk-99/PS5_Mesa", revision=mesa_rev,
-                    dirty=False, built_with_sdk=radv_sdk.group(1) if radv_sdk else None)))
-
-    # The LLVM runtime the SDK links in
-    llvm = ROOT.parent / "PS5_LLVM/llvm/LICENSE.TXT"
-    if llvm.exists():
-        (out / "llvm-runtime").mkdir()
-        shutil.copy2(llvm, out / "llvm-runtime/LICENSE.TXT")
-    parts.append(dict(
-        id="llvm-runtime", name="LLVM libc++, libc++abi, libunwind and compiler-rt builtins (linked into eboot.bin)",
-        licence="Apache-2.0 WITH LLVM-exception",
-        copyright=["Copyright (c) 2003-2026 University of Illinois at Urbana-Champaign and the LLVM project contributors"],
-        artifacts=["eboot.bin"], texts="licenses/llvm-runtime/",
-        source=dict(kind="fixed", revision="ps5-payload-dev SDK v0.42 release archives",
-                    url="https://github.com/ps5-payload-dev/sdk/releases/tag/v0.42")))
-
-    (out / "components.json").write_text(json.dumps(parts, indent=1, ensure_ascii=False) + "\n")
-    has_kit = any(p["id"] == "ui-kit" for p in parts)
-    legal = LEGAL.format(name=name, rule="=" * (len(name) + 12), kit=" and the UI kit" if has_kit else "",
-                         are="are" if has_kit else "is")
+    legal = (PS5 / "package/LEGAL.txt").read_text()
     (app / "LEGAL.txt").write_text(legal)
-    lines = [legal, "", "The parts of this title", "=======================", ""]
-    for p in parts:
-        src = p["source"]
-        where = f'{src["remote"]} at {src["revision"]}' if src["kind"] == "git" else f'{src["revision"]}: {src["url"]}'
-        lines += [p["name"], f'  licence:   {p["licence"]}', f'  copyright: {"; ".join(p["copyright"])}',
-                  f'  in:        {", ".join(p["artifacts"])}', f'  texts:     {p["texts"]}', f'  source:    {where}', ""]
-    lines += ["The assets: assets/NOTICES.txt, with their licence texts in assets/LICENSES/."]
-    (out / "README.txt").write_text("\n".join(lines) + "\n")
-    dirty = [p["id"] for p in parts if p["source"].get("dirty")]
-    print(f"==> notices: LEGAL.txt, licenses/ ({len(parts)} parts{'; dirty: ' + ', '.join(dirty) if dirty else ''})")
+    # The copyright and the attribution terms of Press5elect's parts (GPL-3.0 section 7(b)).
+    shutil.copyfile(ROOT / "NOTICE", app / "NOTICE.txt")
+
+    lines = [legal.rstrip(), "", "=" * 92, "THE PARTS", "=" * 92, ""]
+    records = []
+    for component in components:
+        texts = []
+        for name, source in component["texts"].items():
+            source_path = Path(source) if source.startswith("/") else (ROOT / source)
+            if not source_path.is_file():
+                print(f"{component['id']}: licence text missing: {source}", file=sys.stderr)
+                return 1
+            shutil.copyfile(source_path, licenses / name)
+            texts.append(name)
+        revision = component["source"]["revision"]
+        revision = resolved.get(revision, revision)
+        missing = [name for name in component["artifacts"] if not (app / name).exists()]
+        if missing:
+            print(f"{component['id']}: not in the title folder: {', '.join(missing)}", file=sys.stderr)
+            return 1
+        record = {
+            "id": component["id"], "name": component["name"], "licence": component["licence"],
+            "copyright": component["copyright"], "modifications": component["modifications"], "texts": texts,
+            "source": {"url": component["source"]["url"], "revision": revision},
+            "artifacts": [artifact_record(app, name) for name in component["artifacts"]],
+        }
+        records.append(record)
+        lines += [component["name"], f"    licence:   {component['licence']}", f"    copyright: {component['copyright']}",
+                  f"    source:    {component['source']['url']}", f"    revision:  {revision}"]
+        if component["modifications"] not in ("none", "-"):
+            lines.append(f"    changed:   {component['modifications']}")
+        if texts:
+            lines.append(f"    texts:     {', '.join(texts)}")
+        lines.append("")
+
+    (licenses / "README.txt").write_text("\n".join(lines))
+    (licenses / "components.json").write_text(json.dumps(
+        {"title": app.name, "build_identity": resolved["@identity"], "components": records}, indent=2) + "\n")
+    print(f"notices: {len(records)} parts, {len(list(licenses.iterdir()))} files in {licenses.relative_to(app.parent)}")
+    return 0
+
+
+def check(app: Path) -> int:
+    problems = []
+    for path in sorted(app.rglob("*")):
+        relative = path.relative_to(app)
+        parts = [part.lower() for part in relative.parts]
+        if path.is_dir():
+            if len(parts) == 1 and parts[0] in FORBIDDEN_FOLDERS:
+                problems.append(f"a console's own folder is in the package: {relative}/")
+            continue
+        name, suffix = parts[-1], path.suffix.lower()
+        shipped_text = parts[0] == "licenses" and suffix in {".ini", ".cfg"}
+        if name in FORBIDDEN_NAMES or (suffix == ".bin" and name not in ALLOWED_BIN) or \
+                (suffix in FORBIDDEN_SUFFIXES and not shipped_text):
+            problems.append(f"must never be in a package: {relative}")
+
+    for required in ("LEGAL.txt", "NOTICE.txt", "README.md", "licenses/README.txt", "licenses/components.json",
+                     "licenses/GPL-3.0.txt", "eboot.bin", "sce_sys/param.json", "sce_sys/icon0.png",
+                     "sce_module/libc.prx"):
+        if not (app / required).is_file():
+            problems.append(f"missing: {required}")
+
+    manifest = app / "licenses/components.json"
+    if manifest.is_file():
+        components = json.loads(manifest.read_text())["components"]
+        covered_files, covered_folders = set(), []
+        for component in components:
+            if "unknown" in component["source"]["revision"]:
+                problems.append(f"{component['id']}: the revision of its source is unknown")
+            if "with local changes" in component["source"]["revision"] or "+dirty" in component["source"]["revision"]:
+                problems.append(f"{component['id']}: built from a tree with uncommitted changes")
+            for text in component["texts"]:
+                if not (app / "licenses" / text).is_file():
+                    problems.append(f"{component['id']}: licence text missing: licenses/{text}")
+            for artifact in component["artifacts"]:
+                path = app / artifact["path"]
+                if artifact["path"].endswith("/"):
+                    covered_folders.append(artifact["path"])
+                    if artifact_record(app, artifact["path"]) != artifact:
+                        problems.append(f"{component['id']}: {artifact['path']} changed since the notices were written")
+                else:
+                    covered_files.add(artifact["path"])
+                    if not path.is_file():
+                        problems.append(f"{component['id']}: {artifact['path']} is not in the package")
+                    elif sha256(path) != artifact["sha256"]:
+                        problems.append(f"{component['id']}: {artifact['path']} changed since the notices were written")
+        for path in sorted(app.rglob("*")):
+            relative = path.relative_to(app).as_posix()
+            if path.is_file() and path.suffix.lower() in EXECUTABLE_SUFFIXES and relative not in covered_files and \
+                    not any(relative.startswith(folder) for folder in covered_folders):
+                problems.append(f"an executable file no part accounts for: {relative}")
+
+    for problem in problems:
+        print(f"FAILED: {problem}", file=sys.stderr)
+    if not problems:
+        print(f"release check: {app} passes ({sum(1 for p in app.rglob('*') if p.is_file())} files)")
+    return 1 if problems else 0
+
+
+def main() -> int:
+    arguments = sys.argv[1:]
+    checking = bool(arguments) and arguments[0] == "--check"
+    if checking:
+        arguments = arguments[1:]
+    if len(arguments) != 1 or not Path(arguments[0]).is_dir():
+        print("usage: stage-notices.py [--check] <title folder>", file=sys.stderr)
+        return 2
+    app = Path(arguments[0]).resolve()
+    return check(app) if checking else stage(app)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

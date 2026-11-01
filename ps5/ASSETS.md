@@ -8,4 +8,3 @@ submodule) stay out, and the samples that use them get the replacements here.
 | Path under `/app0/assets/` | Asset | Author | Licence | Samples |
 | --- | --- | --- | --- | --- |
 | `Roboto-Medium.ttf` | [Roboto Medium](https://fonts.google.com/specimen/Roboto) | Christian Robertson (Google Fonts) | Apache-2.0 | all |
-| `models/ps5/lantern` | [Lantern (glTF sample model)](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Lantern) (parent nodes centre it and scale it to 1.6, 5.5 and 8 tall, one .gltf for each sample) | Microsoft (sbtron) | CC0-1.0 | pshakux |
