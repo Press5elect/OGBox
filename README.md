@@ -120,6 +120,12 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.11 (bring-up)
+
+Fixed
+- A switch in `boot.txt` written without `env ` (for example `NC_SWEEP_RDTSC=0`) now takes
+  effect; 0.1.10 left it out.
+
 ### 0.1.10 (bring-up)
 
 Added
