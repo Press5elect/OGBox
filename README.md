@@ -120,6 +120,12 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.12 (bring-up)
+
+Added
+- `NC_SWEEP_SKIP=<section>,...` in `boot.txt` leaves those sections of the game unpatched,
+  for testing; the boot log shows each rdtsc patch's original bytes.
+
 ### 0.1.11 (bring-up)
 
 Fixed
