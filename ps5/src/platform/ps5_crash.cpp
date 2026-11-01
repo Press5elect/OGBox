@@ -316,6 +316,29 @@ void BytesAt(Out& o, const char* what, uintptr_t address)
   o.end();
 }
 
+// OGBox 0.1.21: guest memory in lines of 32 bytes, for a crash in guest code: the stack frame
+// (the locals a bad pointer came from) and the code before the faulting instruction (what made
+// it). Lines that can't be read say so. Each line: "  <what> <address>: <32 bytes>".
+void GuestLines(Out& o, const char* what, uint32_t from, uint32_t length)
+{
+  for (uint32_t at = from & ~31u; at < from + length; at += 32)
+  {
+    uint8_t bytes[32];
+    o.s("  ").s(what).s(" ").hex(at, 8).s(":");
+    if (!SafeRead(at, bytes, sizeof(bytes)))
+    {
+      o.s(" (not readable)").end();
+      continue;
+    }
+    for (uint8_t b : bytes)
+    {
+      o.c(' ');
+      o.c("0123456789abcdef"[b >> 4]).c("0123456789abcdef"[b & 15]);
+    }
+    o.end();
+  }
+}
+
 struct Regs
 {
   uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15, rip, rflags;
@@ -424,6 +447,18 @@ void Report(int signal, siginfo_t* info, void* ctx)
     else
       o.s(" (not readable)");
     o.end();
+    FsyncLog();
+    // the rest of the frame: esp up to ebp + 0x100 when ebp is a frame above esp (at most 1 KB),
+    // else 512 bytes from esp; then the code from 0x180 before eip to 0x40 after it
+    const uint32_t esp = static_cast<uint32_t>(r.rsp), ebp = static_cast<uint32_t>(r.rbp);
+    const uint32_t eip = static_cast<uint32_t>(r.rip);
+    uint32_t stack_len = 512;
+    if (ebp > esp && ebp - esp < 0x300)
+      stack_len = ebp - esp + 0x100;
+    GuestLines(o, "guest stack", esp, stack_len);
+    FsyncLog();
+    GuestLines(o, "guest code", eip - 0x180, 0x1c0);
+    FsyncLog();
   }
   else
   {

@@ -16,7 +16,7 @@
 #include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 
-#define OGBT_VERSION "1.0"
+#define OGBT_VERSION "1.1"
 
 void ogbt_open_output(void);
 void ogbt_close_output(void);
@@ -61,5 +61,6 @@ void test_cpu(void);
 void test_mem(void);
 void test_time(void);
 void test_disc(void);
+void test_hdd(void);
 
 #endif

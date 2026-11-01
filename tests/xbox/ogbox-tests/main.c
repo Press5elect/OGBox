@@ -254,6 +254,7 @@ int main(void)
     test_cpu();
     test_mem();
     test_disc();
+    test_hdd();
 
     report("== done: %d passed, %d failed, in %.1f s", g_pass, g_fail, qpc_us(qpc() - t0) / 1e6);
     report("results: OGBox boot log (OGBT lines) and E:\\ogbox-tests.txt");

@@ -131,6 +131,24 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.21 (bring-up)
+
+Added
+- The test disc (1.1) also writes files on hard-disk partitions 1 and 4 and reads them back
+  after each change: written in pieces, overwritten at random, grown, cut short, deleted.
+- A crash in game code puts more in the boot log: the game's stack frame and the code before
+  the instruction that faulted.
+
+Fixed
+- Game threads getting each other's floating-point state. When the emulator switched from one
+  game thread to another, the thread that resumed got the x87 and SSE registers, control word
+  and MXCSR of the one it interrupted: the console's kernel loaded them back as it left the
+  emulator's signal handler. The test disc found it (on 0.1.20, 6 of its checks failed, in
+  every switch it caught). Any game with more than one thread that uses floating point could
+  compute with another thread's numbers now and then. That fits Crash Bandicoot's crash (its
+  animation code read a matrix of nonsense), but it isn't confirmed yet. The boot log has a
+  `signal frame FPU:` line.
+
 ### 0.1.20 (bring-up)
 
 Added
