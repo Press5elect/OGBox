@@ -131,6 +131,15 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.22 (bring-up)
+
+Fixed
+- 0.1.21 stopping every game within seconds (SIGFPE). Its floating-point fix wrote the game
+  thread's state where the console SDK's header says the kernel keeps it, but the console's
+  kernel keeps it elsewhere. The emulator now finds the kernel's copy by matching it against
+  the registers, writes there, and says where in a `signal frame FPU:` boot-log line. Until it
+  finds it, it writes nothing (0.1.20's behaviour).
+
 ### 0.1.21 (bring-up)
 
 Added
@@ -146,8 +155,8 @@ Fixed
   emulator's signal handler. The test disc found it (on 0.1.20, 6 of its checks failed, in
   every switch it caught). Any game with more than one thread that uses floating point could
   compute with another thread's numbers now and then. That fits Crash Bandicoot's crash (its
-  animation code read a matrix of nonsense), but it isn't confirmed yet. The boot log has a
-  `signal frame FPU:` line.
+  animation code read a matrix of nonsense), but it isn't confirmed yet. (Corrected in 0.1.22:
+  this version wrote the state to the wrong place and stopped every game with SIGFPE.)
 
 ### 0.1.20 (bring-up)
 
