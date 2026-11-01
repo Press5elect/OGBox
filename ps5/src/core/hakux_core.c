@@ -368,6 +368,26 @@ static void *vcpu_thread(void *arg)
  * 0.1.4: the vCPU never idle) shows the loop it spins in. PSHAKUX_GUEST_SAMPLER=0 (an env line in
  * boot.txt) turns it off. */
 extern bool (*g_hle_pc_sampler)(uint32_t *pc);
+/* hakuX (native/hle/glue.c): the registers of the sample just taken, guest code only */
+extern bool nc_hle_sample_regs(uint32_t regs[9]);
+/* hakuX (hw/xbox/hle/pb/pbmode.c): what the push-buffer decoder knows of a physical address */
+extern int hle_pb_describe_pa(uint32_t pa, char *buf, size_t len);
+
+/* 0.1.7: a register's value as a guest address, for the sampler's line: the dword there, its
+ * physical address and what the GPU's decoder knows of it ("" when it isn't a mapped address). */
+static void describe_reg(const char *name, uint32_t v, char *out, size_t len)
+{
+    out[0] = 0;
+    if (v < 0x10000u || !g_core.vm.pte || nc_vm_phys(&g_core.vm, v & ~3u) == UINT32_MAX ||
+        nc_vm_phys(&g_core.vm, (v & ~3u) + 3) == UINT32_MAX) {
+        return;
+    }
+    const uint32_t pa = nc_vm_phys(&g_core.vm, v);
+    char what[200];
+    hle_pb_describe_pa(pa, what, sizeof(what));
+    snprintf(out, len, " [%s]=%08x (pa %08x%s%s)", name, nc_vm_rd32(&g_core.vm, v & ~3u), pa,
+             v >= 0x80000000u ? ", the contiguous window" : "", what);
+}
 #define SAMPLER_EIP_HOST 0xF0000000u
 #define SAMPLER_EIP_SYSOP 0x08000000u
 #define SAMPLER_EIP_IDLE 0xFFFFFFFFu
@@ -388,6 +408,8 @@ static void *sampler_thread(void *arg)
             continue;
         }
         uint32_t eip[SLOTS] = {0}, cnt[SLOTS] = {0};
+        uint32_t regs[SLOTS][9];
+        bool have_regs[SLOTS] = {false};
         unsigned taken = 0, idle = 0, kcall = 0, host = 0;
         for (unsigned i = 0; i < SAMPLES; i++) {
             uint32_t pc = 0;
@@ -414,6 +436,7 @@ static void *sampler_thread(void *arg)
                 if (!cnt[k] || eip[k] == pc) {
                     eip[k] = pc;
                     cnt[k]++;
+                    have_regs[k] = nc_hle_sample_regs(regs[k]) || have_regs[k];
                     break;
                 }
             }
@@ -425,6 +448,7 @@ static void *sampler_thread(void *arg)
         int n = 0;
         top[0] = 0;
         uint32_t first = 0;
+        int first_slot = -1;
         for (unsigned r = 0; r < 8; r++) {
             unsigned best = SLOTS;
             for (unsigned k = 0; k < SLOTS; k++) {
@@ -437,6 +461,7 @@ static void *sampler_thread(void *arg)
             }
             if (!r) {
                 first = eip[best];
+                first_slot = have_regs[best] ? (int)best : -1;
             }
             n += snprintf(top + n, sizeof(top) - (size_t)n, " %08x %u%%", eip[best], cnt[best] * 100u / taken);
             cnt[best] = 0;
@@ -453,6 +478,26 @@ static void *sampler_thread(void *arg)
         pshakux_log("guest: %u samples in 1 s: halted %u%%, kernel calls %u%%, host %u%%; busiest guest EIPs:%s%s%s",
                     taken, idle * 100u / taken, kcall * 100u / taken, host * 100u / taken, top[0] ? top : " none",
                     code[0] ? " | code at the first -8: " : "", code);
+        if (first_slot >= 0 && cnt[first_slot] == 0) {
+            /* the busiest EIP's registers (its last sample) and what they point at: a loop that
+             * waits for a value shows the value, where it lives, and (10 s later) whether it moved */
+            const uint32_t *r = regs[first_slot];
+            static const char *const nm[8] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
+            char derefs[1200];
+            int d = 0;
+            derefs[0] = 0;
+            for (unsigned i = 0; i < 8 && d < (int)sizeof(derefs) - 260; i++) {
+                if (i == 4) {
+                    continue;
+                }
+                char one[256];
+                describe_reg(nm[i], r[i], one, sizeof(one));
+                d += snprintf(derefs + d, sizeof(derefs) - (size_t)d, "%s", one);
+            }
+            pshakux_log("guest: at %08x: eax %08x ecx %08x edx %08x ebx %08x esp %08x ebp %08x esi %08x edi %08x "
+                        "eflags %08x |%s", first, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8],
+                        derefs[0] ? derefs : " no register points at guest memory");
+        }
     }
     pshakux_thread_gone();
     return NULL;

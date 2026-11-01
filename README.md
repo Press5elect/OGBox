@@ -119,6 +119,31 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.7 (bring-up)
+
+Added
+- A guest memory history for crashes like Burnout 3's at its intro movie (0.1.6): the last 8,192
+  allocations, commits, frees, contiguous blocks, kernel stacks, section loads and host unmaps,
+  each with the guest thread and caller. A guest access to a page it doesn't have now logs the
+  reservation around that address, what was done to the memory within 64 KiB of it, and the page
+  table around it.
+- A read log: each file handle's first six reads (thread, caller, offset, size, overlapped or
+  waited for) and their completions (status, bytes, time taken), every failed read, and the disc
+  reader's state every 10 s (what it is reading and for how long, the queue, reads finished but
+  not yet completed for the game). `env NC_READ_LOG=n` in `boot.txt` sets the reads per handle
+  (0 turns it off).
+- The `guest:` sampler line is followed by the busiest EIP's registers, and for each register
+  that points at guest memory, the value there, its physical address and what the GPU knows
+  about it (the semaphore, the report area, the push buffer, the display).
+- The 30-s thread dump also shows each thread's start routine, queued APCs and the type of each
+  object it waits on, the interrupt state (enabled, asserted, IRQL, ISR, DPC thread) and the disc
+  reader's state.
+
+Changed
+- The native CPU's code sweep also patches `rdtsc`, `cpuid`, `sidt` and `sgdt` where six
+  instructions after them decode as code. Burnout 3's timer reads at 001fc961 and 001fc984 ran
+  unscaled beside the scaled one at 001fc934.
+
 ### 0.1.6 (bring-up)
 
 Added
