@@ -120,6 +120,17 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.10 (bring-up)
+
+Added
+- One `boot.txt` switch per kind of code patch, for testing: `env NC_SWEEP_RDTSC=0`,
+  `env NC_SWEEP_CPUID=0`, `env NC_SWEEP_FLAGS=0` (pushfd/popfd), `env NC_SWEEP_TABLES=1`.
+
+Fixed
+- Burnout 3's intro movie no longer crashes the title: `sgdt`/`sidt` are no longer patched on
+  the PS5 (the console traps the real ones itself), and one that was really movie data no longer
+  gets overwritten.
+
 ### 0.1.9 (bring-up)
 
 Fixed
