@@ -19,7 +19,7 @@ sdk="$cache/ps5-payload-sdk"
 sdk_fork="${PS5_PAYLOAD_SDK_FORK:-$root/../PS5_PayloadSDK}"
 # 611893f: /data through the Lapy daemon (ps5platform/elevation.h), an opt-in no sample calls.
 # Never older than 6b63a2a, the platform layer's localeconv in the C locale (ps5_localeconv).
-# PSHakuX 0.1.4: e105cf6, fdv tracks as many files as it has descriptor slots (a file it could not
+# OGBox 0.1.4: e105cf6, fdv tracks as many files as it has descriptor slots (a file it could not
 # track kept one of the console's ~249 opens by path; checked with git ls-remote 2026-11-01).
 sdk_revision=e105cf6f25801d9e9981812a89a3b74021d2d2a2
 

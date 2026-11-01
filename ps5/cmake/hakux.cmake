@@ -1,7 +1,7 @@
-# PSHakuX - hakuX for PS5
+# OGBox - hakuX for PS5
 # Copyright (C) 2026 Press5elect
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+# Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
 #
 # hakuX's native core for the console, included by ps5/CMakeLists.txt: what hakuX's own
 # native/CMakeLists.txt and native/cmake/hle.cmake build, without FEX (cmake/fex.cmake), without
@@ -16,7 +16,7 @@
 #                 stub (ps5/hakux/cpu/cpu_stub.c, weak) is always linked, so whatever the
 #                 backend does not define yet still links, and a run says the CPU is missing.
 #
-# What hakuX does for Android, PSHakuX does for the console in ps5/hakux/, not in hakuX:
+# What hakuX does for Android, OGBox does for the console in ps5/hakux/, not in hakuX:
 #   - compat/include: the Android and Linux headers hakuX includes (system properties, prctl,
 #     eventfd, the Android log, AHardwareBuffer's types), mapped to the console's;
 #     compat/hakux_ps5.h, included first in every hakuX file: gettid, the Linux system calls;
@@ -166,10 +166,10 @@ if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
 	endforeach()
 	set(hakux_cpu_definitions NC_CPU_NATIVE=1 NC_WINDOW_HOLE_END=${PSHAKUX_WINDOW_HOLE_END})
 	set(hakux_cpu_options -fno-delete-null-pointer-checks)
-	message(STATUS "PSHakuX: native CPU backend's sources: ${cpu_sources} (cpu/vmhost.c: its __PROSPERO__ half, the platform layer's shm)")
+	message(STATUS "OGBox: native CPU backend's sources: ${cpu_sources} (cpu/vmhost.c: its __PROSPERO__ half, the platform layer's shm)")
 endif()
 list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/cpu_stub.c)
-message(STATUS "PSHakuX: hakuX from ${HAKUX_DIR}; CPU backend ${PSHAKUX_CPU}${PSHAKUX_CPU_NOTE}")
+message(STATUS "OGBox: hakuX from ${HAKUX_DIR}; CPU backend ${PSHAKUX_CPU}${PSHAKUX_CPU_NOTE}")
 add_library(hakux_core OBJECT ${hakux_core_sources})
 hakux_target(hakux_core)
 target_include_directories(hakux_core PRIVATE ${PSHAKUX_DEPS}/xxhash ${CMAKE_BINARY_DIR}/slirp

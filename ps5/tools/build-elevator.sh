@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Press5elect
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Additional term (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
-# PSHakuX - build the sandbox elevation helper (build/sandbox-elevator.elf).
+# Additional term (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
+# OGBox - build the sandbox elevation helper (build/sandbox-elevator.elf).
 #
 # A title's sandbox shows it only part of the console's file system (no USB drives under /mnt, not
 # all of /data). The title sends this helper to the payload loader on port 9021 (elfldr, which

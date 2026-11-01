@@ -1,15 +1,15 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * Android's system properties, which hakuX reads for its debug switches (debug.hakux.*, through
  * hw/xbox/hle/prop.h and directly). Where Android's are not, hakuX's prop.h reads a property from
  * the environment variable of its name upper-cased with dots as underscores
  * (debug.hakux.present: DEBUG_HAKUX_PRESENT; ps5/patches/hakux, as hakuX-native does), and so does
  * __system_property_get here (ps5/hakux/compat/hakux_ps5.c). The title sets them from boot.txt's
- * "prop NAME=VALUE" lines and /data/pshakux/props.txt; an unset one, as on a phone, reads as empty.
+ * "prop NAME=VALUE" lines and /data/ogbox/props.txt; an unset one, as on a phone, reads as empty.
  */
 #ifndef PSHAKUX_SYS_SYSTEM_PROPERTIES_H
 #define PSHAKUX_SYS_SYSTEM_PROPERTIES_H

@@ -1,22 +1,22 @@
-# PSHakuX - what boots. Copy this file to boot.txt in this folder
+# OGBox - what boots. Copy this file to boot.txt in this folder
 # (/data/homebrew/PPSA99251/boot.txt) and change it.
 #
 # The first line that is not a comment: the Xbox disc image (an XISO) to boot, by its path on
 # the console, or "none" for the dashboard from the emulated hard disk. Only your own backups
 # of games you own. A path without a leading / is in this folder (games/game.iso). With the
-# payload loader (elfldr) running, PSHakuX leaves its sandbox, so the image may be anywhere on
+# payload loader (elfldr) running, OGBox leaves its sandbox, so the image may be anywhere on
 # the console: /data/..., a USB drive (/mnt/usb0/...), extended storage (/mnt/ext0/...).
-/data/pshakux/games/game.iso
+/data/ogbox/games/game.iso
 #
 # hakuX's options, any number on a line (its native/core/options.h): for example
 #   scale=2      the internal resolution, twice the game's
 #   uncap        no frame rate cap
 #   video=...    the console's video settings (hex; widescreen is 0x00010000)
 #
-# The emulated hard disk's folder (default /data/pshakux/hdd; Partition0-5 are made in it):
-#   hdd=/data/pshakux/hdd
+# The emulated hard disk's folder (default /data/ogbox/hdd; Partition0-5 are made in it):
+#   hdd=/data/ogbox/hdd
 #
-# One of hakuX's debug properties (more of them, NAME=VALUE lines, in /data/pshakux/props.txt):
+# One of hakuX's debug properties (more of them, NAME=VALUE lines, in /data/ogbox/props.txt):
 #   prop debug.hakux.NAME=VALUE
 #
 # One of hakuX's environment switches, for diagnostics (set before the core starts), e.g.:

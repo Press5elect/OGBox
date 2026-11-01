@@ -1,5 +1,7 @@
-PSHakuX (PPSA99251) - an unofficial port of hakuX, an original Xbox emulator, to the PlayStation 5
-PSHakuX by Press5elect. Copyright (C) 2026 Press5elect.
+OGBox (PPSA99251) - an unofficial port of hakuX, an original Xbox emulator, to the PlayStation 5
+OGBox by Press5elect. Copyright (C) 2026 Press5elect.
+Built on hakuX (github.com/rfandango/hakuX, GPL-3.0-or-later) and the parts of it that come from
+xemu (the MCPX APU: LGPL-2.1-or-later and GPL-2.0-or-later).
 
 NO PIRACY. This package contains no games, no Xbox BIOS, boot ROM or EEPROM, no console firmware
 and no keys, and none will ever be provided or linked to. Use only legally obtained backups of
@@ -14,20 +16,22 @@ corresponding source: the source archive that comes with this package, and the r
 licenses/components.json names for every part. There is no warranty, to the extent permitted by
 law (sections 15 and 16 of the licence, licenses/GPL-3.0.txt).
 
-CREDIT. PSHakuX's own parts (the port layer, the front end, the tools, and the changes to hakuX)
+CREDIT. OGBox's own parts (the port layer, the front end, the tools, and the changes to hakuX)
 are Copyright (C) 2026 Press5elect, under the same licence with one additional term that its
 section 7(b) allows: whoever passes them on, or a work based on them, in whole or in part, keeps
-the attribution "PSHakuX by Press5elect" in the source files' notices and in the work's legal
+the attribution "OGBox by Press5elect" in the source files' notices and in the work's legal
 notices and About page (and "Crux2 by Press5elect" or "Kelvin by Press5elect" for the parts made
 from those projects). That holds however the work is made, with the help of an AI system
-included. NOTICE.txt has the terms in full. They cover Press5elect's code only: hakuX, xemu's
+included. OGBox's logo (the green X and the name, assets/ogbox-logo.png, and the title's icon
+and pictures made from it) is Press5elect's too, under the same terms. NOTICE.txt has the terms
+in full. They cover Press5elect's code only: hakuX, xemu's
 parts and the other parts stay their authors' work, under their own licences
 (licenses/README.txt).
 
 UNOFFICIAL. This is not a build of the hakuX project and is not supported by it. Please do not
 report its problems to hakuX. Parts of this port were written with an AI system's help.
 
-FREE, AND FROM ONE PLACE. PSHakuX is free. It is published on GitHub only; a copy anyone asks
+FREE, AND FROM ONE PLACE. OGBox is free. It is published on GitHub only; a copy anyone asks
 money for, or one from elsewhere, is not this release.
 
 TRADEMARKS. "Xbox" is a trademark of Microsoft Corporation; "PlayStation", "PS5" and "DualSense"

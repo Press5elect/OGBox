@@ -1,8 +1,8 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * The HLE GPU's presenter on the console: a host-owned image. On Android hakuX draws its front
  * frame into the activity's window through a swapchain of its own (hw/xbox/hle/vk/swapchain.c);
@@ -10,7 +10,7 @@
  * HLE GPU only hands the front frame over and the title draws it.
  *
  * This first form copies: the front image is read back into memory the CPU sees and given to the
- * title as RGBA8 rows, which it uploads into its own image (ps5/src/pshakux_main.cpp). It is the
+ * title as RGBA8 rows, which it uploads into its own image (ps5/src/ogbox_main.cpp). It is the
  * bring-up path, simple and independent of how the two Vulkan devices relate. The zero-copy form
  * shares the image (one device, or memory exported between the two) behind the same calls.
  */

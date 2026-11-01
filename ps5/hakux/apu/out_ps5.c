@@ -1,8 +1,8 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * The APU's output on the console, in place of hakuX's native/dev/apu/out.c (AAudio), with the
  * same interface (native/dev/apu/apu_int.h: apu_out_open, apu_out_push, apu_out_queued,

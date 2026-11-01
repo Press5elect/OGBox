@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# PSHakuX - hakuX for PS5
+# OGBox - hakuX for PS5
 # Copyright (C) 2026 Press5elect
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+# Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
 #
 # hakuX's source at the pinned upstream revision, in vendor/hakuX, as it is upstream.
 # (Made after Crux2's ps5/tools/fetch-pcsx2.sh, Crux2 by Press5elect.)
@@ -20,7 +20,7 @@ set -euo pipefail
 ps5=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 root=$(dirname "$ps5")
 vendor="$root/vendor/hakuX"
-# a7cdb5a975 (2026-11-01): hakuX's master when PSHakuX began; checked with git ls-remote that day.
+# a7cdb5a975 (2026-11-01): hakuX's master when OGBox began; checked with git ls-remote that day.
 revision=a7cdb5a975e31730d488c47f6f10440b16c1e6f4
 url=https://github.com/rfandango/hakuX
 

@@ -8,8 +8,8 @@
 // kernel functions are found with ps5_modules.h (the part of Crux2's PS5SystemModules this needs).
 // Kelvin by Press5elect.
 //
-// PSHakuX: from Kelvin 3061bf1; adds the Helper role (690) and pshakux_priority_set for the C code
-// of the core's glue. PSHakuX by Press5elect.
+// OGBox: from Kelvin 3061bf1; adds the Helper role (690) and pshakux_priority_set for the C code
+// of the core's glue. OGBox by Press5elect.
 
 #include "ps5_priority.h"
 
@@ -23,7 +23,7 @@ namespace PS5Priority
 {
 namespace
 {
-// PSHakuX 0.1.1: pthread_getschedparam / pthread_setschedparam, which the console honours (the
+// OGBox 0.1.1: pthread_getschedparam / pthread_setschedparam, which the console honours (the
 // boot log's watcher line shows 700 -> 690 taking effect). 0.1.0 looked scePthreadSetprio up at
 // run time; the lookup cannot find libkernel in this title, so no role was ever applied.
 int GetPriority(pthread_t thread, int* priority)
@@ -111,7 +111,7 @@ extern "C" void pshakux_priority_set(int role)
 		PS5Priority::SetCurrentThread(roles[role]);
 }
 
-// PSHakuX 0.1.3: a thread of hakuX's by its name, set by itself (its entry function's role) or by
+// OGBox 0.1.3: a thread of hakuX's by its name, set by itself (its entry function's role) or by
 // its creator (the name hakuX gives it after pthread_create). Every thread is said in the boot log,
 // once: "thread NAME: ROLE, priority BEFORE -> WANTED: RESULT (now AFTER)".
 extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const char* name, const char* how)

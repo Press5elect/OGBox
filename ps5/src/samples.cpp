@@ -21,7 +21,7 @@
 #include "ps5_samples.h"
 
 #define PS5_SAMPLES \
-	SAMPLE(pshakux, true, "PSHakuX", "PSHakuX")
+	SAMPLE(ogbox, true, "OGBox", "OGBox")
 
 #define SAMPLE(id, menu, title, description) \
 	namespace sample_##id { VulkanExampleBase *createExample(); }

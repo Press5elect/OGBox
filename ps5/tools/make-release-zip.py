@@ -3,22 +3,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Additional term (GPL-3.0 section 7(b)): keep the attribution "Crux2 by Press5elect"; see NOTICE.
 # Crux2 - pack a built title folder, and the source that goes with it.
-# PSHakuX: Crux2's ps5/tools/make-release-zip.py (08c3507) for PSHakuX: hakuX's pinned source in
-# place of PCSX2's (its patches are in the project archive). PSHakuX by Press5elect.
+# OGBox: Crux2's ps5/tools/make-release-zip.py (08c3507) for OGBox: hakuX's pinned source in
+# place of PCSX2's (its patches are in the project archive). OGBox by Press5elect.
 #
 #   ps5/tools/make-release-zip.py <tag> [--date YYYY-MM-DD] [--out DIR] [--part-mib N]
 #
 # Writes into DIR (default dist/release-<tag>):
 #
-#   PSHakuX-<tag>.zip            dist/<TITLE_ID>/ as one archive: directory entries included,
+#   OGBox-<tag>.zip            dist/<TITLE_ID>/ as one archive: directory entries included,
 #                                  deflate, every entry's Unix mode 777, every timestamp set to the date, so
 #                                  the same folder always gives the same file. It is tested,
 #                                  unpacked into a scratch folder, and the release check
 #                                  (stage-notices.py --check) is run on that copy.
-#   PSHakuX-<tag>-partNofM.zip   with --part-mib: the same folder in archives no larger than
+#   OGBox-<tag>-partNofM.zip   with --part-mib: the same folder in archives no larger than
 #                                  that, for a channel with a size limit. Each unpacks into the
 #                                  same <TITLE_ID>/ folder; all of them together are the title.
-#   PSHakuX-<tag>-source.zip     this project: the port layer, the host, the patches to PCSX2
+#   OGBox-<tag>-source.zip     this project: the port layer, the host, the patches to PCSX2
 #                                  and Mesa, the tools and the tests (what is not fetched)
 #   hakux-<revision>.tar.xz        hakuX at the pinned revision, as fetched (the patches are in the
 #                                  project archive)
@@ -132,7 +132,7 @@ def main() -> int:
     produced = []
 
     # ---- the title folder, whole
-    whole = out / f"PSHakuX-{args.tag}.zip"
+    whole = out / f"OGBox-{args.tag}.zip"
     pack(app, title_id, entries(app), whole, stamp, open_to_all=True)
     with tempfile.TemporaryDirectory() as scratch:
         with zipfile.ZipFile(whole) as archive:
@@ -167,7 +167,7 @@ def main() -> int:
             parts.append(current)
         empty_folders = [path for path in entries(app) if path.is_dir() and not any(path.iterdir())]
         for index, chosen in enumerate(parts, 1):
-            part = out / f"PSHakuX-{args.tag}-part{index}of{len(parts)}.zip"
+            part = out / f"OGBox-{args.tag}-part{index}of{len(parts)}.zip"
             pack(app, title_id, chosen + (empty_folders if index == len(parts) else []), part, stamp, open_to_all=True)
             if part.stat().st_size > limit:
                 print(f"{part.name} came out larger than {args.part_mib} MiB", file=sys.stderr)
@@ -186,11 +186,11 @@ def main() -> int:
                 return 1
 
     # ---- the source
-    source = out / f"PSHakuX-{args.tag}-source.zip"
+    source = out / f"OGBox-{args.tag}-source.zip"
     chosen = [path for path in entries(ROOT)
               if not (set(path.relative_to(ROOT).parts) & SOURCE_SKIP) and path.suffix != ".pyc"
               and not is_profile_run(path.relative_to(ROOT))]
-    pack(ROOT, f"PSHakuX-{args.tag}", chosen, source, stamp)
+    pack(ROOT, f"OGBox-{args.tag}", chosen, source, stamp)
     produced.append(source)
 
     pcsx2 = ROOT / "vendor/hakuX"  # hakuX
@@ -206,16 +206,16 @@ def main() -> int:
     produced.append(upstream)
 
     components = json.loads((app / "licenses/components.json").read_text())
-    lines = [f"PSHakuX {args.tag}: where the source of every part is", "",
+    lines = [f"OGBox {args.tag}: where the source of every part is", "",
              f"Build identity: {components['build_identity']}", "",
-             f"In this folder: PSHakuX-{args.tag}-source.zip (the port, its patches, tools and tests) and",
+             f"In this folder: OGBox-{args.tag}-source.zip (the port, its patches, tools and tests) and",
              f"hakux-{revision[:12]}.tar.xz (hakuX at the pinned revision; ps5/patches/hakux/*.patch of the",
              "project archive are laid over it by ps5/tools/prepare-hakux.sh).", "",
              "Every other part is fetched by the build (ps5/tools/bootstrap.sh, build-deps.sh) from a public",
              "repository at the revision below:", ""]
     grouped = {}
     for component in components["components"]:
-        if component["id"] not in ("hakux", "pshakux"):
+        if component["id"] not in ("hakux", "ogbox"):
             grouped.setdefault((component["source"]["url"], component["source"]["revision"]), []).append(component["name"])
     for (url, revision_named), names in grouped.items():
         lines += ["; ".join(names), f"    {url}", f"    revision: {revision_named}", ""]

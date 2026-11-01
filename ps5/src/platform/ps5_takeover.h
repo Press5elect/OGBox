@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Additional term (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+// Additional term (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
 //
-// PSHakuX 0.1.4 - the takeover: 0x80000000-0x80200000 from the title's own sce_module/libc.prx.
+// OGBox 0.1.4 - the takeover: 0x80000000-0x80200000 from the title's own sce_module/libc.prx.
 //
 // The console's loader puts the title's libc.prx (PS5_Vulkan's clean-room C runtime) at 0x80000000,
 // where the Xbox's kernel image is (0x80010000; games built with the XDK read its PE header there).
@@ -18,7 +18,7 @@
 //
 // Every step is said in the boot log ("takeover:" lines) before it is done.
 //
-// Flag files (in /data/pshakux/ or the title folder): takeover-off (not tried: the 0.1.3 layout),
+// Flag files (in /data/ogbox/ or the title folder): takeover-off (not tried: the 0.1.3 layout),
 // takeover-force (done even when the scan finds pointers it would not take on its own).
 
 #pragma once

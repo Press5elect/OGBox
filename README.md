@@ -1,13 +1,17 @@
-# PSHakuX
+# OGBox
 
 **An unofficial port of [hakuX](https://github.com/rfandango/hakuX), an original Xbox (2001)
 emulator, to the PlayStation 5, as a homebrew title (`PPSA99251`) for a jailbroken console.**
-PSHakuX by Press5elect.
+OGBox by Press5elect. It was called PSHakuX up to 0.1.5.
+
+OGBox is built on hakuX (rfandango and contributors, GPL-3.0-or-later) and on the parts of hakuX
+that come from xemu (the MCPX APU, LGPL-2.1-or-later and GPL-2.0-or-later). It is not hakuX's or
+xemu's work and neither project supports it.
 
 > **Unofficial.** This is not the hakuX project's build and it is not supported by hakuX.
-> Please do not report PSHakuX's problems to hakuX: open them here.
+> Please do not report OGBox's problems to hakuX: open them here.
 >
-> **Free, and on GitHub only.** PSHakuX costs nothing. A copy anyone asks money for, or one from
+> **Free, and on GitHub only.** OGBox costs nothing. A copy anyone asks money for, or one from
 > somewhere else, is not this release.
 >
 > **No piracy.** No games, Xbox BIOS, boot ROM, EEPROM, firmware or keys are in this repository
@@ -25,7 +29,7 @@ at 0x80010000, where the console loads the title's own runtime module (`libc.prx
 and the console ended the title there (Burnout 3 with 0.1.2 and 0.1.3). 0.1.4 takes that range
 back from `libc.prx` at start-up, as PSHakuX System Check 0.0.5 did on the console, and puts the
 guest's kernel at 0x80010000; whether XDK games then boot is what 0.1.4's console runs will show.
-`pshakux-boot.log` says whether the takeover was done (`takeover:` lines) and which layout the
+`ogbox-boot.log` says whether the takeover was done (`takeover:` lines) and which layout the
 core used (`core:` lines). With 0.1.4 Burnout 3 boots, runs its loading screen at 60 fps and
 stays there; 0.1.5 adds the boot-log diagnostics that say what it waits for.
 
@@ -35,20 +39,22 @@ stays there; 0.1.5 adds the boot-log diagnostics that say what it waits for.
 2. Copy `boot.example.txt` in it to `boot.txt` and write the path of your Xbox disc image
    (an XISO) on its first line, with hakuX's options after it (`scale=2`, `uncap`, ...). A path
    without a leading `/` is in the title folder (`games/My Game.iso`). With the payload loader
-   (elfldr, port 9021) running, PSHakuX leaves its sandbox at start, so the image can be anywhere:
+   (elfldr, port 9021) running, OGBox leaves its sandbox at start, so the image can be anywhere:
    `/data/...`, a USB drive (`/mnt/usb0/...`) or extended storage (`/mnt/ext0/...`). A file
    named `elevation-off.txt` in the title folder keeps it inside the sandbox.
-3. Start PSHakuX from the home screen. Hold **OPTIONS and the touch pad** for two seconds to quit.
+3. Start OGBox from the home screen. Hold **OPTIONS and the touch pad** for two seconds to quit.
 
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
 L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
-is a player (1-4). The emulated hard disk lives in `/data/pshakux/hdd`, the shader caches in
-`/data/pshakux/cache`, outside the title folder, so an update is just replacing the folder.
+is a player (1-4). The emulated hard disk lives in `/data/ogbox/hdd`, the shader caches in
+`/data/ogbox/cache`, outside the title folder, so an update is just replacing the folder.
+(Up to 0.1.5 the folder was `/data/pshakux`: the first start of 0.1.6 renames it to
+`/data/ogbox` when there is no `/data/ogbox` yet, and the boot log says so.)
 hakuX's core cannot yet stop one game and boot another in the same process, so a new boot is a
 relaunch of the title with arguments (`--boot <image>`, `--loadstate <file>`, `--relaunch`,
 `--hdd <folder>`, `--option <opt>`); a game's own reboot into another XBE relaunches it that way.
-`pshakux-boot.log` in the title folder says what happened (the run before is kept as
-`pshakux-boot.previous.log`).
+`ogbox-boot.log` in the title folder says what happened (the run before is kept as
+`ogbox-boot.previous.log`).
 
 ## Building
 
@@ -72,16 +78,16 @@ into `build/hakux-src` and lays `ps5/patches/hakux/*.patch` over the copy (a pat
 already has, or changed, is left out and said). What the console needs instead of hakuX's
 Android parts is in `ps5/hakux/`, not in hakuX:
 
-| hakuX on Android | PSHakuX on the PS5 |
+| hakuX on Android | OGBox on the PS5 |
 | --- | --- |
 | FEXCore (the guest CPU, `native/cpu/cpu.cpp`) | the native backend (`native/cpu/cpu_native.c`, `NC_CPU=native`), a weak stub until it is there (`ps5/hakux/cpu/cpu_stub.c`) |
 | AAudio (`native/dev/apu/out.c`) | `sceAudioOut`, 48 kHz, 256-sample blocking writes (`ps5/hakux/apu/out_ps5.c`) |
 | the activity's window and its swapchain (`hw/xbox/hle/vk/swapchain.c`) | a host-owned image: the front frame handed to the title, which draws it on its own display (`ps5/hakux/hle/present_host.c`) |
 | AHardwareBuffer guest RAM (zero copy) | hakuX's own copy fallback |
 | system properties, prctl, eventfd, gettid, memfd | `ps5/hakux/compat` (properties from `boot.txt` and `props.txt`; memfd through the platform layer) |
-| SDL3, JNI, the app (`native/app`) | the bring-up front end, `ps5/src/pshakux_main.cpp`, on the Core seam (`ps5/src/core/pshakux_core.h`) |
+| SDL3, JNI, the app (`native/app`) | the bring-up front end, `ps5/src/ogbox_main.cpp`, on the Core seam (`ps5/src/core/ogbox_core.h`) |
 
-The front end talks to the emulator only through the Core (`ps5/src/core/pshakux_core.h`):
+The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_core.h`):
 the full front end comes later on the same calls.
 
 ## Credits
@@ -89,6 +95,8 @@ the full front end comes later on the same calls.
 - **hakuX** by rfandango and its contributors (GPL-3.0-or-later): the emulator. Its MCPX APU is
   xemu's (LGPL-2.1-or-later), with Hatari's DSP56300 emulation (GPL-2.0-or-later); its kernel
   export table is nxdk's (CC0).
+- **OGBox's logo** (the green X and the name) by Press5elect: `ps5/art/ogbox-logo.png`, the
+  title's icon and launcher pictures (`ps5/tools/make-title-art.py`) and the start screen.
 - **Crux2** and **Kelvin** by Press5elect: the console platform code (the boot log, the crash
   report, the clock, the thread priorities, the virtual file layer), the build and release tools,
   and the high-base link.
@@ -100,16 +108,38 @@ the full front end comes later on the same calls.
 
 ## Licence
 
-PSHakuX is GPL-3.0-or-later (`LICENSE`). Press5elect's own code carries an attribution term
-under the GPL's section 7(b): keep "PSHakuX by Press5elect" (and "Crux2 by Press5elect" or
+OGBox is GPL-3.0-or-later (`LICENSE`). Press5elect's own code carries an attribution term
+under the GPL's section 7(b): keep "OGBox by Press5elect" (and "Crux2 by Press5elect" or
 "Kelvin by Press5elect" for the files made from those projects) in the source notices and the
 legal notices of any work based on it, however it is made, with AI tools included. The term
-covers Press5elect's code only, not hakuX's or xemu's. `NOTICE` has it in full.
+covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it in full.
 
 "Xbox" is a trademark of Microsoft Corporation; "PlayStation", "PS5" and "DualSense" are
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.6 (bring-up)
+
+Added
+- OGBox's logo on the screen from the start until the game's first frame.
+
+Changed
+- PSHakuX is now OGBox: the title's name, its boot log (`ogbox-boot.log`,
+  `ogbox-boot.previous.log`), the crash report (`==== OGBox stopped`), the package
+  (`OGBox-<version>.zip`), the notices and the source. The title ID stays `PPSA99251`.
+- A new logo, home-screen icon and launcher pictures, made from Press5elect's logo; the
+  temporary icon is gone.
+- The data folder is `/data/ogbox`: at start-up an existing `/data/pshakux` is renamed to it
+  once, when there is no `/data/ogbox` yet.
+- The host's code entries at 0x80000000 are checked and put back every 10 ms (was 100 ms).
+
+Fixed
+- The console ended the title at a game's loading screen with `SYSTEM_XO_VIOLATION` (0.1.5): the
+  page of the host's code entries at 0x80000000 was made read-only while staying executable,
+  which the PS5 makes execute-only, so the game's read of it was fatal. That page is no longer
+  protected on the PS5, and write tracking never leaves a guest page readable and executable
+  without write there: a page it tracks is read-only without execute until it is written.
 
 ### 0.1.5 (bring-up)
 
@@ -148,7 +178,7 @@ Added
   the guest's memory is mapped over it when the core starts, with stubs at `libc.prx`'s old code
   entries (the thread destructors libkernel still calls at every thread exit). Every step is in
   the boot log (`takeover:` lines); when it cannot be done the 0.1.3 layout is kept and the boot
-  log says why. Flag files in `/data/pshakux/`: `takeover-off` (not tried), `takeover-force`.
+  log says why. Flag files in `/data/ogbox/`: `takeover-off` (not tried), `takeover-force`.
 - The heartbeat says when a stub at the old entries was written over (by the game or a device)
   and put back.
 
@@ -164,7 +194,7 @@ Changed
 Fixed
 - The read of the kernel's header at 0x8001003c that ended XDK games (Burnout 3) now reads the
   guest's own kernel image when the takeover is done (proven in the system check; not yet with a
-  game in PSHakuX).
+  game in OGBox).
 
 ### 0.1.3 (bring-up)
 

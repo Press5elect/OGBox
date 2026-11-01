@@ -45,7 +45,7 @@ int sceAudioOutOutput(int32_t port, const void *samples);
 int sceAudioOutClose(int32_t port);
 int sceKernelUsleep(uint32_t microseconds);
 
-/* PSHakuX (from Kelvin): when the boot log has taken standard error (ps5/src/platform/ps5_bootlog.cpp), its
+/* OGBox (from Kelvin): when the boot log has taken standard error (ps5/src/platform/ps5_bootlog.cpp), its
  * watcher copies it on to klog, and the SDK's capture would take it back from the boot log. */
 int pshakux_diag_owns_stderr(void) __attribute__((weak));
 
@@ -64,7 +64,7 @@ platform_init(const char *title_name)
    say("splash dismissed: %d", sceSystemServiceHideSplashScreen());
 }
 
-/* PSHakuX (from Kelvin): with the boot log, a line goes there and to klog at once (ps5/src/platform/ps5_bootlog.cpp). */
+/* OGBox (from Kelvin): with the boot log, a line goes there and to klog at once (ps5/src/platform/ps5_bootlog.cpp). */
 void pshakux_log(const char *format, ...) __attribute__((weak, format(printf, 1, 2)));
 
 void
@@ -101,7 +101,7 @@ void
 catchReturnFromMain(int status)
 {
    say("exit status %d: asking the shell to close the title", status);
-   /* PSHakuX 0.1.4: libc.prx's old entries made safe again (ps5_takeover.h) */
+   /* OGBox 0.1.4: libc.prx's old entries made safe again (ps5_takeover.h) */
    pshakux_takeover_before_exit("the shell exit");
    fflush(NULL);
    (void)sceSystemServiceLoadExec("exit", NULL);

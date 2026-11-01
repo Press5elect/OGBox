@@ -1,8 +1,8 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * Included first in every hakuX file the title compiles (ps5/cmake/hakux.cmake): the Linux and
  * Android calls hakuX makes that the console's FreeBSD-like libc names otherwise or lacks, mapped

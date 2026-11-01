@@ -1,10 +1,10 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
- * The Core (pshakux_core.h) on hakuX's native core: the sequence hakuX's own front ends use
+ * The Core (ogbox_core.h) on hakuX's native core: the sequence hakuX's own front ends use
  * (native/app/app_main.c, native/run/xboxrun.c), for the console.
  *
  *   configure  HAKUX_HLE_MODE=replace (the HLE GPU as the app runs it), the shader and pipeline
@@ -20,7 +20,7 @@
  * The crash report gets the core's line (the state and the guest's EIP when the fault was in its
  * code), and the boot log's heartbeat the status line.
  */
-#include "core/pshakux_core.h"
+#include "core/ogbox_core.h"
 #include "hle/present_host.h"
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_priority.h"
@@ -354,7 +354,7 @@ static void *vcpu_thread(void *arg)
     snprintf(g_message, sizeof(g_message), "%s",
              k->quit ? "The game left (to the dashboard, a reboot or a shutdown)."
              : k->relaunch ? "The game started another XBE: the title starts again with it."
-             : k->stop ? "The game stopped (see pshakux-boot.log)." : "The game ended.");
+             : k->stop ? "The game stopped (see ogbox-boot.log)." : "The game ended.");
     pshakux_log("core: the run ended: %s", g_message);
     set_state(k->stop && !k->quit && !k->relaunch ? PSHX_CORE_FAILED : PSHX_CORE_STOPPED);
     pshakux_thread_gone();

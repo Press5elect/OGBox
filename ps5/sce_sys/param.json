@@ -9,8 +9,8 @@
   "attribute3": 524352,
   "conceptId": "99251",
   "contentBadgeType": 1,
-  "contentId": "UP9000-PPSA99251_00-PSHAKUX000000000",
-  "contentVersion": "00.105.000",
+  "contentId": "UP9000-PPSA99251_00-OGBOX00000000000",
+  "contentVersion": "00.106.000",
   "downloadDataSize": 256,
   "gameIntent": {
     "permittedIntents": [
@@ -25,7 +25,7 @@
   "localizedParameters": {
     "defaultLanguage": "en-US",
     "en-US": {
-      "titleName": "PSHakuX"
+      "titleName": "OGBox"
     }
   },
   "masterVersion": "01.00",

@@ -1,8 +1,8 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * Linux's eventfd, which no system module of the console exports: a pipe stands in for it
  * (ps5/hakux/compat/hakux_ps5.c). eventfd gives the pipe's read end; what is written to the

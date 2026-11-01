@@ -71,7 +71,7 @@ int AltStack(const stack_t* ss, stack_t* old)
 }
 
 volatile sig_atomic_t s_in_crash = 0;
-// PSHakuX: the core's part of a report (pshakux_crash_set_note) and its guest code segment.
+// OGBox: the core's part of a report (pshakux_crash_set_note) and its guest code segment.
 std::atomic<pshakux_crash_note_fn> s_note{nullptr};
 std::atomic<uint16_t> s_guest_cs{0};
 std::atomic<bool> s_terminating{false};
@@ -102,7 +102,7 @@ const char* SignalName(int signal)
 
 // ---- an async-signal-safe line writer -------------------------------------------------------
 // Each line: "[   12.345] text\n" to the boot log (the timestamp makes the watcher leave it, as
-// it leaves pshakux_log's lines: it goes to klog here), "[PSHakuX] text\n" to klog.
+// it leaves pshakux_log's lines: it goes to klog here), "[OGBox] text\n" to klog.
 char s_stamp[16] = "[        ?] ";
 
 struct Out
@@ -178,7 +178,7 @@ struct Out
     }
     char record[520];
     size_t k = 0;
-    const char* prefix = "[PSHakuX] ";
+    const char* prefix = "[OGBox] ";
     while (*prefix)
       record[k++] = *prefix++;
     for (size_t i = 0; i < n && k < sizeof(record) - 2; i++)
@@ -360,19 +360,19 @@ void Report(int signal, siginfo_t* info, void* ctx)
   Out o;
   SetStamp();
   const ucontext_t* const context = static_cast<const ucontext_t*>(ctx);
-  o.s("==== PSHakuX stopped: ").s(SignalName(signal)).s(" ====").end();
+  o.s("==== OGBox stopped: ").s(SignalName(signal)).s(" ====").end();
   o.s("  signal ").dec(signal).s(", code ").dec(info ? info->si_code : 0);
   if (info && info->si_code <= 0)
     o.s(" (sent by a process: pid ").dec(info->si_pid).c(')');
   o.s(", fault address ").hex(info ? reinterpret_cast<uintptr_t>(info->si_addr) : 0, 16).end();
   const char* const name = pshakux_thread_name();
-  o.s("  thread: id ").dec(pshakux_thread_id()).s(", ").s(name ? name : "(not named: a thread PSHakuX did not start, or one "
+  o.s("  thread: id ").dec(pshakux_thread_id()).s(", ").s(name ? name : "(not named: a thread OGBox did not start, or one "
                                                                        "that did not name itself)")
     .s(", pthread ").hex(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(pthread_self()))).end();
   o.s("  eboot at ").hex(pshakux_eboot_start()).s(", linked at ").hex(pshakux_eboot_link_base()).s("; ")
     .s(pshakux_build_identity()).end();
 
-  // PSHakuX: the core's own lines (pshakux_crash_set_note): where the guest was, for one.
+  // OGBox: the core's own lines (pshakux_crash_set_note): where the guest was, for one.
   if (const pshakux_crash_note_fn note = s_note.load(std::memory_order_acquire))
   {
     char line[400];
@@ -496,7 +496,7 @@ void InstallFor(int signal)
       {
       }
     }
-    pshakux_log("==== PSHakuX stopped: std::terminate: %s%s%s ====", what, type[0] ? " (type " : "", type[0] ? type : "");
+    pshakux_log("==== OGBox stopped: std::terminate: %s%s%s ====", what, type[0] ? " (type " : "", type[0] ? type : "");
     if (type[0])
       pshakux_log("  (type names are mangled: c++filt reads them)");
     Out o;

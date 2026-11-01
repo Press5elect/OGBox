@@ -1,12 +1,12 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * The Core: the front end's one door into the emulator. Everything the title's front end does
  * with hakuX goes through these calls, and nothing else of hakuX is included by it: the bring-up
- * front end (ps5/src/pshakux_main.cpp) now, the full front end (Crux2's bigpicture interface,
+ * front end (ps5/src/ogbox_main.cpp) now, the full front end (Crux2's bigpicture interface,
  * with a game library, settings and the quick menu) later, on the same calls. Its implementation
  * for hakuX is src/core/hakux_core.c.
  *

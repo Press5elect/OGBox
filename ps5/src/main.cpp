@@ -30,6 +30,8 @@
 
 #include <sys/stat.h>
 
+#include <cerrno>
+#include <cstdio>
 #include <chrono>
 #include <cstring>
 #include <cstdarg>
@@ -48,7 +50,7 @@ extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(Vk
 
 namespace {
 
-// PSHakuX 0.1.3: in the title folder as it is named now (out of the sandbox it is not /app0:
+// OGBox 0.1.3: in the title folder as it is named now (out of the sandbox it is not /app0:
 // src/platform/ps5_sandbox.cpp); set by main once the boot log knows it.
 std::string g_testRunPath = PS5_APP_ROOT "/test-run.txt";
 std::string g_resultsPath = PS5_APP_ROOT "/test-results.txt";
@@ -376,17 +378,17 @@ void runMenu()
 
 } // namespace
 
-// PSHakuX: the arguments of a relaunch (src/platform/ps5_relaunch.h): on the console argv[0] is the
+// OGBox: the arguments of a relaunch (src/platform/ps5_relaunch.h): on the console argv[0] is the
 // first argument passed, not a program name, and none is skipped.
 extern "C" void pshakux_args_set(int argc, char **argv);
 
 int main(int argc, char **argv)
 {
-	// PSHakuX (from Kelvin): the boot log first (pshakux-boot.log in the title folder: its header, standard error
+	// OGBox (from Kelvin): the boot log first (ogbox-boot.log in the title folder: its header, standard error
 	// a line at a time, the crash report, the heartbeat), so everything after is in it.
 	pshakux_diag_start(PS5_TITLE_NAME);
 	{
-		// PSHakuX 0.1.3: the title folder may be named otherwise than /app0 now (out of the
+		// OGBox 0.1.3: the title folder may be named otherwise than /app0 now (out of the
 		// sandbox): the shaders, the assets and the test run's files are found under its name.
 		const std::string dir = pshakux_title_dir();
 		if (dir != PS5_APP_ROOT) {
@@ -397,8 +399,26 @@ int main(int argc, char **argv)
 			pshakux_log("title folder: %s: shaders and assets read from there", dir.c_str());
 		}
 	}
+	// OGBox 0.1.6: the data folder is /data/ogbox now (it was /data/pshakux when the title was named
+	// PSHakuX): moved once, before anything reads it (the takeover's flag files, the hard disk,
+	// the caches, props.txt). An existing /data/ogbox is never touched or merged.
+	{
+		struct stat old_st, new_st;
+		const bool have_old = stat("/data/pshakux", &old_st) == 0 && S_ISDIR(old_st.st_mode);
+		const bool have_new = stat("/data/ogbox", &new_st) == 0;
+		if (have_old && !have_new) {
+			if (rename("/data/pshakux", "/data/ogbox") == 0) {
+				pshakux_log("data folder: /data/pshakux renamed to /data/ogbox (the title's old name)");
+			} else {
+				pshakux_log("data folder: renaming /data/pshakux to /data/ogbox failed: %s; /data/ogbox is used, "
+					"move the old folder's files yourself", std::strerror(errno));
+			}
+		} else if (have_old) {
+			pshakux_log("data folder: /data/ogbox is used; /data/pshakux is there too and left as it is");
+		}
+	}
 	pshakux_args_set(argc, argv);
-	// PSHakuX 0.1.4: 0x80000000-0x80200000 from the title's libc.prx (src/platform/ps5_takeover.h),
+	// OGBox 0.1.4: 0x80000000-0x80200000 from the title's libc.prx (src/platform/ps5_takeover.h),
 	// before the title starts threads of its own; the core maps the guest's window there later.
 	pshakux_takeover_prepare();
 	platform_init(PS5_TITLE_NAME);

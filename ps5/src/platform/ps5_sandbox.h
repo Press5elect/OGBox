@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Additional term (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
-// PSHakuX 0.1.3 - leaving the sandbox (ps5_sandbox.cpp says how and why).
+// Additional term (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
+// OGBox 0.1.3 - leaving the sandbox (ps5_sandbox.cpp says how and why).
 
 #pragma once
 

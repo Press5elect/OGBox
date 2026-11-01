@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PSHakuX - build the title into dist/<TITLE_ID>/.
+# OGBox - build the title into dist/<TITLE_ID>/.
 #
 #   ps5/tools/build.sh             everything: the dependencies, hakuX's source, compile, link, package
 #   ps5/tools/build.sh --compile   stop after compiling (no link)
@@ -22,12 +22,14 @@
 # The payload SDK is this title's own pin of my fork (tools/setup-sdk.sh).
 #
 # Made from PS5 Vulkan Template's ps5/tools/build.sh (Copyright (C) 2026 Mihawk, MIT) and Kelvin's.
-# The changes for PSHakuX: Copyright (C) 2026 Press5elect, GPL-3.0-or-later; keep the attribution
-# "PSHakuX by Press5elect" (NOTICE).
+# The changes for OGBox: Copyright (C) 2026 Press5elect, GPL-3.0-or-later; keep the attribution
+# "OGBox by Press5elect" (NOTICE).
 
 set -euo pipefail
 
-ps5=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# (The physical path: the repository is reached as ../OGBox and through the PS5_PSHakuX link to it
+# alike, and CMake's cache names one source folder.)
+ps5=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 root=$(dirname "$ps5")
 vulkan=$(cd -- "${PS5_VULKAN_DIR:-$root/../PS5_Vulkan}" && pwd)
 sdk=$(bash "$ps5/tools/setup-sdk.sh")
@@ -48,7 +50,7 @@ cpu=${NC_CPU:-native}
 hole=${PSHAKUX_WINDOW_HOLE_END:-0x80120000u}
 
 # (Configured again when what it is configured with changes.)
-configure="$hakux_tree|$cpu|$hole|$vulkan|$sdk"
+configure="$ps5|$hakux_tree|$cpu|$hole|$vulkan|$sdk"
 if [[ -f $build/build.ninja && $(cat "$build/configure-flags.txt" 2>/dev/null) != "$configure" ]]; then
     rm -f "$build/CMakeCache.txt" "$build/build.ninja"
 fi
@@ -61,7 +63,7 @@ if [[ ! -f $build/build.ninja ]]; then
         -DPSHAKUX_WINDOW_HOLE_END="$hole" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=OFF > "$build.configure.log" 2>&1 \
         || { cat "$build.configure.log" >&2; exit 1; }
-    grep 'PSHakuX:' "$build.configure.log" | sed 's/^-- /    /' >&2 || true
+    grep 'OGBox:' "$build.configure.log" | sed 's/^-- /    /' >&2 || true
 fi
 
 # The RADV archive: RADV_ARCHIVE when set; else radv-crux2 when PS5_Vulkan has it (PS5 Mesa at

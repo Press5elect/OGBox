@@ -1,8 +1,8 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * The title's arguments, and the title starting itself again with new ones.
  *
@@ -24,7 +24,7 @@ extern "C" {
 #endif
 
 /* The first argument of every relaunch, so the new instance knows it is one. */
-#define PSHAKUX_RELAUNCHED "--pshakux-relaunched"
+#define PSHAKUX_RELAUNCHED "--ogbox-relaunched"
 
 /* From main(), as it got them (argv[0] is the first argument: see above); logged. */
 void pshakux_args_set(int argc, char **argv);

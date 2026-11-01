@@ -4,15 +4,15 @@
 # Additional term (GPL-3.0 section 7(b)): keep the attribution "Crux2 by Press5elect"; see NOTICE.
 # Crux2 - the notices a title folder carries, and the check before one leaves the machine.
 #
-# PSHakuX: Crux2's ps5/tools/stage-notices.py (08c3507) for PSHakuX: hakuX's parts and pins, and the
-# Xbox's files that must never be in a package. PSHakuX by Press5elect.
+# OGBox: Crux2's ps5/tools/stage-notices.py (08c3507) for OGBox: hakuX's parts and pins, and the
+# Xbox's files that must never be in a package. OGBox by Press5elect.
 #
 #   ps5/tools/stage-notices.py dist/PPSA99251            write LEGAL.txt, NOTICE.txt and licenses/
 #   ps5/tools/stage-notices.py --check dist/PPSA99251    check a title folder (or an unpacked ZIP)
 #
 # Staging (tools/link-title.sh runs it) writes, from ps5/notices/components.json:
 #   LEGAL.txt                 no piracy, the licence, the credit, unofficial, trademarks
-#   NOTICE.txt                PSHakuX's copyright (Press5elect) and its attribution terms
+#   NOTICE.txt                OGBox's copyright (Press5elect) and its attribution terms
 #   licenses/README.txt       the same notice, then every part with its author and licence
 #   licenses/components.json  every part: licence, copyright, modifications, the revision and
 #                             address of its source, and the files it is in with their sha256

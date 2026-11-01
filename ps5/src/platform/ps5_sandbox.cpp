@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Additional term (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+// Additional term (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
 //
-// PSHakuX 0.1.3 - leaving the sandbox, as Crux2 does (github.com/Press5elect/Crux2 08c3507,
+// OGBox 0.1.3 - leaving the sandbox, as Crux2 does (github.com/Press5elect/Crux2 08c3507,
 // ps5/frontend/ps5_platform.cpp's EarlyInit and FindTitleFolder).
 //
 // A title's sandbox shows it only part of the console's file system: 0.1.0 could not open a disc
-// at /data/pshakux/games/x.iso ("No such file or directory") while /data/homebrew/PPSA99251/...
+// at /data/ogbox/games/x.iso ("No such file or directory") while /data/homebrew/PPSA99251/...
 // opened, and USB drives (/mnt/usb*) and extended storage (/mnt/ext*) are not there at all. The
 // bundled helper (sandbox-elevator.elf, BlackBearReloaded's ps5-native-app-boilerplate, built by
 // ps5/tools/build-elevator.sh) is sent to the payload loader on port 9021 (elfldr, which kstuff

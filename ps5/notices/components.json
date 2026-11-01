@@ -1,10 +1,10 @@
 {
  "components": [
   {
-   "id": "pshakux",
-   "name": "PSHakuX: the PS5 port of hakuX (the front end, the Core seam, the console's replacements for hakuX's Android parts in ps5/hakux, the patches to hakuX, the build and the tools)",
-   "licence": "GPL-3.0-or-later, with the attribution term of NOTICE.txt (GPL-3.0 section 7(b): keep \"PSHakuX by Press5elect\")",
-   "copyright": "Copyright (C) 2026 Press5elect (PSHakuX by Press5elect)",
+   "id": "ogbox",
+   "name": "OGBox: the PS5 port of hakuX (the front end, the Core seam, the console's replacements for hakuX's Android parts in ps5/hakux, the patches to hakuX, the build and the tools) and OGBox's logo (ps5/art/ogbox-logo.png: the start screen, the icon and the launcher pictures made from it by ps5/tools/make-title-art.py)",
+   "licence": "GPL-3.0-or-later, with the attribution term of NOTICE.txt (GPL-3.0 section 7(b): keep \"OGBox by Press5elect\")",
+   "copyright": "Copyright (C) 2026 Press5elect (OGBox by Press5elect)",
    "modifications": "-",
    "texts": {
     "GPL-3.0.txt": "LICENSE"
@@ -12,6 +12,10 @@
    "artifacts": [
     "eboot.bin",
     "sce_sys/param.json",
+    "sce_sys/icon0.png",
+    "sce_sys/pic0.dds",
+    "sce_sys/pic1.dds",
+    "assets/ogbox-logo.png",
     "shaders/"
    ],
    "source": {
@@ -24,7 +28,7 @@
    "name": "Crux2's console platform code, by way of Kelvin: the boot log, the crash report, the processor-counter clock, the sleep and frame-limiter timing, the thread priorities, the system-module lookup (ps5/src/platform), Crux2's libc additions (ps5_libc.c) and virtual file layer (ps5/src/platform/vfs), and its build and release tools",
    "licence": "GPL-3.0-or-later, with Crux2's attribution term (GPL-3.0 section 7(b): keep \"Crux2 by Press5elect\"; NOTICE.txt)",
    "copyright": "Copyright (C) 2026 Press5elect (Crux2 by Press5elect)",
-   "modifications": "adapted to PSHakuX: the boot log's probe lines replaced by the core's status line, the crash report's by the core's note, a helper role in the priorities",
+   "modifications": "adapted to OGBox: the boot log's probe lines replaced by the core's status line, the crash report's by the core's note, a helper role in the priorities",
    "texts": {},
    "artifacts": [
     "eboot.bin"
@@ -38,7 +42,7 @@
    "id": "elevator",
    "name": "Leaving the sandbox (/data, USB drives, extended storage): sandbox-elevator.elf and its client (ps5-native-app-boilerplate's sandbox-elevation example, by way of Crux2: ps5/elevation)",
    "licence": "GPL-3.0-or-later",
-   "copyright": "Copyright (C) 2026 BlackBearReloaded; the changes Copyright (C) 2026 Press5elect (Crux2 by Press5elect, PSHakuX by Press5elect)",
+   "copyright": "Copyright (C) 2026 BlackBearReloaded; the changes Copyright (C) 2026 Press5elect (Crux2 by Press5elect, OGBox by Press5elect)",
    "modifications": "this title's ID (PPSA99251) in the helper; the client reports each step for the boot log (src/platform/ps5_sandbox.cpp)",
    "texts": {
     "ps5-native-app-boilerplate-LICENSE.txt": "ps5/elevation/LICENSE"
@@ -57,7 +61,7 @@
    "name": "Kelvin's parts: the eboot's high base (ps5/ld, the native tool's high-base patch), the presenter's shaders, the build identity and timing code",
    "licence": "GPL-3.0-or-later, with Kelvin's attribution term (GPL-3.0 section 7(b): keep \"Kelvin by Press5elect\"; NOTICE.txt)",
    "copyright": "Copyright (C) 2026 Press5elect (Kelvin by Press5elect); the linker layout is ps5-native-app-boilerplate's (Copyright (C) 2026 BlackBearReloaded, GPL-3.0-or-later)",
-   "modifications": "adapted to PSHakuX",
+   "modifications": "adapted to OGBox",
    "texts": {},
    "artifacts": [
     "eboot.bin",

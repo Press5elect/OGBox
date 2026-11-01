@@ -4,8 +4,8 @@
  * SPDX-FileCopyrightText: 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Additional term (GPL-3.0 section 7(b)): keep the attribution "Crux2 by Press5elect"; see NOTICE.
- * PSHakuX: from Crux2 08c3507 (ps5/elevation), with this title's ID (PPSA99251) and the client's
- * steps reported for the boot log. Keep the attribution "PSHakuX by Press5elect" too.
+ * OGBox: from Crux2 08c3507 (ps5/elevation), with this title's ID (PPSA99251) and the client's
+ * steps reported for the boot log. Keep the attribution "OGBox by Press5elect" too.
  */
 #include "elevation.hpp"
 

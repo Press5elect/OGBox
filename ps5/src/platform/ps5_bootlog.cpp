@@ -13,9 +13,9 @@
 // The host reference build writes the same log in its title folder (PS5_APP_ROOT).
 // Kelvin by Press5elect.
 //
-// PSHakuX: from Kelvin 3061bf1 (ps5/src/platform/ps5_bootlog.cpp), the probe's state replaced by a
-// status line the core gives (pshakux_diag_set_status): pshakux-boot.log, pshakux-boot.previous.log.
-// PSHakuX by Press5elect.
+// OGBox: from Kelvin 3061bf1 (ps5/src/platform/ps5_bootlog.cpp), the probe's state replaced by a
+// status line the core gives (pshakux_diag_set_status): ogbox-boot.log, ogbox-boot.previous.log.
+// OGBox by Press5elect.
 
 #if !defined(__PROSPERO__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1
@@ -64,7 +64,7 @@ constexpr char TITLE_ID[] = "PPSA99251";
 
 // Fixed storage: read by the crash report, in a signal handler.
 char s_title_dir[160] = PS5_APP_ROOT;
-char s_prefix[40] = "[PSHakuX] ";
+char s_prefix[40] = "[OGBox] ";
 int s_log_fd = -1;
 int s_read_fd = -1; // the watcher's own descriptor of the log, to copy standard error on to klog
 #if !defined(__PROSPERO__)
@@ -239,12 +239,12 @@ void LogHeader()
   if (const std::tm* const tm = std::gmtime(&now))
     std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S UTC", tm);
 #if defined(__PROSPERO__)
-  pshakux_log("PSHakuX (%s) starts, %s", TITLE_ID, when);
+  pshakux_log("OGBox (%s) starts, %s", TITLE_ID, when);
 #else
-  pshakux_log("PSHakuX (%s) starts, %s (host reference build)", TITLE_ID, when);
+  pshakux_log("OGBox (%s) starts, %s (host reference build)", TITLE_ID, when);
 #endif
   pshakux_log("build identity: %s", pshakux_build_identity());
-  pshakux_log("build: PSHakuX %s, revision %.12s%s, built %s; RADV %s; payload SDK %.12s", pshakux_build_version(),
+  pshakux_log("build: OGBox %s, revision %.12s%s, built %s; RADV %s; payload SDK %.12s", pshakux_build_version(),
              pshakux_build_revision(), pshakux_build_dirty() ? " with uncommitted changes (dirty)" : "", pshakux_build_stamp(),
              pshakux_build_radv(), pshakux_build_sdk());
   pshakux_log("build: hakuX %s; CPU backend %s", pshakux_build_hakux(), pshakux_build_cpu());
@@ -270,7 +270,7 @@ void LogHeader()
       pshakux_log("system: %s %s %s (host reference build)", name.sysname, name.release, name.machine);
   }
 #endif
-  pshakux_log("title folder: %s (this log: pshakux-boot.log, the run before: pshakux-boot.previous.log)", s_title_dir);
+  pshakux_log("title folder: %s (this log: ogbox-boot.log, the run before: ogbox-boot.previous.log)", s_title_dir);
 }
 
 void LogMachine()
@@ -373,7 +373,7 @@ void RaiseWatcherPriority()
 }
 #endif
 
-// PSHakuX: what the heartbeat says beside the time comes from the core (pshakux_diag_set_status):
+// OGBox: what the heartbeat says beside the time comes from the core (pshakux_diag_set_status):
 // the guest's state, frames and the like; the provider writes one line into its buffer.
 std::atomic<pshakux_status_fn> s_status{nullptr};
 std::atomic<int> s_status_fast{0};
@@ -389,10 +389,10 @@ void Heartbeat()
 
 void* WatcherMain(void*)
 {
-  pshakux_thread_named("pshakux-watch");
+  pshakux_thread_named("ogbox-watch");
   pshakux_install_crash_stack();
 #if defined(__PROSPERO__)
-  pthread_set_name_np(pthread_self(), "pshakux-watch");
+  pthread_set_name_np(pthread_self(), "ogbox-watch");
   RaiseWatcherPriority();
 #endif
   double next_beat = 0;
@@ -540,7 +540,7 @@ void LogSandboxLine(const char* line)
 extern "C" void pshakux_diag_start(const char* title_name)
 {
   clock_gettime(CLOCK_MONOTONIC, &s_start);
-  // PSHakuX 0.1.3: out of the sandbox first, while the process has one thread (ps5_sandbox.cpp);
+  // OGBox 0.1.3: out of the sandbox first, while the process has one thread (ps5_sandbox.cpp);
   // the title folder may then be named otherwise than /app0.
   (void)pshakux_sandbox_leave(s_title_dir, sizeof(s_title_dir));
   if (title_name && title_name[0])
@@ -550,8 +550,8 @@ extern "C" void pshakux_diag_start(const char* title_name)
   // The boot log; the previous run's is kept, since a crash report is the last thing in it.
   // (The previous log goes first: a rename onto a file is not trusted on an exFAT drive.)
   char log_path[224], previous_path[224];
-  std::snprintf(log_path, sizeof(log_path), "%s/pshakux-boot.log", s_title_dir);
-  std::snprintf(previous_path, sizeof(previous_path), "%s/pshakux-boot.previous.log", s_title_dir);
+  std::snprintf(log_path, sizeof(log_path), "%s/ogbox-boot.log", s_title_dir);
+  std::snprintf(previous_path, sizeof(previous_path), "%s/ogbox-boot.previous.log", s_title_dir);
   (void)unlink(previous_path);
   (void)rename(log_path, previous_path);
   s_log_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0666);

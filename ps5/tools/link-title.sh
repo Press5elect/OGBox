@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PSHakuX - link the title and package its folder.
+# OGBox - link the title and package its folder.
 #
 #   link-title.sh BUILD_DIR PS5_VULKAN_DIR SDK OBJECT... -- ARCHIVE...
 #
@@ -160,12 +160,12 @@ printf '%s\n' "${extra_names[@]}" > "$work/link/bound-by-title.txt"
     printf '{\n    local:\n'
     printf '        %s;\n' "${extra_names[@]}"
     printf '};\n'
-} > "$work/link/pshakux-local.map"
+} > "$work/link/ogbox-local.map"
 
 # ---- the link -------------------------------------------------------------------------------------
 "$sdk/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" "${extra_flags[@]}" \
     --version-script "$native/app-symbols.map" \
-    --version-script "$work/link/pshakux-local.map" --exclude-libs=ALL -Map="$work/link/llvm-pie.map" \
+    --version-script "$work/link/ogbox-local.map" --exclude-libs=ALL -Map="$work/link/llvm-pie.map" \
     -e _start -o "$work/link/llvm-pie.elf" \
     "$work/link/obj/app_crt.o" --start-group "${objects[@]}" "${archives[@]}" --end-group \
     "$work/link/stubs/libSceAgc.so" "$work/link/stubs/libSceAgcDriver.so" \
@@ -214,7 +214,7 @@ for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
 done
 (cd "$vulkan/runtime" && sha256sum --check --strict --quiet libc.prx.sha256)
 cp "$vulkan/runtime/libc.prx" "$app/sce_module/libc.prx"
-# PSHakuX 0.1.4: the eboot's imports for the takeover of 0x80000000 from libc.prx
+# OGBox 0.1.4: the eboot's imports for the takeover of 0x80000000 from libc.prx
 # (src/platform/ps5_takeover.cpp, as the system check 0.0.5's): its first load address, then each
 # GOT slot the loader fills, with the symbol's name (the converter keeps LLVM's addresses).
 readelf=$(command -v llvm-readelf || echo /usr/lib/llvm-20/bin/llvm-readelf)
@@ -222,8 +222,9 @@ readelf=$(command -v llvm-readelf || echo /usr/lib/llvm-20/bin/llvm-readelf)
     "$readelf" -l --wide "$work/link/llvm-pie.elf" | awk '$1 == "LOAD" { print "text " $3; exit }'
     "$readelf" -r --wide "$work/link/llvm-pie.elf" |
         awk '$3 ~ /^R_X86_64_(JUMP_SLOT|GLOB_DAT|64)$/ && $5 != "" { print "0x" $1, $3, $5 }'
-} > "$app/pshakux-imports.txt"
-grep -q '^text 0x' "$app/pshakux-imports.txt" || { echo "link-title.sh: no imports table" >&2; exit 1; }
+} > "$app/ogbox-imports.txt"
+grep -q '^text 0x' "$app/ogbox-imports.txt" || { echo "link-title.sh: no imports table" >&2; exit 1; }
+rm -f "$app/pshakux-imports.txt"   # (0.1.6: the name before the title was OGBox)
 # The precompiled SPIR-V of the base class and of the program (CMake writes the list without a
 # final newline: read then reports end of file).
 IFS=';' read -r -a samples < "$work/samples.txt" || (( ${#samples[@]} ))

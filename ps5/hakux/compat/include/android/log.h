@@ -1,11 +1,11 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * The Android log, for hakuX files that write to it directly: one line on standard error, which
- * the boot log (pshakux-boot.log) takes and copies on to klog (ps5/src/platform/ps5_bootlog.cpp).
+ * the boot log (ogbox-boot.log) takes and copies on to klog (ps5/src/platform/ps5_bootlog.cpp).
  */
 #ifndef PSHAKUX_ANDROID_LOG_H
 #define PSHAKUX_ANDROID_LOG_H

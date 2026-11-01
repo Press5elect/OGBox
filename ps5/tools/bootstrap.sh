@@ -29,7 +29,7 @@
 #
 # Copyright (C) 2026 Mihawk
 # SPDX-License-Identifier: MIT
-# PSHakuX's steps (hakuX, the dependencies, radv-crux2): Copyright (C) 2026 Press5elect.
+# OGBox's steps (hakuX, the dependencies, radv-crux2): Copyright (C) 2026 Press5elect.
 set -euo pipefail
 
 ps5=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)

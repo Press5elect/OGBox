@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Additional term (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+// Additional term (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
 //
-// PSHakuX 0.1.4 - the takeover of 0x80000000-0x80200000 from sce_module/libc.prx (ps5_takeover.h).
+// OGBox 0.1.4 - the takeover of 0x80000000-0x80200000 from sce_module/libc.prx (ps5_takeover.h).
 // Ported from PSHakuX System Check 0.0.5's src/cpu/hxtakeover.inc (Press5elect), where it was proven
 // on the console: the scan, the shadow of libc.prx's data, libkernel's registrations made again, the
 // rewrite, then (here: in hakuX-native's vmhost, when the core starts) the map over 0x80000000. The
@@ -276,7 +276,7 @@ const char* Place(uint64_t a, const Region* g)
 	return g && g->name[0] ? g->name : "anonymous";
 }
 
-// ---- the eboot's imports (pshakux-imports.txt, written by tools/link-title.sh) ----
+// ---- the eboot's imports (ogbox-imports.txt, written by tools/link-title.sh) ----
 struct Import
 {
 	uint64_t slot;
@@ -290,7 +290,7 @@ uint64_t g_got_lo, g_got_hi;
 void ReadImports()
 {
 	char path[512], line[256];
-	std::snprintf(path, sizeof(path), "%s/pshakux-imports.txt", pshakux_title_dir());
+	std::snprintf(path, sizeof(path), "%s/ogbox-imports.txt", pshakux_title_dir());
 	FILE* f = std::fopen(path, "r");
 	if (!f)
 	{
@@ -636,7 +636,7 @@ bool Flag(const char* name)
 {
 	char path[512];
 	struct stat st;
-	std::snprintf(path, sizeof(path), "/data/pshakux/%s", name);
+	std::snprintf(path, sizeof(path), "/data/ogbox/%s", name);
 	if (stat(path, &st) == 0)
 		return true;
 	std::snprintf(path, sizeof(path), "%s/%s", pshakux_title_dir(), name);

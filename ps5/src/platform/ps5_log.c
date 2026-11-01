@@ -64,7 +64,7 @@ ps5_title_breadcrumb(const char *text)
    ps5px_log("radv: %s", text ? text : "");
 }
 
-/* PSHakuX: what Crux2's host gives its port layer (ps5/frontend/ps5_host.cpp): a stop with a
+/* OGBox: what Crux2's host gives its port layer (ps5/frontend/ps5_host.cpp): a stop with a
  * message, for a state the title cannot go on from (src/platform/ps5_libc.c's setjmp guard). The
  * message goes to the boot log, and abort() writes the crash report after it. */
 void ps5_title_fatal(const char *message) __attribute__((noreturn));

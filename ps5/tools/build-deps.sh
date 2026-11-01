@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Press5elect
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Additional term (GPL-3.0 section 7(b)): keep the attribution "Crux2 by Press5elect"; see NOTICE.
-# PSHakuX - the third-party sources and libraries the title builds with, for the console.
-# (Crux2's ps5/tools/build-deps.sh, trimmed to what PSHakuX links; PSHakuX by Press5elect.)
+# OGBox - the third-party sources and libraries the title builds with, for the console.
+# (Crux2's ps5/tools/build-deps.sh, trimmed to what OGBox links; OGBox by Press5elect.)
 #
 #   ps5/tools/build-deps.sh          fetch and build what is missing into .deps/
 #
@@ -19,7 +19,7 @@
 #     nv2a_vsh_cpu, the vertex shader interpreter, at 89315e8, the revision xemu pins
 #     (subprojects/nv2a_vsh_cpu.wrap; hakuX names "561fe80", which neither xemu-project's nor
 #     abaire's repository has). xxHash is its header, v0.8.4, its newest release (hakuX takes FEX's copy, which
-#     PSHakuX does not have).
+#     OGBox does not have).
 #
 # Everything lands in .deps/ (ignored): src/ the sources, ports/ the prefix the build reads,
 # build/ the build trees and their logs. Prints nothing on success but the steps it took.

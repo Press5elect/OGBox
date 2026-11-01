@@ -1,11 +1,11 @@
-# PSHakuX - the title's build (ps5/tools/build.sh drives it): the top-level project for the
+# OGBox - the title's build (ps5/tools/build.sh drives it): the top-level project for the
 # prospero toolchain.
 #
 # Configured with the payload SDK's toolchain (toolchain/prospero.cmake), as PS5_Vulkan builds the
 # CTS for the console. It compiles, into objects:
 #   - the PS5 Vulkan Template foundation: the base class, its third-party code and the PS5 layer
 #     (src/main.cpp, launcher, platform.c), with the one program listed in src/samples.cpp,
-#     PSHakuX's front end (src/pshakux_main.cpp), in a namespace of its own;
+#     OGBox's front end (src/ogbox_main.cpp), in a namespace of its own;
 #   - the console platform code from Crux2 and Kelvin (src/platform: the boot log, the crash
 #     report, the clock, the thread priorities, libc's missing names, the virtual file layer);
 #   - the Core seam (src/core: the front end's one door into the emulator);
@@ -13,12 +13,12 @@
 # then tools/link-title.sh links them with RADV and packages the title folder.
 #
 # Made from PS5 Vulkan Template's ps5/CMakeLists.txt (Copyright (C) 2026 Mihawk, MIT) and Kelvin's
-# (Press5elect). The changes for PSHakuX: Copyright (C) 2026 Press5elect, GPL-3.0-or-later, with the
-# attribution term of NOTICE (GPL-3.0 section 7(b)): keep "PSHakuX by Press5elect".
+# (Press5elect). The changes for OGBox: Copyright (C) 2026 Press5elect, GPL-3.0-or-later, with the
+# attribution term of NOTICE (GPL-3.0 section 7(b)): keep "OGBox by Press5elect".
 # SPDX-License-Identifier: MIT AND GPL-3.0-or-later
 
 cmake_minimum_required(VERSION 3.20)
-project(pshakux C CXX)
+project(ogbox C CXX)
 
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # The title's name, from its identity: klog's prefix and the boot log's heading
@@ -30,10 +30,10 @@ set(GLSLANG_DIR "${ROOT}/.deps/glslang-16.6.0/ps5" CACHE PATH "glslang's console
 set(PSHAKUX_PORTS "${ROOT}/.deps/ports" CACHE PATH "the prebuilt and cross-built libraries (tools/build-deps.sh)")
 # PS5_PAYLOAD_SDK: the SDK the toolchain file came from (tools/setup-sdk.sh's pin)
 if(PS5_HOST_REFERENCE)
-	message(FATAL_ERROR "PSHakuX has no host reference build: the core is the console's (its CPU runs guest code natively)")
+	message(FATAL_ERROR "OGBox has no host reference build: the core is the console's (its CPU runs guest code natively)")
 endif()
 
-# The program: one SAMPLE(id, ...) line in src/samples.cpp. PSHakuX's is src/pshakux_main.cpp
+# The program: one SAMPLE(id, ...) line in src/samples.cpp. OGBox's is src/ogbox_main.cpp
 # (src/<id>_main.cpp before examples/<id>/<id>.cpp).
 file(READ src/samples.cpp samples_cpp)
 string(REGEX MATCHALL "\n[ \t]*SAMPLE\\([a-z0-9_]+," sample_entries "${samples_cpp}")
@@ -87,7 +87,7 @@ add_custom_target(pshakux_identity
 		${CMAKE_BINARY_DIR}/generated/ps5_build_identity.h ${CMAKE_BINARY_DIR}/build-identity.txt
 		${PS5_VULKAN_DIR} ${HAKUX_SOURCE_TREE} ${PSHAKUX_CPU}
 	BYPRODUCTS ${CMAKE_BINARY_DIR}/generated/ps5_build_identity.h ${CMAKE_BINARY_DIR}/build-identity.txt
-	COMMENT "PSHakuX: build identity"
+	COMMENT "OGBox: build identity"
 	VERBATIM)
 
 # ---- the console platform code (src/platform): from Crux2 (Press5elect) by way of Kelvin, and

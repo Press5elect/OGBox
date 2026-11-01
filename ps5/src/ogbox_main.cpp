@@ -1,15 +1,15 @@
 /*
- * PSHakuX - hakuX for PS5
+ * OGBox - hakuX for PS5
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
- * Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * The bring-up front end: enough to boot a game and see it, until the full front end (Crux2's
  * bigpicture interface) comes. It talks to the emulator only through the Core
- * (src/core/pshakux_core.h), which is the seam that front end takes over.
+ * (src/core/ogbox_core.h), which is the seam that front end takes over.
  *
- *  - The launch: the template's main (src/main.cpp) has opened the boot log (pshakux-boot.log in
- *    the title folder, the previous run's kept as pshakux-boot.previous.log, a crash report, an
+ *  - The launch: the template's main (src/main.cpp) has opened the boot log (ogbox-boot.log in
+ *    the title folder, the previous run's kept as ogbox-boot.previous.log, a crash report, an
  *    "alive:" heartbeat with the Core's status line), dismissed the splash and set up Vulkan on
  *    RADV; this class is its one program.
  *  - What boots: /data/homebrew/PPSA99251/boot.txt (or the title folder's), read before the
@@ -20,11 +20,11 @@
  *        # comments
  *        /data/xbox/My Game.iso          the disc image (an XISO), or "none" for the dashboard
  *        scale=2 uncap                   hakuX's options (native/core/options.h), any number a line
- *        hdd=/data/pshakux/hdd           the hard disk's folder (default /data/pshakux/hdd)
+ *        hdd=/data/ogbox/hdd           the hard disk's folder (default /data/ogbox/hdd)
  *        prop debug.hakux.NAME=VALUE     one of hakuX's debug properties
  *        env NAME=VALUE                  one of hakuX's environment switches (0.1.5: diagnostics)
  *
- *    with /data/pshakux/props.txt for more properties (NAME=VALUE lines). The title's arguments come
+ *    with /data/ogbox/props.txt for more properties (NAME=VALUE lines). The title's arguments come
  *    before boot.txt (a relaunch gives them, src/platform/ps5_relaunch.h; on the console argv[0] is
  *    the first argument, so all are read):
  *
@@ -35,7 +35,7 @@
  *        --option <opt>, or a word with '='   one of hakuX's options
  *
  *    The emulator's own files
- *    (shader and pipeline caches) go to /data/pshakux/cache: outside the title folder, so an update
+ *    (shader and pipeline caches) go to /data/ogbox/cache: outside the title folder, so an update
  *    is replacing the title folder.
  *  - The picture: the HLE GPU's front frame, handed over by the Core as RGBA8 rows (the
  *    host-owned image presenter, ps5/hakux/hle/present_host.c), uploaded into one sampled image
@@ -74,7 +74,9 @@
 #include "platform/ps5_priority.h"
 #include "platform/ps5_relaunch.h"
 #include "platform/ps5_sandbox.h"
-#include "core/pshakux_core.h"
+#include "core/ogbox_core.h"
+
+#include "stb_image.h"   // (its implementation is the base class's: base/VulkanglTFModel.cpp)
 
 extern "C" int pshakux_props_load(const char *path);
 extern "C" int pshakux_prop_set(const char *name, const char *value);
@@ -82,7 +84,7 @@ extern "C" int pshakux_prop_set(const char *name, const char *value);
 namespace {
 
 constexpr const char *kBootFile = "/data/homebrew/PPSA99251/boot.txt";
-constexpr const char *kDataRoot = "/data/pshakux";
+constexpr const char *kDataRoot = "/data/ogbox";
 constexpr double kQuitHoldSeconds = 2.0;
 
 struct BootConfig {
@@ -215,7 +217,7 @@ bool readArguments(BootConfig &config)
 		} else if (arg.rfind("--", 0) != 0 && !arg.empty()) {
 			config.options.push_back(arg);
 		} else {
-			pshakux_log("arguments: %s is not one of PSHakuX's: left out", arg.c_str());
+			pshakux_log("arguments: %s is not one of OGBox's: left out", arg.c_str());
 		}
 	}
 	if (boot) {
@@ -308,6 +310,11 @@ public:
 	uint64_t frameSeen{ 0 };
 	bool upload{ false };       // this frame copies a new picture in
 	bool havePicture{ false };  // a picture has been shown: it stays until a newer one
+	// OGBox 0.1.6: until the game's first frame the screen shows OGBox's logo (assets/ogbox-logo.png,
+	// ps5/art/ogbox-logo.png as it is), letterboxed on black at its own shape.
+	std::vector<uint8_t> logoPixels;
+	uint32_t logoWidth{ 0 }, logoHeight{ 0 };
+	bool showingLogo{ false };  // the picture is the logo, not a game's frame
 	uint64_t framesDrawn{ 0 }, picturesTaken{ 0 };
 	uint32_t players{ 0 };
 	double quitHeldSince{ -1.0 };
@@ -336,7 +343,7 @@ public:
 
 	VulkanExample() : VulkanExampleBase()
 	{
-		title = "PSHakuX";
+		title = "OGBox";
 		apiVersion = VK_API_VERSION_1_3;
 		useDynamicRendering = true;
 		requiresStencil = true;
@@ -350,30 +357,30 @@ public:
 		const std::string props = std::string(kDataRoot) + "/props.txt";
 		const int loaded = pshakux_props_load(props.c_str());
 		if (loaded >= 0) {
-			pshakux_log("pshakux: %d properties from %s", loaded, props.c_str());
+			pshakux_log("ogbox: %d properties from %s", loaded, props.c_str());
 		}
 		if (!readArguments(boot) && !readBootConfig(boot)) {
 			problem = std::string("No game to boot: write the path of an Xbox disc image (an XISO) on the first line of ") +
 				kBootFile + ".";
-			pshakux_log("pshakux: no boot.txt with a disc image (%s, %s)", kBootFile, titleBootFile().c_str());
+			pshakux_log("ogbox: no boot.txt with a disc image (%s, %s)", kBootFile, titleBootFile().c_str());
 			return;
 		}
 		if (boot.image != "none") {
 			struct stat st;
 			if (stat(boot.image.c_str(), &st) != 0) {
 				const int error = errno;
-				pshakux_log("pshakux: the disc image %s cannot be opened: %s (%s)", boot.image.c_str(), std::strerror(error),
+				pshakux_log("ogbox: the disc image %s cannot be opened: %s (%s)", boot.image.c_str(), std::strerror(error),
 					pshakux_sandbox_elevated() ? "out of the sandbox: the console's own paths are visible"
 						: "inside the sandbox: only part of /data is visible; the boot log's \"sandbox:\" lines say why");
 				problem = "The disc image " + boot.image + " cannot be opened: " + std::strerror(error) + ".";
 				if (!pshakux_sandbox_elevated()) {
-					problem += " The title is inside its sandbox (see sandbox: in pshakux-boot.log): put the image in the title folder, or run the payload loader (elfldr) so the title can leave it.";
+					problem += " The title is inside its sandbox (see sandbox: in ogbox-boot.log): put the image in the title folder, or run the payload loader (elfldr) so the title can leave it.";
 				}
 				return;
 			}
-			pshakux_log("pshakux: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
+			pshakux_log("ogbox: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
 		}
-		pshakux_log("pshakux: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
+		pshakux_log("ogbox: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
 			boot.hdd.c_str(), boot.options.size());
 		std::vector<const char *> argv;
 		for (const std::string &option : boot.options) {
@@ -387,7 +394,7 @@ public:
 		config.argc = static_cast<int>(argv.size());
 		config.argv = argv.data();
 		configured = pshx_core_configure(&config);
-		pshakux_log("pshakux: core %s: %s%s%s", pshx_core_name(), configured ? "configured" : "not configured",
+		pshakux_log("ogbox: core %s: %s%s%s", pshx_core_name(), configured ? "configured" : "not configured",
 			configured ? "" : ": ", configured ? "" : pshx_core_message());
 	}
 
@@ -589,8 +596,8 @@ public:
 		VkPipelineDynamicStateCreateInfo dynamicState = vks::initializers::pipelineDynamicStateCreateInfo(dynamicStates);
 		VkPipelineVertexInputStateCreateInfo vertexInput = vks::initializers::pipelineVertexInputStateCreateInfo();
 		std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-			loadShader(getShadersPath() + "pshakux/present.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
-			loadShader(getShadersPath() + "pshakux/present.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT),
+			loadShader(getShadersPath() + "ogbox/present.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+			loadShader(getShadersPath() + "ogbox/present.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT),
 		};
 		VkPipelineRenderingCreateInfoKHR renderingCI{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
 		renderingCI.colorAttachmentCount = 1;
@@ -617,18 +624,58 @@ public:
 	{
 		VulkanExampleBase::prepare();
 		preparePresenter();
+		loadLogo();
 		prepared = true;
 		if (configured) {
-			pshakux_log("pshakux: starting the core");
+			pshakux_log("ogbox: starting the core");
 			pshx_core_start();
 		}
 	}
 
 	// ---- each frame ---------------------------------------------------------------------------
+	/* OGBox's logo, the picture until the game's first frame (none when the file is missing). */
+	void loadLogo()
+	{
+		const std::string path = getAssetPath() + "ogbox-logo.png";
+		int w = 0, h = 0, n = 0;
+		stbi_uc *pixels = stbi_load(path.c_str(), &w, &h, &n, STBI_rgb_alpha);
+		if (!pixels || w <= 0 || h <= 0) {
+			pshakux_log("presenter: no logo (%s: %s)", path.c_str(), pixels ? "empty" : stbi_failure_reason());
+			if (pixels) {
+				stbi_image_free(pixels);
+			}
+			return;
+		}
+		logoWidth = static_cast<uint32_t>(w);
+		logoHeight = static_cast<uint32_t>(h);
+		logoPixels.assign(pixels, pixels + size_t(logoWidth) * logoHeight * 4);
+		stbi_image_free(pixels);
+		pshakux_log("presenter: logo %ux%u from %s, shown until the game's first frame", logoWidth, logoHeight, path.c_str());
+	}
+
+	/* The logo into this frame's staging buffer, once, while no game frame has come. */
+	bool fetchLogo()
+	{
+		if (havePicture || showingLogo || logoPixels.empty()) {
+			return false;
+		}
+		Staging &s = staging[currentBuffer];
+		ensureStaging(s, VkDeviceSize(logoPixels.size()));
+		std::memcpy(s.mapped, logoPixels.data(), logoPixels.size());
+		ensurePicture(logoWidth, logoHeight);
+		showingLogo = true;
+		std::vector<uint8_t>().swap(logoPixels);   // uploaded this frame: not needed again
+		return true;
+	}
+
 	/* The newest frame into this frame's staging buffer, when there is one. */
 	void fetchPicture()
 	{
 		upload = false;
+		if (fetchLogo()) {
+			upload = true;
+			return;
+		}
 		uint32_t w = 0, h = 0;
 		pshx_core_frame_size(&w, &h);
 		if (!w || !h) {
@@ -643,6 +690,7 @@ public:
 		ensurePicture(fw, fh);
 		upload = true;
 		havePicture = true;
+		showingLogo = false;
 		if (!picturesTaken++) {
 			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames", fw, fh,
 				static_cast<unsigned long long>(framesDrawn));
@@ -655,6 +703,9 @@ public:
 	float displayAspect() const
 	{
 		float aspect = static_cast<float>(picture.width) / static_cast<float>(picture.height);
+		if (showingLogo) {
+			return aspect;   // the logo at its own shape
+		}
 		if (pshx_core_widescreen() && aspect < 1.6f) {
 			aspect = 16.0f / 9.0f;
 		}
@@ -684,7 +735,7 @@ public:
 			picture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
 		beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
-		if (havePicture && picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+		if ((havePicture || showingLogo) && picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
 			const float aspect = displayAspect();
 			float w = static_cast<float>(width), h = static_cast<float>(height);
 			if (w / h > aspect) {
@@ -743,7 +794,7 @@ public:
 			if (quitHeldSince < 0.0) {
 				quitHeldSince = now;
 			} else if (now - quitHeldSince >= kQuitHoldSeconds) {
-				pshakux_log("pshakux: OPTIONS and the touch pad held for %.0f s: quitting", kQuitHoldSeconds);
+				pshakux_log("ogbox: OPTIONS and the touch pad held for %.0f s: quitting", kQuitHoldSeconds);
 				quit = true;
 			}
 		} else {
@@ -760,7 +811,7 @@ public:
 		const int state = pshx_core_state();
 		if (state != lastState) {
 			lastState = state;
-			pshakux_log("pshakux: core %s%s%s", stateName(state), pshx_core_message()[0] ? ": " : "",
+			pshakux_log("ogbox: core %s%s%s", stateName(state), pshx_core_message()[0] ? ": " : "",
 				pshx_core_message());
 		}
 		if (!relaunchAsked && pshx_core_relaunch_wanted()) {
@@ -779,7 +830,7 @@ public:
 	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
 	{
 		const int state = pshx_core_state();
-		overlay->text("PSHakuX %s - hakuX for PS5 (unofficial)", pshakux_build_version());
+		overlay->text("OGBox %s by Press5elect - built on hakuX, for PS5 (unofficial)", pshakux_build_version());
 		if (!problem.empty()) {
 			overlay->text("%s", problem.c_str());
 		} else {
@@ -792,7 +843,7 @@ public:
 				overlay->text("Waiting for the game's first frame...");
 			}
 		}
-		overlay->text("Hold OPTIONS and the touch pad for two seconds to quit. Log: pshakux-boot.log");
+		overlay->text("Hold OPTIONS and the touch pad for two seconds to quit. Log: ogbox-boot.log");
 	}
 };
 

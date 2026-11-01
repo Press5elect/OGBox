@@ -11,9 +11,9 @@
 // and for the host reference build (ps5/tools/host-reference.sh), where the title folder is
 // PS5_APP_ROOT. Kelvin by Press5elect.
 //
-// The boot log, pshakux-boot.log in the title folder (/data/homebrew/PPSA99251/ on the console):
+// The boot log, ogbox-boot.log in the title folder (/data/homebrew/PPSA99251/ on the console):
 //   - opened first thing in main(), before the probe, mode 0666; the previous run's is kept as
-//     pshakux-boot.previous.log (Crux2's scheme: a crash report is the last thing in it);
+//     ogbox-boot.previous.log (Crux2's scheme: a crash report is the last thing in it);
 //   - every line is written with write(2) as it happens, nothing is buffered in the title;
 //   - standard error goes into it too, a line at a time (the template's say(), the driver's
 //     messages, std::cerr), and a watcher thread copies those lines on to klog;
@@ -54,10 +54,10 @@ int pshakux_diag_owns_stderr(void);
 /// build: the terminal's standard error). Async-signal-safe.
 void pshakux_klog_raw(const char* text, unsigned length);
 
-/// The calling thread's name for the crash report ("main", "pshakux-watch", "probe-busy" ...).
+/// The calling thread's name for the crash report ("main", "ogbox-watch", "probe-busy" ...).
 /// Up to 64 threads; the name must stay valid (a literal).
 void pshakux_thread_named(const char* name);
-/// PSHakuX 0.1.3: the same for another thread (a thread its creator names; hakuX's helpers).
+/// OGBox 0.1.3: the same for another thread (a thread its creator names; hakuX's helpers).
 void pshakux_thread_named_for(pthread_t thread, const char* name);
 /// The calling thread is ending: its name is let go (a later thread may get its pthread_t).
 void pshakux_thread_gone(void);
@@ -74,7 +74,7 @@ void pshakux_install_crash_stack(void);
 /// Installs the crash report for the fatal signals and std::terminate (ps5_crash.cpp).
 void pshakux_crash_install(void);
 
-/// PSHakuX: the core's lines in a crash report (where the guest was, which device it touched...).
+/// OGBox: the core's lines in a crash report (where the guest was, which device it touched...).
 /// Called in the signal handler: it must be async-signal-safe (no locks, no allocation, no stdio
 /// but snprintf into line).
 typedef void (*pshakux_crash_note_fn)(char* line, unsigned size);
@@ -102,7 +102,7 @@ void pshakux_diag_session_end(int status);
 /// Copies what standard error has written since the watcher last looked on to klog, now.
 void pshakux_diag_drain(void);
 
-/// PSHakuX: sysconf without the console's, which a title is not given (measured 2026-11-01):
+/// OGBox: sysconf without the console's, which a title is not given (measured 2026-11-01):
 /// _SC_NPROCESSORS_ONLN and _CONF answer 13 (the processors a title's threads run on),
 /// _SC_PAGESIZE and _SC_PAGE_SIZE 16384 (the console's page); anything else -1 with EINVAL.
 long pshakux_sysconf(int name);

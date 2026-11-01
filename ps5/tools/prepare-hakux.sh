@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# PSHakuX - hakuX for PS5
+# OGBox - hakuX for PS5
 # Copyright (C) 2026 Press5elect
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Additional terms (GPL-3.0 section 7(b)): keep the attribution "PSHakuX by Press5elect"; see NOTICE.
+# Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
 #
 # The hakuX source the build compiles: a copy of HAKUX_SRC with ps5/patches/hakux/*.patch laid
 # over it, in build/hakux-src. Prints its path.
@@ -41,7 +41,7 @@ for file in COPYING LICENSE README.md; do
     [[ -f $src/$file ]] && cp -p "$src/$file" "$stage/"
 done
 [[ -d $src/licenses ]] && rsync -a "$src/licenses" "$stage/"
-(cd "$stage" && git init -q . && git add -A && git -c user.name=PSHakuX -c user.email=noreply@anthropic.com commit -qm base)
+(cd "$stage" && git init -q . && git add -A && git -c user.name=OGBox -c user.email=noreply@anthropic.com commit -qm base)
 
 vendored=$([[ $src == "$root/vendor/hakuX" ]] && echo 1 || echo 0)
 applied=0 skipped=0

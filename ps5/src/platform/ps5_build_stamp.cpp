@@ -10,7 +10,7 @@
 // writes at every build (CMake target pshakux_identity), console and host reference build alike;
 // the build number is Kelvin's revision. Kelvin by Press5elect.
 //
-// PSHakuX: from Kelvin 3061bf1; adds hakuX's revision and the CPU backend. PSHakuX by Press5elect.
+// OGBox: from Kelvin 3061bf1; adds hakuX's revision and the CPU backend. OGBox by Press5elect.
 
 #include "ps5_bootlog.h"
 

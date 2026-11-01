@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Additional terms (GPLv3 section 7(b)): credit to Press5elect, see LICENSE.md
 #
-# PSHakuX: from Kelvin 3061bf1 (ps5/tools/build-native-tool.sh), unchanged but for this line. Kelvin by
+# OGBox: from Kelvin 3061bf1 (ps5/tools/build-native-tool.sh), unchanged but for this line. Kelvin by
 # Press5elect; see NOTICE.
 set -euo pipefail
 vulkan=$1 out=$2

@@ -5,8 +5,8 @@
 # Crux2 - build the RADV archive Crux2 links: PS5 Mesa at the revision PS5_Vulkan pins, with every
 # patch of ps5/patches/mesa applied in order, built by PS5_Vulkan's tools/build-radv.sh release.
 #
-# PSHakuX: Crux2's ps5/tools/build-radv-crux2.sh (08c3507), as ps5/tools/build-radv.sh, with Crux2's
-# ps5/patches/mesa-27 (the only set PSHakuX carries). The archive is the same as Crux2's and Kelvin's
+# OGBox: Crux2's ps5/tools/build-radv-crux2.sh (08c3507), as ps5/tools/build-radv.sh, with Crux2's
+# ps5/patches/mesa-27 (the only set OGBox carries). The archive is the same as Crux2's and Kelvin's
 # and keeps its name, radv-crux2: one already built in PS5_Vulkan's .deps/native/radv-crux2 is
 # linked as it is (ps5/tools/build.sh), and this script is only needed to make it again.
 #
