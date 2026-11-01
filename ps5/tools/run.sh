@@ -56,7 +56,7 @@ if [[ $klog_port == open ]]; then
     python3 "$vulkan/tools/run-title.py" "$title_id" \
         --until "$prefix ends" --timeout "${RUN_TIMEOUT:-$timeout}" \
         --echo "$prefix (sample|samples|test run|ends|screenshot)|fatal|FAILED|Fatal" \
-        --elf "$root/build/ps5/link/llvm-pie.elf" --output "$output"
+        --elf "$root/build/ps5/link/llvm-pie.elf" --output "$output" --fetch pshakux-boot.log
 elif (( ${#samples[@]} )); then
     echo "no klog capture on the console (port closed): following the title's own results file"
     python3 "$ps5/tools/run-without-klog.py" "$run_dir" "${RUN_TIMEOUT:-$timeout}" || true

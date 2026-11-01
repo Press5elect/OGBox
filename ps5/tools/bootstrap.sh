@@ -16,8 +16,12 @@
 #                make                                  the native tool and libc.prx
 #                tools/build-radv.sh release           the RADV release archive
 #                tools/build-ps5vkctl.sh               the console's control payload
-#   this one     git submodule update --init external/glm   glm (the asset pack is not needed)
-#                ps5/tools/setup-sdk.sh                this repository's SDK pin
+#   this one     ps5/tools/setup-sdk.sh                this repository's SDK pin
+#                ps5/tools/fetch-hakux.sh              hakuX at the pinned revision (vendor/hakuX)
+#                ps5/tools/build-deps.sh               libslirp, nv2a_vsh_cpu, xxHash, glslang, the
+#                                                      file layer's libraries (.deps/)
+#                PS5_Vulkan's .deps/native/radv-crux2  the RADV archive with Crux2's Mesa 27 patches
+#                                                      (ps5/tools/build-radv.sh; the release one else)
 #
 # What it never does: rebuild a RADV archive that is already there (unless
 # asked), touch the console, or write the console's address (PS5_Vulkan's .env,
@@ -25,6 +29,7 @@
 #
 # Copyright (C) 2026 Mihawk
 # SPDX-License-Identifier: MIT
+# PSHakuX's steps (hakuX, the dependencies, radv-crux2): Copyright (C) 2026 Press5elect.
 set -euo pipefail
 
 ps5=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -126,13 +131,6 @@ if [[ -d $vulkan ]]; then
 fi
 
 step "this repository"
-if [[ -f $root/external/glm/glm/glm.hpp ]]; then
-    ok "glm (a submodule)"
-elif $check; then
-    todo "glm: git -C $root submodule update --init external/glm"
-else
-    git -C "$root" submodule update --init -q external/glm && ok "glm (a submodule)"
-fi
 sdk_revision=$(sed -n 's/^sdk_revision=//p' "$ps5/tools/setup-sdk.sh")
 if [[ -f $root/.deps/native/ps5-payload-sdk/.ps5-sdk-revision &&
         $(< "$root/.deps/native/ps5-payload-sdk/.ps5-sdk-revision") == "$sdk_revision" ]]; then
@@ -141,6 +139,27 @@ elif $check; then
     todo "its payload SDK: ps5/tools/setup-sdk.sh"
 else
     bash "$ps5/tools/setup-sdk.sh" > /dev/null && ok "its payload SDK, at ${sdk_revision:0:12}"
+fi
+
+hakux_revision=$(bash "$ps5/tools/fetch-hakux.sh" --revision)
+if [[ $(git -C "$root/vendor/hakuX" rev-parse HEAD 2>/dev/null) == "$hakux_revision" ]]; then
+    ok "hakuX, at ${hakux_revision:0:10} (vendor/hakuX)"
+elif $check; then
+    todo "hakuX: ps5/tools/fetch-hakux.sh"
+else
+    bash "$ps5/tools/fetch-hakux.sh" && ok "hakuX, at ${hakux_revision:0:10} (vendor/hakuX)"
+fi
+if [[ -f $root/.deps/build/libnfs.done && -f $root/.deps/src/libslirp/src/slirp.c ]]; then
+    ok "the dependencies (.deps)"
+elif $check; then
+    todo "the dependencies: ps5/tools/build-deps.sh"
+else
+    bash "$ps5/tools/build-deps.sh" && ok "the dependencies (.deps)"
+fi
+if [[ -f $vulkan/.deps/native/radv-crux2/lib/libvulkan_radeon.ps5.a ]]; then
+    ok "radv-crux2 (PS5_Vulkan's .deps/native/radv-crux2)"
+else
+    todo "radv-crux2 (optional; the release archive is linked without it): ps5/tools/build-radv.sh"
 fi
 
 echo
