@@ -91,6 +91,13 @@ fi
 [[ ${LINK_ONLY:-0} == 1 ]] && exit 0
 app="$root/dist/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["titleId"])' "$ps5/sce_sys/param.json")"
 python3 "$ps5/tools/build-assets.py" --install "$app"
+# hakuX's mods and cheats (its mods/ folder, one folder a game: 0.1.19) beside eboot.bin, as the work
+# tree has them (ps5/src/core/ogbox_mods.c reads them).
+if [[ -d $hakux_tree/mods ]]; then
+    rm -rf "$app/mods"
+    mkdir -p "$app/mods"
+    rsync -a --exclude .git "$hakux_tree/mods/" "$app/mods/"
+fi
 # The notices beside eboot.bin, once everything else is in: LEGAL.txt, NOTICE.txt and licenses/,
 # each part with its revision and the files it is in.
 PSHAKUX_BUILD_DIR="$build" python3 "$ps5/tools/stage-notices.py" "$app"

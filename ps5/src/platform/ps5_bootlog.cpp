@@ -23,6 +23,7 @@
 
 #include "ps5_bootlog.h"
 #include "ps5_sandbox.h"
+#include "ps5_timing.h"
 
 
 #include <algorithm>
@@ -300,6 +301,10 @@ void LogMachine()
                static_cast<double>(hz) / 1e9,
                line[0] ? line : "the title's monotonic clock (ps5_clock.c) has not started yet");
   }
+  // 0.1.19: how late the console's timed sleeps wake (Crux2's start-up probe, a background thread,
+  // a second or so): the log line says what a 1 ms and a 3 ms sleep really take here.
+  PS5Timing::SetReport([](const char* text) { pshakux_log("%s", text); });
+  PS5Timing::StartProbe();
   {
     const int64_t total = sceKernelGetDirectMemorySize();
     int64_t start = 0;

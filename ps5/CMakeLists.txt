@@ -97,6 +97,7 @@ add_library(pshakux_platform OBJECT
 	src/platform/ps5_crash.cpp
 	src/platform/ps5_build_stamp.cpp
 	src/platform/ps5_clock.c
+	src/platform/ps5_gpuwait.c
 	src/platform/ps5_log.c
 	src/platform/ps5_modules.cpp
 	src/platform/ps5_priority.cpp
@@ -115,7 +116,7 @@ target_include_directories(pshakux_platform PRIVATE src/platform src ${CMAKE_BIN
 target_compile_options(pshakux_platform PRIVATE ${common_options} -fno-stack-protector)
 
 # ---- the Core seam (src/core): the front end's one door into hakuX
-add_library(pshakux_core OBJECT src/core/hakux_core.c)
+add_library(pshakux_core OBJECT src/core/hakux_core.c src/core/ogbox_mods.c)
 hakux_target(pshakux_core)
 target_include_directories(pshakux_core PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/hakux ${HAKUX_DIR}/native/compat/glib)
 

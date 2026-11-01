@@ -52,6 +52,10 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
 game. Its first line may name a disc image; with an `autoboot` line that image boots straight
 away, without the list.
 
+hakuX's mods and cheats (60 and 120 fps mods, game fixes; the `mods` folder is hakuX's own) are
+off until chosen: add `<key> mod <name>` or `<key> cheat <name>` lines to `/data/ogbox/mods.txt`.
+The boot log lists what the running game has, with the key to use.
+
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
 L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
 is a player (1-4). The emulated hard disk lives in `/data/ogbox/hdd`, the shader caches in
@@ -127,6 +131,31 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.19 (bring-up)
+
+Added
+- hakuX's mods and cheats, as it ships them (its `mods/` folder, in the title folder: 120 and
+  60 fps mods and the disc-specific patches of fourteen releases). Which are on is in
+  `/data/ogbox/mods.txt` (or `mods.txt` in the title folder), one per line:
+  `4541005B.1 mod 120fps` (Burnout 3) or `4D530064.3 mod 60fps` (Halo 2); a cheat is `<key> cheat <name>`. The boot log lists what the
+  game has (`mods:` lines, the key is the disc's title ID and certificate version) and what is on.
+  All are off until chosen.
+- The boot log says how late the console's timed sleeps wake (`timing:` line, Crux2's probe).
+
+Changed
+- The 0.1.18 core layout for the GPU threads is off unless `env OGBOX_GPU_PIN=1` is in
+  `boot.txt`; the emulated CPU still has a core of its own and the other threads the rest.
+- While the emulated CPU waits (a game's `Sleep(1)`, a poll of its GPU) it waits awake for the
+  last 20 ms of the wait; `env NC_IDLE_SPIN_MS=0` in `boot.txt` goes back to a plain timed wait.
+
+Fixed
+- Burnout 3 (and other GPU-heavy games) falling from 60 to 20 frames a second in a race, with the
+  emulated CPU sitting idle: the graphics driver waits for the GPU by sleeping a millisecond
+  between looks, and a one-millisecond sleep on the console lasts up to 18. Every wait for the
+  GPU that took over 1.5 ms came back about 18 ms late, so the game, held at its read of an
+  occlusion-test result, flipped its frames a vblank or two behind. The driver's sleeps now wait
+  awake, and so do the emulated CPU's short sleeps (a game's `Sleep(1)` took 18.6 ms).
+
 ### 0.1.18 (bring-up)
 
 Changed
@@ -151,11 +180,6 @@ Changed
   every other thread runs on the remaining cores, as in Crux2. `env OGBOX_THREAD_LAYOUT=0` in
   `boot.txt` turns the core layout off.
 - When a network share cannot be opened, the server's reason is shown under the game list.
-
-Fixed
-- Def Jam: Fight for NY: the hang after the THX logo. OGBox's helper threads ran ahead of the
-  emulated CPU and took its processor ("vCPU starved: 4 ms CPU of 59" in the boot log), so the
-  game's 60 Hz timer interrupt came 338 ms late and its logic stopped.
 
 ### 0.1.16 (bring-up)
 

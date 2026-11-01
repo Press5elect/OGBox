@@ -92,23 +92,37 @@ std::atomic<bool> s_enabled{false};
  * thread, processor 1, left empty), every other thread of the title on processors 2-12 (the title
  * has 0-12), so nothing shares the guest CPU's core whatever it does. env OGBOX_THREAD_LAYOUT=0 in
  * boot.txt leaves the console's own placement. */
-/* 0.1.18: the HLE GPU's two threads on cores of their own too, as Crux2's GS: the push-buffer
- * decoder (hle-pb) on core 1 (processors 2-3), the render thread (hle.render) on core 2 (4-5),
- * everything else on cores 3-6 (6-12). */
+/* 0.1.18 tried the HLE GPU's two threads on cores of their own too, as Crux2's GS: the
+ * push-buffer decoder (hle-pb) on processors 2-3, the render thread (hle.render) on 4-5 and
+ * everything else on 6-12. The Burnout 3 run that had it ended frozen with its frame rate
+ * falling, and it was not what slowed the runs without it (0.1.19: the late wake-ups of the
+ * driver's GPU waits), so it is off unless env OGBOX_GPU_PIN=1 in boot.txt asks for it. */
 constexpr uint64_t kVcpuMask = 0x1u;
 constexpr uint64_t kDecoderMask = 0xCu;
 constexpr uint64_t kRenderMask = 0x30u;
-constexpr uint64_t kOthersMask = 0x1FC0u;
+constexpr uint64_t kOthersMask = 0x1FFCu;
+constexpr uint64_t kOthersPinnedMask = 0x1FC0u;
+
+bool GpuPinWanted()
+{
+	static const bool wanted = [] {
+		const char* e = std::getenv("OGBOX_GPU_PIN");
+		return e && e[0] == '1';
+	}();
+	return wanted;
+}
 
 uint64_t MaskFor(bool vcpu, const char* name)
 {
 	if (vcpu)
 		return kVcpuMask;
+	if (!GpuPinWanted())
+		return kOthersMask;
 	if (name && std::strcmp(name, "hle-pb") == 0)
 		return kDecoderMask;
 	if (name && std::strcmp(name, "hle.render") == 0)
 		return kRenderMask;
-	return kOthersMask;
+	return kOthersPinnedMask;
 }
 
 bool LayoutWanted()

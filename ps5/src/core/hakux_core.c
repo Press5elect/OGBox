@@ -21,6 +21,7 @@
  * code), and the boot log's heartbeat the status line.
  */
 #include "core/ogbox_core.h"
+#include "core/ogbox_mods.h"
 #include "hle/present_host.h"
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_priority.h"
@@ -336,6 +337,8 @@ bool pshx_core_configure(const PshxCoreConfig *config)
             return false;
         }
         pshakux_log("core: disc image %s", g_image);
+        /* 0.1.19: hakuX's mods and cheats for this game (its mods/ folder, ogbox_mods.h) */
+        ogbox_mods_prepare(g_disc_fd, config->data_root && config->data_root[0] ? config->data_root : "/data/ogbox");
     } else {
         pshakux_log("core: no disc: the dashboard from the hard disk");
     }

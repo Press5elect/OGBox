@@ -131,6 +131,10 @@ extra_names+=(__wrap_clock_gettime __wrap_lstat __wrap_poll)
 # ps5vfs_disc_open): one descriptor answered from the share, every other one by libc.
 extra_flags+=(--wrap=pread --wrap=fstat)
 extra_names+=(__wrap_pread __wrap_fstat)
+# OGBox 0.1.19: the driver's short sleeps awake (src/platform/ps5_gpuwait.c): a 1 ms sleep on the
+# console lasts up to 18 ms, and the driver sleeps between polls of the GPU's marker.
+extra_flags+=(--wrap=radv_ps5_sleep_us)
+extra_names+=(__wrap_radv_ps5_sleep_us)
 
 platform="$sdk/target/lib/libps5platform.a"
 "$nm" --defined-only "$platform" 2>/dev/null | awk '$2 == "T" && $3 ~ /^ps5_/ { print substr($3, 5) }' \
