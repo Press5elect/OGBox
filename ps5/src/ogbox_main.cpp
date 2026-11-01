@@ -383,6 +383,18 @@ public:
 		pshakux_log("ogbox: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
 			boot.hdd.c_str(), boot.options.size());
 		std::vector<const char *> argv;
+		/* 0.1.10: hakuX's own defaults, as its release app passes them every run
+		 * (android/.../NativeCoreActivity.kt and AppPrefs.kt): console timing on
+		 * (the DVD drive's and hard disk's real read times: games' streaming and
+		 * movies are paced by them), shaders built asynchronously and the
+		 * recorded ones before the game, 1x scale, and the console's video
+		 * settings: HDTV AV pack with 480p allowed. boot.txt's own options come
+		 * after these and win. */
+		static const char *const kHakuxDefaults[] = { "devtime=1", "asyncpipe=1", "prebuild=1", "scale=1",
+			"video=00080000", "avpack=hdtv" };
+		for (const char *option : kHakuxDefaults) {
+			argv.push_back(option);
+		}
 		for (const std::string &option : boot.options) {
 			argv.push_back(option.c_str());
 		}

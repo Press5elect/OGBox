@@ -126,6 +126,12 @@ Added
 - One `boot.txt` switch per kind of code patch, for testing: `env NC_SWEEP_RDTSC=0`,
   `env NC_SWEEP_CPUID=0`, `env NC_SWEEP_FLAGS=0` (pushfd/popfd), `env NC_SWEEP_TABLES=1`.
 
+Changed
+- hakuX's own defaults are passed to the core on every run, as hakuX's app does: console
+  timing (the drive's real read times, which pace streaming and movies), asynchronous and
+  prebuilt shaders, 1x scale, and the console's video settings (HDTV AV pack, 480p allowed).
+  Options in `boot.txt` still override them.
+
 Fixed
 - Burnout 3's intro movie no longer crashes the title: `sgdt`/`sidt` are no longer patched on
   the PS5 (the console traps the real ones itself), and one that was really movie data no longer
