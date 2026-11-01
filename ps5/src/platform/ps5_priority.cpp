@@ -111,6 +111,32 @@ extern "C" void pshakux_priority_set(int role)
 		PS5Priority::SetCurrentThread(roles[role]);
 }
 
+// PSHakuX 0.1.3: a thread of hakuX's by its name, set by itself (its entry function's role) or by
+// its creator (the name hakuX gives it after pthread_create). Every thread is said in the boot log,
+// once: "thread NAME: ROLE, priority BEFORE -> WANTED: RESULT (now AFTER)".
+extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const char* name, const char* how)
+{
+  using PS5Priority::Role;
+  static const Role roles[] = {Role::Sound, Role::Input, Role::Interface, Role::Emulation, Role::Helper,
+    Role::Background};
+  int before = -1, after = -1;
+  PS5Priority::GetPriority(thread, &before);
+  if (role < 0 || role >= static_cast<int>(sizeof(roles) / sizeof(roles[0])))
+  {
+    ps5px_log("thread %s (%s): no role, stays at priority %d", name ? name : "?", how ? how : "", before);
+    return;
+  }
+  const Role r = roles[role];
+  const int wanted = PS5Priority::PriorityOf(r);
+  int result = 0;
+  const bool on = PS5Priority::s_enabled.load(std::memory_order_relaxed);
+  if (on)
+    result = PS5Priority::SetPriority(thread, wanted);
+  PS5Priority::GetPriority(thread, &after);
+  ps5px_log("thread %s (%s): %s, priority %d -> %d: %#x (now %d)%s", name ? name : "?", how ? how : "",
+    PS5Priority::NameOf(r), before, wanted, static_cast<unsigned>(result), after, on ? "" : " [priorities off]");
+}
+
 extern "C" void pshakux_priority_enable(int on)
 {
 	PS5Priority::SetEnabled(on != 0);

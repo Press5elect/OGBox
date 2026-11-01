@@ -43,9 +43,12 @@ bash "$ps5/tools/build-deps.sh"
 hakux_tree=$(cd -- "${HAKUX_SRC:-$root/vendor/hakuX}" 2>/dev/null && pwd || echo "$root/vendor/hakuX")
 hakux_dir=$(bash "$ps5/tools/prepare-hakux.sh" "$hakux_tree")
 cpu=${NC_CPU:-native}
+# The guest's kernel area: past the title's libc.prx (0x80120000, the default), or 0 for a layout
+# that leaves 0x80000000-0x80120000 free (ps5/cmake/hakux.cmake).
+hole=${PSHAKUX_WINDOW_HOLE_END:-0x80120000u}
 
 # (Configured again when what it is configured with changes.)
-configure="$hakux_tree|$cpu|$vulkan|$sdk"
+configure="$hakux_tree|$cpu|$hole|$vulkan|$sdk"
 if [[ -f $build/build.ninja && $(cat "$build/configure-flags.txt" 2>/dev/null) != "$configure" ]]; then
     rm -f "$build/CMakeCache.txt" "$build/build.ninja"
 fi
@@ -55,6 +58,7 @@ if [[ ! -f $build/build.ninja ]]; then
     cmake -S "$ps5" -B "$build" -G Ninja -DCMAKE_MAKE_PROGRAM="$ninja" \
         -DCMAKE_TOOLCHAIN_FILE="$sdk/toolchain/prospero.cmake" \
         -DPS5_VULKAN_DIR="$vulkan" -DHAKUX_DIR="$hakux_dir" -DHAKUX_SOURCE_TREE="$hakux_tree" -DNC_CPU="$cpu" \
+        -DPSHAKUX_WINDOW_HOLE_END="$hole" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=OFF > "$build.configure.log" 2>&1 \
         || { cat "$build.configure.log" >&2; exit 1; }
     grep 'PSHakuX:' "$build.configure.log" | sed 's/^-- /    /' >&2 || true

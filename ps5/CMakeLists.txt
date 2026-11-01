@@ -101,6 +101,7 @@ add_library(pshakux_platform OBJECT
 	src/platform/ps5_modules.cpp
 	src/platform/ps5_priority.cpp
 	src/platform/ps5_relaunch.c
+	src/platform/ps5_sandbox.cpp
 	src/platform/ps5_timing.cpp
 	src/platform/ps5_libc.c
 	src/platform/vfs/ps5_vfs.cpp

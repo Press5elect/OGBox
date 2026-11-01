@@ -23,7 +23,8 @@
 #     link-title.sh binds them), except the ones whose replacement calls the console's own.
 #
 # The title folder, dist/<TITLE_ID>/, gets the signed eboot.bin, sce_sys/, sce_module/libc.prx,
-# the presenter's shaders; tools/build.sh then lays in the assets (tools/build-assets.py) and the
+# the presenter's shaders, sandbox-elevator.elf (tools/build-elevator.sh); tools/build.sh then lays
+# in the assets (tools/build-assets.py) and the
 # notices (tools/stage-notices.py: LEGAL.txt, NOTICE.txt and licenses/).
 #
 # Made from PS5 Vulkan Template's ps5/tools/link-title.sh (Copyright (C) 2026 Mihawk, MIT), with
@@ -223,6 +224,9 @@ for dir in base "${samples[@]}"; do
     mkdir -p "$app/shaders/glsl/$dir"
     cp "$root/shaders/glsl/$dir/"*.spv "$app/shaders/glsl/$dir/"
 done
+# Leaving the sandbox: the helper the title sends to the payload loader (tools/build-elevator.sh;
+# src/platform/ps5_sandbox.cpp).
+cp "$(bash "$ps5/tools/build-elevator.sh")" "$app/sandbox-elevator.elf"
 # What a user writes: an example boot.txt (the title reads /data/homebrew/<TITLE_ID>/boot.txt).
 cp "$ps5/package/boot.example.txt" "$app/boot.example.txt"
 [[ -f $root/README.md ]] && cp "$root/README.md" "$app/README.md"

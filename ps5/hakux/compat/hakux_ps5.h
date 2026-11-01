@@ -12,8 +12,12 @@
  *   syscall(__NR_memfd_create, ...)     memfd_create, which the link binds to the platform
  *                                       layer's (an anonymous shared memory object)
  *   any other syscall()                 ENOSYS (a title may make no system call)
- *   pthread_setname_np                  pthread_set_name_np; a thread naming itself also takes
- *                                       its priority role from its name (helpers 690)
+ *   pthread_create                      through pshakux_pthread_create: the thread gets a crash
+ *                                       report stack, its name and priority role by its entry
+ *                                       function (hakux_ps5.c's table), said in the boot log
+ *   pthread_setname_np                  pthread_set_name_np; the name (a thread's own or its
+ *                                       creator's) gives the role of threads made by hakuX's
+ *                                       thread helpers (hle_thread_create, apu_thread_start)
  *   setpriority(PRIO_PROCESS, tid, n)   a thread lowering itself (n > 0) is a background job (730)
  *   sysconf                             the title's (13 processors, 16 KiB pages): the console
  *                                       gives a title none
@@ -79,12 +83,15 @@ extern "C" {
 long pshakux_syscall(long number, ...);
 int pshakux_gettid(void);
 int pshakux_setname(pthread_t thread, const char *name);
+int pshakux_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*fn)(void *), void *arg,
+                           const char *entry);
 int pshakux_setpriority(int which, id_t who, int prio);
 int memfd_create(const char *name, unsigned int flags);
 
 #define syscall(...) pshakux_syscall(__VA_ARGS__)
 #define gettid() pshakux_gettid()
 #define pthread_setname_np(thread, name) pshakux_setname((thread), (name))
+#define pthread_create(thread, attr, fn, arg) pshakux_pthread_create((thread), (attr), (fn), (arg), #fn)
 #define setpriority(which, who, prio) pshakux_setpriority((which), (who), (prio))
 /* No sysconf for a title on the console (measured 2026-11-01): src/platform/ps5_log.c's. */
 long pshakux_sysconf(int name);

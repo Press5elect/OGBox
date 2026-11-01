@@ -117,7 +117,14 @@ list(APPEND hakux_core_sources ${HAKUX_DIR}/hw/xbox/hle/core/xbe.c)
 # the contiguous window is the console's (a system module sits at 0x80000000).
 set(PSHAKUX_CPU "stub")
 # (The console's window start, for a tree that reads it whatever the backend: hakuX-native's vm.c.)
-set(hakux_cpu_definitions NC_WINDOW_HOLE_END=0x80120000u)
+# The start of the 0x80000000 window the guest cannot have (NC_WINDOW_HOLE_END): the title's
+# libc.prx sits at 0x80000000-0x80120000, so the guest's kernel area is moved past it. Titles built
+# with the XDK read the kernel's PE header at 0x80010000 and are killed there (an execute-only
+# page: SYSTEM_XO_VIOLATION, which no handler can catch); 0 puts the kernel back at 0x80010000,
+# for a layout that keeps that range free (-DPSHAKUX_WINDOW_HOLE_END=0, or the environment's
+# PSHAKUX_WINDOW_HOLE_END through tools/build.sh).
+set(PSHAKUX_WINDOW_HOLE_END "0x80120000u" CACHE STRING "NC_WINDOW_HOLE_END: end of the 0x80000000 window's start the guest cannot have (0: none)")
+set(hakux_cpu_definitions NC_WINDOW_HOLE_END=${PSHAKUX_WINDOW_HOLE_END})
 set(hakux_cpu_options)
 set(PSHAKUX_CPU_NOTE "")
 if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
@@ -155,7 +162,7 @@ if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
 			endif()
 		endif()
 	endforeach()
-	set(hakux_cpu_definitions NC_CPU_NATIVE=1 NC_WINDOW_HOLE_END=0x80120000u)
+	set(hakux_cpu_definitions NC_CPU_NATIVE=1 NC_WINDOW_HOLE_END=${PSHAKUX_WINDOW_HOLE_END})
 	set(hakux_cpu_options -fno-delete-null-pointer-checks)
 	message(STATUS "PSHakuX: native CPU backend's sources: ${cpu_sources} (cpu/vmhost.c: its __PROSPERO__ half, the platform layer's shm)")
 endif()

@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include <pthread.h>
+
 #ifdef __cplusplus
 
 namespace PS5Priority
@@ -62,6 +64,9 @@ extern "C" {
 enum { PSHAKUX_ROLE_SOUND, PSHAKUX_ROLE_INPUT, PSHAKUX_ROLE_INTERFACE, PSHAKUX_ROLE_VCPU,
        PSHAKUX_ROLE_HELPER, PSHAKUX_ROLE_BACKGROUND };
 void pshakux_priority_set(int role);
+/* PSHakuX 0.1.3: the role of a thread (itself or another), said in the boot log once with its
+ * name and priority; role -1: none (said so). how: by what the role was known. */
+void pshakux_priority_set_thread(pthread_t thread, int role, const char *name, const char *how);
 /* [PS5] ThreadPriorities: off until enabled (as Crux2's setting). */
 void pshakux_priority_enable(int on);
 #ifdef __cplusplus

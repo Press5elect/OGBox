@@ -3,7 +3,9 @@
 #
 # The first line that is not a comment: the Xbox disc image (an XISO) to boot, by its path on
 # the console, or "none" for the dashboard from the emulated hard disk. Only your own backups
-# of games you own.
+# of games you own. A path without a leading / is in this folder (games/game.iso). With the
+# payload loader (elfldr) running, PSHakuX leaves its sandbox, so the image may be anywhere on
+# the console: /data/..., a USB drive (/mnt/usb0/...), extended storage (/mnt/ext0/...).
 /data/pshakux/games/game.iso
 #
 # hakuX's options, any number on a line (its native/core/options.h): for example

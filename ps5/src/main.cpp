@@ -47,8 +47,14 @@ extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(Vk
 
 namespace {
 
-const char *const testRunPath = PS5_APP_ROOT "/test-run.txt";
-const char *const resultsPath = PS5_APP_ROOT "/test-results.txt";
+// PSHakuX 0.1.3: in the title folder as it is named now (out of the sandbox it is not /app0:
+// src/platform/ps5_sandbox.cpp); set by main once the boot log knows it.
+std::string g_testRunPath = PS5_APP_ROOT "/test-run.txt";
+std::string g_resultsPath = PS5_APP_ROOT "/test-results.txt";
+std::string g_screenshotDir = PS5_APP_ROOT "/screenshots";
+#define testRunPath (g_testRunPath.c_str())
+#define resultsPath (g_resultsPath.c_str())
+#define screenshotDir (g_screenshotDir.c_str())
 FILE *results = nullptr;
 // test-run.txt's "orbit <program> <degrees a second>" lines
 std::map<std::string, float> orbits;
@@ -68,7 +74,6 @@ __attribute__((format(printf, 1, 2))) void report(const char *format, ...)
 		fflush(results);
 	}
 }
-const char *const screenshotDir = PS5_APP_ROOT "/screenshots";
 
 struct TestRun {
 	uint32_t frames{ 0 };
@@ -379,6 +384,18 @@ int main(int argc, char **argv)
 	// PSHakuX (from Kelvin): the boot log first (pshakux-boot.log in the title folder: its header, standard error
 	// a line at a time, the crash report, the heartbeat), so everything after is in it.
 	pshakux_diag_start(PS5_TITLE_NAME);
+	{
+		// PSHakuX 0.1.3: the title folder may be named otherwise than /app0 now (out of the
+		// sandbox): the shaders, the assets and the test run's files are found under its name.
+		const std::string dir = pshakux_title_dir();
+		if (dir != PS5_APP_ROOT) {
+			vks::tools::resourcePath = dir;
+			g_testRunPath = dir + "/test-run.txt";
+			g_resultsPath = dir + "/test-results.txt";
+			g_screenshotDir = dir + "/screenshots";
+			pshakux_log("title folder: %s: shaders and assets read from there", dir.c_str());
+		}
+	}
 	pshakux_args_set(argc, argv);
 	platform_init(PS5_TITLE_NAME);
 	// The samples report on std::cout and std::cerr: both reach klog

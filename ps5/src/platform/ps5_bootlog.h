@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <pthread.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -56,6 +57,8 @@ void pshakux_klog_raw(const char* text, unsigned length);
 /// The calling thread's name for the crash report ("main", "pshakux-watch", "probe-busy" ...).
 /// Up to 64 threads; the name must stay valid (a literal).
 void pshakux_thread_named(const char* name);
+/// PSHakuX 0.1.3: the same for another thread (a thread its creator names; hakuX's helpers).
+void pshakux_thread_named_for(pthread_t thread, const char* name);
 /// The calling thread is ending: its name is let go (a later thread may get its pthread_t).
 void pshakux_thread_gone(void);
 /// The calling thread's name, or NULL. Async-signal-safe.

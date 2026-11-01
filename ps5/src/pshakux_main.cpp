@@ -13,7 +13,9 @@
  *    "alive:" heartbeat with the Core's status line), dismissed the splash and set up Vulkan on
  *    RADV; this class is its one program.
  *  - What boots: /data/homebrew/PPSA99251/boot.txt (or the title folder's), read before the
- *    machine starts:
+ *    machine starts; a path that does not start with '/' is in the title folder (0.1.3), one that
+ *    does may be anywhere the title sees: out of its sandbox (src/platform/ps5_sandbox.cpp),
+ *    /data/..., USB drives (/mnt/usb0/...) and extended storage (/mnt/ext0/...):
  *
  *        # comments
  *        /data/xbox/My Game.iso          the disc image (an XISO), or "none" for the dashboard
@@ -57,7 +59,9 @@
 
 #include "vulkanexamplebase.h"
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -67,6 +71,7 @@
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_priority.h"
 #include "platform/ps5_relaunch.h"
+#include "platform/ps5_sandbox.h"
 #include "core/pshakux_core.h"
 
 extern "C" int pshakux_props_load(const char *path);
@@ -75,7 +80,6 @@ extern "C" int pshakux_prop_set(const char *name, const char *value);
 namespace {
 
 constexpr const char *kBootFile = "/data/homebrew/PPSA99251/boot.txt";
-constexpr const char *kBootFileApp = "/app0/boot.txt";
 constexpr const char *kDataRoot = "/data/pshakux";
 constexpr double kQuitHoldSeconds = 2.0;
 
@@ -93,11 +97,34 @@ std::string trim(const std::string &s)
 	return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
 }
 
+/* The title folder's boot.txt, under the name the folder has now (/app0 inside the sandbox, its
+ * install path out of it: src/platform/ps5_sandbox.cpp). */
+std::string titleBootFile()
+{
+	return std::string(pshakux_title_dir()) + "/boot.txt";
+}
+
+/* A path from boot.txt or the arguments: as it is when it starts with '/' (anywhere the title can
+ * see: /data/..., /mnt/usb0/..., /mnt/ext0/... out of the sandbox), else relative to the title
+ * folder ("games/My Game.iso" is <title folder>/games/My Game.iso); "none" stays "none". */
+std::string resolvePath(const std::string &path)
+{
+	if (path.empty() || path[0] == '/' || path == "none") {
+		return path;
+	}
+	std::string rest = path;
+	while (rest.rfind("./", 0) == 0) {
+		rest = rest.substr(2);
+	}
+	return std::string(pshakux_title_dir()) + "/" + rest;
+}
+
 /* boot.txt: the first line that is not a comment is the disc image (it may hold spaces); then
  * hakuX's options, separated by spaces, and the hdd= and prop lines. */
 bool readBootConfig(BootConfig &config)
 {
-	for (const char *path : { kBootFile, kBootFileApp }) {
+	const std::string titleFile = titleBootFile();
+	for (const char *path : { kBootFile, titleFile.c_str() }) {
 		FILE *file = std::fopen(path, "r");
 		if (!file) {
 			continue;
@@ -111,7 +138,7 @@ bool readBootConfig(BootConfig &config)
 				continue;
 			}
 			if (!haveImage) {
-				config.image = line;
+				config.image = resolvePath(line);
 				haveImage = true;
 				continue;
 			}
@@ -129,7 +156,7 @@ bool readBootConfig(BootConfig &config)
 				const size_t end = line.find_first_of(" \t", at);
 				const std::string word = line.substr(at, end == std::string::npos ? std::string::npos : end - at);
 				if (word.rfind("hdd=", 0) == 0) {
-					config.hdd = word.substr(4);
+					config.hdd = resolvePath(word.substr(4));
 				} else if (!word.empty()) {
 					config.options.push_back(word);
 				}
@@ -158,11 +185,11 @@ bool readArguments(BootConfig &config)
 		if (arg == PSHAKUX_RELAUNCHED) {
 			continue;
 		} else if (arg == "--boot" && next) {
-			config.image = next;
+			config.image = resolvePath(next);
 			boot = true;
 			i++;
 		} else if (arg == "--hdd" && next) {
-			config.hdd = next;
+			config.hdd = resolvePath(next);
 			i++;
 		} else if (arg == "--loadstate" && next) {
 			config.options.push_back(std::string("loadstate=") + next);
@@ -315,8 +342,23 @@ public:
 		if (!readArguments(boot) && !readBootConfig(boot)) {
 			problem = std::string("No game to boot: write the path of an Xbox disc image (an XISO) on the first line of ") +
 				kBootFile + ".";
-			pshakux_log("pshakux: no boot.txt with a disc image (%s, %s)", kBootFile, kBootFileApp);
+			pshakux_log("pshakux: no boot.txt with a disc image (%s, %s)", kBootFile, titleBootFile().c_str());
 			return;
+		}
+		if (boot.image != "none") {
+			struct stat st;
+			if (stat(boot.image.c_str(), &st) != 0) {
+				const int error = errno;
+				pshakux_log("pshakux: the disc image %s cannot be opened: %s (%s)", boot.image.c_str(), std::strerror(error),
+					pshakux_sandbox_elevated() ? "out of the sandbox: the console's own paths are visible"
+						: "inside the sandbox: only part of /data is visible; the boot log's \"sandbox:\" lines say why");
+				problem = "The disc image " + boot.image + " cannot be opened: " + std::strerror(error) + ".";
+				if (!pshakux_sandbox_elevated()) {
+					problem += " The title is inside its sandbox (see sandbox: in pshakux-boot.log): put the image in the title folder, or run the payload loader (elfldr) so the title can leave it.";
+				}
+				return;
+			}
+			pshakux_log("pshakux: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
 		}
 		pshakux_log("pshakux: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
 			boot.hdd.c_str(), boot.options.size());

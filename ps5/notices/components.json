@@ -35,6 +35,24 @@
    }
   },
   {
+   "id": "elevator",
+   "name": "Leaving the sandbox (/data, USB drives, extended storage): sandbox-elevator.elf and its client (ps5-native-app-boilerplate's sandbox-elevation example, by way of Crux2: ps5/elevation)",
+   "licence": "GPL-3.0-or-later",
+   "copyright": "Copyright (C) 2026 BlackBearReloaded; the changes Copyright (C) 2026 Press5elect (Crux2 by Press5elect, PSHakuX by Press5elect)",
+   "modifications": "this title's ID (PPSA99251) in the helper; the client reports each step for the boot log (src/platform/ps5_sandbox.cpp)",
+   "texts": {
+    "ps5-native-app-boilerplate-LICENSE.txt": "ps5/elevation/LICENSE"
+   },
+   "artifacts": [
+    "sandbox-elevator.elf",
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/BlackBearReloaded/ps5-native-app-boilerplate, as carried by https://github.com/Press5elect/Crux2 (ps5/elevation)",
+    "revision": "Crux2 08c3507a3ac3f3f904cb36f02cef1f36335a67bc"
+   }
+  },
+  {
    "id": "kelvin",
    "name": "Kelvin's parts: the eboot's high base (ps5/ld, the native tool's high-base patch), the presenter's shaders, the build identity and timing code",
    "licence": "GPL-3.0-or-later, with Kelvin's attribution term (GPL-3.0 section 7(b): keep \"Kelvin by Press5elect\"; NOTICE.txt)",

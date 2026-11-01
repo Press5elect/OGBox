@@ -205,6 +205,18 @@ bool pshx_core_configure(const PshxCoreConfig *config)
         nc_io_set_hdd_root(config->hdd_root);
     }
     pshakux_log("core: hard disk %s, caches %s", nc_io_hdd_root(), getenv("HAKUX_NATIVE_BASE"));
+#if defined(NC_WINDOW_HOLE_END)
+    if (NC_WINDOW_HOLE_END) {
+        /* (0.1.3) Burnout 3 read the kernel's PE header at 0x8001003c and the console ended the
+         * title there: an execute-only page of libc.prx, which no handler can catch */
+        pshakux_log("core: the guest's kernel area starts past the title's libc.prx (0x80000000-0x%08x, "
+                    "NC_WINDOW_HOLE_END): a game that reads the kernel's header at 0x80010000 (titles built "
+                    "with the XDK) is ended by the console there (SYSTEM_XO_VIOLATION in klog, no crash report)",
+                    (unsigned)NC_WINDOW_HOLE_END);
+    } else {
+        pshakux_log("core: the guest's kernel area at 0x80010000, as on the Xbox (NC_WINDOW_HOLE_END 0)");
+    }
+#endif
 
     snprintf(g_image, sizeof(g_image), "%s", config->image ? config->image : "");
     if (!g_image[0]) {

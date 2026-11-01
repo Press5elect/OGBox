@@ -22,6 +22,7 @@
 #endif
 
 #include "ps5_bootlog.h"
+#include "ps5_sandbox.h"
 
 
 #include <algorithm>
@@ -469,7 +470,11 @@ extern "C" void pshakux_log(const char* format, ...)
 
 extern "C" void pshakux_thread_named(const char* name)
 {
-  const pthread_t self = pthread_self();
+  pshakux_thread_named_for(pthread_self(), name);
+}
+
+extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
+{
   for (int i = 0; i < MAX_THREADS; i++)
   {
     if (s_thread_used[i].load(std::memory_order_acquire) == 2 && pthread_equal(s_thread_ids[i], self))
@@ -525,9 +530,19 @@ extern "C" long pshakux_thread_id(void)
 #endif
 }
 
+namespace {
+void LogSandboxLine(const char* line)
+{
+  pshakux_log("%s", line);
+}
+} // namespace
+
 extern "C" void pshakux_diag_start(const char* title_name)
 {
   clock_gettime(CLOCK_MONOTONIC, &s_start);
+  // PSHakuX 0.1.3: out of the sandbox first, while the process has one thread (ps5_sandbox.cpp);
+  // the title folder may then be named otherwise than /app0.
+  (void)pshakux_sandbox_leave(s_title_dir, sizeof(s_title_dir));
   if (title_name && title_name[0])
     std::snprintf(s_prefix, sizeof(s_prefix), "[%s] ", title_name);
   pshakux_thread_named("main");
@@ -581,6 +596,7 @@ extern "C" void pshakux_diag_start(const char* title_name)
   if (s_log_fd < 0)
     pshakux_log("boot log: %s cannot be written (%s): klog only", log_path, std::strerror(errno));
 
+  pshakux_sandbox_log(&LogSandboxLine);
   pshakux_crash_install();
   LogMachine();
   pshakux_log("standard error: %s", pshakux_diag_owns_stderr() ? "into this log, a line at a time; the watcher copies it on to klog"

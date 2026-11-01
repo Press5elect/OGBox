@@ -19,16 +19,20 @@ Bring-up. The title builds and links hakuX's native core with its **native CPU b
 Xbox's x86 code runs on the console's own processor in compatibility mode (hakuX-native's
 `native/cpu/cpu_native.c`, branch `ps5-native`), with kernel calls through a far-call gate, its
 HLE GPU on the console's RADV, its APU on the console's sound output, a bring-up front end and
-the console's platform code. On Linux the same backend runs nxdk's `hello` sample to its main
-loop. **Nothing has run on the console yet**: this build is the first console test. The bring-up
-target is nxdk's `hello` (no push-buffer library: nxdk's pbkit writes to 0x80000000, which on the
-console is the title's own runtime module and can't be touched).
+the console's platform code. On the console (firmware 13.09) 0.1.1 and 0.1.2 boot nxdk's `hello`
+from an XISO and show its picture. Games built with Microsoft's XDK do not run yet: they read the
+Xbox kernel's header at 0x80010000, where the console has the title's own runtime module
+(`libc.prx`, execute-only), and the console ends the title there (Burnout 3 with 0.1.2).
 
 ## Using it
 
 1. Copy the `PPSA99251` folder to `/data/homebrew/` on the console.
 2. Copy `boot.example.txt` in it to `boot.txt` and write the path of your Xbox disc image
-   (an XISO) on its first line, with hakuX's options after it (`scale=2`, `uncap`, ...).
+   (an XISO) on its first line, with hakuX's options after it (`scale=2`, `uncap`, ...). A path
+   without a leading `/` is in the title folder (`games/My Game.iso`). With the payload loader
+   (elfldr, port 9021) running, PSHakuX leaves its sandbox at start, so the image can be anywhere:
+   `/data/...`, a USB drive (`/mnt/usb0/...`) or extended storage (`/mnt/ext0/...`). A file
+   named `elevation-off.txt` in the title folder keeps it inside the sandbox.
 3. Start PSHakuX from the home screen. Hold **OPTIONS and the touch pad** for two seconds to quit.
 
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
@@ -101,6 +105,38 @@ covers Press5elect's code only, not hakuX's or xemu's. `NOTICE` has it in full.
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.3 (bring-up)
+
+Added
+- Leaving the sandbox at start, as Crux2 does (`sandbox-elevator.elf`, BlackBearReloaded's
+  ps5-native-app-boilerplate): disc images on `/data`, USB drives and extended storage; every
+  step is in the boot log (`sandbox:` lines). `elevation-off.txt` keeps the title inside.
+- Disc and hard-disk paths in `boot.txt` and the arguments may be relative to the title folder.
+- The boot log names every thread hakuX starts with its priority role and priority, and says
+  why a disc image cannot be opened.
+- The native CPU writes its last words (a fatal signal no handler takes, an unhandled system op,
+  a handler fault loop, a nearly full signal stack) into the boot log at once.
+
+Changed
+- Thread priorities for all of hakuX's threads: what the game's timing waits on (the GPU's
+  vblank and timer, the decoder, render and timeline threads, the kernel clock, USB, sound, disc
+  reads, the network, the hitch monitor) at 690 ahead of the vCPU (700); pipeline compiles, the
+  pipeline cache, file closing and savestate packing at 730. Each hakuX thread also gets its own
+  crash-report stack.
+- The hitch monitor samples where the native CPU really is (its EIP in the game's code, or the
+  kernel call it is in), and counts the kernel's idle wait as halted: a game that sleeps is
+  reported as "guest idle", not as a hang.
+- The native CPU's signal and gate stacks are 8 MiB (were 2 MiB).
+- The guest's kernel area relocation is a build setting (`PSHAKUX_WINDOW_HOLE_END`, 0 puts it at
+  0x80010000 for a layout that leaves that range free); the boot log says which is built.
+
+Fixed
+- The native CPU's code sweep no longer rewrites data: sections such as `.rdata` and `.data`
+  are skipped even when the game marks them executable (Burnout 3 had ~400 bytes of its
+  constants turned into traps).
+- hakuX's threads named by their creator (the HLE GPU's, the APU's) now get their priority;
+  0.1.2 applied it only to a thread naming itself.
 
 ### 0.1.2 (bring-up)
 

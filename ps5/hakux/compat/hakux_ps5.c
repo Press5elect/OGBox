@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,7 @@
 #include <unistd.h>
 
 #include "platform/ps5_priority.h"
+#include "platform/ps5_bootlog.h"
 
 /* ---- the debug properties: environment variables, as hakuX's prop.h reads them off Android ------ */
 
@@ -113,21 +115,115 @@ int pshakux_gettid(void)
     return pthread_getthreadid_np();
 }
 
-/* The priority role of a hakuX thread, by the name it gives itself: the HLE GPU's render, timer
- * and timeline threads and the APU's are helpers (690, ahead of the vCPU at 700, which waits on
- * them); the pipeline compilers lower themselves (setpriority) and are background jobs (730). */
-static int role_of(const char *name)
+/* ---- hakuX's threads: names, priority roles, crash report stacks (0.1.3) --------------------
+ *
+ * The console's scheduler is strict (ps5_priority.h): the vCPU runs at 700; what the guest's
+ * timing waits on runs ahead of it at 690 (it mostly sleeps, so it costs the vCPU nothing); work
+ * that may take long and that nothing waits on at once runs behind at 730. Every thread hakuX
+ * creates is in one of these tables; one that is not is said in the boot log as "no role". */
+typedef struct ThreadRole {
+    const char *key;    /* the entry function (pthread_create's argument) or the thread's name */
+    int role;
+    const char *name;   /* the name given (entry functions only) */
+} ThreadRole;
+
+/* pthread_create(..., entry, ...) in hakuX's own files */
+static const ThreadRole k_entries[] = {
+    {"vcpu_thread", PSHAKUX_ROLE_VCPU, "hakux-vcpu"},       /* src/core/hakux_core.c: the guest's CPU */
+    {"vblank_thread", PSHAKUX_ROLE_HELPER, "nv2a-vblank"},      /* the GPU's vertical blank */
+    {"ptimer_thread", PSHAKUX_ROLE_HELPER, "nv2a-ptimer"},      /* the GPU's timer interrupt */
+    {"clock_thread", PSHAKUX_ROLE_HELPER, "kernel-clock"},      /* the kernel's timer DPCs */
+    {"timer_thread", PSHAKUX_ROLE_HELPER, "hle-timers"},        /* the HLE GPU's timers */
+    {"frame_thread", PSHAKUX_ROLE_HELPER, "ohci-frame"},        /* USB frames: the controllers */
+    {"pcm_thread", PSHAKUX_ROLE_HELPER, "aci-pcm"},             /* AC'97 sound */
+    {"reader_thread", PSHAKUX_ROLE_HELPER, "disc-reader"},      /* disc reads the guest waits for */
+    {"nvnet_thread", PSHAKUX_ROLE_HELPER, "nvnet"},             /* the NIC's interrupts */
+    {"net_thread", PSHAKUX_ROLE_HELPER, "net"},                 /* the NIC's network (polls) */
+    {"closer_thread", PSHAKUX_ROLE_BACKGROUND, "io-closer"},    /* closing written files */
+    {"ram_part", PSHAKUX_ROLE_BACKGROUND, "state-ram"},         /* savestates: RAM compressed */
+    {"pz_piece", PSHAKUX_ROLE_BACKGROUND, "cache-pack"},        /* the caches compressed */
+};
+
+/* names given by hle_thread_create and apu_thread_start (their entry is a parameter, "fn") */
+static const ThreadRole k_names[] = {
+    {"hle-pb", PSHAKUX_ROLE_HELPER, NULL},        /* the push-buffer decoder */
+    {"hle.render", PSHAKUX_ROLE_HELPER, NULL},    /* the render thread */
+    {"hle.timeline", PSHAKUX_ROLE_HELPER, NULL},  /* GPU completion: the guest's fences */
+    {"apu.frame", PSHAKUX_ROLE_HELPER, NULL},     /* the APU's frame */
+    {"hle.hitch", PSHAKUX_ROLE_HELPER, NULL},     /* the hitch monitor: it must see a busy vCPU */
+    {"hle-sampler", PSHAKUX_ROLE_HELPER, NULL},   /* the perf sampler: the same */
+    {"hle.pipe", PSHAKUX_ROLE_BACKGROUND, NULL},  /* pipeline compiles */
+    {"hle.prebuild", PSHAKUX_ROLE_BACKGROUND, NULL}, /* cached pipelines built ahead */
+    {"hle.pcache", PSHAKUX_ROLE_BACKGROUND, NULL}, /* the pipeline cache saved */
+};
+
+static const ThreadRole *find_role(const ThreadRole *table, size_t n, const char *key)
 {
-    static const char *const helpers[] = {"hle", "apu", "nv2a", "vblank", "timeline", "render", "dsp"};
-    for (unsigned i = 0; i < sizeof(helpers) / sizeof(helpers[0]); i++) {
-        if (!strncmp(name, helpers[i], strlen(helpers[i]))) {
-            return PSHAKUX_ROLE_HELPER;
+    for (size_t i = 0; key && i < n; i++) {
+        if (!strcmp(table[i].key, key)) {
+            return &table[i];
         }
     }
-    if (!strncmp(name, "pipe", 4) || !strncmp(name, "shader", 6) || !strncmp(name, "net", 3)) {
-        return PSHAKUX_ROLE_BACKGROUND;
+    return NULL;
+}
+
+/* names given by a creator: kept here (the crash report keeps a pointer) */
+#define NAME_SLOTS 64
+static char g_names[NAME_SLOTS][16];
+static atomic_int g_name_next;
+
+static const char *keep_name(const char *name)
+{
+    const int i = atomic_fetch_add(&g_name_next, 1);
+    if (i >= NAME_SLOTS) {
+        return "hakux-thread";
     }
-    return -1;
+    snprintf(g_names[i], sizeof(g_names[i]), "%s", name);
+    return g_names[i];
+}
+
+typedef struct Start {
+    void *(*fn)(void *);
+    void *arg;
+    const char *entry;
+} Start;
+
+static void *thread_start(void *opaque)
+{
+    Start s = *(Start *)opaque;
+    free(opaque);
+    pshakux_install_crash_stack();  /* a fault or an overflow in a helper is reported too */
+    const ThreadRole *r = find_role(k_entries, sizeof(k_entries) / sizeof(k_entries[0]), s.entry);
+    if (r) {
+        pthread_set_name_np(pthread_self(), r->name);
+        pshakux_thread_named(r->name);
+        pshakux_priority_set_thread(pthread_self(), r->role, r->name, s.entry);
+    } else if (strcmp(s.entry, "fn") != 0) {
+        /* not a thread helper's (those name it after pthread_create): no role known */
+        pshakux_thread_named(s.entry);
+        pshakux_priority_set_thread(pthread_self(), -1, s.entry, "not in hakux_ps5.c's tables");
+    }
+    void *const result = s.fn(s.arg);
+    pshakux_thread_gone();
+    return result;
+}
+
+int pshakux_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*fn)(void *), void *arg,
+                           const char *entry)
+{
+    Start *s = malloc(sizeof(*s));
+    if (!s) {
+        return EAGAIN;
+    }
+    s->fn = fn;
+    s->arg = arg;
+    s->entry = entry ? entry : "?";
+#undef pthread_create
+    const int r = pthread_create(thread, attr, thread_start, s);
+    if (r != 0) {
+        free(s);
+    }
+    return r;
 }
 
 int pshakux_setname(pthread_t thread, const char *name)
@@ -136,11 +232,16 @@ int pshakux_setname(pthread_t thread, const char *name)
         return EINVAL;
     }
     pthread_set_name_np(thread, name);
-    if (pthread_equal(thread, pthread_self())) {
-        const int role = role_of(name);
-        if (role >= 0) {
-            pshakux_priority_set(role);
-        }
+    const ThreadRole *r = find_role(k_names, sizeof(k_names) / sizeof(k_names[0]), name);
+    bool named_by_entry = false;   /* its entry function gave it this name and role already */
+    for (size_t i = 0; i < sizeof(k_entries) / sizeof(k_entries[0]); i++) {
+        named_by_entry |= !strcmp(k_entries[i].name, name);
+    }
+    if (!named_by_entry) {
+        const char *kept = keep_name(name);
+        pshakux_thread_named_for(thread, kept);
+        pshakux_priority_set_thread(thread, r ? r->role : -1, kept,
+                                    pthread_equal(thread, pthread_self()) ? "its own name" : "its creator's name");
     }
     return 0;
 }
@@ -339,4 +440,22 @@ int nftw(const char *path, int (*fn)(const char *, const struct stat *, int, str
     }
     memcpy(buf, path, len + 1);
     return walk(buf, len, sizeof(buf), 0, fn, flags);
+}
+
+/* ---- the native CPU's last words (0.1.3) -----------------------------------------------------
+ * native/cpu/cpu_native.c's line before a fatal signal goes on or an abort: straight into the boot
+ * log, synced, and to klog, from the signal handler (no stdio, no locks). */
+void nc_host_emergency_write(const char *text, size_t len)
+{
+    const int fd = pshakux_log_fd();
+    if (fd >= 0) {
+        char stamp[24];
+        const int n = snprintf(stamp, sizeof(stamp), "[%8.3f] ", pshakux_uptime());
+        if (n > 0) {
+            (void)!write(fd, stamp, (size_t)n);
+        }
+        (void)!write(fd, text, len);
+        (void)fsync(fd);
+    }
+    pshakux_klog_raw(text, (unsigned)len);
 }
