@@ -127,6 +127,10 @@ int ps5vfs_ungetc(int c, FILE* fp);
 int ps5vfs_fflush(FILE* fp);
 int ps5vfs_fileno(FILE* fp);
 
+/* OGBox: a disc image for hakuX's pread/fstat (a descriptor that stands for a virtual file, served
+ * by the wrapped pread and fstat; a plain descriptor for a local path). -1 with errno. */
+int ps5vfs_disc_open(const char* path);
+
 /* ---- writing ---------------------------------------------------------------
  * Whole files only, and only for virtual paths. Each returns 0, or -1 with errno (EROFS from a
  * mount that cannot write, EACCES when the server refuses the account). */

@@ -46,7 +46,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include <dirent.h>
+#include <strings.h>
+#include <sys/stat.h>
+
+// OGBox 0.1.14: ImVec2 arithmetic and ImGui's internals for the game list's navigation (the
+// program's source is compiled inside a namespace: src/wrap.cpp.in)
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "vulkanexamplebase.h"
+#include "imgui_internal.h"
 #include "VulkanglTFModel.h"
 #include "VulkanRaytracingSample.h"
 #include "VulkanFrameBuffer.hpp"

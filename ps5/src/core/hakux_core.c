@@ -47,6 +47,9 @@
 #include <unistd.h>
 
 static NcCore g_core;
+int ps5vfs_is_virtual(const char *path);
+int ps5vfs_disc_open(const char *path);
+
 static int g_disc_fd = -1;
 static int g_state = PSHX_CORE_IDLE;
 static bool g_configured, g_widescreen;
@@ -323,7 +326,9 @@ bool pshx_core_configure(const PshxCoreConfig *config)
             set_state(PSHX_CORE_FAILED);
             return false;
         }
-        g_disc_fd = open(g_image, O_RDONLY | O_CLOEXEC);
+        /* 0.1.14: an image on a network share (/smb/<share>/...) through the virtual file
+         * layer: a descriptor whose pread and fstat it answers (ps5vfs_disc_open) */
+        g_disc_fd = ps5vfs_is_virtual(g_image) ? ps5vfs_disc_open(g_image) : open(g_image, O_RDONLY | O_CLOEXEC);
         if (g_disc_fd < 0) {
             snprintf(g_message, sizeof(g_message), "The disc image %s cannot be opened (%s).", g_image,
                      strerror(errno));

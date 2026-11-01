@@ -4,16 +4,26 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
- * The bring-up front end: enough to boot a game and see it, until the full front end (Crux2's
- * bigpicture interface) comes. It talks to the emulator only through the Core
- * (src/core/ogbox_core.h), which is the seam that front end takes over.
+ * The front end: a game list to pick from, then the game. It talks to the emulator only through
+ * the Core (src/core/ogbox_core.h).
+ *
+ *  - The game list (0.1.14): what shows when the title starts without a game named in its
+ *    arguments. It browses the console's internal storage (/data), USB drives (/mnt/usb0-7),
+ *    extended storage (/mnt/ext0-1) and network shares (SMB or NFS, from
+ *    /data/ogbox/network.cfg, Crux2's format: src/platform/vfs/ps5_vfs.h), showing folders and
+ *    Xbox disc images (.iso, .xiso). D-pad to move, CROSS to open a folder or start a game,
+ *    CIRCLE for the folder above. The folder last opened is remembered (/data/ogbox/library.txt).
+ *    Starting a game relaunches the title with --boot <image> (src/platform/ps5_relaunch.h): the
+ *    game boots in a fresh instance, the one way hakuX's core is known to start.
+ *    Images on a share are read through the virtual file layer (ps5vfs_disc_open).
  *
  *  - The launch: the template's main (src/main.cpp) has opened the boot log (ogbox-boot.log in
  *    the title folder, the previous run's kept as ogbox-boot.previous.log, a crash report, an
  *    "alive:" heartbeat with the Core's status line), dismissed the splash and set up Vulkan on
  *    RADV; this class is its one program.
- *  - What boots: /data/homebrew/PPSA99251/boot.txt (or the title folder's), read before the
- *    machine starts; a path that does not start with '/' is in the title folder (0.1.3), one that
+ *  - boot.txt: /data/homebrew/PPSA99251/boot.txt (or the title folder's): its options are read
+ *    every run; its first line (a disc image) boots straight away only with an "autoboot" line
+ *    (0.1.14; the game list otherwise). A path that does not start with '/' is in the title folder (0.1.3), one that
  *    does may be anywhere the title sees: out of its sandbox (src/platform/ps5_sandbox.cpp),
  *    /data/..., USB drives (/mnt/usb0/...) and extended storage (/mnt/ext0/...):
  *
@@ -23,6 +33,7 @@
  *        hdd=/data/ogbox/hdd           the hard disk's folder (default /data/ogbox/hdd)
  *        prop debug.hakux.NAME=VALUE     one of hakuX's debug properties
  *        env NAME=VALUE                  one of hakuX's environment switches (0.1.5: diagnostics)
+ *        autoboot                        boot the first line's image without the game list
  *
  *    with /data/ogbox/props.txt for more properties (NAME=VALUE lines). The title's arguments come
  *    before boot.txt (a relaunch gives them, src/platform/ps5_relaunch.h; on the console argv[0] is
@@ -46,8 +57,9 @@
  *    raw readings, with no dead zone added (the game has its own): cross A, circle B, square X,
  *    triangle Y, R1 black, L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back, the
  *    sticks and their clicks. The rumble the game asks for goes to the controller's motors.
- *  - Quitting: hold OPTIONS and the touch pad together for two seconds; the title ends through
- *    the shell, as every title does (the template's exit). hakuX's core has no teardown yet, so a
+ *  - Quitting: hold OPTIONS and the touch pad together for two seconds: in a game, back to the
+ *    game list (a relaunch, 0.1.14); in the list, the title ends through the shell, as every title
+ *    does (the template's exit), as does its "Quit OGBox" row. hakuX's core has no teardown yet, so a
  *    new boot is a relaunch of the title: the guest's reboot into another XBE relaunches it with
  *    --boot <same disc> --relaunch, and the full front end will do the same for "back to the
  *    library" (no arguments) and "load a savestate" (--boot <disc> --loadstate <file>).
@@ -60,13 +72,20 @@
 
 #include "vulkanexamplebase.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include <dirent.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 #include "platform.h"
@@ -74,6 +93,7 @@
 #include "platform/ps5_priority.h"
 #include "platform/ps5_relaunch.h"
 #include "platform/ps5_sandbox.h"
+#include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 
 #include "stb_image.h"   // (its implementation is the base class's: base/VulkanglTFModel.cpp)
@@ -86,12 +106,16 @@ namespace {
 constexpr const char *kBootFile = "/data/homebrew/PPSA99251/boot.txt";
 constexpr const char *kDataRoot = "/data/ogbox";
 constexpr double kQuitHoldSeconds = 2.0;
+constexpr const char *kLibraryFile = "/data/ogbox/library.txt";
+constexpr const char *kNetworkFile = "/data/ogbox/network.cfg";
 
 struct BootConfig {
 	std::string image;
 	std::string hdd = std::string(kDataRoot) + "/hdd";
 	std::vector<std::string> options;
 	std::string source;
+	std::string bootTxtImage;   // boot.txt's first line (0.1.14: boots only with "autoboot")
+	bool autoboot{ false };
 };
 
 std::string trim(const std::string &s)
@@ -142,8 +166,12 @@ bool readBootConfig(BootConfig &config)
 				continue;
 			}
 			if (!haveImage) {
-				config.image = resolvePath(line);
+				config.bootTxtImage = resolvePath(line);
 				haveImage = true;
+				continue;
+			}
+			if (line == "autoboot") {
+				config.autoboot = true;
 				continue;
 			}
 			if (line.rfind("env ", 0) == 0) {
@@ -185,7 +213,7 @@ bool readBootConfig(BootConfig &config)
 			}
 		}
 		std::fclose(file);
-		return haveImage;
+		return true;
 	}
 	return false;
 }
@@ -275,6 +303,206 @@ const char *stateName(int state)
 	return "?";
 }
 
+// ---- the game list (0.1.14) ------------------------------------------------------------------
+
+struct LibraryEntry {
+	enum Kind { Place, Folder, Image, Up, Quit } kind;
+	std::string name;   // as shown
+	std::string path;   // what it opens
+	int64_t size{ 0 };
+	std::string note;   // a dim line under it
+};
+
+bool isDiscImage(const std::string &name)
+{
+	const size_t dot = name.rfind('.');
+	if (dot == std::string::npos) {
+		return false;
+	}
+	const char *ext = name.c_str() + dot + 1;
+	return !strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso");
+}
+
+std::string sizeText(int64_t bytes)
+{
+	char text[32];
+	if (bytes >= (int64_t(1) << 30)) {
+		std::snprintf(text, sizeof(text), "%.2f GB", double(bytes) / double(int64_t(1) << 30));
+	} else {
+		std::snprintf(text, sizeof(text), "%.0f MB", double(bytes) / double(1 << 20));
+	}
+	return text;
+}
+
+std::string parentOf(const std::string &path)
+{
+	const size_t slash = path.find_last_of('/');
+	return slash == std::string::npos || slash == 0 ? std::string("/") : path.substr(0, slash);
+}
+
+std::string baseName(const std::string &path)
+{
+	const size_t slash = path.find_last_of('/');
+	return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+bool isFolder(const std::string &path)
+{
+	struct stat st;
+	const int r = ps5vfs_is_virtual(path.c_str()) ? ps5vfs_stat(path.c_str(), &st) : stat(path.c_str(), &st);
+	return r == 0 && S_ISDIR(st.st_mode);
+}
+
+/* The places the list starts from: internal storage, the drives that are there, the shares. */
+std::vector<LibraryEntry> listPlaces()
+{
+	std::vector<LibraryEntry> places;
+	const std::string titleGames = std::string(pshakux_title_dir()) + "/games";
+	if (isFolder(titleGames)) {
+		places.push_back({ LibraryEntry::Place, "OGBox's games folder", titleGames, 0, titleGames });
+	}
+	places.push_back({ LibraryEntry::Place, "Internal storage", "/data", 0, "/data" });
+	for (int i = 0; i < 8; i++) {
+		const std::string usb = "/mnt/usb" + std::to_string(i);
+		if (isFolder(usb)) {
+			places.push_back({ LibraryEntry::Place, "USB drive " + std::to_string(i), usb, 0, usb });
+		}
+	}
+	for (int i = 0; i < 2; i++) {
+		const std::string ext = "/mnt/ext" + std::to_string(i);
+		if (isFolder(ext)) {
+			places.push_back({ LibraryEntry::Place, "Extended storage " + std::to_string(i), ext, 0, ext });
+		}
+	}
+	for (unsigned i = 0;; i++) {
+		const char *mount = ps5vfs_mount_point(i);
+		if (!mount) {
+			break;
+		}
+		if (std::strncmp(mount, "/smb/", 5) == 0) {
+			places.push_back({ LibraryEntry::Place, std::string("Network: ") + (mount + 5), mount, 0, mount });
+		}
+	}
+	return places;
+}
+
+/* A folder's subfolders and disc images, folders first, by name. false with the reason. */
+bool listFolder(const std::string &folder, std::vector<LibraryEntry> &out, std::string &error)
+{
+	std::vector<LibraryEntry> folders, images;
+	const auto add = [&](const std::string &name, bool dir, int64_t size) {
+		if (name.empty() || name[0] == '.' || name == "$RECYCLE.BIN" || name == "System Volume Information") {
+			return;
+		}
+		const std::string path = (folder == "/" ? std::string() : folder) + "/" + name;
+		if (dir) {
+			folders.push_back({ LibraryEntry::Folder, name, path, 0, std::string() });
+		} else if (isDiscImage(name)) {
+			images.push_back({ LibraryEntry::Image, name, path, size, sizeText(size) });
+		}
+	};
+	if (ps5vfs_is_virtual(folder.c_str())) {
+		ps5vfs_dir *dir = ps5vfs_opendir(folder.c_str());
+		if (!dir) {
+			error = std::strerror(errno ? errno : ENOENT);
+			return false;
+		}
+		ps5vfs_dirent entry;
+		while (ps5vfs_readdir(dir, &entry) == 1) {
+			add(entry.name, entry.is_directory != 0, entry.size);
+		}
+		ps5vfs_closedir(dir);
+	} else {
+		DIR *dir = opendir(folder.c_str());
+		if (!dir) {
+			error = std::strerror(errno);
+			return false;
+		}
+		while (struct dirent *entry = readdir(dir)) {
+			const std::string name = entry->d_name;
+			if (name == "." || name == "..") {
+				continue;
+			}
+			const std::string path = (folder == "/" ? std::string() : folder) + "/" + name;
+			struct stat st;
+			if (stat(path.c_str(), &st) != 0) {
+				continue;
+			}
+			add(name, S_ISDIR(st.st_mode), static_cast<int64_t>(st.st_size));
+		}
+		closedir(dir);
+	}
+	const auto byName = [](const LibraryEntry &a, const LibraryEntry &b) {
+		return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+	};
+	std::sort(folders.begin(), folders.end(), byName);
+	std::sort(images.begin(), images.end(), byName);
+	out = std::move(folders);
+	out.insert(out.end(), images.begin(), images.end());
+	return true;
+}
+
+/* A listing on a thread of its own: a share's server may take seconds to answer, and the list
+ * keeps drawing meanwhile. */
+struct Listing {
+	std::mutex mutex;
+	bool done{ false }, ok{ false };
+	std::vector<LibraryEntry> entries;
+	std::string error;
+};
+
+void vfsLog(const char *line)
+{
+	pshakux_log("vfs: %s", line);
+}
+
+/* The virtual file layer: its stand-in file, its log, the shares of network.cfg (a commented
+ * example is written the first time). */
+void startFileLayer()
+{
+	static std::string shadow;
+	shadow = std::string(pshakux_title_dir()) + "/sce_sys/param.json";
+	ps5vfs_set_shadow_path(shadow.c_str());
+	ps5vfs_set_log(vfsLog);
+	struct stat st;
+	if (stat(kNetworkFile, &st) != 0) {
+		if (FILE *f = std::fopen(kNetworkFile, "w")) {
+			std::fputs("# OGBox's network shares: one \"path =\" line per share, shown in the game list.\n"
+				"# SMB: server/share/folder (the server by its IP address); NFS: nfs://server/export/folder\n"
+				"#\n"
+				"# path = 192.168.1.10/Games/Xbox\n"
+				"# path = nfs://192.168.1.20/volume1/games/xbox\n"
+				"# user = guest\n"
+				"# password =\n", f);
+			std::fclose(f);
+			pshakux_log("ogbox: wrote an example %s", kNetworkFile);
+		}
+	}
+	const int mounted = ps5vfs_load_network_config(kNetworkFile);
+	pshakux_log("ogbox: %d network share(s) from %s", mounted < 0 ? 0 : mounted, kNetworkFile);
+}
+
+std::string readLastFolder()
+{
+	std::string folder;
+	if (FILE *f = std::fopen(kLibraryFile, "r")) {
+		char line[1024];
+		if (std::fgets(line, sizeof(line), f)) {
+			folder = trim(line);
+		}
+		std::fclose(f);
+	}
+	return folder;
+}
+
+void writeLastFolder(const std::string &folder)
+{
+	if (FILE *f = std::fopen(kLibraryFile, "w")) {
+		std::fprintf(f, "%s\n", folder.c_str());
+		std::fclose(f);
+	}
+}
+
 } // namespace
 
 class VulkanExample : public VulkanExampleBase
@@ -321,6 +549,135 @@ public:
 	int lastState{ -1 };
 	bool relaunchAsked{ false };
 
+	// The game list (0.1.14): shown when no game was named
+	bool library{ false };
+	std::string folder;                       // "" for the places
+	std::vector<LibraryEntry> entries;
+	std::shared_ptr<Listing> listing;         // the listing under way, if any
+	std::string listError;
+	int selected{ 0 };
+	bool focusSet{ false };
+	std::string startPath;                    // chosen: started on the next frame
+	int startDelay{ 0 };
+	std::string selectName;                   // to select once the listing comes (going up)
+
+	/* Opens a folder ("" for the places), listing it on a thread of its own. */
+	void openFolder(const std::string &path, const std::string &select = std::string())
+	{
+		folder = path;
+		selectName = select;
+		entries.clear();
+		listError.clear();
+		selected = 0;
+		focusSet = false;
+		listing.reset();
+		if (path.empty()) {
+			entries = listPlaces();
+			entries.push_back({ LibraryEntry::Quit, "Quit OGBox", std::string(), 0, std::string() });
+			pickSelection();
+			return;
+		}
+		auto job = std::make_shared<Listing>();
+		listing = job;
+		std::thread([job, path]() {
+			std::vector<LibraryEntry> found;
+			std::string error;
+			const bool ok = listFolder(path, found, error);
+			std::lock_guard<std::mutex> lock(job->mutex);
+			job->entries = std::move(found);
+			job->error = error;
+			job->ok = ok;
+			job->done = true;
+		}).detach();
+	}
+
+	void pickSelection()
+	{
+		if (selectName.empty()) {
+			return;
+		}
+		for (size_t i = 0; i < entries.size(); i++) {
+			if (entries[i].name == selectName || entries[i].path == selectName) {
+				selected = static_cast<int>(i);
+				break;
+			}
+		}
+		selectName.clear();
+	}
+
+	/* The listing's result into the list, when it has come. */
+	void collectListing()
+	{
+		if (!listing) {
+			return;
+		}
+		std::lock_guard<std::mutex> lock(listing->mutex);
+		if (!listing->done) {
+			return;
+		}
+		if (listing->ok) {
+			entries = { { LibraryEntry::Up, "..", parentOf(folder), 0, std::string() } };
+			entries.insert(entries.end(), listing->entries.begin(), listing->entries.end());
+			writeLastFolder(folder);
+			pshakux_log("library: %s: %zu entries", folder.c_str(), entries.size() - 1);
+		} else {
+			listError = listing->error;
+			entries = { { LibraryEntry::Up, "..", parentOf(folder), 0, std::string() } };
+			pshakux_log("library: %s cannot be listed: %s", folder.c_str(), listError.c_str());
+		}
+		listing.reset();
+		pickSelection();
+	}
+
+	/* The folder above, or the places from a place's own folder. */
+	void goUp()
+	{
+		if (folder.empty()) {
+			return;
+		}
+		for (const LibraryEntry &place : listPlaces()) {
+			if (place.path == folder) {
+				openFolder(std::string(), place.path);
+				return;
+			}
+		}
+		const std::string up = parentOf(folder);
+		openFolder(up == "/" || up == "/mnt" || up == "/smb" ? std::string() : up, baseName(folder));
+	}
+
+	void activate(const LibraryEntry &entry)
+	{
+		switch (entry.kind) {
+		case LibraryEntry::Place:
+		case LibraryEntry::Folder:
+			openFolder(entry.path);
+			break;
+		case LibraryEntry::Up:
+			goUp();
+			break;
+		case LibraryEntry::Image:
+			startPath = entry.path;
+			startDelay = 2;   // a frame or two to say so before the relaunch
+			pshakux_log("library: starting %s", entry.path.c_str());
+			break;
+		case LibraryEntry::Quit:
+			pshakux_log("library: Quit OGBox");
+			quit = true;
+			break;
+		}
+	}
+
+	/* Back to the game list from a game: the title starts again with no game named. */
+	void relaunchToLibrary()
+	{
+		relaunchAsked = true;
+		const char *args[] = { nullptr };
+		pshakux_log("ogbox: back to the game list");
+		const int r = pshakux_relaunch(args);
+		pshakux_log("ogbox: the relaunch was refused (%#x): quitting", static_cast<unsigned>(r));
+		quit = true;
+	}
+
 	/* The guest rebooted into another XBE: the title starts again with the same disc, hard disk and
 	 * options, and hakuX's "relaunch" (it boots the XBE the launch data names). */
 	void relaunchForGuest()
@@ -359,15 +716,34 @@ public:
 		if (loaded >= 0) {
 			pshakux_log("ogbox: %d properties from %s", loaded, props.c_str());
 		}
-		if (!readArguments(boot) && !readBootConfig(boot)) {
-			problem = std::string("No game to boot: write the path of an Xbox disc image (an XISO) on the first line of ") +
-				kBootFile + ".";
-			pshakux_log("ogbox: no boot.txt with a disc image (%s, %s)", kBootFile, titleBootFile().c_str());
+		ps5.ownOverlay = true;   // OGBox lays out its own windows (the game list, the status)
+		startFileLayer();
+		/* boot.txt's options every run (0.1.14: a relaunch's arguments no longer leave them out);
+		 * then the arguments, which win */
+		readBootConfig(boot);
+		const bool named = readArguments(boot);
+		if (!named && boot.autoboot && !boot.bootTxtImage.empty()) {
+			boot.image = boot.bootTxtImage;
+			boot.source = boot.source + " (autoboot)";
+		}
+		if (boot.image.empty()) {
+			library = true;
+			std::string last = readLastFolder();
+			if (last.empty() && !boot.bootTxtImage.empty()) {
+				last = parentOf(boot.bootTxtImage);
+			}
+			if (!last.empty() && isFolder(last)) {
+				openFolder(last);
+			} else {
+				openFolder(std::string());
+			}
+			pshakux_log("ogbox: the game list (%s)", folder.empty() ? "the places" : folder.c_str());
 			return;
 		}
 		if (boot.image != "none") {
 			struct stat st;
-			if (stat(boot.image.c_str(), &st) != 0) {
+			const bool virtualImage = ps5vfs_is_virtual(boot.image.c_str()) != 0;
+			if ((virtualImage ? ps5vfs_stat(boot.image.c_str(), &st) : stat(boot.image.c_str(), &st)) != 0) {
 				const int error = errno;
 				pshakux_log("ogbox: the disc image %s cannot be opened: %s (%s)", boot.image.c_str(), std::strerror(error),
 					pshakux_sandbox_elevated() ? "out of the sandbox: the console's own paths are visible"
@@ -773,6 +1149,10 @@ public:
 	/* Each signed-in user's controller to the Core; the rumble back; the quit combination. */
 	void feedControllers()
 	{
+		if (library) {
+			libraryControls();
+			return;
+		}
 		const uint32_t connected = pad_players();
 		if (connected != players) {
 			players = connected;
@@ -806,12 +1186,55 @@ public:
 			if (quitHeldSince < 0.0) {
 				quitHeldSince = now;
 			} else if (now - quitHeldSince >= kQuitHoldSeconds) {
-				pshakux_log("ogbox: OPTIONS and the touch pad held for %.0f s: quitting", kQuitHoldSeconds);
+				pshakux_log("ogbox: OPTIONS and the touch pad held for %.0f s: back to the game list", kQuitHoldSeconds);
+				quitHeldSince = now + 1e9;   // once
+				relaunchToLibrary();
+			}
+		} else {
+			quitHeldSince = -1.0;
+		}
+	}
+
+	/* The game list's own buttons (the D-pad and CROSS go to the list through ImGui's navigation):
+	 * CIRCLE the folder above; OPTIONS and the touch pad held, quit. */
+	void libraryControls()
+	{
+		struct pad first{};
+		pad_player(0, &first);
+		if ((first.pressed & PAD_CIRCLE) && startPath.empty()) {
+			goUp();
+		}
+		const uint32_t combo = PAD_OPTIONS | PAD_TOUCH_PAD;
+		const double now = now_seconds();
+		if ((first.held & combo) == combo) {
+			if (quitHeldSince < 0.0) {
+				quitHeldSince = now;
+			} else if (now - quitHeldSince >= kQuitHoldSeconds) {
+				pshakux_log("ogbox: OPTIONS and the touch pad held in the game list: quitting");
 				quit = true;
 			}
 		} else {
 			quitHeldSince = -1.0;
 		}
+	}
+
+	void renderLibrary()
+	{
+		collectListing();
+		if (!startPath.empty() && --startDelay < 0) {
+			const std::string path = startPath;
+			startPath.clear();
+			const char *args[] = { "--boot", path.c_str(), nullptr };
+			const int r = pshakux_relaunch(args);
+			listError = "The console refused to start the title again (" + std::to_string(r) + ").";
+			pshakux_log("library: the relaunch for %s was refused (%#x)", path.c_str(), static_cast<unsigned>(r));
+		}
+		ui.visible = true;
+		VulkanExampleBase::prepareFrame();
+		upload = false;
+		buildCommandBuffer();
+		VulkanExampleBase::submitFrame();
+		framesDrawn++;
 	}
 
 	void render() override
@@ -820,6 +1243,10 @@ public:
 			return;
 		}
 		feedControllers();
+		if (library) {
+			renderLibrary();
+			return;
+		}
 		const int state = pshx_core_state();
 		if (state != lastState) {
 			lastState = state;
@@ -841,21 +1268,131 @@ public:
 
 	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
 	{
-		const int state = pshx_core_state();
-		overlay->text("OGBox %s by Press5elect - built on hakuX, for PS5 (unofficial)", pshakux_build_version());
-		if (!problem.empty()) {
-			overlay->text("%s", problem.c_str());
+		if (library) {
+			drawLibrary(overlay->scale);
 		} else {
-			overlay->text("Disc: %s", boot.image.c_str());
-			overlay->text("Core: %s", stateName(state));
+			drawStatus(overlay->scale);
+		}
+	}
+
+	void drawLibrary(float s)
+	{
+		const ImVec4 accent(0.42f, 0.78f, 0.25f, 1.0f);   // Xbox green
+		const ImVec4 dim(0.62f, 0.65f, 0.70f, 1.0f);
+		const ImVec4 failure(1.0f, 0.45f, 0.40f, 1.0f);
+		ImGui::SetNextWindowPos(ImVec2(width * 0.5f, height * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(std::min(1300.0f * s, width - 48.0f * s), height - 48.0f * s), ImGuiCond_Always);
+		if (!focusSet) {
+			ImGui::SetNextWindowFocus();
+		}
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * s);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.0f * s, 24.0f * s));
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * s, 6.0f * s));
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.07f, 0.08f, 0.97f));
+		ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(accent.x, accent.y, accent.z, 0.30f));
+		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(accent.x, accent.y, accent.z, 0.45f));
+		ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(accent.x, accent.y, accent.z, 0.60f));
+		ImGui::Begin("OGBox", nullptr,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+		ImGui::SetWindowFontScale(1.6f);
+		ImGui::TextColored(accent, "OGBox");
+		ImGui::SetWindowFontScale(1.0f);
+		ImGui::TextColored(dim, "%s by Press5elect - built on hakuX, for PS5 (unofficial)", pshakux_build_version());
+		ImGui::Separator();
+		ImGui::Text("%s", folder.empty() ? "Choose where your games are" : folder.c_str());
+		ImGui::Spacing();
+
+		const float helpHeight = ImGui::GetTextLineHeightWithSpacing() * (listError.empty() ? 2.0f : 3.5f) + 30.0f * s;
+		ImGui::BeginChild("entries", ImVec2(0.0f, ImGui::GetContentRegionAvail().y - helpHeight), false,
+			ImGuiWindowFlags_NavFlattened);
+		if (listing) {
+			ImGui::TextColored(dim, "Reading the folder...");
+		}
+		int chosen = -1;
+		for (size_t i = 0; i < entries.size(); i++) {
+			const LibraryEntry &e = entries[i];
+			ImGui::PushID(static_cast<int>(i));
+			std::string label;
+			switch (e.kind) {
+			case LibraryEntry::Place: label = e.name; break;
+			case LibraryEntry::Folder: label = "[" + e.name + "]"; break;
+			case LibraryEntry::Image: label = e.name; break;
+			case LibraryEntry::Up: label = ".. (the folder above)"; break;
+			case LibraryEntry::Quit: label = "Quit OGBox"; break;
+			}
+			if (ImGui::Selectable(label.c_str(), static_cast<int>(i) == selected) && startPath.empty()) {
+				chosen = static_cast<int>(i);
+			}
+			if (!focusSet && static_cast<int>(i) == selected) {
+				ImGui::SetItemDefaultFocus();
+				ImGui::SetNavIDWithRectRel(ImGui::GetID(label.c_str()), 0,
+					ImRect(ImGui::GetItemRectMin() - ImGui::GetWindowPos(), ImGui::GetItemRectMax() - ImGui::GetWindowPos()));
+				ImGui::SetScrollHere(0.5f);
+			}
+			if (ImGui::IsItemFocused()) {
+				selected = static_cast<int>(i);
+				focusSet = true;
+			}
+			if (!e.note.empty() && (e.kind == LibraryEntry::Image || e.kind == LibraryEntry::Place)) {
+				ImGui::SameLine(ImGui::GetWindowWidth() - 220.0f * s);
+				ImGui::TextColored(dim, "%s", e.kind == LibraryEntry::Image ? e.note.c_str() : "");
+			}
+			ImGui::PopID();
+		}
+		if (!listing && entries.size() <= 1 && !folder.empty() && listError.empty()) {
+			ImGui::TextColored(dim, "No folders or Xbox disc images (.iso, .xiso) here.");
+		}
+		ImGui::EndChild();
+		if (chosen >= 0 && chosen < static_cast<int>(entries.size())) {
+			const LibraryEntry entry = entries[static_cast<size_t>(chosen)];
+			activate(entry);
+		}
+
+		ImGui::Separator();
+		if (!startPath.empty()) {
+			ImGui::TextColored(accent, "Starting %s...", baseName(startPath).c_str());
+		} else {
+			ImGui::TextColored(dim, "CROSS open / start   CIRCLE back   Hold OPTIONS + touch pad: quit (in a game: back here)");
+			ImGui::TextColored(dim, "Network shares: %s", kNetworkFile);
+		}
+		if (!listError.empty()) {
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(failure, "%s", listError.c_str());
+			ImGui::PopTextWrapPos();
+		}
+		ImGui::End();
+		ImGui::PopStyleColor(4);
+		ImGui::PopStyleVar(3);
+	}
+
+	/* While a game starts, or when it could not: what is happening, in a corner. */
+	void drawStatus(float s)
+	{
+		if (!ui.visible) {
+			return;
+		}
+		const int state = pshx_core_state();
+		ImGui::SetNextWindowPos(ImVec2(10.0f * s, 10.0f * s), ImGuiCond_Always);
+		ImGui::Begin("OGBox status", nullptr,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
+			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+			ImGuiWindowFlags_NoNav);
+		ImGui::Text("OGBox %s by Press5elect - built on hakuX, for PS5 (unofficial)", pshakux_build_version());
+		if (!problem.empty()) {
+			ImGui::Text("%s", problem.c_str());
+		} else {
+			ImGui::Text("Disc: %s", boot.image.c_str());
+			ImGui::Text("Core: %s", stateName(state));
 			if (pshx_core_message()[0]) {
-				overlay->text("%s", pshx_core_message());
+				ImGui::Text("%s", pshx_core_message());
 			}
 			if (state == PSHX_CORE_BOOTING || (state == PSHX_CORE_RUNNING && !havePicture)) {
-				overlay->text("Waiting for the game's first frame...");
+				ImGui::Text("Waiting for the game's first frame...");
 			}
 		}
-		overlay->text("Hold OPTIONS and the touch pad for two seconds to quit. Log: ogbox-boot.log");
+		ImGui::Text("Hold OPTIONS and the touch pad for two seconds: back to the game list. Log: ogbox-boot.log");
+		ImGui::End();
 	}
 };
 

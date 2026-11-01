@@ -127,6 +127,10 @@ done
 # wrappers stay local.
 extra_flags+=(--wrap=clock_gettime --wrap=lstat --wrap=poll)
 extra_names+=(__wrap_clock_gettime __wrap_lstat __wrap_poll)
+# OGBox 0.1.14: pread and fstat, for the disc image on a network share (src/platform/vfs/ps5_vfs.cpp,
+# ps5vfs_disc_open): one descriptor answered from the share, every other one by libc.
+extra_flags+=(--wrap=pread --wrap=fstat)
+extra_names+=(__wrap_pread __wrap_fstat)
 
 platform="$sdk/target/lib/libps5platform.a"
 "$nm" --defined-only "$platform" 2>/dev/null | awk '$2 == "T" && $3 ~ /^ps5_/ { print substr($3, 5) }' \

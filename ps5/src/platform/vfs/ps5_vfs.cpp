@@ -26,6 +26,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 #ifndef PS5VFS_SHADOW_PATH
 #ifdef __PROSPERO__
@@ -1424,4 +1425,76 @@ extern "C" void ps5vfs_stats(unsigned* open_files, uint64_t* bytes_read, uint64_
     *bytes_read = s_bytes_read.load(std::memory_order_relaxed);
   if (backend_reads)
     *backend_reads = s_backend_reads.load(std::memory_order_relaxed);
+}
+
+/* ---------------------------------------------------- a disc image on a share
+ * OGBox: hakuX reads its disc image with pread() and fstat() on a descriptor (native/core/
+ * xdvdfs.c, state/save.c). A virtual image is opened here and the real FILE that stands for it
+ * gives that descriptor; pread and fstat are wrapped for the whole title (tools/link-title.sh:
+ * --wrap=pread --wrap=fstat) and answered from the virtual stream for that one descriptor, through
+ * the stream's block cache. Every other descriptor goes straight to libc. OGBox by Press5elect. */
+
+namespace {
+std::atomic<int> s_disc_fd{-1};
+FILE* s_disc_fp = nullptr;
+}
+
+extern "C" int ps5vfs_disc_open(const char* path)
+{
+  FILE* const fp = ps5vfs_fopen(path, "rb");
+  if (!fp)
+    return -1;
+  if (!Find(fp))
+  {
+    /* not virtual after all: a plain descriptor of its own */
+    const int fd = dup(fileno(fp));
+    fclose(fp);
+    return fd;
+  }
+  s_disc_fp = fp;
+  const int fd = fileno(fp);
+  s_disc_fd.store(fd, std::memory_order_release);
+  ps5vfs::Log("disc image %s: read from the share (descriptor %d stands for it)", path, fd);
+  return fd;
+}
+
+extern "C" ssize_t __real_pread(int fd, void* buffer, size_t length, off_t offset);
+extern "C" int __real_fstat(int fd, struct stat* st);
+
+extern "C" ssize_t __wrap_pread(int fd, void* buffer, size_t length, off_t offset)
+{
+  if (fd < 0 || fd != s_disc_fd.load(std::memory_order_acquire))
+    return __real_pread(fd, buffer, length, offset);
+  VFile* const file = Find(s_disc_fp);
+  if (!file || offset < 0)
+  {
+    errno = EINVAL;
+    return -1;
+  }
+  std::lock_guard lock(file->mutex);
+  file->ungot = -1;
+  file->position = offset;
+  const size_t done = ReadLocked(file, buffer, length);
+  if (done == 0 && length > 0 && file->error)
+  {
+    file->error = false;
+    errno = EIO;
+    return -1;
+  }
+  return static_cast<ssize_t>(done);
+}
+
+extern "C" int __wrap_fstat(int fd, struct stat* st)
+{
+  if (fd < 0 || fd != s_disc_fd.load(std::memory_order_acquire))
+    return __real_fstat(fd, st);
+  VFile* const file = Find(s_disc_fp);
+  if (!file)
+  {
+    errno = EBADF;
+    return -1;
+  }
+  std::lock_guard lock(file->mutex);
+  FillStat(st, file->info);
+  return 0;
 }

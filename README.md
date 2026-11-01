@@ -37,13 +37,20 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
 ## Using it
 
 1. Copy the `PPSA99251` folder to `/data/homebrew/` on the console.
-2. Copy `boot.example.txt` in it to `boot.txt` and write the path of your Xbox disc image
-   (an XISO) on its first line, with hakuX's options after it (`scale=2`, `uncap`, ...). A path
-   without a leading `/` is in the title folder (`games/My Game.iso`). With the payload loader
-   (elfldr, port 9021) running, OGBox leaves its sandbox at start, so the image can be anywhere:
-   `/data/...`, a USB drive (`/mnt/usb0/...`) or extended storage (`/mnt/ext0/...`). A file
-   named `elevation-off.txt` in the title folder keeps it inside the sandbox.
-3. Start OGBox from the home screen. Hold **OPTIONS and the touch pad** for two seconds to quit.
+2. Put your Xbox disc images (XISOs, `.iso` or `.xiso`) on the console (`/data/...`), a USB
+   drive, extended storage or a network share. For a share, add a `path =` line for it to
+   `/data/ogbox/network.cfg` (written with examples on the first start): `192.168.1.10/Games/Xbox`
+   for SMB, with `user =` and `password =` lines if the share needs them, or
+   `nfs://192.168.1.20/volume1/games/xbox` for NFS. With the payload loader (elfldr, port 9021)
+   running, OGBox leaves its sandbox at start, so USB drives and extended storage are visible.
+   A file named `elevation-off.txt` in the title folder keeps it inside the sandbox.
+3. Start OGBox from the home screen and pick a game from the list: D-pad to move, CROSS to open
+   a folder or start a game, CIRCLE to go back. In a game, hold **OPTIONS and the touch pad**
+   for two seconds to go back to the list; in the list, the same quits.
+
+`boot.txt` (copy `boot.example.txt`) holds hakuX's options (`scale=2`, `uncap`, ...) for every
+game. Its first line may name a disc image; with an `autoboot` line that image boots straight
+away, without the list.
 
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
 L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
@@ -119,6 +126,27 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.14 (bring-up)
+
+Added
+- A game list: OGBox starts on a list of places (internal storage, USB drives, extended
+  storage and network shares) to pick a game from, instead of booting what `boot.txt` names.
+  D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back. It remembers the
+  last folder.
+- Games on network shares (SMB or NFS): list them in `/data/ogbox/network.cfg` (an example is
+  written the first time), one `path =` line each.
+- `autoboot` in `boot.txt` boots its first line straight away, as before.
+
+Changed
+- Holding OPTIONS and the touch pad in a game goes back to the game list; in the list it quits.
+- `boot.txt`'s options also apply to games started from the list.
+
+Fixed
+- Def Jam: Fight for NY: the freeze after the EA logo (11 timer reads were left at the PS5's
+  clock rate).
+- Burnout 3: the pink and black screens in a race (the emulator gave up on GPU results after
+  30 ms; it now waits up to 250 ms).
 
 ### 0.1.13 (bring-up)
 
