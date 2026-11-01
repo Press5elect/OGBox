@@ -43,8 +43,8 @@ bash "$ps5/tools/build-deps.sh"
 hakux_tree=$(cd -- "${HAKUX_SRC:-$root/vendor/hakuX}" 2>/dev/null && pwd || echo "$root/vendor/hakuX")
 hakux_dir=$(bash "$ps5/tools/prepare-hakux.sh" "$hakux_tree")
 cpu=${NC_CPU:-native}
-# The guest's kernel area: past the title's libc.prx (0x80120000, the default), or 0 for a layout
-# that leaves 0x80000000-0x80120000 free (ps5/cmake/hakux.cmake).
+# The guest's kernel area when the title keeps libc.prx at 0x80000000 (the fallback, 0x80120000):
+# 0.1.4 takes that range back at start-up and sets no hole at run time (ps5/cmake/hakux.cmake).
 hole=${PSHAKUX_WINDOW_HOLE_END:-0x80120000u}
 
 # (Configured again when what it is configured with changes.)

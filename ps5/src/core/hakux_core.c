@@ -24,6 +24,7 @@
 #include "hle/present_host.h"
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_priority.h"
+#include "platform/ps5_takeover.h"
 
 #include "native/core/core.h"
 #include "native/core/irq.h"
@@ -31,6 +32,9 @@
 #include "native/dev/usb.h"
 #include "native/hle/hle_native.h"
 #include "native/kernel/kernel.h"
+#if defined(NC_CPU_NATIVE)
+#include "native/cpu/vmhost.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -141,9 +145,92 @@ void pshx_core_status(char *line, unsigned size)
              nc_paused() ? " paused" : "", pshx_core_state() == PSHX_CORE_FAILED ? " (see the lines above)" : "");
 }
 
+/* 0.1.4: libc.prx's old entries in guest RAM (physical page 0, under the takeover): put back when
+ * the guest or a device wrote over one, counted for the heartbeat. */
+static unsigned g_stubs_put_back;
+static uint32_t g_stub_first;
+
 static void heartbeat(char *line, unsigned size)
 {
     pshx_core_status(line, size);
+#if defined(NC_CPU_NATIVE)
+    uint32_t first = 0;
+    const unsigned n = nc_vmhost_window_low_active() ? nc_vmhost_check_window_low(&first) : 0;
+    if (n) {
+        if (!g_stubs_put_back) {
+            g_stub_first = first;
+        }
+        g_stubs_put_back += n;
+    }
+    if (g_stubs_put_back) {
+        const size_t used = strlen(line);
+        snprintf(line + used, size > used ? size - used : 0, " libc.prx-stubs-put-back=%u (first +0x%x)",
+                 g_stubs_put_back, (unsigned)g_stub_first);
+    }
+#endif
+}
+
+#if defined(NC_CPU_NATIVE)
+/* The code at libc.prx's old entries under the takeover: xor eax,eax; ret (the same bytes in
+ * 64-bit and 32-bit code: libkernel calls them on host threads, in 64-bit mode). */
+static const uint8_t k_libc_stub[] = {0x31, 0xC0, 0xC3};
+
+/* The title is ending (the shell exit, a relaunch): the old entries once more, and DT_FINI's
+ * (+0xc8010, inside guest RAM: whatever the game put there), through the host's view of RAM, in
+ * case anything on the way out runs the module's finalizer. */
+static void before_exit(const char *why)
+{
+    uint8_t *phys = __atomic_load_n(&g_core.vm.phys, __ATOMIC_ACQUIRE);
+    if (!phys) {
+        pshakux_log("takeover: %s: the guest's window was never mapped: libc.prx is still there", why);
+        return;
+    }
+    memcpy(phys + PSHAKUX_LIBC_DT_FINI, k_libc_stub, sizeof(k_libc_stub));
+    uint32_t first = 0;
+    const unsigned n = nc_vmhost_check_window_low(&first);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    pshakux_log("takeover: %s: libc.prx's DT_FINI (0x%08x) and %u entries made stubs again (%u had changed)", why,
+                0x80000000u + PSHAKUX_LIBC_DT_FINI, pshakux_libc_entry_count, n);
+}
+#endif
+
+/* 0.1.4: the guest's window over 0x80000000 when the takeover was done (the kernel image at
+ * 0x80010000, as on the Xbox), else the 0.1.3 layout. Before the core's start (nc_vm_init). */
+static void choose_window(void)
+{
+#if defined(NC_CPU_NATIVE)
+    if (!pshakux_takeover_done()) {
+        if (!nc_window_hole_end) {
+            /* built with no hole (PSHAKUX_WINDOW_HOLE_END=0): without the takeover the window's map
+             * would replace libc.prx with its users still pointing there */
+            nc_vmhost_set_window_hole(0x80120000u);
+        }
+        pshakux_log("core: the window keeps its hole: 0x80000000-0x%08x stays libc.prx's (the takeover was not done: "
+                    "%s); the guest's kernel area at 0x%08x, and a game that reads the kernel's header at 0x80010000 "
+                    "(titles built with the XDK) is ended by the console there (SYSTEM_XO_VIOLATION in klog, no crash "
+                    "report)",
+                    (unsigned)nc_window_hole_end, pshakux_takeover_reason(), (unsigned)NC_KERNEL_VA);
+        return;
+    }
+    uint32_t offsets[NC_VMHOST_LOW_MAX];
+    unsigned n = 0;
+    for (unsigned i = 0; i < pshakux_libc_entry_count && n < NC_VMHOST_LOW_MAX; i++) {
+        offsets[n++] = pshakux_libc_entries[i];
+    }
+    if (!nc_vmhost_window_low(offsets, n, k_libc_stub, sizeof(k_libc_stub))) {
+        pshakux_log("core: the stubs for libc.prx's old entries could not be set: the window keeps its hole "
+                    "(0x80000000-0x%08x)", (unsigned)nc_window_hole_end);
+        return;
+    }
+    nc_vmhost_set_window_hole(0);
+    pshakux_takeover_set_exit_hook(before_exit);
+    pshakux_log("core: no hole: the guest's window will be mapped over 0x80000000 (libc.prx's range, taken over), "
+                "the kernel's area at 0x%08x and its KPCR at 0x%08x as on the Xbox; stubs (xor eax,eax; ret) at "
+                "libc.prx's %u old entries in guest RAM's page 0 (the thread destructors' 0x80000200 among them)",
+                (unsigned)NC_KERNEL_VA, (unsigned)NC_KERNEL_VA + 0x10000u, n);
+#else
+    pshakux_log("core: no native CPU: the window's layout is the stub's");
+#endif
 }
 
 /* ---- configure and start --------------------------------------------------------------------- */
@@ -205,18 +292,7 @@ bool pshx_core_configure(const PshxCoreConfig *config)
         nc_io_set_hdd_root(config->hdd_root);
     }
     pshakux_log("core: hard disk %s, caches %s", nc_io_hdd_root(), getenv("HAKUX_NATIVE_BASE"));
-#if defined(NC_WINDOW_HOLE_END)
-    if (NC_WINDOW_HOLE_END) {
-        /* (0.1.3) Burnout 3 read the kernel's PE header at 0x8001003c and the console ended the
-         * title there: an execute-only page of libc.prx, which no handler can catch */
-        pshakux_log("core: the guest's kernel area starts past the title's libc.prx (0x80000000-0x%08x, "
-                    "NC_WINDOW_HOLE_END): a game that reads the kernel's header at 0x80010000 (titles built "
-                    "with the XDK) is ended by the console there (SYSTEM_XO_VIOLATION in klog, no crash report)",
-                    (unsigned)NC_WINDOW_HOLE_END);
-    } else {
-        pshakux_log("core: the guest's kernel area at 0x80010000, as on the Xbox (NC_WINDOW_HOLE_END 0)");
-    }
-#endif
+    choose_window();
 
     snprintf(g_image, sizeof(g_image), "%s", config->image ? config->image : "");
     if (!g_image[0]) {

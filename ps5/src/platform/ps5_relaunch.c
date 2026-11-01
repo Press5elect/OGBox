@@ -8,6 +8,7 @@
  */
 #include "ps5_relaunch.h"
 #include "ps5_bootlog.h"
+#include "ps5_takeover.h"
 
 #include <string.h>
 
@@ -63,6 +64,7 @@ int pshakux_relaunch(const char *const *args)
     for (int i = 0; i < n; i++) {
         pshakux_log("  argv[%d] = \"%s\"", i, argv[i]);
     }
+    pshakux_takeover_before_exit("the relaunch");   /* 0.1.4: libc.prx's old entries made safe again */
     pshakux_diag_drain();
     const int result = sceSystemServiceLoadExec("/app0/eboot.bin", argv);
     pshakux_log("relaunch: sceSystemServiceLoadExec answered 0x%08x: the title goes on", (unsigned)result);

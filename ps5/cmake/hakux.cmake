@@ -117,12 +117,14 @@ list(APPEND hakux_core_sources ${HAKUX_DIR}/hw/xbox/hle/core/xbe.c)
 # the contiguous window is the console's (a system module sits at 0x80000000).
 set(PSHAKUX_CPU "stub")
 # (The console's window start, for a tree that reads it whatever the backend: hakuX-native's vm.c.)
-# The start of the 0x80000000 window the guest cannot have (NC_WINDOW_HOLE_END): the title's
-# libc.prx sits at 0x80000000-0x80120000, so the guest's kernel area is moved past it. Titles built
-# with the XDK read the kernel's PE header at 0x80010000 and are killed there (an execute-only
-# page: SYSTEM_XO_VIOLATION, which no handler can catch); 0 puts the kernel back at 0x80010000,
-# for a layout that keeps that range free (-DPSHAKUX_WINDOW_HOLE_END=0, or the environment's
-# PSHAKUX_WINDOW_HOLE_END through tools/build.sh).
+# The start of the 0x80000000 window the guest cannot have when the title keeps it
+# (NC_WINDOW_HOLE_END): the title's libc.prx sits at 0x80000000-0x80120000, so then the guest's
+# kernel area is moved past it, and titles built with the XDK, which read the kernel's PE header at
+# 0x80010000, are killed there (an execute-only page: SYSTEM_XO_VIOLATION, which no handler can
+# catch). 0.1.4: this is only the fallback. At start-up the title takes 0x80000000-0x80200000 back
+# from libc.prx (src/platform/ps5_takeover.cpp) and, when that is done, sets no hole at run time
+# (hakuX-native's nc_vmhost_set_window_hole(0)): the kernel at 0x80010000 as on the Xbox. When it
+# is not done, this layout is kept. A build with 0 here still falls back to 0x80120000 then.
 set(PSHAKUX_WINDOW_HOLE_END "0x80120000u" CACHE STRING "NC_WINDOW_HOLE_END: end of the 0x80000000 window's start the guest cannot have (0: none)")
 set(hakux_cpu_definitions NC_WINDOW_HOLE_END=${PSHAKUX_WINDOW_HOLE_END})
 set(hakux_cpu_options)

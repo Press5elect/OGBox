@@ -26,6 +26,7 @@
 #include "vulkanexamplebase.h"
 #include "ps5_samples.h"
 #include "platform/ps5_bootlog.h"
+#include "platform/ps5_takeover.h"
 
 #include <sys/stat.h>
 
@@ -397,6 +398,9 @@ int main(int argc, char **argv)
 		}
 	}
 	pshakux_args_set(argc, argv);
+	// PSHakuX 0.1.4: 0x80000000-0x80200000 from the title's libc.prx (src/platform/ps5_takeover.h),
+	// before the title starts threads of its own; the core maps the guest's window there later.
+	pshakux_takeover_prepare();
 	platform_init(PS5_TITLE_NAME);
 	// The samples report on std::cout and std::cerr: both reach klog
 	std::cout.rdbuf(std::cerr.rdbuf());

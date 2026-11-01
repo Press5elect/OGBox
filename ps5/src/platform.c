@@ -9,6 +9,7 @@
  * smoke test runs with; no SDK header declares them.
  */
 #include "platform.h"
+#include "platform/ps5_takeover.h"
 
 #include <ps5platform/klog.h>
 
@@ -100,6 +101,8 @@ void
 catchReturnFromMain(int status)
 {
    say("exit status %d: asking the shell to close the title", status);
+   /* PSHakuX 0.1.4: libc.prx's old entries made safe again (ps5_takeover.h) */
+   pshakux_takeover_before_exit("the shell exit");
    fflush(NULL);
    (void)sceSystemServiceLoadExec("exit", NULL);
    for (;;)

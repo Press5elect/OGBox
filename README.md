@@ -20,9 +20,13 @@ Xbox's x86 code runs on the console's own processor in compatibility mode (hakuX
 `native/cpu/cpu_native.c`, branch `ps5-native`), with kernel calls through a far-call gate, its
 HLE GPU on the console's RADV, its APU on the console's sound output, a bring-up front end and
 the console's platform code. On the console (firmware 13.09) 0.1.1 and 0.1.2 boot nxdk's `hello`
-from an XISO and show its picture. Games built with Microsoft's XDK do not run yet: they read the
-Xbox kernel's header at 0x80010000, where the console has the title's own runtime module
-(`libc.prx`, execute-only), and the console ends the title there (Burnout 3 with 0.1.2).
+from an XISO and show its picture. Games built with Microsoft's XDK read the Xbox kernel's header
+at 0x80010000, where the console loads the title's own runtime module (`libc.prx`, execute-only),
+and the console ended the title there (Burnout 3 with 0.1.2 and 0.1.3). 0.1.4 takes that range
+back from `libc.prx` at start-up, as PSHakuX System Check 0.0.5 did on the console, and puts the
+guest's kernel at 0x80010000; whether XDK games then boot is what 0.1.4's console runs will show.
+`pshakux-boot.log` says whether the takeover was done (`takeover:` lines) and which layout the
+core used (`core:` lines).
 
 ## Using it
 
@@ -105,6 +109,32 @@ covers Press5elect's code only, not hakuX's or xemu's. `NOTICE` has it in full.
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.4 (bring-up)
+
+Added
+- The takeover of 0x80000000-0x80200000 from the title's `libc.prx` at start-up (the system
+  check 0.0.5's step): every pointer into it outside it is pointed at a copy in the eboot, then
+  the guest's memory is mapped over it when the core starts, with stubs at `libc.prx`'s old code
+  entries (the thread destructors libkernel still calls at every thread exit). Every step is in
+  the boot log (`takeover:` lines); when it cannot be done the 0.1.3 layout is kept and the boot
+  log says why. Flag files in `/data/pshakux/`: `takeover-off` (not tried), `takeover-force`.
+- The heartbeat says when a stub at the old entries was written over (by the game or a device)
+  and put back.
+
+Changed
+- With the takeover done, the guest's kernel area is at 0x80010000 and its KPCR at 0x80020000,
+  as on the Xbox (was past `libc.prx`, from 0x80120000); the hole is chosen at run time.
+- The APU's voice workers and its output thread run at the sound priority (690); 0.1.3 left them
+  at 700.
+- Savestates made with the other layout of the 0x80000000 window are refused, with a reason.
+- The payload SDK fork is pinned at e105cf6 (fdv tracks as many files as it has descriptor
+  slots).
+
+Fixed
+- The read of the kernel's header at 0x8001003c that ended XDK games (Burnout 3) now reads the
+  guest's own kernel image when the takeover is done (proven in the system check; not yet with a
+  game in PSHakuX).
 
 ### 0.1.3 (bring-up)
 
