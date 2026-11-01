@@ -19,7 +19,7 @@ sdk="$cache/ps5-payload-sdk"
 sdk_fork="${PS5_PAYLOAD_SDK_FORK:-$root/../PS5_PayloadSDK}"
 # 611893f: /data through the Lapy daemon (ps5platform/elevation.h), an opt-in no sample calls.
 # Never older than 6b63a2a, the platform layer's localeconv in the C locale (ps5_localeconv).
-sdk_revision=611893fc25ef3e138f5bc2c90d829d8b58174cd2
+sdk_revision=3e31e0b1b68ada28beca68adc480cf0c3d17b9df
 
 if [[ ! -f $sdk/.ps5-sdk-revision || $(<"$sdk/.ps5-sdk-revision") != "$sdk_revision" ]]; then
     git -C "$sdk_fork" cat-file -e "$sdk_revision^{commit}" 2>/dev/null || {

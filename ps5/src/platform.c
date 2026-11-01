@@ -44,22 +44,40 @@ int sceAudioOutOutput(int32_t port, const void *samples);
 int sceAudioOutClose(int32_t port);
 int sceKernelUsleep(uint32_t microseconds);
 
+/* PSHakuX (from Kelvin): when the boot log has taken standard error (ps5/src/platform/ps5_bootlog.cpp), its
+ * watcher copies it on to klog, and the SDK's capture would take it back from the boot log. */
+int pshakux_diag_owns_stderr(void) __attribute__((weak));
+
 void
 platform_init(const char *title_name)
 {
    static char prefix[64];
    snprintf(prefix, sizeof(prefix), "[%s] ", title_name);
-   const int captured = ps5_klog_capture_stderr(prefix);
-   say("starts (standard error to klog: %s)", captured == 0 ? "yes" : "no");
+   if (pshakux_diag_owns_stderr && pshakux_diag_owns_stderr()) {
+      say("starts (standard error to the boot log, which copies it on to klog)");
+   } else {
+      const int captured = ps5_klog_capture_stderr(prefix);
+      say("starts (standard error to klog: %s)", captured == 0 ? "yes" : "no");
+   }
    /* The shell's splash covers the title's frames until it is dismissed. */
    say("splash dismissed: %d", sceSystemServiceHideSplashScreen());
 }
+
+/* PSHakuX (from Kelvin): with the boot log, a line goes there and to klog at once (ps5/src/platform/ps5_bootlog.cpp). */
+void pshakux_log(const char *format, ...) __attribute__((weak, format(printf, 1, 2)));
 
 void
 say(const char *format, ...)
 {
    va_list args;
    va_start(args, format);
+   if (pshakux_log && pshakux_diag_owns_stderr && pshakux_diag_owns_stderr()) {
+      char line[1024];
+      vsnprintf(line, sizeof(line), format, args);
+      va_end(args);
+      pshakux_log("%s", line);
+      return;
+   }
    vfprintf(stderr, format, args);
    va_end(args);
    fputc('\n', stderr);

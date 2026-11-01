@@ -25,6 +25,7 @@
 
 #include "vulkanexamplebase.h"
 #include "ps5_samples.h"
+#include "platform/ps5_bootlog.h"
 
 #include <sys/stat.h>
 
@@ -371,6 +372,9 @@ void runMenu()
 
 int main()
 {
+	// PSHakuX (from Kelvin): the boot log first (pshakux-boot.log in the title folder: its header, standard error
+	// a line at a time, the crash report, the heartbeat), so everything after is in it.
+	pshakux_diag_start(PS5_TITLE_NAME);
 	platform_init(PS5_TITLE_NAME);
 	// The samples report on std::cout and std::cerr: both reach klog
 	std::cout.rdbuf(std::cerr.rdbuf());
@@ -396,11 +400,13 @@ int main()
 	} else {
 		runMenu();
 	}
+	pshakux_diag_session_end(status);
 	if (results) {
 		report("ends: status %d", status);
 		fclose(results);
 	} else {
 		say("ends: status %d", status);
 	}
+	pshakux_diag_drain();
 	return status;
 }
