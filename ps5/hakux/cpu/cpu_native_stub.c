@@ -84,3 +84,9 @@ WEAK void nc_cpu_native_stats(NcCpu *cpu, NcNativeStats *out)
     (void)cpu;
     memset(out, 0, sizeof(*out));
 }
+
+WEAK void nc_cpu_native_seg_fault(uint32_t eip, bool fs)
+{
+    (void)eip;
+    (void)fs;
+}

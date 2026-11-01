@@ -154,18 +154,21 @@ static void heartbeat(char *line, unsigned size)
 {
     pshx_core_status(line, size);
 #if defined(NC_CPU_NATIVE)
-    uint32_t first = 0;
-    const unsigned n = nc_vmhost_window_low_active() ? nc_vmhost_check_window_low(&first) : 0;
-    if (n) {
-        if (!g_stubs_put_back) {
-            g_stub_first = first;
+    /* 0.1.5: the core watches the page and puts the entries back within milliseconds (vmhost.c);
+     * the heartbeat says how often, and how many writes the watch caught */
+    if (nc_vmhost_window_low_active()) {
+        nc_vmhost_check_window_low(NULL);
+        uint32_t first = 0;
+        unsigned host = 0, guest = 0;
+        g_stubs_put_back = nc_vmhost_window_low_put_back(&first, &host, &guest);
+        g_stub_first = first;
+        if (g_stubs_put_back || host || guest) {
+            const size_t used = strlen(line);
+            snprintf(line + used, size > used ? size - used : 0,
+                     " libc.prx-stubs-put-back=%u (first +0x%x; writes caught: host %u, guest %u; page %s)",
+                     g_stubs_put_back, (unsigned)g_stub_first, host, guest,
+                     nc_vmhost_window_low_watched() ? "watched" : "not watched now");
         }
-        g_stubs_put_back += n;
-    }
-    if (g_stubs_put_back) {
-        const size_t used = strlen(line);
-        snprintf(line + used, size > used ? size - used : 0, " libc.prx-stubs-put-back=%u (first +0x%x)",
-                 g_stubs_put_back, (unsigned)g_stub_first);
     }
 #endif
 }
@@ -358,6 +361,116 @@ static void *vcpu_thread(void *arg)
     return NULL;
 }
 
+/* 0.1.5: where the guest's time goes, every 10 s in the boot log: 400 samples of the vCPU's EIP
+ * over a second (hakuX's sampler: the native CPU's kick signal reads it), the share halted (every
+ * guest thread waiting), in kernel calls or host code, and the busiest guest EIPs with the code
+ * at the first. A game that runs on without progressing (Burnout 3 at its loading screen with
+ * 0.1.4: the vCPU never idle) shows the loop it spins in. PSHAKUX_GUEST_SAMPLER=0 (an env line in
+ * boot.txt) turns it off. */
+extern bool (*g_hle_pc_sampler)(uint32_t *pc);
+#define SAMPLER_EIP_HOST 0xF0000000u
+#define SAMPLER_EIP_SYSOP 0x08000000u
+#define SAMPLER_EIP_IDLE 0xFFFFFFFFu
+
+static void *sampler_thread(void *arg)
+{
+    (void)arg;
+    pshakux_thread_named("guest-sampler");
+    pshakux_priority_set(PSHAKUX_ROLE_BACKGROUND);
+    enum { SAMPLES = 400, SLOTS = 64 };
+    for (;;) {
+        sleep(9);
+        const int state = pshx_core_state();
+        if (state == PSHX_CORE_STOPPED || state == PSHX_CORE_FAILED) {
+            break;
+        }
+        if (state != PSHX_CORE_RUNNING || !g_hle_pc_sampler || nc_paused()) {
+            continue;
+        }
+        uint32_t eip[SLOTS] = {0}, cnt[SLOTS] = {0};
+        unsigned taken = 0, idle = 0, kcall = 0, host = 0;
+        for (unsigned i = 0; i < SAMPLES; i++) {
+            uint32_t pc = 0;
+            const struct timespec ts = {0, 2500000};
+            nanosleep(&ts, NULL);
+            if (!g_hle_pc_sampler(&pc)) {
+                continue;
+            }
+            taken++;
+            if (pc == SAMPLER_EIP_IDLE) {
+                idle++;
+                continue;
+            }
+            if ((pc & SAMPLER_EIP_HOST) == SAMPLER_EIP_HOST) {
+                if (pc & SAMPLER_EIP_SYSOP) {
+                    kcall++;
+                } else {
+                    host++;
+                }
+                continue;
+            }
+            unsigned k = (pc * 2654435761u) >> 26 & (SLOTS - 1);
+            for (unsigned j = 0; j < SLOTS; j++, k = (k + 1) & (SLOTS - 1)) {
+                if (!cnt[k] || eip[k] == pc) {
+                    eip[k] = pc;
+                    cnt[k]++;
+                    break;
+                }
+            }
+        }
+        if (!taken) {
+            continue;
+        }
+        char top[400];
+        int n = 0;
+        top[0] = 0;
+        uint32_t first = 0;
+        for (unsigned r = 0; r < 8; r++) {
+            unsigned best = SLOTS;
+            for (unsigned k = 0; k < SLOTS; k++) {
+                if (cnt[k] && (best == SLOTS || cnt[k] > cnt[best])) {
+                    best = k;
+                }
+            }
+            if (best == SLOTS) {
+                break;
+            }
+            if (!r) {
+                first = eip[best];
+            }
+            n += snprintf(top + n, sizeof(top) - (size_t)n, " %08x %u%%", eip[best], cnt[best] * 100u / taken);
+            cnt[best] = 0;
+        }
+        char code[3 * 24 + 1];
+        code[0] = 0;
+        if (first && g_core.vm.pte && nc_vm_phys(&g_core.vm, first - 8) != UINT32_MAX &&
+            nc_vm_phys(&g_core.vm, first + 15) != UINT32_MAX) {
+            int c = 0;
+            for (unsigned i = 0; i < 24; i++) {
+                c += snprintf(code + c, sizeof(code) - (size_t)c, "%02x ", *(const uint8_t *)nc_vm_host(&g_core.vm, first - 8 + i));
+            }
+        }
+        pshakux_log("guest: %u samples in 1 s: halted %u%%, kernel calls %u%%, host %u%%; busiest guest EIPs:%s%s%s",
+                    taken, idle * 100u / taken, kcall * 100u / taken, host * 100u / taken, top[0] ? top : " none",
+                    code[0] ? " | code at the first -8: " : "", code);
+    }
+    pshakux_thread_gone();
+    return NULL;
+}
+
+static void start_sampler(void)
+{
+    const char *e = getenv("PSHAKUX_GUEST_SAMPLER");
+    if (e && e[0] == '0') {
+        pshakux_log("guest: sampler off (PSHAKUX_GUEST_SAMPLER=0)");
+        return;
+    }
+    pthread_t t;
+    if (pthread_create(&t, NULL, sampler_thread, NULL) == 0) {
+        pthread_detach(t);
+    }
+}
+
 bool pshx_core_start(void)
 {
     if (!g_configured || pshx_core_state() != PSHX_CORE_IDLE) {
@@ -376,6 +489,7 @@ bool pshx_core_start(void)
         return false;
     }
     pthread_detach(t);
+    start_sampler();
     return true;
 }
 

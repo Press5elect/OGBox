@@ -26,7 +26,8 @@ and the console ended the title there (Burnout 3 with 0.1.2 and 0.1.3). 0.1.4 ta
 back from `libc.prx` at start-up, as PSHakuX System Check 0.0.5 did on the console, and puts the
 guest's kernel at 0x80010000; whether XDK games then boot is what 0.1.4's console runs will show.
 `pshakux-boot.log` says whether the takeover was done (`takeover:` lines) and which layout the
-core used (`core:` lines).
+core used (`core:` lines). With 0.1.4 Burnout 3 boots, runs its loading screen at 60 fps and
+stays there; 0.1.5 adds the boot-log diagnostics that say what it waits for.
 
 ## Using it
 
@@ -109,6 +110,35 @@ covers Press5elect's code only, not hakuX's or xemu's. `NOTICE` has it in full.
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.5 (bring-up)
+
+Added
+- Boot-log diagnostics for a game that runs on without progressing (Burnout 3 stays on its
+  loading screen with 0.1.4): every 5 s the APU's state (`hakuX-apu: per s:` GP frames, why they
+  stop, its interrupt raised and acknowledged, the voices playing, the output ring and grains,
+  DirectSound's mailbox waits); every 10 s where the guest's time goes (`guest:` the busiest guest
+  EIPs and the code at the first); every 30 s the guest's threads with what each waits on; the
+  busiest device-register sites with the register they reach; the native CPU's signals by kind.
+- `env NAME=VALUE` lines in `boot.txt`: hakuX's environment switches (diagnostics).
+- The page of `libc.prx`'s old entries (guest physical page 0) is watched: a write there is let
+  through and logged with the writer's address, and the entries are put back within milliseconds.
+
+Changed
+- The native CPU's code sweep also patches `rdtsc`, `cpuid` and `pushfd`/`popfd` at the start of
+  short functions (a branch target): Burnout 3's own timer, D3D's and DirectSound's were left
+  running unscaled or without the guest's interrupt flag.
+- An `fs:` access that faults is emulated and made `gs:` (the KPCR), so it runs natively from then
+  on: on the console it never traps as it does on Linux, and the kernel's own IRQL and
+  critical-section paths took about 8,000 faults a second.
+- hakuX's per-page "mapped over what was there" lines are gone (one for the taken-back range):
+  each was a log line per 16 KiB of every allocation (a 5 MiB one held the CPU 235 ms).
+
+Fixed
+- The crash at quit (OPTIONS and the touch pad): hakuX's HLE GPU loaded volk's instance table from
+  its own instance, made without the display extensions, and the title's swapchain cleanup called
+  `vkDestroySurfaceKHR` through 0. hakuX keeps the title's table; the title checks it when the
+  first frame comes and at quit and loads it again if anything changed it.
 
 ### 0.1.4 (bring-up)
 

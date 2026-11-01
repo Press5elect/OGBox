@@ -18,3 +18,8 @@
 #
 # One of hakuX's debug properties (more of them, NAME=VALUE lines, in /data/pshakux/props.txt):
 #   prop debug.hakux.NAME=VALUE
+#
+# One of hakuX's environment switches, for diagnostics (set before the core starts), e.g.:
+#   env NC_TRACE_APU=1          the APU's interrupt registers and voice lists every 2 s
+#   env HAKUX_APU_STATS=1       the APU's frame rate and output ring every second
+#   env NC_THREAD_DUMPS=30      more of the guest's thread dumps (every 30 s; 12 by default)

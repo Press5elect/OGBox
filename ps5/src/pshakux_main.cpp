@@ -22,6 +22,7 @@
  *        scale=2 uncap                   hakuX's options (native/core/options.h), any number a line
  *        hdd=/data/pshakux/hdd           the hard disk's folder (default /data/pshakux/hdd)
  *        prop debug.hakux.NAME=VALUE     one of hakuX's debug properties
+ *        env NAME=VALUE                  one of hakuX's environment switches (0.1.5: diagnostics)
  *
  *    with /data/pshakux/props.txt for more properties (NAME=VALUE lines). The title's arguments come
  *    before boot.txt (a relaunch gives them, src/platform/ps5_relaunch.h; on the console argv[0] is
@@ -61,6 +62,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -140,6 +142,17 @@ bool readBootConfig(BootConfig &config)
 			if (!haveImage) {
 				config.image = resolvePath(line);
 				haveImage = true;
+				continue;
+			}
+			if (line.rfind("env ", 0) == 0) {
+				/* 0.1.5: one of hakuX's environment switches (diagnostics: NC_TRACE_APU=1,
+				 * HAKUX_APU_STATS=1, NC_TRACE_MMIO=lo-hi, NC_THREAD_DUMPS=n...), before the core starts */
+				const std::string assignment = trim(line.substr(4));
+				const size_t eq = assignment.find('=');
+				if (eq != std::string::npos && eq > 0) {
+					setenv(assignment.substr(0, eq).c_str(), assignment.substr(eq + 1).c_str(), 1);
+					pshakux_log("boot.txt: environment %s", assignment.c_str());
+				}
 				continue;
 			}
 			if (line.rfind("prop ", 0) == 0) {
@@ -383,6 +396,7 @@ public:
 		if (device == VK_NULL_HANDLE) {
 			return;
 		}
+		checkInstanceTable("quit");
 		vkDeviceWaitIdle(device);
 		destroyPicture();
 		for (auto &s : staging) {
@@ -396,6 +410,63 @@ public:
 		// The base class owns descriptorPool and destroys it again if it is still set: 0.1.1
 		// crashed at quit there (RADV freeing the pool twice).
 		descriptorPool = VK_NULL_HANDLE;
+	}
+
+	/* The instance-level commands the template uses (the base class, the swapchain on
+	 * VK_KHR_display, the debug messenger) are volk's globals, one table for the whole title.
+	 * hakuX's HLE GPU makes an instance of its own; up to 0.1.4 it loaded volk's instance table
+	 * from it, made without VK_KHR_surface or VK_KHR_display, and the quit's swapchain cleanup
+	 * called vkDestroySurfaceKHR through 0. hakuX keeps the title's table now (vkdev.c); this
+	 * says so in the log (when the core is up, and at quit) and puts the title's table back if
+	 * anything changed it. */
+	void checkInstanceTable(const char *when)
+	{
+		if (instance == VK_NULL_HANDLE) {
+			return;
+		}
+		struct Entry {
+			const char *name;
+			const void *fn;
+		};
+		const Entry entries[] = {
+			{ "vkDestroyInstance", (const void *)vkDestroyInstance },
+			{ "vkEnumeratePhysicalDevices", (const void *)vkEnumeratePhysicalDevices },
+			{ "vkGetPhysicalDeviceProperties", (const void *)vkGetPhysicalDeviceProperties },
+			{ "vkGetPhysicalDeviceFeatures", (const void *)vkGetPhysicalDeviceFeatures },
+			{ "vkGetPhysicalDeviceMemoryProperties", (const void *)vkGetPhysicalDeviceMemoryProperties },
+			{ "vkGetPhysicalDeviceQueueFamilyProperties", (const void *)vkGetPhysicalDeviceQueueFamilyProperties },
+			{ "vkGetPhysicalDeviceFormatProperties", (const void *)vkGetPhysicalDeviceFormatProperties },
+			{ "vkCreateDevice", (const void *)vkCreateDevice },
+			{ "vkDestroySurfaceKHR", (const void *)vkDestroySurfaceKHR },
+			{ "vkGetPhysicalDeviceSurfaceSupportKHR", (const void *)vkGetPhysicalDeviceSurfaceSupportKHR },
+			{ "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", (const void *)vkGetPhysicalDeviceSurfaceCapabilitiesKHR },
+			{ "vkGetPhysicalDeviceSurfaceFormatsKHR", (const void *)vkGetPhysicalDeviceSurfaceFormatsKHR },
+			{ "vkGetPhysicalDeviceSurfacePresentModesKHR", (const void *)vkGetPhysicalDeviceSurfacePresentModesKHR },
+			{ "vkGetPhysicalDeviceDisplayPropertiesKHR", (const void *)vkGetPhysicalDeviceDisplayPropertiesKHR },
+			{ "vkGetPhysicalDeviceDisplayPlanePropertiesKHR", (const void *)vkGetPhysicalDeviceDisplayPlanePropertiesKHR },
+			{ "vkGetDisplayPlaneSupportedDisplaysKHR", (const void *)vkGetDisplayPlaneSupportedDisplaysKHR },
+			{ "vkGetDisplayModePropertiesKHR", (const void *)vkGetDisplayModePropertiesKHR },
+			{ "vkGetDisplayPlaneCapabilitiesKHR", (const void *)vkGetDisplayPlaneCapabilitiesKHR },
+			{ "vkCreateDisplayPlaneSurfaceKHR", (const void *)vkCreateDisplayPlaneSurfaceKHR },
+		};
+		unsigned missing = 0;
+		const char *first = nullptr;
+		for (const Entry &e : entries) {
+			if (!e.fn) {
+				missing++;
+				first = first ? first : e.name;
+			}
+		}
+		const bool ours = volkGetLoadedInstance() == instance;
+		if (ours && !missing) {
+			pshakux_log("vulkan: instance table at %s: the title's, %zu commands checked", when,
+				sizeof(entries) / sizeof(entries[0]));
+			return;
+		}
+		pshakux_log("vulkan: instance table at %s: %s, %u of %zu commands null (first %s): loaded again "
+			"from the title's instance", when, ours ? "the title's instance" : "ANOTHER instance's",
+			missing, sizeof(entries) / sizeof(entries[0]), first ? first : "none");
+		volkLoadInstanceOnly(instance);
 	}
 
 	// ---- Vulkan resources (as Kelvin's presenter) -----------------------------------------------
@@ -575,6 +646,7 @@ public:
 		if (!picturesTaken++) {
 			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames", fw, fh,
 				static_cast<unsigned long long>(framesDrawn));
+			checkInstanceTable("the first frame (the HLE GPU's instance made)");
 		}
 	}
 
