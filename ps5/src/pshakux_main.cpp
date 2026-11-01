@@ -21,7 +21,17 @@
  *        hdd=/data/pshakux/hdd           the hard disk's folder (default /data/pshakux/hdd)
  *        prop debug.hakux.NAME=VALUE     one of hakuX's debug properties
  *
- *    with /data/pshakux/props.txt for more properties (NAME=VALUE lines). The emulator's own files
+ *    with /data/pshakux/props.txt for more properties (NAME=VALUE lines). The title's arguments come
+ *    before boot.txt (a relaunch gives them, src/platform/ps5_relaunch.h; on the console argv[0] is
+ *    the first argument, so all are read):
+ *
+ *        --boot <image>        what boots (then boot.txt is not read)
+ *        --hdd <folder>        the hard disk's folder
+ *        --loadstate <file>    into that savestate (hakuX's loadstate=)
+ *        --relaunch            the guest's reboot into another XBE (hakuX's relaunch)
+ *        --option <opt>, or a word with '='   one of hakuX's options
+ *
+ *    The emulator's own files
  *    (shader and pipeline caches) go to /data/pshakux/cache: outside the title folder, so an update
  *    is replacing the title folder.
  *  - The picture: the HLE GPU's front frame, handed over by the Core as RGBA8 rows (the
@@ -34,7 +44,10 @@
  *    triangle Y, R1 black, L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back, the
  *    sticks and their clicks. The rumble the game asks for goes to the controller's motors.
  *  - Quitting: hold OPTIONS and the touch pad together for two seconds; the title ends through
- *    the shell, as every title does (the template's exit).
+ *    the shell, as every title does (the template's exit). hakuX's core has no teardown yet, so a
+ *    new boot is a relaunch of the title: the guest's reboot into another XBE relaunches it with
+ *    --boot <same disc> --relaunch, and the full front end will do the same for "back to the
+ *    library" (no arguments) and "load a savestate" (--boot <disc> --loadstate <file>).
  *  - Thread priorities: the vCPU at 700, the core's helpers at 690, background jobs at 730
  *    (src/platform/ps5_priority.h), on from the start.
  *
@@ -53,6 +66,7 @@
 #include "platform.h"
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_priority.h"
+#include "platform/ps5_relaunch.h"
 #include "core/pshakux_core.h"
 
 extern "C" int pshakux_props_load(const char *path);
@@ -132,6 +146,42 @@ bool readBootConfig(BootConfig &config)
 		return haveImage;
 	}
 	return false;
+}
+
+/* The title's arguments (all of them: argv[0] is the first). true when they name what boots. */
+bool readArguments(BootConfig &config)
+{
+	bool boot = false;
+	for (int i = 0; i < pshakux_argc(); i++) {
+		const std::string arg = pshakux_argv(i);
+		const char *next = pshakux_argv(i + 1);
+		if (arg == PSHAKUX_RELAUNCHED) {
+			continue;
+		} else if (arg == "--boot" && next) {
+			config.image = next;
+			boot = true;
+			i++;
+		} else if (arg == "--hdd" && next) {
+			config.hdd = next;
+			i++;
+		} else if (arg == "--loadstate" && next) {
+			config.options.push_back(std::string("loadstate=") + next);
+			i++;
+		} else if (arg == "--relaunch") {
+			config.options.push_back("relaunch");
+		} else if (arg == "--option" && next) {
+			config.options.push_back(next);
+			i++;
+		} else if (arg.rfind("--", 0) != 0 && !arg.empty()) {
+			config.options.push_back(arg);
+		} else {
+			pshakux_log("arguments: %s is not one of PSHakuX's: left out", arg.c_str());
+		}
+	}
+	if (boot) {
+		config.source = "the title's arguments";
+	}
+	return boot;
 }
 
 /* A stick's raw reading (0..255, 128 at rest, y down) as the Xbox controller's (y up). */
@@ -222,6 +272,27 @@ public:
 	uint32_t players{ 0 };
 	double quitHeldSince{ -1.0 };
 	int lastState{ -1 };
+	bool relaunchAsked{ false };
+
+	/* The guest rebooted into another XBE: the title starts again with the same disc, hard disk and
+	 * options, and hakuX's "relaunch" (it boots the XBE the launch data names). */
+	void relaunchForGuest()
+	{
+		relaunchAsked = true;
+		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--relaunch" };
+		for (const std::string &option : boot.options) {
+			if (option != "relaunch" && option.rfind("loadstate=", 0) != 0) {
+				words.push_back("--option");
+				words.push_back(option);
+			}
+		}
+		std::vector<const char *> args;
+		for (const std::string &word : words) {
+			args.push_back(word.c_str());
+		}
+		args.push_back(nullptr);
+		pshakux_relaunch(args.data());
+	}
 
 	VulkanExample() : VulkanExampleBase()
 	{
@@ -241,7 +312,7 @@ public:
 		if (loaded >= 0) {
 			pshakux_log("pshakux: %d properties from %s", loaded, props.c_str());
 		}
-		if (!readBootConfig(boot)) {
+		if (!readArguments(boot) && !readBootConfig(boot)) {
 			problem = std::string("No game to boot: write the path of an Xbox disc image (an XISO) on the first line of ") +
 				kBootFile + ".";
 			pshakux_log("pshakux: no boot.txt with a disc image (%s, %s)", kBootFile, kBootFileApp);
@@ -574,6 +645,9 @@ public:
 			lastState = state;
 			pshakux_log("pshakux: core %s%s%s", stateName(state), pshx_core_message()[0] ? ": " : "",
 				pshx_core_message());
+		}
+		if (!relaunchAsked && pshx_core_relaunch_wanted()) {
+			relaunchForGuest();
 		}
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
 		// template's settings window.

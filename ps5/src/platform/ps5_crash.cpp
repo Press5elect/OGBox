@@ -30,9 +30,13 @@
 #endif
 
 #include "ps5_bootlog.h"
+#if defined(__PROSPERO__)
+#include "ps5_modules.h" // PS5SystemModules
+#endif
 
 
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -56,6 +60,26 @@ extern "C" const char __executable_start[] __attribute__((weak));
 #endif
 
 namespace {
+
+// PSHakuX: sigaltstack is found while the title runs, not imported. Measured on the console
+// (2026-11-01): it is not among the exports a title is given, so an import of it could be null
+// (a call through address 0); found or not, the title starts, and without it the crash report
+// still runs, on the faulting thread's own stack (a stack overflow then goes unreported).
+int AltStack(const stack_t* ss, stack_t* old)
+{
+#if defined(__PROSPERO__)
+  using Fn = int (*)(const stack_t*, stack_t*);
+  static const Fn fn = reinterpret_cast<Fn>(PS5SystemModules::FindFunction("libkernel", "sigaltstack", "sHziAegVp74"));
+  if (!fn)
+  {
+    errno = ENOSYS;
+    return -1;
+  }
+  return fn(ss, old);
+#else
+  return sigaltstack(ss, old);
+#endif
+}
 
 volatile sig_atomic_t s_in_crash = 0;
 // PSHakuX: the core's part of a report (pshakux_crash_set_note) and its guest code segment.
@@ -512,7 +536,7 @@ struct CrashStack
       stack_t none;
       std::memset(&none, 0, sizeof(none));
       none.ss_flags = SS_DISABLE;
-      (void)sigaltstack(&none, nullptr);
+      (void)AltStack(&none, nullptr);
       std::free(memory);
     }
   }
@@ -560,7 +584,7 @@ extern "C" void pshakux_install_crash_stack(void)
   std::memset(&ss, 0, sizeof(ss));
   ss.ss_sp = static_cast<char*>(memory);
   ss.ss_size = CrashStack::SIZE;
-  if (sigaltstack(&ss, nullptr) != 0)
+  if (AltStack(&ss, nullptr) != 0)
   {
     std::free(memory);
     return;

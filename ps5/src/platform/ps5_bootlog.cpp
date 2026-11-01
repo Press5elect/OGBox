@@ -286,7 +286,7 @@ void LogMachine()
              static_cast<unsigned long long>(pshakux_eboot_link_base()));
 
   const double ghz = MeasureCpuGHz();
-  const long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  const long cpus = pshakux_sysconf(_SC_NPROCESSORS_ONLN);
 #if defined(__PROSPERO__)
   pshakux_log("cpu: about %.2f GHz (dependent additions, best of 3); %ld logical CPUs online; built with SDK version "
              "2.00, the kernel's high-frequency profile is expected (klog [BAPM] names it)",

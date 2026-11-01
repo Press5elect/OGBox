@@ -21,6 +21,14 @@
  *                          map, as the kernel wants)
  *   an unmapping           ps5_shm_unmap with PS5_SHM_KEEP_RESERVED: the range is a hole of the
  *                          reservation again, without access
+ *
+ * Measured on the console (2026-11-01): pages are 16 KiB (a mapping, or a change of protection, is
+ * in 16 KiB units: the Xbox's 4 KiB pages cannot each be mapped on their own); MAP_FIXED |
+ * MAP_EXCL is not honoured (it replaces what is there), so nothing here relies on it (the
+ * reservations are made with sceKernelReserveVirtualRange, which places a range elsewhere rather
+ * than replace one, and are checked); and 0x80000000-0x80120000 is the title's own
+ * sce_module/libc.prx: it is never reserved or mapped over. A request that would is refused and
+ * said, rather than done.
  */
 #include "native/cpu/vmhost.h"
 #include "native/core/nc.h"
@@ -33,6 +41,38 @@
 #ifndef NC_WINDOW_HOLE_END
 #define NC_WINDOW_HOLE_END 0x80120000u
 #endif
+
+#define HOST_PAGE 0x4000u            /* the console's page: 16 KiB */
+#define LIBC_PRX_LO 0x80000000ull    /* the title's sce_module/libc.prx */
+#define LIBC_PRX_HI 0x80120000ull
+
+/* A range nc_vmhost_map/unmap may touch: 16 KiB aligned, inside the reservations, and clear of
+ * libc.prx. Said once a kind. */
+static bool allowed(const char *what, uint32_t va, uint32_t off, uint32_t len)
+{
+    static unsigned said_align, said_prx, said_out;
+    if ((va | off | len) & (HOST_PAGE - 1)) {
+        if (said_align++ < 8) {
+            nc_log("hakuX-native", "vm: %s %08x+%x (offset %x) is not in whole 16 KiB pages, the console's: refused",
+                   what, va, len, off);
+        }
+        return false;
+    }
+    if ((uint64_t)va < LIBC_PRX_HI && (uint64_t)va + len > LIBC_PRX_LO) {
+        if (said_prx++ < 8) {
+            nc_log("hakuX-native", "vm: %s %08x+%x would cover the title's libc.prx (80000000-80120000): refused",
+                   what, va, len);
+        }
+        return false;
+    }
+    if (!nc_vmhost_reserved(va) || !nc_vmhost_reserved(va + len - 1)) {
+        if (said_out++ < 8) {
+            nc_log("hakuX-native", "vm: %s %08x+%x is outside the guest's reservations: refused", what, va, len);
+        }
+        return false;
+    }
+    return true;
+}
 
 static const struct {
     uint64_t lo, hi;
@@ -110,7 +150,7 @@ bool nc_vmhost_map(uint32_t va, int ram, uint32_t off, uint32_t len)
 {
     const struct ps5_shm *shm = ram_of(ram);
     void *view = NULL;
-    if (!shm) {
+    if (!shm || !allowed("map", va, off, len)) {
         return false;
     }
     const int r = ps5_shm_map(shm, off, len, (void *)(uintptr_t)va, PS5_SHM_READ | PS5_SHM_WRITE | PS5_SHM_EXEC,
@@ -120,5 +160,8 @@ bool nc_vmhost_map(uint32_t va, int ram, uint32_t off, uint32_t len)
 
 bool nc_vmhost_unmap(uint32_t va, uint32_t len)
 {
+    if (!allowed("unmap", va, 0, len)) {
+        return false;
+    }
     return ps5_shm_unmap((void *)(uintptr_t)va, len, PS5_SHM_KEEP_RESERVED) == 0;
 }

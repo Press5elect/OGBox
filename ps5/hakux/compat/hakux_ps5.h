@@ -15,6 +15,8 @@
  *   pthread_setname_np                  pthread_set_name_np; a thread naming itself also takes
  *                                       its priority role from its name (helpers 690)
  *   setpriority(PRIO_PROCESS, tid, n)   a thread lowering itself (n > 0) is a background job (730)
+ *   sysconf                             the title's (13 processors, 16 KiB pages): the console
+ *                                       gives a title none
  *   PR_SET_TIMERSLACK, PR_SET_NAME      prctl: the name; the timer slack has no equal (0)
  */
 #ifndef PSHAKUX_HAKUX_PS5_H
@@ -84,6 +86,9 @@ int memfd_create(const char *name, unsigned int flags);
 #define gettid() pshakux_gettid()
 #define pthread_setname_np(thread, name) pshakux_setname((thread), (name))
 #define setpriority(which, who, prio) pshakux_setpriority((which), (who), (prio))
+/* No sysconf for a title on the console (measured 2026-11-01): src/platform/ps5_log.c's. */
+long pshakux_sysconf(int name);
+#define sysconf(name) pshakux_sysconf(name)
 
 /* The console's libc names the coarse monotonic clock CLOCK_MONOTONIC_FAST. */
 #ifndef CLOCK_MONOTONIC_COARSE

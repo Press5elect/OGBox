@@ -13,8 +13,10 @@
  * The life of a run: pshx_core_configure (once: what boots and how), pshx_core_start (the vCPU
  * thread boots the title and runs it), then each display refresh pshx_core_take_frame and
  * pshx_core_set_pad, until the state is PSHX_CORE_STOPPED or PSHX_CORE_FAILED or the user quits.
- * hakuX's core has no way to stop and start again in the same process yet: the title ends through
- * the shell (the template's exit) after a run, as hakuX's Android activity ends its process.
+ * hakuX's core has no way to stop and start again in the same process yet: a new boot is a relaunch
+ * of the title with the arguments that say what to boot (src/platform/ps5_relaunch.h: quitting a
+ * game back to the library, loading a savestate with "loadstate=<file>", the guest's own reboot
+ * into another XBE with "relaunch"), and quitting ends the title through the shell.
  *
  * Threads: configure and start from the main thread; the rest from any thread unless said.
  */
@@ -55,6 +57,10 @@ bool pshx_core_configure(const PshxCoreConfig *config);
 bool pshx_core_start(void);
 
 int pshx_core_state(void);
+/* The run stopped for the guest's reboot into another XBE (XLaunchNewImage): the front end
+ * relaunches the title with the same disc and the option "relaunch" (hakuX boots the XBE its
+ * launch data names). */
+bool pshx_core_relaunch_wanted(void);
 /* Why the run failed or stopped, for the screen ("" when there is nothing to say). */
 const char *pshx_core_message(void);
 /* The core's name and its revision, for the boot log and an about page. */

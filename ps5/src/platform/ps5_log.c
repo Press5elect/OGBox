@@ -15,7 +15,9 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 void ps5px_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
@@ -72,4 +74,23 @@ ps5_title_fatal(const char *message)
 {
    pshakux_log("FATAL: %s", message ? message : "(no message)");
    abort();
+}
+
+long
+pshakux_sysconf(int name)
+{
+#if defined(__PROSPERO__)
+   switch (name) {
+   case _SC_NPROCESSORS_ONLN:
+   case _SC_NPROCESSORS_CONF:
+      return 13;
+   case _SC_PAGESIZE:
+      return 16384;
+   default:
+      errno = EINVAL;
+      return -1;
+   }
+#else
+   return sysconf(name);
+#endif
 }

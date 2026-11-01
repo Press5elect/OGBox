@@ -99,6 +99,11 @@ void pshakux_diag_session_end(int status);
 /// Copies what standard error has written since the watcher last looked on to klog, now.
 void pshakux_diag_drain(void);
 
+/// PSHakuX: sysconf without the console's, which a title is not given (measured 2026-11-01):
+/// _SC_NPROCESSORS_ONLN and _CONF answer 13 (the processors a title's threads run on),
+/// _SC_PAGESIZE and _SC_PAGE_SIZE 16384 (the console's page); anything else -1 with EINVAL.
+long pshakux_sysconf(int name);
+
 /// What tools/build-identity.sh recorded for this build (ps5_build_stamp.cpp).
 const char* pshakux_build_stamp(void);
 const char* pshakux_build_identity(void);

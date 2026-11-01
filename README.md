@@ -34,6 +34,9 @@ The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R
 L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
 is a player (1-4). The emulated hard disk lives in `/data/pshakux/hdd`, the shader caches in
 `/data/pshakux/cache`, outside the title folder, so an update is just replacing the folder.
+hakuX's core cannot yet stop one game and boot another in the same process, so a new boot is a
+relaunch of the title with arguments (`--boot <image>`, `--loadstate <file>`, `--relaunch`,
+`--hdd <folder>`, `--option <opt>`); a game's own reboot into another XBE relaunches it that way.
 `pshakux-boot.log` in the title folder says what happened (the run before is kept as
 `pshakux-boot.previous.log`).
 

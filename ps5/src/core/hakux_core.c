@@ -60,6 +60,11 @@ int pshx_core_state(void)
     return __atomic_load_n(&g_state, __ATOMIC_ACQUIRE);
 }
 
+bool pshx_core_relaunch_wanted(void)
+{
+    return pshx_core_state() == PSHX_CORE_STOPPED && g_core.kernel.relaunch;
+}
+
 const char *pshx_core_message(void)
 {
     const char *fatal = nc_hle_fatal();
@@ -253,7 +258,7 @@ static void *vcpu_thread(void *arg)
     const NcKernel *k = &g_core.kernel;
     snprintf(g_message, sizeof(g_message), "%s",
              k->quit ? "The game left (to the dashboard, a reboot or a shutdown)."
-             : k->relaunch ? "The game started another XBE (a relaunch: not yet supported here)."
+             : k->relaunch ? "The game started another XBE: the title starts again with it."
              : k->stop ? "The game stopped (see pshakux-boot.log)." : "The game ended.");
     pshakux_log("core: the run ended: %s", g_message);
     set_state(k->stop && !k->quit && !k->relaunch ? PSHX_CORE_FAILED : PSHX_CORE_STOPPED);
