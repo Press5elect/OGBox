@@ -451,9 +451,11 @@ struct Listing {
 	std::string error;
 };
 
+std::string g_networkStatus;   // at the foot of the game list
+
 void vfsLog(const char *line)
 {
-	pshakux_log("vfs: %s", line);
+	pshakux_log("%s", line);   // the layer's lines begin with "vfs: "
 }
 
 /* The virtual file layer: its stand-in file, its log, the shares of network.cfg (a commented
@@ -478,8 +480,48 @@ void startFileLayer()
 			pshakux_log("ogbox: wrote an example %s", kNetworkFile);
 		}
 	}
-	const int mounted = ps5vfs_load_network_config(kNetworkFile);
-	pshakux_log("ogbox: %d network share(s) from %s", mounted < 0 ? 0 : mounted, kNetworkFile);
+	chmod(kNetworkFile, 0666);
+	/* 0.1.15: /data/ogbox/network.cfg, else the title folder's. A file that cannot be opened is
+	 * said, with the reason, in the log and at the foot of the game list (0.1.14 counted it as
+	 * no shares and said nothing: a network.cfg copied in over FTP was not read). One the title
+	 * may not read is made readable when it can be (chmod 0666), then tried again. */
+	const std::string titleFile = std::string(pshakux_title_dir()) + "/network.cfg";
+	g_networkStatus = std::string("no shares set up (") + kNetworkFile + ")";
+	for (const std::string &path : { std::string(kNetworkFile), titleFile }) {
+		if (stat(path.c_str(), &st) != 0) {
+			continue;
+		}
+		FILE *probe = std::fopen(path.c_str(), "r");
+		int error = probe ? 0 : errno;
+		if (!probe) {
+			const int changed = chmod(path.c_str(), 0666);
+			pshakux_log("ogbox: %s cannot be opened (%s; mode %o, owner %d): chmod 0666 %s", path.c_str(),
+				std::strerror(error), static_cast<unsigned>(st.st_mode & 07777), static_cast<int>(st.st_uid),
+				changed == 0 ? "done" : std::strerror(errno));
+			probe = std::fopen(path.c_str(), "r");
+			error = probe ? 0 : errno;
+		}
+		if (!probe) {
+			g_networkStatus = path + " cannot be read: " + std::strerror(error);
+			pshakux_log("ogbox: %s", g_networkStatus.c_str());
+			continue;
+		}
+		char line[512];
+		unsigned lines = 0, paths = 0;
+		while (std::fgets(line, sizeof(line), probe)) {
+			lines++;
+			const std::string text = trim(line);
+			if (text.rfind("path", 0) == 0 && text.find('=') != std::string::npos) {
+				paths++;
+			}
+		}
+		std::fclose(probe);
+		const int mounted = ps5vfs_load_network_config(path.c_str());
+		g_networkStatus = std::to_string(mounted < 0 ? 0 : mounted) + " share(s) from " + path;
+		pshakux_log("ogbox: %d network share(s) from %s (%u lines, %u path lines)", mounted < 0 ? 0 : mounted,
+			path.c_str(), lines, paths);
+		break;
+	}
 }
 
 std::string readLastFolder()
@@ -1354,7 +1396,7 @@ public:
 			ImGui::TextColored(accent, "Starting %s...", baseName(startPath).c_str());
 		} else {
 			ImGui::TextColored(dim, "CROSS open / start   CIRCLE back   Hold OPTIONS + touch pad: quit (in a game: back here)");
-			ImGui::TextColored(dim, "Network shares: %s", kNetworkFile);
+			ImGui::TextColored(dim, "Network shares: %s", g_networkStatus.c_str());
 		}
 		if (!listError.empty()) {
 			ImGui::PushTextWrapPos(0.0f);

@@ -127,6 +127,16 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.15 (bring-up)
+
+Added
+- The foot of the game list shows how many network shares were set up, or why
+  `network.cfg` could not be read. A `network.cfg` in the title folder is read too.
+
+Fixed
+- A `network.cfg` copied to the console over FTP that the title could not open was taken as
+  no shares, without saying why; OGBox now makes it readable and reads it.
+
 ### 0.1.14 (bring-up)
 
 Added
