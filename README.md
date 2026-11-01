@@ -131,6 +131,16 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.24 (bring-up)
+
+Fixed
+- 0.1.23 stopping games with SIGFPE. Its floating-point fix used the place the console SDK's
+  header gives for the kernel's saved copy, and on the console that place holds something
+  else. The emulator now looks for the copy by the marks every such image has (its MXCSR mask
+  and control-word bits). If it finds one, it reads and writes the game's floating-point state
+  there; if not, it keeps 0.1.20's behaviour. Either way, the boot log says what it found and
+  shows the bytes once (`signal frame` lines).
+
 ### 0.1.23 (bring-up)
 
 Fixed
@@ -141,7 +151,9 @@ Fixed
   when the handler returns. So the emulator saved and switched blank state, and the kernel put
   the interrupted thread's values back into whichever thread resumed. The emulator now reads
   and writes the game's floating-point state in the kernel's copy, as it already did on Linux.
-  The boot log's `signal frame FPU:` line says which copy it uses.
+  The boot log's `signal frame FPU:` line says which copy it uses. (Corrected in 0.1.24: the
+  copy isn't where the SDK's header says on the console; this version stopped games with
+  SIGFPE.)
 
 ### 0.1.22 (bring-up)
 
