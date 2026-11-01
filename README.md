@@ -31,7 +31,8 @@ back from `libc.prx` at start-up, as PSHakuX System Check 0.0.5 did on the conso
 guest's kernel at 0x80010000; whether XDK games then boot is what 0.1.4's console runs will show.
 `ogbox-boot.log` says whether the takeover was done (`takeover:` lines) and which layout the
 core used (`core:` lines). With 0.1.4 Burnout 3 boots, runs its loading screen at 60 fps and
-stays there; 0.1.5 adds the boot-log diagnostics that say what it waits for.
+stays there; 0.1.5 adds the boot-log diagnostics that say what it waits for, and 0.1.8 logs
+the APU's voices and the guest threads' waits, to find what that loading screen waits for.
 
 ## Using it
 
@@ -118,6 +119,29 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.8 (bring-up)
+
+Added
+- The APU's state in the boot log every 5 s: the guest's DirectSound methods by name and count,
+  the interrupt's rises by source (a voice's notification, the FE's trap), the notifications
+  written (how many, the last one's voice and address), the idle traps, and each voice on the
+  lists with its format, stream or buffer, position, envelope, volumes, a stream's SSLs, and the
+  samples, segments and SSLs it played since the last line.
+- An APU event log: the first 300 methods that start, stop, pause or place a voice's data, and
+  the first 100 notifications and idle traps. `env NC_APU_TRACE=n` in `boot.txt` sets how many
+  (0 turns it off).
+- The thread dump says, for each object a thread waits on, how often and how it was last
+  signalled, when, by which thread and from where (or that it never was), and how long the
+  thread has waited and the call that waits.
+
+Changed
+- The thread dump comes every 10 s from 10 s in (was every 30 s from 20 s in, after the point
+  where Burnout 3's runs were quit).
+
+Fixed
+- Quitting with OPTIONS and the touch pad ends the title cleanly: confirmed on the console with
+  0.1.7 and Burnout 3 (exit status 0, the title closed by the shell).
 
 ### 0.1.7 (bring-up)
 
