@@ -61,24 +61,13 @@ extern "C" const char __executable_start[] __attribute__((weak));
 
 namespace {
 
-// PSHakuX: sigaltstack is found while the title runs, not imported. Measured on the console
-// (2026-11-01): it is not among the exports a title is given, so an import of it could be null
-// (a call through address 0); found or not, the title starts, and without it the crash report
-// still runs, on the faulting thread's own stack (a stack overflow then goes unreported).
+// sigaltstack is an ordinary libkernel import, as in Kelvin on the console. 0.1.0 looked it up
+// at run time instead, which cannot find libkernel in this title: the lookup failed and signal
+// handlers ran on the interrupted stack (a guest stack, where the kernel could not write the
+// signal frame: the title got SIGILL).
 int AltStack(const stack_t* ss, stack_t* old)
 {
-#if defined(__PROSPERO__)
-  using Fn = int (*)(const stack_t*, stack_t*);
-  static const Fn fn = reinterpret_cast<Fn>(PS5SystemModules::FindFunction("libkernel", "sigaltstack", "sHziAegVp74"));
-  if (!fn)
-  {
-    errno = ENOSYS;
-    return -1;
-  }
-  return fn(ss, old);
-#else
   return sigaltstack(ss, old);
-#endif
 }
 
 volatile sig_atomic_t s_in_crash = 0;
@@ -587,6 +576,7 @@ extern "C" void pshakux_install_crash_stack(void)
   void* const memory = std::malloc(CrashStack::SIZE);
   if (!memory)
     return;
+  std::memset(memory, 0, CrashStack::SIZE);  // touched now: the kernel cannot fault pages in while it writes a signal frame
   stack_t ss;
   std::memset(&ss, 0, sizeof(ss));
   ss.ss_sp = static_cast<char*>(memory);

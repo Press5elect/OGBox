@@ -102,6 +102,16 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.1 (bring-up)
+
+Fixed
+- The game's code no longer ends the title at its first interrupt or device access: signal
+  handlers now run on their own stack (sigaltstack is imported as usual, and the stack's memory
+  is touched up front), not on the game's stack, where the console could not write the signal
+  frame and closed the title with SIGILL.
+- Thread priorities are applied (with pthread_setschedparam); 0.1.0 left every thread at the
+  title's priority.
+
 ### 0.1.0 (bring-up)
 
 **Added**

@@ -12,10 +12,10 @@
 // of the core's glue. PSHakuX by Press5elect.
 
 #include "ps5_priority.h"
-#include "ps5_modules.h" // PS5SystemModules
 
 #include <atomic>
 #include <pthread.h>
+#include <sched.h>
 
 extern "C" void ps5px_log(const char* format, ...);
 
@@ -23,25 +23,27 @@ namespace PS5Priority
 {
 namespace
 {
-using GetFn = int (*)(pthread_t thread, int* priority);
-using SetFn = int (*)(pthread_t thread, int priority);
-
-struct Functions
+// PSHakuX 0.1.1: pthread_getschedparam / pthread_setschedparam, which the console honours (the
+// boot log's watcher line shows 700 -> 690 taking effect). 0.1.0 looked scePthreadSetprio up at
+// run time; the lookup cannot find libkernel in this title, so no role was ever applied.
+int GetPriority(pthread_t thread, int* priority)
 {
-	GetFn get = nullptr;
-	SetFn set = nullptr;
-};
+	int policy = 0;
+	sched_param param{};
+	const int r = pthread_getschedparam(thread, &policy, &param);
+	*priority = r == 0 ? param.sched_priority : -1;
+	return r;
+}
 
-const Functions& Find()
+int SetPriority(pthread_t thread, int priority)
 {
-	static const Functions functions = [] {
-		Functions f;
-		f.get = reinterpret_cast<GetFn>(PS5SystemModules::FindFunction("libkernel", "scePthreadGetprio", "1tKyG7RlMJo"));
-		f.set = reinterpret_cast<SetFn>(PS5SystemModules::FindFunction("libkernel", "scePthreadSetprio", "W0Hpm2X0uPE"));
-		ps5px_log("priority: scePthreadSetprio %s", f.set ? "found" : "NOT found: every thread keeps the title's priority");
-		return f;
-	}();
-	return functions;
+	int policy = 0;
+	sched_param param{};
+	int r = pthread_getschedparam(thread, &policy, &param);
+	if (r != 0)
+		return r;
+	param.sched_priority = priority;
+	return pthread_setschedparam(thread, policy, &param);
 }
 
 int PriorityOf(Role role)
@@ -85,20 +87,15 @@ void SetCurrentThread(Role role)
 {
 	if (!s_enabled.load(std::memory_order_relaxed))
 		return;
-	const Functions& f = Find();
-	if (!f.set)
-		return;
 	const int wanted = PriorityOf(role);
 	int before = -1;
-	if (f.get)
-		f.get(pthread_self(), &before);
-	const int result = f.set(pthread_self(), wanted);
+	GetPriority(pthread_self(), &before);
+	const int result = SetPriority(pthread_self(), wanted);
 	const unsigned bit = 1u << static_cast<unsigned>(role);
 	if ((s_said.fetch_or(bit, std::memory_order_relaxed) & bit) == 0)
 	{
 		int after = -1;
-		if (f.get)
-			f.get(pthread_self(), &after);
+		GetPriority(pthread_self(), &after);
 		ps5px_log("priority: a %s thread from %d to %d: %#x (now %d)", NameOf(role), before, wanted,
 			static_cast<unsigned>(result), after);
 	}
