@@ -144,6 +144,19 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.36 (bring-up)
+
+Changed
+- The boot log's stall report (written when a game stops giving frames) now says what the
+  emulated CPU's thread is stuck in: the system call it waits in and its arguments, and, when it
+  is inside a signal's delivery, which signal it is and where it came in, with the emulator's own
+  frames under it. The 1 to 2 second freezes (every game) all stop at the same place in the
+  system library, inside a signal's delivery; this release is to name it.
+
+Fixed
+- The stall report looked for the emulator's own return addresses in only the first 32 MiB of
+  the 60 MiB program, so it never listed them.
+
 ### 0.1.35 (bring-up)
 
 Fixed

@@ -798,6 +798,20 @@ struct StallSample
   uintptr_t frame[12];
   int found;                // OGBox 0.1.30: the stack's return addresses into the title (StackScan)
   uintptr_t stack[16];
+  // OGBox 0.1.36: the code before the PC and before the first return address (a system call's
+  // number is in the bytes before it), and the signal the thread was inside of when its frames
+  // end in the system's signal trampoline (FreeBSD's sigcode: "call *(%rsp)", the sigframe at
+  // the return address's slot + 8: the handler, the interrupted context, its siginfo).
+  uint64_t rax, rdi, rsi, rdx, r10;
+  uint8_t code_pc[32], code_ret[32];
+  bool have_code_pc, have_code_ret;
+  int signo;                // 0: the frames do not end in the trampoline
+  uintptr_t sig_handler;
+  Regs sig;
+  int sig_frames;
+  uintptr_t sig_frame[12];
+  int sig_found;
+  uintptr_t sig_stack[16];
 };
 StallSample s_stall;
 std::atomic<uint32_t> s_stall_seq{0};
@@ -822,7 +836,7 @@ bool AfterCall(uintptr_t address)
  * holds (0.1.31: 32 KiB): inside the system library, or code entered from a signal or the CPU gate, the rbp chain
  * is not the title's (0.1.29's Def Jam stalls: "at 0x80000138c from 0x80000c6fa" and nothing of
  * the title's). */
-void StackScan(uintptr_t rsp)
+int StackScanInto(uintptr_t rsp, uintptr_t* out)
 {
   const uintptr_t base = pshakux_eboot_start();
   int n = 0;
@@ -834,11 +848,49 @@ void StackScan(uintptr_t rsp)
     for (int i = 0; i < 32 && n < 16; i++)
     {
       const uintptr_t v = words[i];
-      if (v > base + 8 && v - base < 0x2000000u && AfterCall(v))
-        s_stall.stack[n++] = v;
+      // 0.1.36: the whole eboot (about 60 MiB; up to 0.1.35 only its first 32 MiB, which left out
+      // the emulator's own code)
+      if (v > base + 8 && v - base < 0x8000000u && AfterCall(v))
+        out[n++] = v;
     }
   }
-  s_stall.found = n;
+  return n;
+}
+
+void StackScan(uintptr_t rsp)
+{
+  s_stall.found = StackScanInto(rsp, s_stall.stack);
+}
+
+/* The return addresses up an rbp chain (host code). */
+int WalkFrames(uintptr_t rbp, uintptr_t rsp, uintptr_t* out, uintptr_t* slots, int max)
+{
+  int n = 0;
+  uintptr_t frame = rbp, previous = rsp;
+  while (n < max && frame >= previous && frame - rsp < 0x1000000 && (frame & 7) == 0)
+  {
+    uintptr_t words[2];
+    if (!SafeRead(frame, words, sizeof(words)) || words[1] == 0)
+      break;
+    out[n] = words[1];
+    if (slots)
+      slots[n] = frame + 8;
+    n++;
+    previous = frame + 16;
+    frame = words[0];
+  }
+  return n;
+}
+
+bool InModule(uintptr_t address)
+{
+  const uintptr_t base = pshakux_eboot_start();
+  if (base != 0 && address >= base && address - base < 0x40000000u)
+    return true;
+  for (int i = 0; i < s_module_count; i++)
+    if (address >= s_modules[i].start && address < s_modules[i].end)
+      return true;
+  return false;
 }
 
 void StallHandler(int, siginfo_t*, void* context)
@@ -850,17 +902,42 @@ void StallHandler(int, siginfo_t*, void* context)
   s_stall.rbp = r.rbp;
   s_stall.cs = static_cast<uint16_t>(r.cs);
   int n = 0;
+  uintptr_t slots[12] = {};
+  s_stall.rax = r.rax, s_stall.rdi = r.rdi, s_stall.rsi = r.rsi, s_stall.rdx = r.rdx, s_stall.r10 = r.r10;
+  s_stall.signo = 0;
+  s_stall.have_code_pc = s_stall.have_code_ret = false;
   if (r.cs != s_guest_cs.load(std::memory_order_relaxed))
   {
-    uintptr_t frame = r.rbp, previous = r.rsp;
-    while (n < 12 && frame >= previous && frame - r.rsp < 0x1000000 && (frame & 7) == 0)
+    n = WalkFrames(r.rbp, r.rsp, s_stall.frame, slots, 12);
+    s_stall.have_code_pc = SafeRead(r.rip - 24, s_stall.code_pc, sizeof(s_stall.code_pc));
+    if (n > 0)
+      s_stall.have_code_ret = SafeRead(s_stall.frame[0] - 24, s_stall.code_ret, sizeof(s_stall.code_ret));
+    // the frames end in the signal trampoline: the signal, and where it came in
+    for (int i = 0; i < n; i++)
     {
-      uintptr_t words[2];
-      if (!SafeRead(frame, words, sizeof(words)) || words[1] == 0)
-        break;
-      s_stall.frame[n++] = words[1];
-      previous = frame + 16;
-      frame = words[0];
+      uint8_t call[3];
+      if (InModule(s_stall.frame[i]) || !SafeRead(s_stall.frame[i] - 3, call, 3) || call[0] != 0xFF ||
+          call[1] != 0x14 || call[2] != 0x24)
+        continue;
+      const uintptr_t sigframe = slots[i] + 8;
+      ucontext_t uc;
+      siginfo_t si;
+      uintptr_t handler = 0;
+      if (SafeRead(sigframe, &handler, sizeof(handler)) && SafeRead(sigframe + 16, &uc, sizeof(uc)) &&
+          SafeRead(sigframe + 16 + sizeof(ucontext_t), &si, sizeof(si)))
+      {
+        s_stall.signo = si.si_signo ? si.si_signo : -1;
+        s_stall.sig_handler = handler;
+        s_stall.sig = ReadRegs(&uc);
+        s_stall.sig_frames = 0;
+        s_stall.sig_found = 0;
+        if (s_stall.sig.cs != s_guest_cs.load(std::memory_order_relaxed))
+        {
+          s_stall.sig_frames = WalkFrames(s_stall.sig.rbp, s_stall.sig.rsp, s_stall.sig_frame, nullptr, 12);
+          s_stall.sig_found = StackScanInto(s_stall.sig.rsp, s_stall.sig_stack);
+        }
+      }
+      break;
     }
   }
   s_stall.frames = n;
@@ -939,5 +1016,49 @@ extern "C" void pshakux_stall_report(double seconds)
   {
     o.s("    on the stack ");
     Where(o, s_stall.stack[i]).end();
+  }
+  // 0.1.36: the registers (a system call's arguments) and the code before the PC and the first
+  // return address
+  o.s("    rax ").hex(s_stall.rax).s(" rdi ").hex(s_stall.rdi).s(" rsi ").hex(s_stall.rsi).s(" rdx ")
+    .hex(s_stall.rdx).s(" r10 ").hex(s_stall.r10).end();
+  if (s_stall.have_code_pc)
+  {
+    o.s("    code before the PC, from -0x18:");
+    for (unsigned i = 0; i < sizeof(s_stall.code_pc); i++)
+      o.c(' ').hex(s_stall.code_pc[i], 2);
+    o.end();
+  }
+  if (s_stall.have_code_ret)
+  {
+    o.s("    code before the first return address, from -0x18:");
+    for (unsigned i = 0; i < sizeof(s_stall.code_ret); i++)
+      o.c(' ').hex(s_stall.code_ret[i], 2);
+    o.end();
+  }
+  if (s_stall.signo)
+  {
+    const Regs& g = s_stall.sig;
+    o.s("    inside the delivery of signal ").udec(static_cast<uint64_t>(s_stall.signo > 0 ? s_stall.signo : 0))
+      .s(" (handler ");
+    Where(o, s_stall.sig_handler).s("), which came in ");
+    if (g.cs == s_guest_cs.load(std::memory_order_relaxed))
+    {
+      o.s("in the game's code, eip ").hex(g.rip & 0xffffffffu, 8).s(" esp ").hex(g.rsp & 0xffffffffu, 8).end();
+    }
+    else
+    {
+      o.s("in host code at ");
+      Where(o, g.rip).end();
+      for (int i = 0; i < s_stall.sig_frames; i++)
+      {
+        o.s("      from ");
+        Where(o, s_stall.sig_frame[i]).end();
+      }
+      for (int i = 0; i < s_stall.sig_found; i++)
+      {
+        o.s("      on the stack ");
+        Where(o, s_stall.sig_stack[i]).end();
+      }
+    }
   }
 }
