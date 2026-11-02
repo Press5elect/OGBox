@@ -144,6 +144,17 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.31 (bring-up)
+
+Changed
+- The emulated CPU's thread back at the priority of the others (700, as up to 0.1.28): with
+  0.1.29's higher one, Def Jam's freezes got longer, from about half a second to over a second.
+  `OGBOX_VCPU_PRIORITY` in boot.txt still sets it.
+- More in the boot log for the freezes: a device access (the GPU, sound, USB and so on) that
+  takes over 5 ms is logged with the device and register ("slow device access"); the freeze
+  probe names the system library and the function it stopped in, and looks further up the
+  stack for OGBox's own calls. Crash reports name system-library addresses the same way.
+
 ### 0.1.30 (bring-up)
 
 Changed

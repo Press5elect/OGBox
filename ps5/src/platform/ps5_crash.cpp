@@ -38,6 +38,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -245,7 +246,122 @@ bool SafeRead(uintptr_t address, void* out, size_t size)
   return read(s_pipe[0], out, size) == static_cast<ssize_t>(size);
 }
 
-// "eboot+0x1234 (elf 0x3000001234)" when the address is in the eboot.
+// OGBox 0.1.31: the system's modules (libkernel, libSceLibcInternal, ...) and some of their
+// functions, so an address in them is said by name: "libkernel.sprx+0x138c (after
+// pthread_cond_wait+0x2c)". The process's module list shows a title only its own modules, but
+// the console's loader answers sceKernelGetModuleInfo for the others' handles too; their exports
+// are found with sceKernelDlsym. Made once, before the probes (MapSystemModules), read by Where.
+struct ModuleRange
+{
+  uintptr_t start, end;
+  char name[40];
+};
+struct KnownFunction
+{
+  uintptr_t address;
+  const char* name;
+};
+ModuleRange s_modules[48];
+int s_module_count = 0;
+KnownFunction s_functions[160];
+int s_function_count = 0;
+
+extern "C" int sceKernelGetModuleInfo(int32_t handle, void* info);
+extern "C" int sceKernelDlsym(int32_t handle, const char* symbol, void** address);
+
+const char* const k_known_functions[] = {
+  "pthread_mutex_lock", "pthread_mutex_trylock", "pthread_mutex_unlock", "pthread_mutex_timedlock",
+  "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_signal", "pthread_cond_broadcast",
+  "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "pthread_rwlock_unlock", "pthread_once", "pthread_join",
+  "pthread_kill", "pthread_sigmask", "pthread_yield", "pthread_self", "pthread_create", "pthread_getspecific",
+  "pthread_setspecific", "pthread_getschedparam", "pthread_setschedparam", "sched_yield", "nanosleep", "usleep",
+  "sleep", "clock_gettime", "clock_getres", "gettimeofday", "clock_nanosleep", "sigprocmask", "sigaction",
+  "sigaltstack", "sigsuspend", "sigwait", "kill", "raise", "_umtx_op", "__error", "write", "read", "pread",
+  "pwrite", "writev", "readv", "open", "close", "fsync", "lseek", "fstat", "stat", "ioctl", "fcntl", "poll",
+  "select", "mmap", "munmap", "mprotect", "madvise", "getpid", "sysctl", "sysctlbyname", "socket", "connect",
+  "send", "recv", "sendto", "recvfrom", "setsockopt", "getsockopt", "sceKernelUsleep", "sceKernelNanosleep",
+  "sceKernelDebugOutText", "sceKernelGetProcessTime", "sceKernelReadTsc", "sceKernelGetTscFrequency",
+  "sceKernelWaitEventFlag", "sceKernelWaitSema", "sceKernelSignalSema", "sceKernelWaitEqueue",
+  "sceKernelCreateEqueue", "sceKernelMapDirectMemory", "sceKernelAllocateDirectMemory",
+  "sceKernelMprotect", "sceKernelMunmap", "sceKernelDlsym", "sceKernelGetModuleInfo", "scePthreadMutexLock",
+  "scePthreadMutexUnlock", "scePthreadCondWait", "scePthreadCondTimedwait", "scePthreadYield",
+  "malloc", "free", "calloc", "realloc", "memalign", "posix_memalign", "aligned_alloc", "malloc_usable_size",
+  "memcpy", "memmove", "memset", "strlen", "vsnprintf", "snprintf", "sprintf", "vfprintf", "fprintf", "printf",
+  "fwrite", "fputs", "fflush", "fopen", "fclose", "fread", "localeconv", "setlocale", "strtod", "qsort",
+  "abort", "exit", "atexit", "__cxa_atexit", "__cxa_guard_acquire", "__cxa_guard_release",
+};
+
+int CompareFunctions(const void* a, const void* b)
+{
+  const uintptr_t x = static_cast<const KnownFunction*>(a)->address, y = static_cast<const KnownFunction*>(b)->address;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+void MapSystemModules()
+{
+  if (s_module_count)
+    return;
+  static const int32_t ranges[][2] = {{0, 0x80}, {0x2000, 0x2080}};
+  for (const auto& range : ranges)
+  {
+    for (int32_t handle = range[0]; handle < range[1] && s_module_count < 48; handle++)
+    {
+      alignas(8) uint8_t info[0x160] = {};
+      const uint64_t size = sizeof(info);
+      std::memcpy(info, &size, sizeof(size));
+      if (sceKernelGetModuleInfo(handle, info) != 0)
+        continue;
+      ModuleRange& m = s_modules[s_module_count];
+      std::memcpy(m.name, info + 8, sizeof(m.name) - 1);
+      m.name[sizeof(m.name) - 1] = 0;
+      uint32_t segments = 0;
+      std::memcpy(&segments, info + 0x148, sizeof(segments));
+      m.start = UINTPTR_MAX;
+      m.end = 0;
+      for (uint32_t i = 0; i < segments && i < 4; i++)
+      {
+        uint64_t address = 0;
+        uint32_t length = 0;
+        std::memcpy(&address, info + 0x108 + 16 * i, sizeof(address));
+        std::memcpy(&length, info + 0x108 + 16 * i + 8, sizeof(length));
+        if (length && address < m.start)
+          m.start = address;
+        if (length && address + length > m.end)
+          m.end = address + length;
+      }
+      bool seen = m.end <= m.start;
+      for (int j = 0; j < s_module_count && !seen; j++)
+        seen = s_modules[j].start == m.start;
+      if (seen)
+        continue;
+      s_module_count++;
+      for (const char* name : k_known_functions)
+      {
+        void* address = nullptr;
+        if (s_function_count < 160 && sceKernelDlsym(handle, name, &address) == 0 && address &&
+            reinterpret_cast<uintptr_t>(address) >= m.start && reinterpret_cast<uintptr_t>(address) < m.end)
+        {
+          bool dup = false;
+          for (int j = 0; j < s_function_count && !dup; j++)
+            dup = s_functions[j].address == reinterpret_cast<uintptr_t>(address);
+          if (!dup)
+            s_functions[s_function_count++] = {reinterpret_cast<uintptr_t>(address), name};
+        }
+      }
+    }
+  }
+  std::qsort(s_functions, static_cast<size_t>(s_function_count), sizeof(s_functions[0]), CompareFunctions);
+  char line[2048];
+  int n = 0;
+  for (int i = 0; i < s_module_count && n < static_cast<int>(sizeof(line)) - 96; i++)
+    n += std::snprintf(line + n, sizeof(line) - static_cast<size_t>(n), "%s%s %#lx-%#lx", i ? ", " : "",
+      s_modules[i].name, static_cast<unsigned long>(s_modules[i].start), static_cast<unsigned long>(s_modules[i].end));
+  pshakux_log("stall probe: %d system modules (%s); %d of their functions known by name", s_module_count,
+    s_module_count ? line : "none answered", s_function_count);
+}
+
+// "eboot+0x1234 (elf 0x3000001234)" when the address is in the eboot; "libkernel.sprx+0x138c (after
+// pthread_cond_wait+0x2c)" in a system module (MapSystemModules).
 Out& Where(Out& o, uintptr_t address)
 {
   const uintptr_t base = pshakux_eboot_start();
@@ -253,6 +369,23 @@ Out& Where(Out& o, uintptr_t address)
   if (base != 0 && address >= base && address - base < 0x40000000u)
   {
     o.s("  eboot+").hex(address - base).s(" (elf ").hex(pshakux_eboot_link_base() + (address - base)).c(')');
+    return o;
+  }
+  for (int i = 0; i < s_module_count; i++)
+  {
+    const ModuleRange& m = s_modules[i];
+    if (address < m.start || address >= m.end)
+      continue;
+    o.s("  ").s(m.name).c('+').hex(address - m.start);
+    const KnownFunction* best = nullptr;
+    for (int j = 0; j < s_function_count && s_functions[j].address <= address; j++)
+    {
+      if (s_functions[j].address >= m.start)
+        best = &s_functions[j];
+    }
+    if (best)
+      o.s(" (after ").s(best->name).c('+').hex(address - best->address).c(')');
+    break;
   }
   return o;
 }
@@ -686,14 +819,14 @@ bool AfterCall(uintptr_t address)
 }
 
 /* OGBox 0.1.30: the title's return addresses on the stack from rsp up (4 KiB), whatever rbp
- * holds: inside the system library, or code entered from a signal or the CPU gate, the rbp chain
+ * holds (0.1.31: 32 KiB): inside the system library, or code entered from a signal or the CPU gate, the rbp chain
  * is not the title's (0.1.29's Def Jam stalls: "at 0x80000138c from 0x80000c6fa" and nothing of
  * the title's). */
 void StackScan(uintptr_t rsp)
 {
   const uintptr_t base = pshakux_eboot_start();
   int n = 0;
-  for (uintptr_t at = rsp & ~uintptr_t(7); base != 0 && n < 16 && at < rsp + 4096; at += 256)
+  for (uintptr_t at = rsp & ~uintptr_t(7); base != 0 && n < 16 && at < rsp + 32768; at += 256)
   {
     uintptr_t words[32];
     if (!SafeRead(at, words, sizeof(words)))
@@ -741,6 +874,7 @@ void StallHandler(int, siginfo_t*, void* context)
 
 extern "C" void pshakux_stall_set_thread(void)
 {
+  MapSystemModules();
   struct sigaction sa;
   std::memset(&sa, 0, sizeof(sa));
   sa.sa_sigaction = StallHandler;
