@@ -13,6 +13,9 @@
 #include <string.h>
 #include <unistd.h>
 
+/* native/core/log.c (weak: a core without it writes its lines at once) */
+void nc_log_flush(void) __attribute__((weak));
+
 /* The SDK's libSceSystemService stub: imported, as the template's exit is. A lookup of it by name
  * at run time fails on the console; the import works. */
 int sceSystemServiceLoadExec(const char *path, const char *const *argv);
@@ -66,6 +69,7 @@ int pshakux_relaunch(const char *const *args)
         pshakux_log("  argv[%d] = \"%s\"", i, argv[i]);
     }
     pshakux_takeover_before_exit("the relaunch");   /* 0.1.4: libc.prx's old entries made safe again */
+    if (nc_log_flush) nc_log_flush();   /* 0.1.30: the core's queued lines (native/core/log.c) */
     pshakux_diag_drain();
     if (pshakux_log_fd() >= 0) {
         fsync(pshakux_log_fd());   /* OGBox 0.1.25: the lines up to here on the disk */

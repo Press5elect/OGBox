@@ -144,6 +144,17 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.30 (bring-up)
+
+Changed
+- The emulator core's log lines are written by a thread of their own. In Def Jam the emulated
+  CPU's thread stopped for over 400 ms at a time inside the write of a log line (a late
+  interrupt being noted, from the game's own GPU register writes), the game frozen meanwhile.
+  The lines keep their order; `NC_LOG_SYNC=1` in boot.txt writes them at once again.
+- The freeze probe also lists the game-side return addresses it finds on the emulated CPU's
+  stack ("on the stack" lines), for the freezes where it stops inside the system library and
+  the frame chain says nothing more.
+
 ### 0.1.29 (bring-up)
 
 Added

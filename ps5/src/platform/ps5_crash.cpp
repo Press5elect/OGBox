@@ -52,6 +52,8 @@
 #if defined(__PROSPERO__)
 // Refuses to build against an SDK whose ucontext_t is not the console's layout.
 #include <ps5platform/context.h>
+
+extern "C" void nc_log_flush(void) __attribute__((weak));   // native/core/log.c
 // The eboot's first byte: the linker script makes __dso_handle the start of .text (ps5/ld/).
 extern "C" char __dso_handle[] __attribute__((weak, visibility("hidden")));
 #else
@@ -380,6 +382,8 @@ Regs ReadRegs(const ucontext_t* context)
 
 void Report(int signal, siginfo_t* info, void* ctx)
 {
+  if (nc_log_flush)
+    nc_log_flush();               // 0.1.30: the core's queued lines first (native/core/log.c)
   Out o;
   SetStamp();
   const ucontext_t* const context = static_cast<const ucontext_t*>(ctx);
@@ -659,11 +663,50 @@ struct StallSample
   uint16_t cs;
   int frames;
   uintptr_t frame[12];
+  int found;                // OGBox 0.1.30: the stack's return addresses into the title (StackScan)
+  uintptr_t stack[16];
 };
 StallSample s_stall;
 std::atomic<uint32_t> s_stall_seq{0};
 std::atomic<pthread_t> s_stall_thread{};
 std::atomic<bool> s_stall_ready{false};
+
+/* Whether the bytes before address end with a call (E8 rel32, or FF /2 through a register or
+ * memory): a return address, not a stray value of the title's range. */
+bool AfterCall(uintptr_t address)
+{
+  uint8_t b[8];
+  if (!SafeRead(address - 8, b, sizeof(b)))
+    return false;
+  return b[3] == 0xE8 ||                                          // call rel32
+         (b[6] == 0xFF && ((b[7] & 0xF8) == 0xD0 || (b[7] & 0xF8) == 0x10)) ||   // call reg / [reg]
+         (b[5] >= 0x40 && b[5] <= 0x4F && b[6] == 0xFF && (b[7] & 0xF8) == 0xD0) ||  // call r8-r15
+         (b[5] == 0xFF && (b[6] & 0xF8) == 0x50) ||               // call [reg + disp8]
+         (b[2] == 0xFF && (b[3] == 0x15 || (b[3] & 0xF8) == 0x90));  // call [rip + disp32], [reg + disp32]
+}
+
+/* OGBox 0.1.30: the title's return addresses on the stack from rsp up (4 KiB), whatever rbp
+ * holds: inside the system library, or code entered from a signal or the CPU gate, the rbp chain
+ * is not the title's (0.1.29's Def Jam stalls: "at 0x80000138c from 0x80000c6fa" and nothing of
+ * the title's). */
+void StackScan(uintptr_t rsp)
+{
+  const uintptr_t base = pshakux_eboot_start();
+  int n = 0;
+  for (uintptr_t at = rsp & ~uintptr_t(7); base != 0 && n < 16 && at < rsp + 4096; at += 256)
+  {
+    uintptr_t words[32];
+    if (!SafeRead(at, words, sizeof(words)))
+      break;
+    for (int i = 0; i < 32 && n < 16; i++)
+    {
+      const uintptr_t v = words[i];
+      if (v > base + 8 && v - base < 0x2000000u && AfterCall(v))
+        s_stall.stack[n++] = v;
+    }
+  }
+  s_stall.found = n;
+}
 
 void StallHandler(int, siginfo_t*, void* context)
 {
@@ -688,6 +731,9 @@ void StallHandler(int, siginfo_t*, void* context)
     }
   }
   s_stall.frames = n;
+  s_stall.found = 0;
+  if (r.cs != s_guest_cs.load(std::memory_order_relaxed))
+    StackScan(r.rsp);
   s_stall_seq.fetch_add(1, std::memory_order_release);
   errno = saved;
 }
@@ -754,5 +800,10 @@ extern "C" void pshakux_stall_report(double seconds)
   {
     o.s("    from ");
     Where(o, s_stall.frame[i]).end();
+  }
+  for (int i = 0; i < s_stall.found; i++)
+  {
+    o.s("    on the stack ");
+    Where(o, s_stall.stack[i]).end();
   }
 }
