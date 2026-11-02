@@ -46,15 +46,16 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
    A file named `elevation-off.txt` in the title folder keeps it inside the sandbox.
 3. Start OGBox from the home screen and pick a game from the list: the places on the left, the
    folder in the middle, the selected disc on the right (its name, title ID, mods and settings).
-   D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back, TRIANGLE for the
-   settings. In a game, hold **OPTIONS and the touch pad** for two seconds to go back to the
+   D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back, L2 / R2 to jump a
+   letter back or on, TRIANGLE for the settings. In a game, hold **OPTIONS and the touch pad** for two seconds to go back to the
    list; in the list, the same quits.
 
 **Settings** (TRIANGLE, or Settings on the left) has hakuX's every setting, with hakuX's
 defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
 cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
 timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
-Network (off, LAN, XLink Kai, Insignia) and Interface (the FPS counter, the code rain). CROSS
+Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left; USB drives
+hidden by default) and Interface (the FPS counter, the code rain). CROSS
 picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
 any of the Graphics, Console and Console video ones for that game alone (TRIANGLE: back to the
 app's). They are kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`;
@@ -143,6 +144,34 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.43 (bring-up)
+
+Fixed
+- The freezes in every game (0.1 s to 12 s). When a controller or GPU interrupt arrived just
+  as a game entered the emulator's kernel through its gate, the emulator single-stepped the
+  whole kernel call, one console signal per instruction: a thousand times slower. Games that
+  poll a device or call the kernel in a tight loop (NFS Most Wanted, Mortal Kombat, Def Jam) hit
+  it most. Now an interrupt that arrives on the way in waits for the call's end, which takes it
+  at once. On the PC build of the same code, a 12-second test run stepped 40,000 to 107,000
+  instructions this way before the fix and none after; the run is 15% faster.
+- The boot log's CPU sampler counted the time in those kernel calls as "halted" (the guest
+  idle), which hid the cause; it says "kernel calls" now.
+- The kernel's last-events record in the boot log is printed newest first; 0.1.42 cut off the
+  newest events.
+
+Added
+- Settings, **Game list**: which places the list's left column shows (OGBox's games folder,
+  internal storage, USB drives, extended storage, network shares). The USB drives are hidden
+  by default; "Connected ones" shows only drives that are plugged in.
+- **L2 / R2** in the game list jump to the previous or next first letter, the letter shown
+  large for a moment; held, they keep jumping.
+- Back from a game, the list fades in straight away (no boot screen) with the game last played
+  selected. It is selected at OGBox's start too. `autoboot` in boot.txt no longer starts its
+  game again on the way back.
+
+Changed
+- The boot screen no longer names hakuX (hakuX stays credited below and in NOTICE).
 
 ### 0.1.42 (bring-up)
 

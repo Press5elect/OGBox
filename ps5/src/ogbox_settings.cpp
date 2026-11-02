@@ -127,11 +127,32 @@ std::vector<Option> makeOptions()
 		dns.text = true;
 		o.push_back(dns);
 	}
+	// ---- Game list (OGBox 0.1.43): which places its left column shows
+	{
+		const auto place = [&o](const char *key, const char *label, const char *description,
+						 std::vector<Choice> choices, const char *def) {
+			Option p{ key, Section::Library, label, description, std::move(choices), def, false };
+			p.now = true;
+			o.push_back(p);
+		};
+		place("list_games", "OGBox's games folder",
+			"The games folder in OGBox's own folder, when there is one.", kOnOff, "1");
+		place("list_internal", "Internal storage", "The console's own storage (/data).", kOnOff, "1");
+		place("list_usb", "USB drives",
+			"The console's USB drives (/mnt/usb0 to usb7). Connected ones: only a drive that is plugged in.",
+			{ { "0", "Hidden" }, { "1", "Connected ones" }, { "2", "All eight" } }, "0");
+		place("list_ext", "Extended storage", "The extended storage drives (/mnt/ext0, ext1), when there.", kOnOff, "1");
+		place("list_network", "Network shares", "The shares of /data/ogbox/network.cfg.", kOnOff, "1");
+	}
 	// ---- Interface (OGBox's)
 	o.push_back({ "show_fps", Section::Interface, "Show FPS counter",
 		"Frame rate and frame time overlay while playing.", kOnOff, "1", false });
-	o.push_back({ "rain", Section::Interface, "Code rain",
-		"The falling code behind the game list and the menus.", kOnOff, "1", false });
+	{
+		Option rain{ "rain", Section::Interface, "Code rain",
+			"The falling code behind the game list and the menus.", kOnOff, "1", false };
+		rain.now = true;
+		o.push_back(rain);
+	}
 	return o;
 }
 
@@ -200,6 +221,7 @@ const char *sectionName(Section s)
 	case Section::Console: return "Console";
 	case Section::Video: return "Console video";
 	case Section::Network: return "Network";
+	case Section::Library: return "Game list";
 	case Section::Interface: return "Interface";
 	default: return "";
 	}

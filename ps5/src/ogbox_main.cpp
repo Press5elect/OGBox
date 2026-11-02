@@ -73,6 +73,8 @@
 #include "vulkanexamplebase.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <random>
 #include <atomic>
@@ -112,6 +114,7 @@ constexpr const char *kBootFile = "/data/homebrew/PPSA99251/boot.txt";
 constexpr const char *kDataRoot = "/data/ogbox";
 constexpr double kQuitHoldSeconds = 2.0;
 constexpr const char *kLibraryFile = "/data/ogbox/library.txt";
+constexpr const char *kLastGameFile = "/data/ogbox/last-game.txt";   // 0.1.43: the disc last started
 constexpr const char *kNetworkFile = "/data/ogbox/network.cfg";
 
 struct BootConfig {
@@ -122,6 +125,7 @@ struct BootConfig {
 	std::string bootTxtImage;   // boot.txt's first line (0.1.14: boots only with "autoboot")
 	bool autoboot{ false };
 	std::string gameKey;        // 0.1.26: --game <title ID>.<version> (the game list read it)
+	bool back{ false };         // 0.1.43: --back, from a game to the game list (no boot screen)
 };
 
 std::string trim(const std::string &s)
@@ -248,6 +252,8 @@ bool readArguments(BootConfig &config)
 			i++;
 		} else if (arg == "--relaunch") {
 			config.options.push_back("relaunch");
+		} else if (arg == "--back") {
+			config.back = true;
 		} else if (arg == "--option" && next) {
 			config.options.push_back(next);
 			i++;
@@ -362,28 +368,47 @@ bool isFolder(const std::string &path)
 	return r == 0 && S_ISDIR(st.st_mode);
 }
 
-/* The places the list starts from: internal storage, the drives that are there, the shares. */
-std::vector<LibraryEntry> listPlaces()
+/* OGBox 0.1.43: which places the game list shows (the settings' Game list section). */
+struct PlaceFilter {
+	bool games{ true }, internal{ true }, ext{ true }, network{ true };
+	int usb{ 2 };   // 0 hidden, 1 the connected ones, 2 all eight
+};
+
+/* A drive plugged in: its folder is a mount, on another device than the folder above. */
+bool isMountPoint(const std::string &path)
 {
+	struct stat st, up;
+	return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && stat(parentOf(path).c_str(), &up) == 0 &&
+		st.st_dev != up.st_dev;
+}
+
+/* The places the list starts from: internal storage, the drives that are there, the shares; the
+ * filter's only (none: every one, as going up from a place's folder needs). */
+std::vector<LibraryEntry> listPlaces(const PlaceFilter *filter = nullptr)
+{
+	const PlaceFilter all;
+	const PlaceFilter &f = filter ? *filter : all;
 	std::vector<LibraryEntry> places;
 	const std::string titleGames = std::string(pshakux_title_dir()) + "/games";
-	if (isFolder(titleGames)) {
+	if (f.games && isFolder(titleGames)) {
 		places.push_back({ LibraryEntry::Place, "OGBox's games folder", titleGames, 0, titleGames });
 	}
-	places.push_back({ LibraryEntry::Place, "Internal storage", "/data", 0, "/data" });
-	for (int i = 0; i < 8; i++) {
+	if (f.internal) {
+		places.push_back({ LibraryEntry::Place, "Internal storage", "/data", 0, "/data" });
+	}
+	for (int i = 0; i < 8 && f.usb > 0; i++) {
 		const std::string usb = "/mnt/usb" + std::to_string(i);
-		if (isFolder(usb)) {
+		if (f.usb == 1 ? isMountPoint(usb) : isFolder(usb)) {
 			places.push_back({ LibraryEntry::Place, "USB drive " + std::to_string(i), usb, 0, usb });
 		}
 	}
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < 2 && f.ext; i++) {
 		const std::string ext = "/mnt/ext" + std::to_string(i);
 		if (isFolder(ext)) {
 			places.push_back({ LibraryEntry::Place, "Extended storage " + std::to_string(i), ext, 0, ext });
 		}
 	}
-	for (unsigned i = 0;; i++) {
+	for (unsigned i = 0; f.network; i++) {
 		const char *mount = ps5vfs_mount_point(i);
 		if (!mount) {
 			break;
@@ -393,6 +418,21 @@ std::vector<LibraryEntry> listPlaces()
 		}
 	}
 	return places;
+}
+
+/* OGBox 0.1.43: the letter a list entry files under, for L2 / R2 ('#' digits and the rest). */
+char letterOf(const std::string &name)
+{
+	for (const char c : name) {
+		const unsigned char u = static_cast<unsigned char>(c);
+		if (std::isalpha(u)) {
+			return static_cast<char>(std::toupper(u));
+		}
+		if (std::isdigit(u)) {
+			return '#';
+		}
+	}
+	return '#';
 }
 
 /* A folder's subfolders and disc images, folders first, by name. false with the reason. */
@@ -614,6 +654,28 @@ void writeLastFolder(const std::string &folder)
 	}
 }
 
+/* OGBox 0.1.43: the disc last started from the game list, selected when the list opens again. */
+std::string readLastGame()
+{
+	std::string path;
+	if (FILE *f = std::fopen(kLastGameFile, "r")) {
+		char line[1024];
+		if (std::fgets(line, sizeof(line), f)) {
+			path = trim(line);
+		}
+		std::fclose(f);
+	}
+	return path;
+}
+
+void writeLastGame(const std::string &path)
+{
+	if (FILE *f = std::fopen(kLastGameFile, "w")) {
+		std::fprintf(f, "%s\n", path.c_str());
+		std::fclose(f);
+	}
+}
+
 /* OGBox 0.1.26: one disc read at a time for the game list's details (the share's disc layer has
  * one disc descriptor; the mods' catalog is the core's one table). */
 std::mutex g_discInfoMutex;
@@ -706,6 +768,13 @@ public:
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
 	std::vector<LibraryEntry> places;         // the left column
 	double placesRead{ -100.0 };
+	// 0.1.43: back from a game, the list fades in (no boot screen); L2 / R2 a letter on
+	double fadeSince{ -1.0 };
+	float trigL{ 0.0f }, trigR{ 0.0f };      // the triggers last frame
+	double trigHeldSince{ -1.0 }, trigNext{ 0.0 };
+	char jumpLetter{ 0 };
+	double jumpSince{ -1.0 };
+	int jumpTo{ -1 };
 	// the selected disc's details, read on a thread of their own once the selection rests
 	struct Details {
 		std::mutex mutex;
@@ -767,6 +836,70 @@ public:
 	unsigned probeThisStall{ 0 }, probeTotal{ 0 };
 	int probeWanted{ -1 };
 
+	/* 0.1.43: the places the settings' Game list section shows. */
+	PlaceFilter placeFilter() const
+	{
+		PlaceFilter f;
+		f.games = prefs.global("list_games") != "0";
+		f.internal = prefs.global("list_internal") != "0";
+		f.ext = prefs.global("list_ext") != "0";
+		f.network = prefs.global("list_network") != "0";
+		f.usb = std::atoi(prefs.global("list_usb").c_str());
+		return f;
+	}
+
+	/* 0.1.43: L2 (-1) or R2 (+1): the first entry of the previous or the next letter in the list
+	 * (folders, then discs, each by name); L2 inside a letter goes to its first entry first. */
+	void jumpByLetter(int dir)
+	{
+		if (entries.empty() || listing) {
+			return;
+		}
+		const int n = static_cast<int>(entries.size());
+		const auto key = [&](int i) -> int {
+			const LibraryEntry &e = entries[static_cast<size_t>(i)];
+			if (e.kind != LibraryEntry::Folder && e.kind != LibraryEntry::Image) {
+				return -1;
+			}
+			return (e.kind == LibraryEntry::Image ? 256 : 0) + static_cast<unsigned char>(letterOf(e.name));
+		};
+		int i = selected >= 0 && selected < n ? selected : 0;
+		int to = i;
+		if (dir > 0) {
+			const int k = key(i);
+			int j = i + 1;
+			while (j < n && key(j) == k) {
+				j++;
+			}
+			to = j < n ? j : n - 1;
+		} else {
+			if (key(i) < 0) {
+				return;
+			}
+			int s0 = i;
+			while (s0 > 0 && key(s0 - 1) == key(i)) {
+				s0--;
+			}
+			if (s0 < i) {
+				to = s0;
+			} else if (s0 > 0 && key(s0 - 1) >= 0) {
+				to = s0 - 1;
+				while (to > 0 && key(to - 1) == key(s0 - 1)) {
+					to--;
+				}
+			}
+		}
+		if (to != i || selected != to) {
+			selected = to;
+			focusSet = false;   // drawLibrary focuses and scrolls to it
+			jumpTo = to;
+		}
+		if (key(to) >= 0) {
+			jumpLetter = letterOf(entries[static_cast<size_t>(to)].name);
+			jumpSince = now_seconds();
+		}
+	}
+
 	/* Opens a folder ("" for the places), listing it on a thread of its own. */
 	void openFolder(const std::string &path, const std::string &select = std::string())
 	{
@@ -776,9 +909,11 @@ public:
 		listError.clear();
 		selected = 0;
 		focusSet = false;
+		jumpTo = -1;
 		listing.reset();
 		if (path.empty()) {
-			entries = listPlaces();
+			const PlaceFilter f = placeFilter();
+			entries = listPlaces(&f);
 			pickSelection();
 			return;
 		}
@@ -912,7 +1047,7 @@ public:
 	void relaunchToLibrary()
 	{
 		relaunchAsked = true;
-		const char *args[] = { nullptr };
+		const char *args[] = { "--back", nullptr };   // 0.1.43: straight to the list, fading in
 		pshakux_log("ogbox: back to the game list");
 		quiesceForExit();
 		const int r = pshakux_relaunch(args);
@@ -965,7 +1100,7 @@ public:
 		 * then the arguments, which win */
 		readBootConfig(boot);
 		const bool named = readArguments(boot);
-		if (!named && boot.autoboot && !boot.bootTxtImage.empty()) {
+		if (!named && !boot.back && boot.autoboot && !boot.bootTxtImage.empty()) {   // (0.1.43: back is the list)
 			boot.image = boot.bootTxtImage;
 			boot.source = boot.source + " (autoboot)";
 		}
@@ -976,7 +1111,7 @@ public:
 			screen = Screen::Boot;
 			screenSince = now_seconds();
 			bootLines = {
-				std::string("> OGBox ") + pshakux_build_version() + " - hakuX native, for PS5",
+				std::string("> OGBox ") + pshakux_build_version() + " for PS5",
 				"> settings: /data/ogbox/settings.txt",
 				"> mods: the title folder's mods/, chosen in /data/ogbox/mods.txt",
 				"> network shares: " + g_networkStatus,
@@ -986,8 +1121,19 @@ public:
 			if (last.empty() && !boot.bootTxtImage.empty()) {
 				last = parentOf(boot.bootTxtImage);
 			}
+			/* 0.1.43: the disc last started, selected; back from a game the list itself fades in */
+			const std::string lastGame = readLastGame();
+			if (!lastGame.empty() && lastGame != "none" && isFolder(parentOf(lastGame))) {
+				last = parentOf(lastGame);
+			}
+			const std::string select = !lastGame.empty() && parentOf(lastGame) == last ? baseName(lastGame) : std::string();
+			if (boot.back) {
+				screen = Screen::Library;
+				fadeSince = -2.0;   // from the list's first frame
+				wantFocus = true;
+			}
 			if (!last.empty() && isFolder(last)) {
-				openFolder(last);
+				openFolder(last, select);
 			} else {
 				openFolder(std::string());
 			}
@@ -1541,6 +1687,27 @@ public:
 			if ((pressed & PAD_TRIANGLE) && startPath.empty()) {
 				openSettings(std::string(), std::string());
 			}
+			/* 0.1.43: L2 / R2 a letter back or on; held, again every 0.12 s after 0.4 s */
+			const double tnow = now_seconds();
+			const bool l2 = menuPad.l2 > (trigL > 0.35f ? 0.3f : 0.55f);
+			const bool r2 = menuPad.r2 > (trigR > 0.35f ? 0.3f : 0.55f);
+			const bool wasL = trigL > 0.35f, wasR = trigR > 0.35f;
+			trigL = l2 ? 1.0f : 0.0f;
+			trigR = r2 ? 1.0f : 0.0f;
+			const int dir = r2 && !l2 ? 1 : l2 && !r2 ? -1 : 0;
+			if (dir != 0 && startPath.empty()) {
+				const bool fresh = dir > 0 ? !wasR : !wasL;
+				if (fresh) {
+					trigHeldSince = tnow;
+					trigNext = tnow + 0.4;
+					jumpByLetter(dir);
+				} else if (tnow >= trigNext) {
+					trigNext = tnow + 0.12;
+					jumpByLetter(dir);
+				}
+			} else {
+				trigHeldSince = -1.0;
+			}
 		} else if (pressed & PAD_CIRCLE) {
 			screen = Screen::Library;
 			screenSince = now_seconds();
@@ -1608,6 +1775,7 @@ public:
 			if (path == "none") {
 				args = { "--boot", "none", "--option", "dash" };
 			} else {
+				writeLastGame(path);
 				args = { "--boot", path.c_str() };
 				if (!key.empty()) {
 					args.push_back("--game");
@@ -1795,6 +1963,19 @@ public:
 		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.4f, pad));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(pad * 0.4f, pad * 0.3f));
+		/* 0.1.43: back from a game, everything fades in from black over 0.8 s */
+		float fade = 1.0f;
+		if (fadeSince == -2.0) {
+			fadeSince = now_seconds();
+		}
+		if (fadeSince >= 0.0) {
+			const double t = (now_seconds() - fadeSince) / 0.8;
+			fade = t >= 1.0 ? 1.0f : static_cast<float>(std::max(0.02, t * t * (3.0 - 2.0 * t)));
+			if (t >= 1.0) {
+				fadeSince = -1.0;
+			}
+		}
+		ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
 		if (wantFocus || (screen == Screen::Library && !focusSet)) {
 			ImGui::SetNextWindowFocus();
 			wantFocus = false;
@@ -1810,7 +1991,7 @@ public:
 	void endScreen()
 	{
 		ImGui::End();
-		ImGui::PopStyleVar(2);
+		ImGui::PopStyleVar(3);
 		ImGui::PopStyleColor(2);
 	}
 
@@ -2050,7 +2231,8 @@ public:
 	{
 		ensureDetails();
 		if (placesRead < 0.0 || now_seconds() - placesRead > 5.0) {
-			places = listPlaces();
+			const PlaceFilter f = placeFilter();
+			places = listPlaces(&f);
 			placesRead = now_seconds();
 		}
 		beginScreen("##library", 0.35f);
@@ -2122,13 +2304,19 @@ public:
 			if (!focusSet && static_cast<int>(i) == selected && screen == Screen::Library) {
 				focusLastItem();
 				ImGui::SetScrollHere(0.5f);
+				if (jumpTo >= 0) {
+					focusSet = true;
+					jumpTo = -1;
+				}
 			}
 			columnItem(1, static_cast<int>(i) == (selected >= 0 && selected < static_cast<int>(entries.size()) ? selected : 0));
-			if (ImGui::IsItemFocused()) {
+			/* (an L2 / R2 jump: the row the focus is still on above it is not the selection) */
+			if (ImGui::IsItemFocused() && jumpTo < 0) {
 				selected = static_cast<int>(i);
 				focusSet = true;
 			}
 		}
+		jumpTo = -1;   // one frame at most
 		if (!listing && entries.size() <= 1 && !folder.empty() && listError.empty()) {
 			ImGui::TextColored(mx::label, "No folders or Xbox disc images (.iso, .xiso) here.");
 		}
@@ -2146,10 +2334,26 @@ public:
 		ImGui::EndChild();
 		ImGui::PopStyleVar();
 
+		/* 0.1.43: the letter L2 / R2 went to, large over the list for a moment */
+		if (jumpLetter && jumpSince >= 0.0 && now_seconds() - jumpSince < 0.7) {
+			const float t = static_cast<float>(now_seconds() - jumpSince);
+			const float a = t < 0.45f ? 1.0f : 1.0f - (t - 0.45f) / 0.25f;
+			const float size = ImGui::GetFontSize() * 5.0f;
+			const char text[2] = { jumpLetter, 0 };
+			const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+			const float box = std::max(ts.x, ts.y) * 1.5f;
+			const ImVec2 c(style.WindowPadding.x + leftW + style.ItemSpacing.x + midW * 0.5f, H * 0.5f);
+			ImDrawList *ol = ImGui::GetOverlayDrawList();
+			ol->AddRectFilled(ImVec2(c.x - box * 0.5f, c.y - box * 0.5f), ImVec2(c.x + box * 0.5f, c.y + box * 0.5f),
+				mx::u32(mx::panel, a), box * 0.12f);
+			ol->AddRect(ImVec2(c.x - box * 0.5f, c.y - box * 0.5f), ImVec2(c.x + box * 0.5f, c.y + box * 0.5f),
+				mx::u32(mx::bright, a), box * 0.12f, ImDrawCornerFlags_All, 3.0f);
+			ol->AddText(ImGui::GetFont(), size, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), mx::u32(mx::bright, a), text);
+		}
 		if (!startPath.empty()) {
 			footer(("Starting " + (startPath == "none" ? std::string("the Xbox dashboard") : baseName(startPath)) + " ...").c_str());
 		} else {
-			footer("CROSS open / start    CIRCLE back    TRIANGLE settings    hold OPTIONS + touch pad: quit",
+			footer("CROSS open / start    CIRCLE back    L2 / R2 letter    TRIANGLE settings    hold OPTIONS + touch pad: quit",
 				"Network shares: " + g_networkStatus);
 		}
 		endScreen();
@@ -2331,7 +2535,7 @@ public:
 			columnItem(1, firstOption);
 			firstOption = false;
 			if (ImGui::IsItemFocused()) {
-				help = std::string(o.description) + (o.text ? "" : " Takes effect at the next game start.");
+				help = std::string(o.description) + (o.text || o.now ? "" : " Takes effect at the next game start.");
 				int by = 0;
 				if (pressed & PAD_SQUARE) {
 					by = -1;
@@ -2354,6 +2558,12 @@ public:
 						prefs.setGlobal(o.key, next);
 						if (std::string(o.key) == "rain") {
 							rainOn = next == "1";
+						}
+						if (o.section == ogbox::Section::Library) {
+							placesRead = -100.0;   // the game list's places again, as set
+							if (folder.empty() && !listing) {
+								openFolder(std::string());
+							}
 						}
 					}
 				}

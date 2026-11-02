@@ -20,7 +20,7 @@
 
 namespace ogbox {
 
-enum class Section { Graphics, Console, Video, Network, Interface, Count };
+enum class Section { Graphics, Console, Video, Network, Library, Interface, Count };
 const char *sectionName(Section s);
 
 struct Choice {
@@ -39,6 +39,7 @@ struct Option {
 	int minimum{ 0 }, maximum{ 0 }; // a number's range
 	bool text{ false };           // free text (an address), set in settings.txt
 	const char *unit{ "" };
+	bool now{ false };            // 0.1.43: takes effect at once (the menus'), not at a game's start
 };
 
 const std::vector<Option> &options();
