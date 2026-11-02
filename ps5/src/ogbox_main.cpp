@@ -104,6 +104,7 @@
 #include "core/ogbox_mods.h"
 #include "ogbox_settings.h"
 #include "ogbox_library.h"
+#include "ogbox_storage.h"
 #include "VulkanTexture.h"
 
 #include "stb_image.h"   // (its implementation is the base class's: base/VulkanglTFModel.cpp)
@@ -764,7 +765,7 @@ public:
 	unsigned shotsTaken{ 0 };
 
 	// ---- OGBox 0.1.26: the menus (the boot screen, the game list, the settings, the mods) ----
-	enum class Screen { Boot, Library, Settings, Mods };
+	enum class Screen { Boot, Library, Settings, Mods, Storage };
 	Screen screen{ Screen::Library };
 	double screenSince{ 0.0 };
 	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
@@ -826,6 +827,16 @@ public:
 	// the mods and cheats screen
 	std::vector<OgboxModEntry> modList;
 	std::string modsKey, modsTitle;
+	// 0.1.48: the data folder's screen (the first start's, and Settings > Data folder)
+	enum class StorageStep { Places, Browse, Confirm, Moving, Done };
+	StorageStep storageStep{ StorageStep::Places };
+	bool storageFirst{ false };
+	std::string storageFolder;                // Browse: "" the drives
+	std::vector<std::string> storageSubs;     // its folders
+	std::string storageTarget, storageMessage;
+	uint64_t storageHave{ 0 };                // what the data folder holds now
+	std::vector<ogbox::StoragePlace> storageList;
+	bool storageFocus{ false };
 	// the code rain
 	struct Drop {
 		float x, y, speed;
@@ -1217,6 +1228,8 @@ public:
 		}
 		ps5.ownOverlay = true;   // OGBox lays out its own windows (the game list, the status)
 		startFileLayer();
+		/* 0.1.48: the hard disk in the data folder the player chose (boot.txt's hdd= and --hdd still win) */
+		boot.hdd = ogbox::storagePath("hdd");
 		/* boot.txt's options every run (0.1.14: a relaunch's arguments no longer leave them out);
 		 * then the arguments, which win */
 		readBootConfig(boot);
@@ -1234,7 +1247,7 @@ public:
 			screenSince = now_seconds();
 			bootLines = {
 				std::string("> OGBox ") + pshakux_build_version() + " for PS5",
-				"> settings: /data/ogbox/settings.txt",
+				"> settings: /data/ogbox/settings.txt; data: " + ogbox::storageRoot(),
 				"> mods: the title folder's mods/, chosen in /data/ogbox/mods.txt",
 				"> network shares: " + g_networkStatus,
 				"> the game list: " + std::string(readLastFolder().empty() ? "the places" : readLastFolder()),
@@ -1259,7 +1272,11 @@ public:
 			} else {
 				openFolder(std::string());
 			}
-			pshakux_log("ogbox: the game list (%s)", folder.empty() ? "the places" : folder.c_str());
+			pshakux_log("ogbox: the game list (%s); the data folder %s", folder.empty() ? "the places" : folder.c_str(),
+				ogbox::storageRoot().c_str());
+			if (!ogbox::storageChosen() && !boot.back) {
+				openStorage(true);   // 0.1.48: the first start asks where the data goes
+			}
 			return;
 		}
 		if (boot.image != "none") {
@@ -1314,7 +1331,7 @@ public:
 		for (const std::string &option : boot.options) {
 			argv.push_back(option.c_str());
 		}
-		const std::string cache = std::string(kDataRoot) + "/cache";
+		const std::string cache = ogbox::storagePath("cache");
 		PshxCoreConfig config{};
 		config.image = boot.image.c_str();
 		config.hdd_root = boot.hdd.c_str();
@@ -1830,6 +1847,10 @@ public:
 			} else {
 				trigHeldSince = -1.0;
 			}
+		} else if (screen == Screen::Storage) {
+			if (pressed & PAD_CIRCLE) {
+				storageBack();
+			}
 		} else if (pressed & PAD_CIRCLE) {
 			screen = Screen::Library;
 			screenSince = now_seconds();
@@ -2003,7 +2024,7 @@ public:
 	/* The frame just taken from the core (this frame's staging buffer) to /data/ogbox/shots. */
 	void takeShot()
 	{
-		const std::string folder = std::string(kDataRoot) + "/shots";
+		const std::string folder = ogbox::storagePath("shots");
 		mkdir(folder.c_str(), 0777);
 		char name[96];
 		std::snprintf(name, sizeof(name), "/shot-%04u-%.0fs.bmp", ++shotsTaken, now_seconds());
@@ -2144,21 +2165,126 @@ public:
 		}
 	}
 
-	/* The hints at the foot of a screen. */
-	void footer(const char *hints, const std::string &second = std::string())
+	/* ---- 0.1.48: the DualSense's buttons, drawn (the typeface has no such symbols), each face
+	 * button in the colour of the Xbox button it is: CROSS A green, CIRCLE B red, SQUARE X blue,
+	 * TRIANGLE Y yellow. In text, {X} {O} {S} {T} {L1} {R1} {L2} {R2} {OPT} {TP} {DPAD} {L3} {R3}. */
+	static ImVec4 xboxColor(char face)
+	{
+		switch (face) {
+		case 'X': return ImVec4(0.36f, 0.76f, 0.12f, 1.0f);   // A
+		case 'O': return ImVec4(0.92f, 0.20f, 0.18f, 1.0f);   // B
+		case 'S': return ImVec4(0.18f, 0.49f, 0.92f, 1.0f);   // X
+		case 'T': return ImVec4(0.96f, 0.77f, 0.10f, 1.0f);   // Y
+		}
+		return ImVec4(0.85f, 0.88f, 0.86f, 1.0f);
+	}
+
+	/* One button at x (its left), centred on y; its width. */
+	float padGlyph(ImDrawList *dl, const std::string &name, float x, float cy, float size, float alpha = 1.0f, bool measure = false)
+	{
+		const float r = size * 0.5f;
+		const ImU32 dark = mx::u32(ImVec4(0.05f, 0.06f, 0.06f, 1.0f), alpha);
+		if (name == "X" || name == "O" || name == "S" || name == "T") {
+			if (measure) {
+				return size;
+			}
+			const ImVec2 c(x + r, cy);
+			const ImU32 col = mx::u32(xboxColor(name[0]), alpha);
+			dl->AddCircleFilled(c, r, dark, 32);
+			dl->AddCircle(c, r - 1.0f, col, 32, std::max(1.5f, size * 0.07f));
+			const float k = r * 0.46f, t = std::max(2.0f, size * 0.10f);
+			if (name == "X") {
+				dl->AddLine(ImVec2(c.x - k, c.y - k), ImVec2(c.x + k, c.y + k), col, t);
+				dl->AddLine(ImVec2(c.x - k, c.y + k), ImVec2(c.x + k, c.y - k), col, t);
+			} else if (name == "O") {
+				dl->AddCircle(c, k * 1.05f, col, 24, t);
+			} else if (name == "S") {
+				dl->AddRect(ImVec2(c.x - k * 0.9f, c.y - k * 0.9f), ImVec2(c.x + k * 0.9f, c.y + k * 0.9f), col, 0.0f, ImDrawCornerFlags_All, t);
+			} else {
+				dl->AddTriangle(ImVec2(c.x, c.y - k * 1.05f), ImVec2(c.x + k * 1.05f, c.y + k * 0.75f), ImVec2(c.x - k * 1.05f, c.y + k * 0.75f), col, t);
+			}
+			return size;
+		}
+		if (name == "DPAD") {
+			if (measure) {
+				return size;
+			}
+			const ImVec2 c(x + r, cy);
+			const float a = r * 0.85f, b = r * 0.30f;
+			const ImU32 col = mx::u32(ImVec4(0.85f, 0.88f, 0.86f, 1.0f), alpha);
+			dl->AddRectFilled(ImVec2(c.x - b, c.y - a), ImVec2(c.x + b, c.y + a), col, b * 0.4f);
+			dl->AddRectFilled(ImVec2(c.x - a, c.y - b), ImVec2(c.x + a, c.y + b), col, b * 0.4f);
+			return size;
+		}
+		// the others: a pill with their name
+		const char *text = name == "OPT" ? "OPTIONS" : name == "TP" ? "TOUCH PAD" : name.c_str();
+		const float fs = size * 0.58f;
+		const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, text);
+		const float w = ts.x + size * 0.6f;
+		if (measure) {
+			return w;
+		}
+		const ImVec2 p0(x, cy - r * 0.82f), p1(x + w, cy + r * 0.82f);
+		dl->AddRectFilled(p0, p1, mx::u32(ImVec4(0.85f, 0.88f, 0.86f, 1.0f), alpha), r * 0.5f);
+		dl->AddText(ImGui::GetFont(), fs, ImVec2(x + (w - ts.x) * 0.5f, cy - ts.y * 0.5f), dark, text);
+		return w;
+	}
+
+	/* Text with {buttons} in it, from at (its top left); its width. */
+	float richText(ImDrawList *dl, ImVec2 at, const std::string &text, ImU32 color, float alpha = 1.0f, bool measure = false)
+	{
+		const float size = ImGui::GetFontSize();
+		const float lh = ImGui::GetTextLineHeight();
+		float x = at.x;
+		size_t i = 0;
+		while (i < text.size()) {
+			const size_t open = text.find('{', i);
+			const size_t stop = open == std::string::npos ? text.size() : open;
+			if (stop > i) {
+				const char *b = text.c_str() + i, *e = text.c_str() + stop;
+				if (!measure) {
+					dl->AddText(ImGui::GetFont(), size, ImVec2(x, at.y), color, b, e);
+				}
+				x += ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, b, e).x;
+			}
+			if (open == std::string::npos) {
+				break;
+			}
+			const size_t close = text.find('}', open);
+			if (close == std::string::npos) {
+				break;
+			}
+			x += padGlyph(dl, text.substr(open + 1, close - open - 1), x, at.y + lh * 0.5f, lh * 1.05f, alpha, measure) + size * 0.18f;
+			i = close + 1;
+		}
+		return x - at.x;
+	}
+
+	/* richText at the cursor, as an item. */
+	void richLine(const std::string &text, const ImVec4 &color)
+	{
+		const ImVec2 at = ImGui::GetCursorScreenPos();
+		const float w = richText(ImGui::GetWindowDrawList(), at, text, mx::u32(color));
+		ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
+	}
+
+	/* The hints at the foot of a screen, with the buttons drawn. */
+	void footer(const std::string &hints, const std::string &second = std::string())
 	{
 		const float lines = second.empty() ? 1.0f : 2.0f;
-		ImGui::SetCursorPosY(static_cast<float>(height) - ImGui::GetStyle().WindowPadding.y -
-			ImGui::GetTextLineHeightWithSpacing() * lines);
+		const float lh = ImGui::GetTextLineHeightWithSpacing() * 1.15f;
+		ImGui::SetCursorPosY(static_cast<float>(height) - ImGui::GetStyle().WindowPadding.y - lh * lines);
 		ImDrawList *dl = ImGui::GetWindowDrawList();
 		const ImVec2 at = ImGui::GetCursorScreenPos();
-		dl->AddLine(ImVec2(at.x, at.y - 4.0f), ImVec2(static_cast<float>(width) - at.x, at.y - 4.0f), mx::u32(mx::line), 2.0f);
-		ImGui::TextColored(mx::label, "%s", hints);
-		ImGui::SameLine(static_cast<float>(width) - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize("OGBox by Press5elect").x);
-		ImGui::TextColored(mx::line, "OGBox by Press5elect");
+		dl->AddLine(ImVec2(at.x, at.y - 6.0f), ImVec2(static_cast<float>(width) - at.x, at.y - 6.0f), mx::u32(mx::line), 2.0f);
+		richText(dl, at, hints, mx::u32(mx::text));
+		const char *sign = "OGBox by Press5elect";
+		dl->AddText(ImVec2(static_cast<float>(width) - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(sign).x, at.y),
+			mx::u32(mx::line), sign);
 		if (!second.empty()) {
-			ImGui::TextColored(mx::label, "%s", second.c_str());
+			dl->AddText(ImVec2(at.x, at.y + lh), mx::u32(mx::label), second.c_str());
 		}
+		ImGui::Dummy(ImVec2(1.0f, lh * lines));
 	}
 
 	/* The boot screen: the logo (the presenter's, above), a bar filling, the start's lines typed. */
@@ -2201,9 +2327,13 @@ public:
 			}
 			y += ImGui::GetTextLineHeightWithSpacing();
 		}
-		ImGui::SetCursorScreenPos(ImVec2(W - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize("CROSS: skip").x,
-			H - ImGui::GetStyle().WindowPadding.y - ImGui::GetTextLineHeightWithSpacing()));
-		ImGui::TextColored(mx::line, "CROSS: skip");
+		{
+			const std::string skip = "{X} skip";
+			ImDrawList *bl = ImGui::GetWindowDrawList();
+			const float sw = richText(bl, ImVec2(0, 0), skip, 0, 1.0f, true);
+			richText(bl, ImVec2(W - ImGui::GetStyle().WindowPadding.x - sw, H - ImGui::GetStyle().WindowPadding.y -
+				ImGui::GetTextLineHeightWithSpacing() * 1.2f), skip, mx::u32(mx::label));
+		}
 		endScreen();
 	}
 
@@ -2326,29 +2456,117 @@ public:
 		}).detach();
 	}
 
-	/* A row in a list: the text, a note on the right; true when chosen (CROSS). */
-	bool row(const std::string &id, const std::string &text, const std::string &note, bool current, const ImVec4 &color)
+	/* 0.1.48: the small pictures before a row's text */
+	enum class Icon { None, Folder, Disc, Up, Console, Usb, Network, Gear, Power, Dash, Check, Plus };
+
+	void drawIcon(ImDrawList *dl, Icon icon, ImVec2 c, float s, ImU32 col)
+	{
+		const float t = std::max(1.5f, s * 0.09f);
+		switch (icon) {
+		case Icon::Folder:
+			dl->AddRectFilled(ImVec2(c.x - s * 0.45f, c.y - s * 0.30f), ImVec2(c.x - s * 0.05f, c.y - s * 0.18f), col, s * 0.05f);
+			dl->AddRect(ImVec2(c.x - s * 0.45f, c.y - s * 0.20f), ImVec2(c.x + s * 0.45f, c.y + s * 0.32f), col, s * 0.06f, ImDrawCornerFlags_All, t);
+			break;
+		case Icon::Disc:
+			dl->AddCircle(c, s * 0.40f, col, 24, t);
+			dl->AddCircleFilled(c, s * 0.10f, col, 12);
+			break;
+		case Icon::Up:
+			dl->AddLine(ImVec2(c.x + s * 0.15f, c.y - s * 0.30f), ImVec2(c.x - s * 0.15f, c.y), col, t * 1.3f);
+			dl->AddLine(ImVec2(c.x - s * 0.15f, c.y), ImVec2(c.x + s * 0.15f, c.y + s * 0.30f), col, t * 1.3f);
+			break;
+		case Icon::Console:
+			dl->AddRect(ImVec2(c.x - s * 0.42f, c.y - s * 0.22f), ImVec2(c.x + s * 0.42f, c.y + s * 0.22f), col, s * 0.05f, ImDrawCornerFlags_All, t);
+			dl->AddLine(ImVec2(c.x - s * 0.25f, c.y), ImVec2(c.x + s * 0.10f, c.y), col, t);
+			break;
+		case Icon::Usb:
+			dl->AddRect(ImVec2(c.x - s * 0.18f, c.y - s * 0.40f), ImVec2(c.x + s * 0.18f, c.y + s * 0.05f), col, 0.0f, ImDrawCornerFlags_All, t);
+			dl->AddRectFilled(ImVec2(c.x - s * 0.28f, c.y + s * 0.05f), ImVec2(c.x + s * 0.28f, c.y + s * 0.42f), col, s * 0.06f);
+			break;
+		case Icon::Network:
+			dl->AddCircle(ImVec2(c.x, c.y - s * 0.22f), s * 0.14f, col, 12, t);
+			dl->AddCircle(ImVec2(c.x - s * 0.30f, c.y + s * 0.25f), s * 0.12f, col, 12, t);
+			dl->AddCircle(ImVec2(c.x + s * 0.30f, c.y + s * 0.25f), s * 0.12f, col, 12, t);
+			dl->AddLine(ImVec2(c.x, c.y - s * 0.08f), ImVec2(c.x - s * 0.22f, c.y + s * 0.16f), col, t);
+			dl->AddLine(ImVec2(c.x, c.y - s * 0.08f), ImVec2(c.x + s * 0.22f, c.y + s * 0.16f), col, t);
+			break;
+		case Icon::Gear:
+			dl->AddCircle(c, s * 0.26f, col, 16, t * 1.6f);
+			for (int k = 0; k < 8; k++) {
+				const float a = static_cast<float>(k) * 0.785398f;
+				dl->AddLine(ImVec2(c.x + std::cos(a) * s * 0.30f, c.y + std::sin(a) * s * 0.30f),
+					ImVec2(c.x + std::cos(a) * s * 0.44f, c.y + std::sin(a) * s * 0.44f), col, t * 1.6f);
+			}
+			break;
+		case Icon::Power:
+			dl->PathArcTo(c, s * 0.34f, -1.0f, 4.14f, 20);
+			dl->PathStroke(col, false, t * 1.2f);
+			dl->AddLine(ImVec2(c.x, c.y - s * 0.44f), ImVec2(c.x, c.y - s * 0.05f), col, t * 1.2f);
+			break;
+		case Icon::Dash:
+			dl->AddCircle(c, s * 0.40f, col, 24, t);
+			dl->AddLine(ImVec2(c.x - s * 0.22f, c.y - s * 0.22f), ImVec2(c.x + s * 0.22f, c.y + s * 0.22f), col, t * 1.4f);
+			dl->AddLine(ImVec2(c.x - s * 0.22f, c.y + s * 0.22f), ImVec2(c.x + s * 0.22f, c.y - s * 0.22f), col, t * 1.4f);
+			break;
+		case Icon::Check:
+			dl->AddLine(ImVec2(c.x - s * 0.32f, c.y), ImVec2(c.x - s * 0.08f, c.y + s * 0.25f), col, t * 1.4f);
+			dl->AddLine(ImVec2(c.x - s * 0.08f, c.y + s * 0.25f), ImVec2(c.x + s * 0.34f, c.y - s * 0.28f), col, t * 1.4f);
+			break;
+		case Icon::Plus:
+			dl->AddLine(ImVec2(c.x - s * 0.30f, c.y), ImVec2(c.x + s * 0.30f, c.y), col, t * 1.4f);
+			dl->AddLine(ImVec2(c.x, c.y - s * 0.30f), ImVec2(c.x, c.y + s * 0.30f), col, t * 1.4f);
+			break;
+		case Icon::None:
+			break;
+		}
+	}
+
+	/* A row in a list: an icon, the text, a note on the right (it may hold {buttons}); true when
+	 * chosen (CROSS). toggle: 0 none, 1 off, 2 on (a switch drawn at the right). */
+	bool row(const std::string &id, const std::string &text, const std::string &note, bool current, const ImVec4 &color,
+		Icon icon = Icon::None, int toggle = 0)
 	{
 		ImGui::PushID(id.c_str());
-		const float h = ImGui::GetTextLineHeight() * 1.5f;
+		const float h = ImGui::GetTextLineHeight() * 1.6f;
 		const ImVec2 at = ImGui::GetCursorScreenPos();
 		const bool chosen = ImGui::Selectable("##row", current, 0, ImVec2(0.0f, h));
 		const bool focused = ImGui::IsItemFocused();
 		ImDrawList *dl = ImGui::GetWindowDrawList();
 		const float ty = at.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
 		const float pad = ImGui::GetStyle().FramePadding.x;
+		const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
 		const ImU32 c = focused ? mx::u32(ImVec4(0, 0, 0, 1)) : mx::u32(color);
 		if (focused) {
-			const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-			const float pulse = 0.75f + 0.25f * static_cast<float>(std::sin(now_seconds() * 4.0));
-			dl->AddRectFilled(at, ImVec2(right, at.y + h), mx::u32(mx::bright, pulse));
+			const float pulse = 0.80f + 0.20f * static_cast<float>(std::sin(now_seconds() * 4.0));
+			dl->AddRectFilled(at, ImVec2(right, at.y + h), mx::u32(mx::bright, pulse), h * 0.18f);
+		} else if (current) {
+			dl->AddRect(at, ImVec2(right, at.y + h), mx::u32(mx::line), h * 0.18f, ImDrawCornerFlags_All, 2.0f);
 		}
-		dl->AddText(ImVec2(at.x + pad, ty), c, text.c_str());
+		float x = at.x + pad;
+		if (icon != Icon::None) {
+			const float s = ImGui::GetTextLineHeight();
+			drawIcon(dl, icon, ImVec2(x + s * 0.5f, at.y + h * 0.5f), s, c);
+			x += s * 1.4f;
+		}
+		float limit = right - pad;
+		if (toggle) {
+			const float th = ImGui::GetTextLineHeight() * 0.9f, tw = th * 1.9f;
+			const ImVec2 t0(right - pad - tw, at.y + (h - th) * 0.5f), t1(right - pad, at.y + (h + th) * 0.5f);
+			const bool on = toggle == 2;
+			dl->AddRectFilled(t0, t1, focused ? mx::u32(ImVec4(0, 0, 0, 0.85f)) : mx::u32(on ? mx::bright : mx::line, on ? 0.9f : 1.0f), th * 0.5f);
+			const float knob = th * 0.5f - 3.0f;
+			dl->AddCircleFilled(ImVec2(on ? t1.x - th * 0.5f : t0.x + th * 0.5f, t0.y + th * 0.5f), knob,
+				focused ? mx::u32(on ? mx::bright : mx::label) : mx::u32(on ? ImVec4(0, 0, 0, 1) : mx::label), 20);
+			limit = t0.x - pad;
+		}
+		float nw = 0.0f;
 		if (!note.empty()) {
-			const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-			const float nw = ImGui::CalcTextSize(note.c_str()).x;
-			dl->AddText(ImVec2(right - nw - pad, ty), focused ? c : mx::u32(mx::label), note.c_str());
+			nw = richText(dl, ImVec2(0, 0), note, 0, 1.0f, true);
+			richText(dl, ImVec2(limit - nw, ty), note, focused ? c : mx::u32(mx::label));
 		}
+		dl->PushClipRect(ImVec2(x, at.y), ImVec2(limit - nw - pad, at.y + h), true);
+		dl->AddText(ImVec2(x, ty), c, text.c_str());
+		dl->PopClipRect();
 		ImGui::PopID();
 		return chosen;
 	}
@@ -2388,18 +2606,21 @@ public:
 		ImGui::TextColored(mx::label, "PLACES");
 		for (size_t i = 0; i < places.size(); i++) {
 			const bool here = !folder.empty() && folder.compare(0, places[i].path.size(), places[i].path) == 0;
-			if (row("p" + std::to_string(i), places[i].name, std::string(), false, here ? mx::bright : mx::text)) {
+			const std::string &pp = places[i].path;
+			const Icon pi = pp.rfind("/mnt/usb", 0) == 0 ? Icon::Usb : pp.rfind("/smb", 0) == 0 || pp.rfind("/nfs", 0) == 0 ? Icon::Network
+				: pp.rfind("/mnt/ext", 0) == 0 ? Icon::Usb : pp == "/data" ? Icon::Console : Icon::Folder;
+			if (row("p" + std::to_string(i), places[i].name, std::string(), here, here ? mx::bright : mx::text, pi)) {
 				chosenPlace = static_cast<int>(i);
 			}
 			columnItem(0, i == 0);
 		}
 		ImGui::Spacing();
 		ImGui::TextColored(mx::label, "OGBOX");
-		const bool openSet = row("settings", "Settings", "TRIANGLE", false, mx::text);
+		const bool openSet = row("settings", "Settings", "{T}", false, mx::text, Icon::Gear);
 		columnItem(0, places.empty());
-		const bool dash = row("dash", "Xbox dashboard", std::string(), false, mx::text);
+		const bool dash = row("dash", "Xbox dashboard", std::string(), false, mx::text, Icon::Dash);
 		columnItem(0, false);
-		const bool leave = row("quit", "Quit OGBox", std::string(), false, mx::text);
+		const bool leave = row("quit", "Quit OGBox", std::string(), false, mx::text, Icon::Power);
 		columnItem(0, false);
 		ImGui::EndChild();
 
@@ -2467,13 +2688,15 @@ public:
 				}
 				std::string label, note;
 				ImVec4 color = mx::text;
+				Icon icon = Icon::None;
 				switch (e.kind) {
-				case LibraryEntry::Folder: label = "> " + e.name; color = mx::label; break;
-				case LibraryEntry::Image: label = shownName(e); note = sizes ? e.note : std::string(); break;
-				case LibraryEntry::Up: label = "< the folder above"; color = mx::label; break;
+				case LibraryEntry::Folder: label = e.name; color = mx::label; icon = Icon::Folder; break;
+				case LibraryEntry::Image: label = shownName(e); note = sizes ? e.note : std::string(); icon = Icon::Disc; break;
+				case LibraryEntry::Up: label = "Back to " + (parentOf(folder) == "/" ? std::string("the places") : baseName(parentOf(folder)));
+					color = mx::label; icon = Icon::Up; break;
 				default: label = e.name; break;
 				}
-				picked = row("e" + std::to_string(i), label, note, false, color);
+				picked = row("e" + std::to_string(i), label, note, false, color, icon);
 			}
 			if (picked && startPath.empty()) {
 				chosen = static_cast<int>(i);
@@ -2530,7 +2753,7 @@ public:
 		if (!startPath.empty()) {
 			footer(("Starting " + (startPath == "none" ? std::string("the Xbox dashboard") : baseName(startPath)) + " ...").c_str());
 		} else {
-			footer("CROSS open / start    CIRCLE back    L2 / R2 letter    TRIANGLE settings    hold OPTIONS + touch pad: quit",
+			footer("{X} open / start     {O} back     {L2} {R2} jump a letter     {T} settings     hold {OPT} + {TP} quit",
 				"Network shares: " + g_networkStatus);
 		}
 		endScreen();
@@ -2564,7 +2787,7 @@ public:
 				ImGui::TextColored(mx::text, "Nothing yet.");
 			} else if (e->kind == LibraryEntry::Folder) {
 				ImGui::TextColored(mx::text, "Folder %s", e->name.c_str());
-				ImGui::TextColored(mx::label, "CROSS opens it.");
+				richLine("{X} opens it.", mx::label);
 			} else if (e->kind == LibraryEntry::Up) {
 				ImGui::TextColored(mx::text, "The folder above.");
 			} else {
@@ -2712,6 +2935,7 @@ public:
 					: "OGBox's settings, hakuX's every one. Changes take effect at the next game start.";
 			}
 		}
+		bool storageRow = false;
 		if (forGame) {
 			ImGui::Spacing();
 			reset = row("reset", "Use the app's for all", std::string(), false, mx::label);
@@ -2719,7 +2943,22 @@ public:
 			if (ImGui::IsItemFocused()) {
 				help = "Every setting of this game back to the app's.";
 			}
+		} else {
+			ImGui::Spacing();
+			storageRow = row("storage", "Data folder", std::string(), false, mx::text, Icon::Folder);
+			columnItem(0, false);
+			if (ImGui::IsItemFocused()) {
+				help = "Where OGBox keeps the Xbox hard disk, the caches, the covers and the screenshots: now " +
+					ogbox::storageRoot() + " (" + ogbox::freeSpaceText(ogbox::storageRoot()) + "). Choose another place and OGBox moves them there.";
+			}
 		}
+		// 0.1.48: the controller, the DualSense's buttons as the Xbox's
+		ImGui::Spacing();
+		ImGui::TextColored(mx::label, "CONTROLLER");
+		richLine("{X} A   {O} B   {S} X   {T} Y", mx::text);
+		richLine("{L1} white   {R1} black", mx::text);
+		richLine("{L2} {R2} triggers", mx::text);
+		richLine("{OPT} start   {TP} back", mx::text);
 		ImGui::EndChild();
 		ImGui::SameLine();
 		ImGui::BeginChild("options", ImVec2(0.0f, colH), true, ImGuiWindowFlags_NavFlattened);
@@ -2788,9 +3027,12 @@ public:
 		ImGui::TextColored(mx::text, "%s", help.c_str());
 		ImGui::PopTextWrapPos();
 		ImGui::EndChild();
-		footer(forGame ? "CROSS next    SQUARE previous    TRIANGLE the app's    CIRCLE back"
-			: "CROSS next    SQUARE previous    L1 / R1 -30 / +30 (days)    CIRCLE back");
+		footer(forGame ? "{X} next choice     {S} previous     {T} back to the app's setting     {O} back"
+			: "{X} next choice     {S} previous     {L1} {R1} -30 / +30 (days)     {O} back");
 		endScreen();
+		if (storageRow) {
+			openStorage(false);
+		}
 		if (reset) {
 			prefs.clearOverrides();
 			pshakux_log("settings: %s: every setting back to the app's", forGameKey.c_str());
@@ -2803,7 +3045,7 @@ public:
 		beginScreen("##mods", 0.25f);
 		const float H = static_cast<float>(height);
 		const ImGuiStyle &style = ImGui::GetStyle();
-		glowTitle("MODS AND CHEATS", 1.6f);
+		glowTitle("MODS, PATCHES, CHEATS", 1.6f);
 		ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
 		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.4f);
 		ImGui::TextColored(mx::label, "%s  %s", modsTitle.c_str(), modsKey.c_str());
@@ -2823,14 +3065,17 @@ public:
 		for (size_t i = 0; i < modList.size(); i++) {
 			OgboxModEntry &m = modList[i];
 			if (first || (i > 0 && kindOf(modList[i - 1]) != kindOf(m))) {
-				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : m.patch ? "PATCHES (the disc's XBE, changed at the start)" : "MODS");
+				if (!first) {
+					ImGui::Spacing();
+				}
+				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : m.patch ? "PATCHES  (applied to a copy of the disc's XBE at the start)" : "MODS");
 				first = false;
 			}
-			const std::string text = std::string(m.on ? "[ON]  " : "[OFF] ") + (m.patch ? std::string(m.category) + ": " : std::string()) + m.name;
+			const std::string text = (m.patch ? std::string(m.category) + "  " : std::string()) + m.name;
 			std::string note = m.cheat ? (m.once ? "once" : std::string())
 				: m.patch ? std::string(m.author)
 				: (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
-			const bool toggled = row("m" + std::to_string(i), text, note, false, m.on ? mx::bright : mx::text);
+			const bool toggled = row("m" + std::to_string(i), text, note, false, m.on ? mx::bright : mx::text, Icon::None, m.on ? 2 : 1);
 			if (!modsFocus) {
 				focusLastItem();
 				modsFocus = true;
@@ -2846,6 +3091,11 @@ public:
 				if (m.patch) {
 					help += std::string("By ") + m.author + ", from " + m.source + ". Applied at the game's next start; a patch "
 						"whose bytes are not in this disc's XBE is left out (the boot log says so).";
+					const std::string all = std::string(m.name) + " " + m.description;
+					if (all.find("128") != std::string::npos || (!std::strcmp(m.category, "720p") &&
+							all.find("stock") == std::string::npos)) {
+						help += " Needs the 128 MB RAM upgrade: with Settings > Console > Memory on Auto, OGBox gives the game 128 MB while it's on.";
+					}
 				} else {
 					help += m.cheat ? "Cheats apply while the game runs, from its next start." : "Mods change the game's code and files, from its next start.";
 				}
@@ -2859,7 +3109,7 @@ public:
 		ImGui::TextColored(mx::line, "/data/ogbox/mods.txt");
 		ImGui::PopTextWrapPos();
 		ImGui::EndChild();
-		footer("CROSS on / off    CIRCLE back");
+		footer("{X} on / off     {O} back");
 		endScreen();
 	}
 
@@ -2920,7 +3170,7 @@ public:
 					cursor();
 				}
 			}
-			ImGui::TextColored(mx::line, "Hold OPTIONS + touch pad: back to the game list");
+			richLine("hold {OPT} + {TP}  back to the game list", mx::label);
 			ImGui::End();
 		}
 		// the quit ring, while OPTIONS and the touch pad are held
@@ -2941,11 +3191,313 @@ public:
 			dl->PathStroke(mx::u32(mx::bright), false, r * 0.16f);
 			ImGui::SameLine();
 			ImGui::BeginGroup();
-			ImGui::TextColored(mx::bright, "Hold OPTIONS + touch pad");
+			richLine("hold {OPT} + {TP}", mx::bright);
 			ImGui::TextColored(mx::text, "back to the game list in %.1f s", std::max(0.0, kQuitHoldSeconds - (now - quitHeldSince)));
 			ImGui::EndGroup();
 			ImGui::End();
 			ImGui::PopStyleColor();
+		}
+	}
+
+	// ---- 0.1.48: the data folder ------------------------------------------------------------
+
+	void openStorage(bool first)
+	{
+		storageFirst = first;
+		storageStep = StorageStep::Places;
+		storageList = ogbox::storagePlaces();
+		storageMessage.clear();
+		screen = Screen::Storage;
+		screenSince = now_seconds();
+		wantFocus = true;
+		storageFocus = false;
+		pshakux_log("storage: %s (now %s)", first ? "the first start asks where the data goes" : "choosing the data folder again",
+			ogbox::storageRoot().c_str());
+	}
+
+	void storageBrowse(const std::string &path)
+	{
+		storageFolder = path;
+		storageSubs.clear();
+		if (!path.empty()) {
+			if (DIR *dir = opendir(path.c_str())) {
+				while (struct dirent *e = readdir(dir)) {
+					const std::string n = e->d_name;
+					if (n.empty() || n[0] == '.' || n == "$RECYCLE.BIN" || n == "System Volume Information") {
+						continue;
+					}
+					if (isFolder(path + "/" + n)) {
+						storageSubs.push_back(n);
+					}
+				}
+				closedir(dir);
+			}
+			std::sort(storageSubs.begin(), storageSubs.end(),
+				[](const std::string &a, const std::string &b) { return strcasecmp(a.c_str(), b.c_str()) < 0; });
+		}
+		storageStep = StorageStep::Browse;
+		storageFocus = false;
+	}
+
+	/* A folder chosen: the same one, an empty one, or one to move the data to. */
+	void storageChoose(const std::string &target)
+	{
+		const std::string now = ogbox::storageRoot();
+		std::string why;
+		if (!ogbox::writableFolder(target, why)) {
+			storageMessage = target + ": " + why;
+			return;
+		}
+		storageTarget = target;
+		storageHave = target == now ? 0 : ogbox::storageBytes(now);
+		if (target != now && storageHave > 0) {
+			storageStep = StorageStep::Confirm;
+			storageFocus = false;
+			storageMessage.clear();
+			return;
+		}
+		if (!ogbox::setStorageRoot(target, why)) {
+			storageMessage = why;
+			return;
+		}
+		storageDone("OGBox keeps its data in " + target + ".");
+	}
+
+	void storageDone(const std::string &message)
+	{
+		storageMessage = message;
+		storageStep = StorageStep::Done;
+		storageFocus = false;
+	}
+
+	void storageLeave()
+	{
+		if (storageFirst) {
+			screen = Screen::Library;
+			focusSet = false;
+		} else {
+			screen = Screen::Settings;
+			focusList = false;
+		}
+		screenSince = now_seconds();
+		wantFocus = true;
+	}
+
+	/* CIRCLE on the data folder's screen. */
+	void storageBack()
+	{
+		switch (storageStep) {
+		case StorageStep::Browse:
+			if (storageFolder.empty()) {
+				storageStep = StorageStep::Places;
+			} else {
+				const bool root = storageFolder == "/data" || storageFolder.rfind("/mnt/", 0) == 0 && std::count(storageFolder.begin(), storageFolder.end(), '/') <= 2;
+				storageBrowse(root ? std::string() : parentOf(storageFolder));
+			}
+			storageFocus = false;
+			break;
+		case StorageStep::Confirm:
+			storageStep = StorageStep::Places;
+			storageFocus = false;
+			break;
+		case StorageStep::Moving:
+			break;
+		case StorageStep::Done:
+		case StorageStep::Places:
+			if (!storageFirst || ogbox::storageChosen()) {
+				storageLeave();
+			}
+			break;
+		}
+	}
+
+	void storageItemFocus()
+	{
+		if (!storageFocus) {
+			focusLastItem();
+			storageFocus = true;
+		}
+	}
+
+	void drawStorage()
+	{
+		beginScreen("##storage", 0.25f);
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const ImGuiStyle &style = ImGui::GetStyle();
+		glowTitle(storageFirst ? "WELCOME TO OGBOX" : "DATA FOLDER", 1.6f);
+		const std::string now = ogbox::storageRoot();
+		ImGui::PushTextWrapPos(W * 0.92f);
+		if (storageFirst && storageStep == StorageStep::Places) {
+			ImGui::TextColored(mx::text, "Where should OGBox keep its data? That is the Xbox's hard disk (your saves), the shader "
+				"caches, the covers and your screenshots: a few GB as you play.");
+			ImGui::TextColored(mx::label, "OGBox's settings stay on the console either way. You can change this later in Settings, "
+				"and OGBox moves the data for you.");
+		} else if (storageStep == StorageStep::Places) {
+			ImGui::TextColored(mx::text, "Now: %s  (%s)", now.c_str(), ogbox::freeSpaceText(now).c_str());
+			ImGui::TextColored(mx::label, "Choose another place and OGBox moves your Xbox hard disk, caches, covers and screenshots there.");
+		}
+		ImGui::PopTextWrapPos();
+		ImGui::Spacing();
+		const float footH = ImGui::GetTextLineHeightWithSpacing() * 1.8f;
+		const float listH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(style.WindowPadding.x * 0.5f, style.WindowPadding.y * 0.6f));
+		ImGui::BeginChild("storage", ImVec2(W * 0.62f, listH), true, ImGuiWindowFlags_NavFlattened);
+		std::string pick;
+		bool browse = false;
+		switch (storageStep) {
+		case StorageStep::Places: {
+			ImGui::TextColored(mx::label, "PLACES");
+			for (size_t i = 0; i < storageList.size(); i++) {
+				const ogbox::StoragePlace &p = storageList[i];
+				const bool here = p.path == now;
+				const std::string text = p.name + (p.recommended ? "  (recommended)" : "") + (here ? "  - now" : "");
+				const Icon icon = p.path.rfind("/mnt/", 0) == 0 ? Icon::Usb : Icon::Console;
+				if (row("sp" + std::to_string(i), text, p.path + "    " + p.note, here, here ? mx::bright : mx::text, icon)) {
+					pick = p.path;
+				}
+				storageItemFocus();
+			}
+			if (row("browse", "Another folder...", "internal storage, USB, extended storage", false, mx::text, Icon::Folder)) {
+				browse = true;
+			}
+			break;
+		}
+		case StorageStep::Browse: {
+			ImGui::TextColored(mx::label, "%s", storageFolder.empty() ? "DRIVES" : storageFolder.c_str());
+			if (storageFolder.empty()) {
+				std::vector<std::pair<std::string, std::string>> roots = { { "This console", "/data" } };
+				for (int i = 0; i < 8; i++) {
+					const std::string u = "/mnt/usb" + std::to_string(i);
+					if (isMountPoint(u)) {
+						roots.push_back({ "USB drive " + std::to_string(i), u });
+					}
+				}
+				for (int i = 0; i < 2; i++) {
+					const std::string e = "/mnt/ext" + std::to_string(i);
+					if (isMountPoint(e)) {
+						roots.push_back({ "Extended storage " + std::to_string(i), e });
+					}
+				}
+				for (size_t i = 0; i < roots.size(); i++) {
+					if (row("r" + std::to_string(i), roots[i].first, roots[i].second + "    " + ogbox::freeSpaceText(roots[i].second), false,
+							mx::text, roots[i].second == "/data" ? Icon::Console : Icon::Usb)) {
+						storageBrowse(roots[i].second);
+					}
+					storageItemFocus();
+				}
+			} else {
+				if (row("use", "Use this folder", ogbox::freeSpaceText(storageFolder), false, mx::bright, Icon::Check)) {
+					pick = storageFolder;
+				}
+				storageItemFocus();
+				if (row("make", "Make a folder named OGBox here and use it", std::string(), false, mx::text, Icon::Plus)) {
+					pick = storageFolder + "/OGBox";
+				}
+				if (row("up", "Back", std::string(), false, mx::label, Icon::Up)) {
+					storageBack();
+				}
+				for (size_t i = 0; i < storageSubs.size(); i++) {
+					if (row("f" + std::to_string(i), storageSubs[i], std::string(), false, mx::label, Icon::Folder)) {
+						storageBrowse(storageFolder + "/" + storageSubs[i]);
+						break;
+					}
+				}
+			}
+			break;
+		}
+		case StorageStep::Confirm: {
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(mx::text, "OGBox has %s of data in %s.", sizeText(static_cast<int64_t>(storageHave)).c_str(), now.c_str());
+			ImGui::TextColored(mx::label, "New folder: %s  (%s)", storageTarget.c_str(), ogbox::freeSpaceText(storageTarget).c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::Spacing();
+			if (row("move", "Move my data there", sizeText(static_cast<int64_t>(storageHave)), false, mx::bright, Icon::Check)) {
+				ogbox::StorageMove::get().start(now, storageTarget);
+				storageStep = StorageStep::Moving;
+			}
+			storageItemFocus();
+			if (row("empty", "Start there empty", "the data stays in " + now, false, mx::text, Icon::Plus)) {
+				std::string why;
+				if (ogbox::setStorageRoot(storageTarget, why)) {
+					storageDone("OGBox keeps its data in " + storageTarget + " from now on. What was in " + now + " is still there.");
+				} else {
+					storageMessage = why;
+				}
+			}
+			if (row("cancel", "Cancel", std::string(), false, mx::label, Icon::Up)) {
+				storageStep = StorageStep::Places;
+				storageFocus = false;
+			}
+			break;
+		}
+		case StorageStep::Moving: {
+			const ogbox::StorageMove::Progress pr = ogbox::StorageMove::get().progress();
+			ImGui::TextColored(mx::text, "Moving your data to %s", storageTarget.c_str());
+			cursor();
+			ImGui::Spacing();
+			const float f = pr.total ? std::min(1.0f, static_cast<float>(static_cast<double>(pr.bytes) / static_cast<double>(pr.total))) : 0.0f;
+			const ImVec2 at = ImGui::GetCursorScreenPos();
+			const float bw = ImGui::GetContentRegionAvail().x, bh = ImGui::GetTextLineHeight() * 0.8f;
+			ImDrawList *dl = ImGui::GetWindowDrawList();
+			dl->AddRectFilled(at, ImVec2(at.x + bw, at.y + bh), mx::u32(ImVec4(0.0f, 0.12f, 0.04f, 1.0f)), bh * 0.5f);
+			dl->AddRectFilled(at, ImVec2(at.x + std::max(bh, bw * f), at.y + bh), mx::u32(mx::bright), bh * 0.5f);
+			ImGui::Dummy(ImVec2(bw, bh));
+			ImGui::TextColored(mx::label, "%s of %s   %s", sizeText(static_cast<int64_t>(pr.bytes)).c_str(),
+				sizeText(static_cast<int64_t>(pr.total)).c_str(), pr.current.c_str());
+			ImGui::TextColored(mx::label, "Leave OGBox open until it's done.");
+			if (pr.done) {
+				if (pr.ok) {
+					storageDone("Done: OGBox keeps its data in " + storageTarget + " now.");
+				} else {
+					storageMessage = "The move stopped: " + pr.error + ". Your data is still in " + now + ".";
+					storageStep = StorageStep::Places;
+					storageFocus = false;
+				}
+			}
+			break;
+		}
+		case StorageStep::Done: {
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(mx::bright, "%s", storageMessage.c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::Spacing();
+			if (row("ok", storageFirst ? "Go to the game list" : "Back to the settings", std::string(), false, mx::bright, Icon::Check)) {
+				storageLeave();
+			}
+			storageItemFocus();
+			break;
+		}
+		}
+		if (!storageMessage.empty() && storageStep != StorageStep::Done) {
+			ImGui::Spacing();
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(mx::fail, "%s", storageMessage.c_str());
+			ImGui::PopTextWrapPos();
+		}
+		ImGui::EndChild();
+		ImGui::SameLine();
+		ImGui::BeginChild("storage-about", ImVec2(0.0f, listH), true, ImGuiWindowFlags_NoNav);
+		ImGui::PushTextWrapPos(0.0f);
+		ImGui::TextColored(mx::label, "WHAT GOES THERE");
+		ImGui::TextColored(mx::text, "hdd");
+		ImGui::TextColored(mx::label, "the Xbox's hard disk: saves, the dashboard if you add one");
+		ImGui::TextColored(mx::text, "cache");
+		ImGui::TextColored(mx::label, "shaders built for your games, patched XBEs");
+		ImGui::TextColored(mx::text, "covers, shots");
+		ImGui::TextColored(mx::label, "the game list's covers, your screenshots");
+		ImGui::Spacing();
+		ImGui::TextColored(mx::label, "A USB drive must stay plugged in while you play. exFAT is best; FAT32 can't hold files over 4 GB.");
+		ImGui::PopTextWrapPos();
+		ImGui::EndChild();
+		ImGui::PopStyleVar();
+		footer(storageStep == StorageStep::Moving ? std::string("Moving...")
+			: storageFirst && storageStep == StorageStep::Places ? std::string("{X} choose")
+			: std::string("{X} choose     {O} back"));
+		endScreen();
+		if (!pick.empty()) {
+			storageChoose(pick);
+		} else if (browse) {
+			storageBrowse(std::string());
 		}
 	}
 
@@ -2961,6 +3513,7 @@ public:
 		case Screen::Library: drawLibrary(); break;
 		case Screen::Settings: drawSettings(); break;
 		case Screen::Mods: drawMods(); break;
+		case Screen::Storage: drawStorage(); break;
 		}
 	}
 };

@@ -44,7 +44,10 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
    `nfs://192.168.1.20/volume1/games/xbox` for NFS. With the payload loader (elfldr, port 9021)
    running, OGBox leaves its sandbox at start, so USB drives and extended storage are visible.
    A file named `elevation-off.txt` in the title folder keeps it inside the sandbox.
-3. Start OGBox from the home screen and pick a game from the list: the places on the left, the
+3. Start OGBox from the home screen. The first time, it asks where to keep its data (the Xbox
+   hard disk, the caches, the covers, the screenshots): the console's storage, a folder of your
+   own on it, a USB drive or extended storage. Settings > Data folder changes it later and moves
+   the data. Then pick a game from the list: the places on the left, the
    folder in the middle, the selected disc on the right (its name, title ID, mods and settings).
    D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back, L2 / R2 to jump a
    letter back or on, TRIANGLE for the settings. In a game, hold **OPTIONS and the touch pad** for two seconds to go back to the
@@ -73,7 +76,7 @@ release) is left out at the start and the boot log says why.
 **Covers**: the list shows each disc's cover from libretro's thumbnails, found by the disc's
 Redump name (OGBox ships Redump's Xbox database, `gamedata/games.db`); a disc named as Redump
 names it (`Halo 2 (USA) (En,Fr,De).iso`) always matches, others by their title ID. The covers
-are downloaded once into `/data/ogbox/covers` (Game list > Covers turns that off). libretro has
+are downloaded once into the data folder's `covers` (Game list > Covers turns that off). libretro has
 no game descriptions for the Xbox, so the details panel shows Redump's name, region, languages
 and serial. **Xbox dashboard** (on the left) starts the dashboard from the
 emulated hard disk; OGBox doesn't include one.
@@ -83,9 +86,11 @@ game, over the settings. Its first line may name a disc image; with an `autoboot
 image boots straight away, without the list.
 
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
-L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. Each signed-in user's controller
-is a player (1-4). The emulated hard disk lives in `/data/ogbox/hdd`, the shader caches in
-`/data/ogbox/cache`, outside the title folder, so an update is just replacing the folder.
+L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. The menus draw the DualSense's
+buttons, each face button in its Xbox button's colour (A green, B red, X blue, Y yellow). Each
+signed-in user's controller is a player (1-4). The emulated hard disk lives in the data
+folder's `hdd`, the shader caches in its `cache` (`/data/ogbox` unless you chose another),
+outside the title folder, so an update is just replacing the folder.
 (Up to 0.1.5 the folder was `/data/pshakux`: the first start of 0.1.6 renames it to
 `/data/ogbox` when there is no `/data/ogbox` yet, and the boot log says so.)
 hakuX's core cannot yet stop one game and boot another in the same process, so a new boot is a
@@ -156,6 +161,25 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.48 (bring-up)
+
+Added
+- The first start asks where OGBox keeps its data: the Xbox hard disk (your saves), the shader
+  and patch caches, the covers and the screenshots. The console's storage (`/data/ogbox`, as
+  before), a folder of its own on it (`/data/OGBox`), a USB drive, extended storage, or any folder
+  you pick, each with its free space. The settings, mods choices and network shares stay in
+  `/data/ogbox`. **Settings > Data folder** chooses again and moves the data there (renamed on
+  the same drive, else copied with a progress bar, then deleted), or starts the new folder empty.
+  boot.txt's `hdd=` is no longer needed (it still wins when set).
+- The menus show the DualSense's buttons as pictures instead of their names, the face buttons in
+  the colours of the Xbox buttons they are; the settings show the controller's layout.
+
+Changed
+- A cleaner front end: icons for the places, folders, discs and OGBox's own rows, rounded
+  highlights, "Back to <folder>" instead of "< the folder above", switches for the mods, patches
+  and cheats instead of [ON] / [OFF], and the screen's title says MODS, PATCHES, CHEATS.
+- A patch that needs the 128 MB RAM upgrade says so in its description.
 
 ### 0.1.47 (bring-up)
 

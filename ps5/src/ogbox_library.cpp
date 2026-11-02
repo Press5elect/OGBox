@@ -10,6 +10,7 @@
  * /data/ogbox/covers as <name>.png, or <name>.none when libretro has none (asked again after a week).
  */
 #include "ogbox_library.h"
+#include "ogbox_storage.h"
 
 #include "platform/ps5_bootlog.h"
 
@@ -37,8 +38,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#ifndef OGBOX_COVERS_DIR
-#define OGBOX_COVERS_DIR "/data/ogbox/covers"
+#ifndef OGBOX_PLAYED_FILE
 #define OGBOX_PLAYED_FILE "/data/ogbox/played.txt"
 #endif
 
@@ -54,8 +54,16 @@ std::string lower(std::string s)
 	return s;
 }
 
-constexpr const char *kCoversDir = OGBOX_COVERS_DIR;
 constexpr const char *kPlayedFile = OGBOX_PLAYED_FILE;
+/* 0.1.48: in the data folder (ogbox_storage.h); OGBOX_COVERS_DIR for the tests */
+std::string coversDir()
+{
+#ifdef OGBOX_COVERS_DIR
+	return OGBOX_COVERS_DIR;
+#else
+	return storagePath("covers");
+#endif
+}
 constexpr const char *kHost = "thumbnails.libretro.com";
 constexpr const char *kSystem = "/Microsoft%20-%20Xbox/Named_Boxarts/";
 
@@ -344,7 +352,7 @@ struct Covers::Impl {
 
 	static std::string pathOf(const std::string &name, const char *ext)
 	{
-		return std::string(kCoversDir) + "/" + libretroName(name) + ext;
+		return coversDir() + "/" + libretroName(name) + ext;
 	}
 
 	void run()
@@ -416,7 +424,7 @@ void Covers::enable(bool on)
 	impl->on = on;
 	if (on && !impl->started) {
 		impl->started = true;
-		mkdir(kCoversDir, 0777);
+		mkdir(coversDir().c_str(), 0777);
 		std::thread([this] { impl->run(); }).detach();
 	}
 	impl->cv.notify_all();
