@@ -144,6 +144,23 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.38 (bring-up)
+
+Changed
+- Faster on every game: the emulated CPU no longer goes through the console's signal path for
+  each access a game makes to the Xbox's hardware registers. That path cost thousands of trips
+  a second (9 000 to 37 000 in your logs: Mortal Kombat, NFS Most Wanted, GTA San Andreas,
+  Burnout 3), and every freeze in those logs stopped inside it. The Android version does not
+  pay it: its CPU translator turns those accesses into direct calls. OGBox now does the
+  equivalent: an instruction that keeps touching hardware is rewritten, after a few times, into
+  a jump to a small stub that enters the emulator directly (no signal), and the hardware access
+  is done there.
+- The game's timestamp reads (`rdtsc`) that are made often are rewritten the same way, into a
+  stub that computes the Xbox's time without leaving the game's code.
+- The returns from every interrupt handler and deferred call of the emulated kernel no longer
+  go through a signal either (one or two thousand a second).
+- `NC_MMIO_GATE=0` in boot.txt turns the rewriting off, for comparison.
+
 ### 0.1.37 (bring-up)
 
 Fixed

@@ -104,7 +104,7 @@ set(hakux_core_sources
 	dev/nv2a.c dev/ports.c dev/usb.c dev/usb_hub.c dev/xid.c dev/ohci.c dev/aci.c dev/nvnet.c
 	net/net.c net/lan.c net/kai.c net/nat.c
 	kernel/kernel.c kernel/pool.c kernel/ob.c kernel/ps.c kernel/ke.c kernel/mm.c kernel/paging.c
-	kernel/ex.c kernel/rtl.c kernel/seh.c kernel/fixups.c kernel/x86mmio.c kernel/timer.c
+	kernel/ex.c kernel/rtl.c kernel/seh.c kernel/fixups.c kernel/x86mmio.c kernel/mmiosite.c kernel/timer.c
 	kernel/intr.c kernel/apc.c kernel/io.c kernel/xc.c kernel/xc_crypto.c kernel/kstate.c
 	state/state.c state/vm_state.c state/save.c state/cache.c)
 list(TRANSFORM hakux_core_sources PREPEND ${HAKUX_DIR}/native/)
