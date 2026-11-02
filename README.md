@@ -162,6 +162,13 @@ Fixed
     textures; they are looked up directly now (faster drawing in texture-heavy games).
   - #23 (FadedAtlas): a game touching memory it can't use gets the error in its own handlers, as
     on the Xbox, instead of the emulator crashing, when the game has a handler for it.
+- From xemu's open pull requests (abaire's and burningurine's, checked there against a real
+  Xbox), rewritten for hakuX's renderer:
+  - Specular highlights (#3076) and spotlight edges (#3078) use the Xbox GPU's own formula
+    instead of an approximation, in games that drive the GPU's fixed-function lighting directly.
+  - Reflection and sphere maps follow the game's "infinite viewer" setting (#3087).
+  - Bump maps in the R6G5B5 format are drawn (#3081); they were left out before.
+  - Y16 textures are drawn, with the channels the Xbox gives (#3070).
 
 ### 0.1.28 (bring-up)
 
