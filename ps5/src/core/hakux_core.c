@@ -153,10 +153,28 @@ void pshx_core_status(char *line, unsigned size)
  * the guest or a device wrote over one, counted for the heartbeat. */
 static unsigned g_stubs_put_back;
 static uint32_t g_stub_first;
+/* 0.1.44: a heartbeat every 0.25 s until then (the run's first 25 s), then every 2 s again */
+static double g_fast_until = -1.0;
 
+static void heartbeat_fn(char *line, unsigned size);
 static void heartbeat(char *line, unsigned size)
 {
+    heartbeat_fn(line, size);
+    if (g_fast_until > 0.0 && pshakux_uptime() > g_fast_until) {
+        g_fast_until = 0.0;
+        pshakux_diag_set_status(heartbeat, 0);
+    }
+}
+
+static void heartbeat_fn(char *line, unsigned size)
+{
     pshx_core_status(line, size);
+    {
+        char mem[160];
+        pshakux_memory_note(mem, sizeof(mem));
+        const size_t used = strlen(line);
+        snprintf(line + used, size > used ? size - used : 0, "; memory: %s", mem);
+    }
 #if defined(NC_CPU_NATIVE)
     /* 0.1.5: the core watches the page and puts the entries back within milliseconds (vmhost.c);
      * the heartbeat says how often, and how many writes the watch caught */
@@ -172,6 +190,26 @@ static void heartbeat(char *line, unsigned size)
                      " libc.prx-stubs-put-back=%u (first +0x%x; writes caught: host %u, guest %u; page %s)",
                      g_stubs_put_back, (unsigned)g_stub_first, host, guest,
                      nc_vmhost_window_low_watched() ? "watched" : "not watched now");
+        }
+        /* 0.1.44: which of the old entries the host still calls, and how often */
+        uint32_t offs[NC_VMHOST_LOW_MAX], calls[NC_VMHOST_LOW_MAX];
+        const unsigned n = nc_vmhost_window_low_calls(offs, calls, NC_VMHOST_LOW_MAX);
+        if (n) {
+            size_t used = strlen(line);
+            snprintf(line + used, size > used ? size - used : 0, "; libc.prx's old entries called:");
+            unsigned any = 0;
+            for (unsigned i = 0; i < n; i++) {
+                if (calls[i]) {
+                    used = strlen(line);
+                    snprintf(line + used, size > used ? size - used : 0, " +0x%x %u", (unsigned)offs[i],
+                             (unsigned)calls[i]);
+                    any++;
+                }
+            }
+            if (!any) {
+                used = strlen(line);
+                snprintf(line + used, size > used ? size - used : 0, " none");
+            }
         }
     }
 #endif
@@ -262,7 +300,8 @@ static void make_hdd(const char *root)
 bool pshx_core_configure(const PshxCoreConfig *config)
 {
     pshakux_crash_set_note(crash_note);
-    pshakux_diag_set_status(heartbeat, 0);
+    g_fast_until = pshakux_uptime() + 25.0;
+    pshakux_diag_set_status(heartbeat, 1);
     if (g_configured) {
         snprintf(g_message, sizeof(g_message), "The core is configured once a run.");
         return false;

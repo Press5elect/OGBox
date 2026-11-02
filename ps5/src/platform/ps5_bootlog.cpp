@@ -386,7 +386,7 @@ std::atomic<int> s_status_fast{0};
 void Heartbeat()
 {
   const unsigned long long ms = static_cast<unsigned long long>(Since(s_start) * 1e3);
-  char line[512] = "";
+  char line[900] = "";
   if (const pshakux_status_fn status = s_status.load(std::memory_order_acquire))
     status(line, sizeof(line));
   pshakux_log("alive: t=%llu ms%s%s", ms, line[0] ? " " : "", line);
@@ -440,6 +440,29 @@ extern "C" int pshakux_diag_owns_stderr(void)
 extern "C" double pshakux_uptime(void)
 {
   return Since(s_start);
+}
+
+// OGBox 0.1.44: the memory the title has left, for the heartbeat (a title the system ends for want
+// of memory leaves the trend in its last lines).
+extern "C" void pshakux_memory_note(char* out, unsigned size)
+{
+  if (!out || !size)
+    return;
+  out[0] = '\0';
+#if defined(__PROSPERO__)
+  const int64_t total = sceKernelGetDirectMemorySize();
+  int64_t start = 0;
+  size_t run = 0;
+  const int direct = sceKernelAvailableDirectMemorySize(0, total, PS5_KERNEL_DIRECT_ALIGNMENT, &start, &run);
+  size_t flexible = 0;
+  const int flex = sceKernelAvailableFlexibleMemorySize(&flexible);
+  std::snprintf(out, size, "flexible %llu MiB free%s, direct %llu MiB in its largest free run%s",
+                static_cast<unsigned long long>(flexible >> 20), flex ? " (?)" : "",
+                static_cast<unsigned long long>(run >> 20), direct ? " (?)" : "");
+#else
+  const long page = sysconf(_SC_PAGESIZE);
+  std::snprintf(out, size, "%lld MiB free", static_cast<long long>(sysconf(_SC_AVPHYS_PAGES)) * page >> 20);
+#endif
 }
 
 extern "C" void pshakux_klog_raw(const char* text, unsigned length)

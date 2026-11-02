@@ -43,6 +43,8 @@ int pshakux_log_fd(void);
 
 /// Seconds since pshakux_diag_start, from the monotonic clock.
 double pshakux_uptime(void);
+/* OGBox 0.1.44: the memory left (flexible and direct), one phrase for the heartbeat. */
+void pshakux_memory_note(char *out, unsigned size);
 
 /// The title's folder: /app0 on the console, PS5_APP_ROOT in the host reference build.
 const char* pshakux_title_dir(void);

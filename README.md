@@ -145,6 +145,23 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.44 (bring-up)
+
+Changed
+- NFS Carbon closed about 0.3 s after its first picture with nothing in the boot log: the
+  console ended the title without a signal, so no crash report could be written, and the last
+  lines were still queued. For the cause, the boot log is now written at once (not queued) for
+  a run's first 20 seconds (`env NC_LOG_SYNC_S=0` in boot.txt turns that off), the heartbeat
+  comes every 0.25 s for a run's first 25 seconds, and each heartbeat says the memory left.
+- A suspect: the PS5 build keeps a few bytes of the console's own code in the Xbox's first page
+  of memory (OGBox's takeover of the system's C library), and Mortal Kombat and NFS Most Wanted
+  write over them as their controllers start, at about the point where Carbon closed. They were
+  put back within a millisecond; now they are also put back every time the game enters the emulated kernel, and
+  the log says which game code wrote over them. The heartbeat counts how often the console still
+  calls them.
+- The log names any address a game asks the physical address of that isn't mapped (the
+  emulator answers 0, and a device given it writes into that first page).
+
 ### 0.1.43 (bring-up)
 
 Fixed
