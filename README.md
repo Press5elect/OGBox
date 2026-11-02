@@ -144,6 +144,25 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.29 (bring-up, not built yet)
+
+Added
+- Frame pacing (Settings, Graphics; off by default): holds the game to the speed its frames are
+  drawn at, for less input lag when drawing can't keep up. From hakuX pull request #14
+  (pjperez).
+
+Fixed
+- From hakuX's open pull requests (not merged there yet):
+  - #19 (pjperez): two threads changing a memory page's protection at once could leave it
+    read-only by mistake, and the game crashed on its next write there. One lock now covers
+    them, and a page found in that state is opened instead of crashing.
+  - #20 (pjperez): the table of textures waiting for the GPU to finish with them was written past
+    its end when it filled up, overwriting what follows it.
+  - #21 (pjperez): texture and surface lookups searched every slot once a game had made many
+    textures; they are looked up directly now (faster drawing in texture-heavy games).
+  - #23 (FadedAtlas): a game touching memory it can't use gets the error in its own handlers, as
+    on the Xbox, instead of the emulator crashing, when the game has a handler for it.
+
 ### 0.1.28 (bring-up)
 
 Added

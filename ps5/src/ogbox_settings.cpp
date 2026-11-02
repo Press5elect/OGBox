@@ -40,6 +40,13 @@ std::vector<Option> makeOptions()
 		"1", true });
 	o.push_back({ "uncapped", Section::Graphics, "Uncapped frame rate",
 		"Present every frame at once instead of waiting for the display.", kOnOff, "0", true });
+	// OGBox 0.1.29: hakuX PR #14 (pjperez), the app's "Frame pacing" (on there by default; off
+	// here, as an enhancement is the user's choice).
+	o.push_back({ "frame_pacing", Section::Graphics, "Frame pacing",
+		"Hold the game to the speed frames are drawn at, two frames ahead at most, so the controller "
+		"is read close to what is on screen. Helps a game whose drawing can't keep up (input lag); "
+		"no change when it keeps up.",
+		kOnOff, "0", true });
 	o.push_back({ "async_shaders", Section::Graphics, "Asynchronous shader compilation",
 		"Compile new shaders in the background instead of stopping the game; what needs them can be missing for a few frames.",
 		kOnOff, "1", true });
@@ -408,6 +415,7 @@ std::vector<std::string> Settings::coreArgs() const
 	if (localtime_r(&now, &local)) {
 		a.push_back("tz=" + std::to_string(local.tm_gmtoff / 60));
 	}
+	a.push_back(std::string("pace=") + (on("frame_pacing") ? "1" : "0"));
 	a.push_back(std::string("asyncpipe=") + (on("async_shaders") ? "1" : "0"));
 	a.push_back(std::string("prebuild=") + (on("prebuild_shaders") ? "1" : "0"));
 	a.push_back(std::string("devtime=") + (on("console_timing") ? "1" : "0"));
