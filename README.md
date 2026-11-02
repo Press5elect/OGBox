@@ -144,6 +144,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.39 (bring-up)
+
+Fixed
+- Textures were rebuilt and uploaded again at nearly every draw that used them (about one per
+  draw: 20 000 to 33 000 a second in NFS Most Wanted and Mortal Kombat, and many in Burnout 3),
+  which kept the emulated GPU's command decoder busy 60-75% of the time while the game waited
+  on it. The cause is the PS5's 16 KiB memory pages: the check for "has the game changed this
+  texture" works on the Xbox's 4 KiB pages, and a texture sharing a 16 KiB page with other data
+  was always taken as changed. The check now works in the console's page size, comparing the
+  bytes at a texture's two ends instead. Android (4 KiB pages) never had this. The same applies
+  to render targets the game reads back (Mortal Kombat's 184 000 render-target uploads).
+
 ### 0.1.38 (bring-up)
 
 Changed
