@@ -79,6 +79,10 @@ namespace vks
 			glm::vec2 translate;
 		} pushConstBlock;
 
+		// OGBox 0.1.45: images ImGui::Image draws (their descriptor set is the ImTextureID)
+		static constexpr uint32_t kUserTextures = 96;
+		VkDescriptorSet addTexture(VkSampler sampler, VkImageView view);
+		void freeTexture(VkDescriptorSet set);
 		bool visible{ true };
 		float scale{ 1.0f };
 

@@ -98,6 +98,13 @@ if [[ -d $hakux_tree/mods ]]; then
     mkdir -p "$app/mods"
     rsync -a --exclude .git "$hakux_tree/mods/" "$app/mods/"
 fi
+# 0.1.45: the game data (ps5/gamedata: the Redump database, the XBE patches and their IPS/BPS files,
+# ps5/tools/import-gamedata.py) beside eboot.bin (src/ogbox_library.cpp, src/core/ogbox_patches.c).
+if [[ -d $ps5/gamedata ]]; then
+    rm -rf "$app/gamedata"
+    mkdir -p "$app/gamedata"
+    rsync -a "$ps5/gamedata/" "$app/gamedata/"
+fi
 # The notices beside eboot.bin, once everything else is in: LEGAL.txt, NOTICE.txt and licenses/,
 # each part with its revision and the files it is in.
 PSHAKUX_BUILD_DIR="$build" python3 "$ps5/tools/stage-notices.py" "$app"

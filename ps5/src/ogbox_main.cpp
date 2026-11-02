@@ -85,6 +85,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -102,6 +103,8 @@
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
 #include "ogbox_settings.h"
+#include "ogbox_library.h"
+#include "VulkanTexture.h"
 
 #include "stb_image.h"   // (its implementation is the base class's: base/VulkanglTFModel.cpp)
 
@@ -775,12 +778,24 @@ public:
 	char jumpLetter{ 0 };
 	double jumpSince{ -1.0 };
 	int jumpTo{ -1 };
+	// 0.1.45: the covers as images ImGui draws (the UI overlay's addTexture), the least used let go
+	struct CoverTex {
+		vks::Texture2D tex{};
+		VkDescriptorSet set{ VK_NULL_HANDLE };
+		uint32_t w{ 0 }, h{ 0 };
+		uint64_t used{ 0 };
+		bool failed{ false };
+	};
+	std::map<std::string, CoverTex> coverTex;
+	std::vector<std::pair<uint64_t, CoverTex>> coverRetired;   // destroyed some frames later
+	unsigned coverUploads{ 0 };                                 // this frame's
 	// the selected disc's details, read on a thread of their own once the selection rests
 	struct Details {
 		std::mutex mutex;
 		bool done{ false };
 		OgboxGameInfo info{};
 		int mods{ 0 }, modsOn{ 0 }, cheats{ 0 }, cheatsOn{ 0 }, overrides{ 0 };
+		int patches{ 0 }, patchesOn{ 0 };   // 0.1.45: gamedata/patches.db's
 	};
 	std::shared_ptr<Details> details;
 	std::string detailsPath, restingPath;
@@ -900,6 +915,103 @@ public:
 		}
 	}
 
+	/* 0.1.45: a cover's image for ImGui (null when not ready: asked for, downloading, or none), its size in
+	 * *w, *h. A frame decodes and uploads at most two. */
+	ImTextureID coverImage(const std::string &name, float *w, float *h)
+	{
+		if (name.empty() || prefs.global("list_covers") == "0") {
+			return nullptr;
+		}
+		std::string path;
+		if (ogbox::Covers::get().find(name, path) != ogbox::Covers::State::Ready) {
+			return nullptr;
+		}
+		auto it = coverTex.find(path);
+		if (it == coverTex.end()) {
+			if (coverUploads >= 2) {
+				return nullptr;
+			}
+			coverUploads++;
+			CoverTex t;
+			int iw = 0, ih = 0, n = 0;
+			stbi_uc *pixels = stbi_load(path.c_str(), &iw, &ih, &n, 4);
+			if (!pixels || iw <= 0 || ih <= 0 || iw > 2048 || ih > 2048) {
+				if (pixels) {
+					stbi_image_free(pixels);
+				}
+				t.failed = true;
+				pshakux_log("covers: %s cannot be read as a PNG: removed", path.c_str());
+				std::remove(path.c_str());
+				return nullptr;
+			}
+			t.tex.fromBuffer(pixels, static_cast<VkDeviceSize>(iw) * ih * 4, VK_FORMAT_R8G8B8A8_UNORM, static_cast<uint32_t>(iw),
+				static_cast<uint32_t>(ih), vulkanDevice, queue);
+			stbi_image_free(pixels);
+			t.set = ui.addTexture(t.tex.sampler, t.tex.view);
+			t.w = static_cast<uint32_t>(iw);
+			t.h = static_cast<uint32_t>(ih);
+			it = coverTex.emplace(path, std::move(t)).first;
+			if (coverTex.size() > 64) {
+				// the least recently drawn one goes (its image destroyed once no frame in flight draws it)
+				auto old = coverTex.begin();
+				for (auto c = coverTex.begin(); c != coverTex.end(); ++c) {
+					if (c->second.used < old->second.used) {
+						old = c;
+					}
+				}
+				if (old != it) {
+					coverRetired.emplace_back(framesDrawn + 4, std::move(old->second));
+					coverTex.erase(old);
+				}
+			}
+		}
+		CoverTex &t = it->second;
+		if (t.failed || t.set == VK_NULL_HANDLE) {
+			return nullptr;
+		}
+		t.used = framesDrawn;
+		*w = static_cast<float>(t.w);
+		*h = static_cast<float>(t.h);
+		return reinterpret_cast<ImTextureID>(t.set);
+	}
+
+	/* Each frame: the covers no frame in flight draws any more destroyed. */
+	void coverHousekeeping()
+	{
+		coverUploads = 0;
+		for (size_t i = 0; i < coverRetired.size();) {
+			if (framesDrawn >= coverRetired[i].first) {
+				ui.freeTexture(coverRetired[i].second.set);
+				coverRetired[i].second.tex.destroy();
+				coverRetired.erase(coverRetired.begin() + static_cast<long>(i));
+			} else {
+				i++;
+			}
+		}
+	}
+
+	/* 0.1.45: the Redump name a disc's cover goes by: its file's when that is one, else the database's
+	 * for the title ID the disc's certificate gave (when known). */
+	std::string coverName(const LibraryEntry &e, const OgboxGameInfo *info = nullptr)
+	{
+		const ogbox::GameDb &db = ogbox::GameDb::get();
+		if (const ogbox::DiscRecord *r = db.byFileName(e.name)) {
+			return r->name;
+		}
+		if (info && info->ok) {
+			if (const ogbox::DiscRecord *r = db.byTitle(info->title_id, e.name, info->regions)) {
+				return r->name;
+			}
+		}
+		return info ? std::string() : ogbox::stemOf(e.name);
+	}
+
+	/* The name the list shows for an entry (the settings' Names). */
+	std::string shownName(const LibraryEntry &e) const
+	{
+		return e.kind == LibraryEntry::Image && prefs.global("list_names") == "short" ? ogbox::shortName(e.name) : e.name;
+	}
+
 	/* Opens a folder ("" for the places), listing it on a thread of its own. */
 	void openFolder(const std::string &path, const std::string &select = std::string())
 	{
@@ -958,6 +1070,15 @@ public:
 		if (listing->ok) {
 			entries = { { LibraryEntry::Up, "..", parentOf(folder), 0, std::string() } };
 			entries.insert(entries.end(), listing->entries.begin(), listing->entries.end());
+			if (prefs.global("list_sort") == "played") {
+				// 0.1.45: the discs played last first (folders stay first, by name)
+				std::stable_sort(entries.begin() + 1, entries.end(), [](const LibraryEntry &a, const LibraryEntry &b) {
+					if (a.kind != b.kind) {
+						return a.kind == LibraryEntry::Folder;
+					}
+					return a.kind == LibraryEntry::Image && ogbox::playedAt(a.path) > ogbox::playedAt(b.path);
+				});
+			}
 			writeLastFolder(folder);
 			pshakux_log("library: %s: %zu entries", folder.c_str(), entries.size() - 1);
 		} else {
@@ -1108,6 +1229,7 @@ public:
 			library = true;
 			prefs.load();
 			rainOn = prefs.on("rain");
+			ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
 			screen = Screen::Boot;
 			screenSince = now_seconds();
 			bootLines = {
@@ -1749,8 +1871,8 @@ public:
 		modsKey = key;
 		modsTitle = title;
 		std::lock_guard<std::mutex> disc(g_discInfoMutex);
-		modList.assign(160, OgboxModEntry{});
-		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 160))));
+		modList.assign(480, OgboxModEntry{});
+		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 480))));
 		screen = Screen::Mods;
 		screenSince = now_seconds();
 		help.clear();
@@ -1761,6 +1883,7 @@ public:
 	void renderLibrary()
 	{
 		collectListing();
+		coverHousekeeping();
 		if (!startPath.empty() && --startDelay < 0) {
 			const std::string path = startPath;
 			startPath.clear();
@@ -1776,6 +1899,7 @@ public:
 				args = { "--boot", "none", "--option", "dash" };
 			} else {
 				writeLastGame(path);
+				ogbox::notePlayed(path);
 				args = { "--boot", path.c_str() };
 				if (!key.empty()) {
 					args.push_back("--game");
@@ -2174,15 +2298,15 @@ public:
 			std::lock_guard<std::mutex> disc(g_discInfoMutex);
 			OgboxGameInfo info{};
 			ogbox_game_info(path.c_str(), &info);
-			int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0;
+			int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0, patches = 0, patchesOn = 0;
 			if (info.ok) {
-				std::vector<OgboxModEntry> list(160);
-				const int n = ogbox_mods_catalog(info.key, list.data(), 160);
+				std::vector<OgboxModEntry> list(480);
+				const int n = ogbox_mods_catalog(info.key, list.data(), 480);
 				for (int i = 0; i < n; i++) {
 					const OgboxModEntry &m = list[static_cast<size_t>(i)];
-					(m.cheat ? cheats : mods)++;
+					(m.cheat ? cheats : m.patch ? patches : mods)++;
 					if (m.on) {
-						(m.cheat ? cheatsOn : modsOn)++;
+						(m.cheat ? cheatsOn : m.patch ? patchesOn : modsOn)++;
 					}
 				}
 				ogbox::Settings s;
@@ -2196,6 +2320,8 @@ public:
 			job->cheats = cheats;
 			job->cheatsOn = cheatsOn;
 			job->overrides = overrides;
+			job->patches = patches;
+			job->patchesOn = patchesOn;
 			job->done = true;
 		}).detach();
 	}
@@ -2288,17 +2414,68 @@ public:
 		if (folder.empty()) {
 			ImGui::TextColored(mx::label, "Choose a place on the left: your discs (.iso, .xiso) are in its folders.");
 		}
+		const bool grid = prefs.global("list_layout") == "grid" && !folder.empty();
+		const bool sizes = prefs.global("list_sizes") != "0";
+		const int cols = 5;
+		const float gap = style.ItemSpacing.x;
+		const float tileW = (ImGui::GetContentRegionAvail().x - gap * (cols - 1)) / cols;
+		const float tileH = tileW * 1.4f + ImGui::GetTextLineHeightWithSpacing() * 2.2f;
+		int tile = 0;
 		for (size_t i = 0; i < entries.size(); i++) {
 			const LibraryEntry &e = entries[i];
-			std::string label, note;
-			ImVec4 color = mx::text;
-			switch (e.kind) {
-			case LibraryEntry::Folder: label = "> " + e.name; color = mx::label; break;
-			case LibraryEntry::Image: label = e.name; note = e.note; break;
-			case LibraryEntry::Up: label = "< the folder above"; color = mx::label; break;
-			default: label = e.name; break;
+			bool picked = false;
+			if (grid && e.kind == LibraryEntry::Image) {
+				// 0.1.45: a tile: the cover (or the name in a box), the name under it
+				if (tile % cols) {
+					ImGui::SameLine(0.0f, gap);
+				}
+				tile++;
+				ImGui::PushID(static_cast<int>(i));
+				const ImVec2 at = ImGui::GetCursorScreenPos();
+				picked = ImGui::Selectable("##tile", false, 0, ImVec2(tileW, tileH));
+				const bool focused = ImGui::IsItemFocused();
+				ImGui::PopID();
+				ImDrawList *dl = ImGui::GetWindowDrawList();
+				const float pad = tileW * 0.05f, artW = tileW - pad * 2.0f, artH = tileW * 1.4f - pad * 2.0f;
+				if (focused) {
+					const float pulse = 0.75f + 0.25f * static_cast<float>(std::sin(now_seconds() * 4.0));
+					dl->AddRectFilled(at, ImVec2(at.x + tileW, at.y + tileH), mx::u32(mx::bright, 0.25f * pulse));
+					dl->AddRect(at, ImVec2(at.x + tileW, at.y + tileH), mx::u32(mx::bright, pulse), 0.0f, ImDrawCornerFlags_All, 3.0f);
+				}
+				float cw = 0.0f, ch = 0.0f;
+				const ImTextureID img = coverImage(coverName(e), &cw, &ch);
+				const ImVec2 box0(at.x + pad, at.y + pad), box1(at.x + pad + artW, at.y + pad + artH);
+				if (img && cw > 0.0f && ch > 0.0f) {
+					const float k = std::min(artW / cw, artH / ch);
+					const float dw = cw * k, dh = ch * k;
+					const ImVec2 p0(box0.x + (artW - dw) * 0.5f, box0.y + (artH - dh) * 0.5f);
+					dl->AddImage(img, p0, ImVec2(p0.x + dw, p0.y + dh));
+				} else {
+					dl->AddRectFilled(box0, box1, mx::u32(ImVec4(0.0f, 0.10f, 0.03f, 1.0f)));
+					dl->AddRect(box0, box1, mx::u32(mx::line), 0.0f, ImDrawCornerFlags_All, 2.0f);
+					dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(box0.x + pad, box0.y + pad), mx::u32(mx::label),
+						ogbox::shortName(e.name).c_str(), nullptr, artW - pad * 2.0f);
+				}
+				const std::string label = shownName(e);
+				dl->PushClipRect(ImVec2(at.x, at.y), ImVec2(at.x + tileW, at.y + tileH), true);
+				dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(at.x + pad, box1.y + pad * 0.5f),
+					focused ? mx::u32(mx::bright) : mx::u32(mx::text), label.c_str(), nullptr, tileW - pad * 2.0f);
+				dl->PopClipRect();
+			} else {
+				if (grid && tile % cols) {
+					tile = 0;   // (a row after tiles starts on its own line)
+				}
+				std::string label, note;
+				ImVec4 color = mx::text;
+				switch (e.kind) {
+				case LibraryEntry::Folder: label = "> " + e.name; color = mx::label; break;
+				case LibraryEntry::Image: label = shownName(e); note = sizes ? e.note : std::string(); break;
+				case LibraryEntry::Up: label = "< the folder above"; color = mx::label; break;
+				default: label = e.name; break;
+				}
+				picked = row("e" + std::to_string(i), label, note, false, color);
 			}
-			if (row("e" + std::to_string(i), label, note, false, color) && startPath.empty()) {
+			if (picked && startPath.empty()) {
 				chosen = static_cast<int>(i);
 			}
 			if (!focusSet && static_cast<int>(i) == selected && screen == Screen::Library) {
@@ -2400,7 +2577,7 @@ public:
 		}
 		bool done = false;
 		OgboxGameInfo info{};
-		int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0;
+		int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0, patches = 0, patchesOn = 0;
 		if (details && detailsPath == e->path) {
 			std::lock_guard<std::mutex> lock(details->mutex);
 			done = details->done;
@@ -2410,6 +2587,29 @@ public:
 			cheats = details->cheats;
 			cheatsOn = details->cheatsOn;
 			overrides = details->overrides;
+			patches = details->patches;
+			patchesOn = details->patchesOn;
+		}
+		const bool full = prefs.global("list_details") != "0";
+		const ogbox::DiscRecord *rec = full ? (done && info.ok ? ogbox::GameDb::get().byTitle(info.title_id, e->name, info.regions)
+			: ogbox::GameDb::get().byFileName(e->name)) : nullptr;
+		if (full) {
+			// 0.1.45: the cover (libretro's), as wide as half the panel
+			float cw = 0.0f, ch = 0.0f;
+			const std::string cname = rec ? rec->name : coverName(*e);
+			const ImTextureID img = coverImage(cname, &cw, &ch);
+			const float avail = ImGui::GetContentRegionAvail().x;
+			const float maxW = avail * 0.62f, maxH = static_cast<float>(height) * 0.30f;
+			if (img && cw > 0.0f) {
+				const float k = std::min(maxW / cw, maxH / ch);
+				ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - cw * k) * 0.5f);
+				ImGui::Image(img, ImVec2(cw * k, ch * k));
+			} else if (prefs.global("list_covers") != "0") {
+				std::string path;
+				const ogbox::Covers::State st = ogbox::Covers::get().find(cname, path);
+				ImGui::TextColored(mx::line, "%s", st == ogbox::Covers::State::Missing ? "(libretro has no cover for this disc)"
+					: st == ogbox::Covers::State::Queued ? "(the cover is on its way)" : "");
+			}
 		}
 		ImGui::PushTextWrapPos(0.0f);
 		ImGui::SetWindowFontScale(1.25f);
@@ -2429,7 +2629,13 @@ public:
 			field("DISC", "no default.xbe certificate read");
 		} else {
 			field("TITLE ID", info.key);
+			if (rec) {
+				field("REDUMP", rec->name);
+				field("REGION", rec->region + (rec->languages.empty() ? std::string() : "  " + rec->languages));
+				field("SERIAL", rec->serial);
+			}
 			field("MODS", std::to_string(mods) + (mods ? " (" + std::to_string(modsOn) + " on)" : std::string()));
+			field("PATCHES", std::to_string(patches) + (patches ? " (" + std::to_string(patchesOn) + " on)" : std::string()));
 			field("CHEATS", std::to_string(cheats) + (cheats ? " (" + std::to_string(cheatsOn) + " on)" : std::string()));
 			field("SETTINGS", overrides ? std::to_string(overrides) + " of its own" : std::string("the app's"));
 		}
@@ -2447,7 +2653,7 @@ public:
 		if (done && info.ok) {
 			own = ImGui::Button("GAME SETTINGS", ImVec2(bw, bh));
 			columnItem(2, false);
-			modsButton = ImGui::Button("MODS AND CHEATS", ImVec2(bw, bh));
+			modsButton = ImGui::Button("MODS, PATCHES, CHEATS", ImVec2(bw, bh));
 			columnItem(2, false);
 		}
 		if (start && startPath.empty()) {
@@ -2561,8 +2767,10 @@ public:
 						}
 						if (o.section == ogbox::Section::Library) {
 							placesRead = -100.0;   // the game list's places again, as set
-							if (folder.empty() && !listing) {
-								openFolder(std::string());
+							ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
+							if (!listing && (folder.empty() || std::string(o.key) == "list_sort")) {
+								const LibraryEntry *cur = selectedEntry();
+								openFolder(folder, cur ? cur->name : std::string());
 							}
 						}
 					}
@@ -2606,19 +2814,22 @@ public:
 		ImGui::BeginChild("list", ImVec2(0.0f, colH), true, ImGuiWindowFlags_NavFlattened);
 		if (modList.empty()) {
 			ImGui::PushTextWrapPos(0.0f);
-			ImGui::TextColored(mx::text, "No mods or cheats for this game.");
+			ImGui::TextColored(mx::text, "No mods, patches or cheats for this game.");
 			ImGui::TextColored(mx::label, "OGBox has hakuX's (the title folder's mods/); a game's are in mods/%s/: a folder a mod, cheats.txt the cheats.", modsKey.c_str());
 			ImGui::PopTextWrapPos();
 		}
 		bool first = true;
+		const auto kindOf = [](const OgboxModEntry &e) { return e.cheat ? 2 : e.patch ? 1 : 0; };
 		for (size_t i = 0; i < modList.size(); i++) {
 			OgboxModEntry &m = modList[i];
-			if (first || (i > 0 && modList[i - 1].cheat != m.cheat)) {
-				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : "MODS");
+			if (first || (i > 0 && kindOf(modList[i - 1]) != kindOf(m))) {
+				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : m.patch ? "PATCHES (the disc's XBE, changed at the start)" : "MODS");
 				first = false;
 			}
-			const std::string text = std::string(m.on ? "[ON]  " : "[OFF] ") + m.name;
-			std::string note = m.cheat ? (m.once ? "once" : std::string()) : (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
+			const std::string text = std::string(m.on ? "[ON]  " : "[OFF] ") + (m.patch ? std::string(m.category) + ": " : std::string()) + m.name;
+			std::string note = m.cheat ? (m.once ? "once" : std::string())
+				: m.patch ? std::string(m.author)
+				: (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
 			const bool toggled = row("m" + std::to_string(i), text, note, false, m.on ? mx::bright : mx::text);
 			if (!modsFocus) {
 				focusLastItem();
@@ -2627,12 +2838,17 @@ public:
 			if (toggled) {
 				m.on = !m.on;
 				std::lock_guard<std::mutex> disc(g_discInfoMutex);
-				ogbox_mods_choose(modsKey.c_str(), m.cheat, m.id, m.on);
+				ogbox_mods_choose_kind(modsKey.c_str(), m.cheat ? "cheat" : m.patch ? "patch" : "mod", m.id, m.on);
 				detailsPath.clear();   // the details again, with the change
 			}
 			if (ImGui::IsItemFocused()) {
-				help = m.description[0] ? std::string(m.description) : std::string(m.cheat ? "A cheat." : "A mod.");
-				help += m.cheat ? " Cheats apply while the game runs, from its next start." : " Mods change the game's code and files, from its next start.";
+				help = m.description[0] ? std::string(m.description) + " " : std::string(m.cheat ? "A cheat. " : m.patch ? "" : "A mod. ");
+				if (m.patch) {
+					help += std::string("By ") + m.author + ", from " + m.source + ". Applied at the game's next start; a patch "
+						"whose bytes are not in this disc's XBE is left out (the boot log says so).";
+				} else {
+					help += m.cheat ? "Cheats apply while the game runs, from its next start." : "Mods change the game's code and files, from its next start.";
+				}
 			}
 		}
 		ImGui::EndChild();

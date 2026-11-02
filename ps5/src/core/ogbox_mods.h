@@ -36,23 +36,32 @@ typedef struct OgboxGameInfo {
     uint32_t title_id, version;
     char key[32];     /* "%08X.%u": the mods' and the game's settings' key */
     char title[48];   /* the certificate's title name (ASCII; '?' for other characters) */
+    uint32_t regions; /* 0.1.45: the certificate's game regions (1 North America, 2 Japan, 4 the rest) */
 } OgboxGameInfo;
 
 /* A disc image's default.xbe certificate (on a share, through ps5vfs_disc_open). */
 bool ogbox_game_info(const char *image, OgboxGameInfo *info);
 
 typedef struct OgboxModEntry {
-    char id[128];          /* a mod's folder name; a cheat's name */
-    char name[128];
-    char description[256];
+    char id[128];          /* a mod's folder name; a cheat's name; a patch's id */
+    char name[160];
+    char description[384];
     int refresh;           /* a mod's display refresh (120: a 120 fps mod) */
     bool cheat, once, on;
+    /* 0.1.45: an XBE patch of gamedata/patches.db (ogbox_patches.h) */
+    bool patch;
+    char category[16];
+    char author[64];
+    char source[64];
 } OgboxModEntry;
 
-/* The game's mods, then its cheats, with which are on (/data/ogbox/mods.txt): how many. */
+/* The game's mods, its patches (0.1.45), then its cheats, with which are on (/data/ogbox/mods.txt):
+ * how many. */
 int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max);
 /* One mod or cheat on or off in /data/ogbox/mods.txt. */
 bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on);
+/* 0.1.45: the same of any kind ("mod", "cheat", "patch"). */
+bool ogbox_mods_choose_kind(const char *key, const char *kind, const char *name, bool on);
 
 #ifdef __cplusplus
 }

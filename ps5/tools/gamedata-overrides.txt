@@ -1,0 +1,4 @@
+# OGBox: icup321 patch names (the file name without .ips/.bps, or the game part) the name match misses, and their title IDs
+Aliens vs Predator - Extinction	56550022
+Call of Duty 2 - Big Red One (Collector's Edition) (60 FPS Patch)	41560051
+Soldier of Fortune 2 - Double Helix	4156001B

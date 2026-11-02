@@ -211,8 +211,9 @@ namespace vks
 		VK_CHECK_RESULT(vkCreateSampler(device->logicalDevice, &samplerInfo, nullptr, &sampler));
 
 		// Descriptor pool
-		VkDescriptorPoolSize poolSize{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1 };
-		VkDescriptorPoolCreateInfo descriptorPoolInfo{ .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2, .poolSizeCount = 1, .pPoolSizes = &poolSize };
+		// OGBox 0.1.45: room for images of its own (addTexture: the game list's covers), freed one by one
+		VkDescriptorPoolSize poolSize{ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1 + kUserTextures };
+		VkDescriptorPoolCreateInfo descriptorPoolInfo{ .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = 2 + kUserTextures, .poolSizeCount = 1, .pPoolSizes = &poolSize };
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device->logicalDevice, &descriptorPoolInfo, nullptr, &descriptorPool));
 
 		// Descriptor set layout
@@ -370,6 +371,26 @@ namespace vks
 		buffers[currentBuffer].indexBuffer.flush();
 	}
 
+	VkDescriptorSet UIOverlay::addTexture(VkSampler imageSampler, VkImageView imageView)
+	{
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayout, 1);
+		if (vkAllocateDescriptorSets(device->logicalDevice, &allocInfo, &set) != VK_SUCCESS) {
+			return VK_NULL_HANDLE;
+		}
+		VkDescriptorImageInfo info{ .sampler = imageSampler, .imageView = imageView, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &info);
+		vkUpdateDescriptorSets(device->logicalDevice, 1, &write, 0, nullptr);
+		return set;
+	}
+
+	void UIOverlay::freeTexture(VkDescriptorSet set)
+	{
+		if (set != VK_NULL_HANDLE) {
+			vkFreeDescriptorSets(device->logicalDevice, descriptorPool, 1, &set);
+		}
+	}
+
 	void UIOverlay::draw(const VkCommandBuffer commandBuffer, uint32_t currentBuffer)
 	{
 		ImDrawData* imDrawData = ImGui::GetDrawData();
@@ -388,6 +409,7 @@ namespace vks
 		
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+		VkDescriptorSet bound = descriptorSet;
 
 		pushConstBlock.scale = glm::vec2(2.0f / io.DisplaySize.x, 2.0f / io.DisplaySize.y);
 		pushConstBlock.translate = glm::vec2(-1.0f);
@@ -408,6 +430,12 @@ namespace vks
 					.extent = {.width = (uint32_t)(pcmd->ClipRect.z - pcmd->ClipRect.x), .height = (uint32_t)(pcmd->ClipRect.w - pcmd->ClipRect.y) }
 				};
 				vkCmdSetScissor(commandBuffer, 0, 1, &scissorRect);
+				// OGBox 0.1.45: an image of addTexture's (ImGui::Image), else the font's
+				VkDescriptorSet want = pcmd->TextureId ? reinterpret_cast<VkDescriptorSet>(pcmd->TextureId) : descriptorSet;
+				if (want != bound) {
+					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &want, 0, NULL);
+					bound = want;
+				}
 				vkCmdDrawIndexed(commandBuffer, pcmd->ElemCount, 1, indexOffset, vertexOffset, 0);
 				indexOffset += pcmd->ElemCount;
 			}

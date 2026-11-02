@@ -116,7 +116,7 @@ target_include_directories(pshakux_platform PRIVATE src/platform src ${CMAKE_BIN
 target_compile_options(pshakux_platform PRIVATE ${common_options} -fno-stack-protector)
 
 # ---- the Core seam (src/core): the front end's one door into hakuX
-add_library(pshakux_core OBJECT src/core/hakux_core.c src/core/ogbox_mods.c)
+add_library(pshakux_core OBJECT src/core/hakux_core.c src/core/ogbox_mods.c src/core/ogbox_patches.c)
 hakux_target(pshakux_core)
 target_include_directories(pshakux_core PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/hakux ${HAKUX_DIR}/native/compat/glib)
 
@@ -130,6 +130,7 @@ add_library(samples OBJECT
 	src/samples.cpp
 	src/example_ps5.cpp
 	src/ogbox_settings.cpp
+	src/ogbox_library.cpp
 	src/ogbox_theme.cpp
 	src/platform.c)
 target_compile_definitions(samples PRIVATE

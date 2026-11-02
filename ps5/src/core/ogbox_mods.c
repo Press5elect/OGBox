@@ -10,6 +10,7 @@
  * (native/core/mods.h).
  */
 #include "core/ogbox_mods.h"
+#include "core/ogbox_patches.h"
 
 #include "platform/ps5_bootlog.h"
 
@@ -432,7 +433,8 @@ static void write_files(FILE *out, const char *dir, const char *rel)
     free_names(names, n);
 }
 
-static bool write_manifest(const char *path, const char *game_dir)
+static bool write_manifest(const char *path, const char *game_dir, const NcDisc *disc, const char *key,
+                           const char *work_dir)
 {
     FILE *out = fopen(path, "w");
     if (!out) {
@@ -440,7 +442,7 @@ static bool write_manifest(const char *path, const char *game_dir)
         return false;
     }
     int refresh = 0;
-    for (unsigned i = 0; i < g_nmods; i++) {
+    for (unsigned i = 0; i < g_nmods && game_dir; i++) {
         if (g_mods[i].on) {
             char files[1024];
             snprintf(files, sizeof(files), "%s/%s/files", game_dir, g_mods[i].id);
@@ -450,6 +452,8 @@ static bool write_manifest(const char *path, const char *game_dir)
             }
         }
     }
+    /* 0.1.45: the XBE patches on (gamedata/patches.db): the patched files, as files of the disc */
+    ogbox_patches_prepare(disc, key, work_dir, out);
     for (unsigned i = 0; i < g_nmods; i++) {
         /* a mod that is off too: a savestate saved with it on gets the disc's bytes back */
         const char *kind = g_mods[i].on ? "patch" : "patchoff";
@@ -487,26 +491,26 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
             folder = folders[i];
         }
     }
-    if (!folder) {
+    char game_dir[1024] = "";
+    if (folder) {
+        snprintf(game_dir, sizeof(game_dir), "%s/%s", mods_dir, folder);
+    } else {
         pshakux_log("mods: %s: none in %s", key, mods_dir);
-        free_names(folders, nfolders);
-        return;
     }
-    char game_dir[1024];
-    snprintf(game_dir, sizeof(game_dir), "%s/%s", mods_dir, folder);
     free_names(folders, nfolders);
 
-    size_t nmods = 0;
-    char **ids = list_dir(game_dir, &nmods, true);
-    for (size_t i = 0; i < nmods; i++) {
-        load_mod(game_dir, ids[i]);
+    if (game_dir[0]) {
+        size_t nmods = 0;
+        char **ids = list_dir(game_dir, &nmods, true);
+        for (size_t i = 0; i < nmods; i++) {
+            load_mod(game_dir, ids[i]);
+        }
+        free_names(ids, nmods);
+        char cheats[1100];
+        snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
+        load_cheats(cheats);
+        pshakux_log("mods: %s: %u mods and %u cheats in %s", key, g_nmods, g_ncheats, game_dir);
     }
-    free_names(ids, nmods);
-    char cheats[1024];
-    snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
-    load_cheats(cheats);
-
-    pshakux_log("mods: %s: %u mods and %u cheats in %s", key, g_nmods, g_ncheats, game_dir);
     for (unsigned i = 0; i < g_nmods; i++) {
         pshakux_log("mods:   mod %s: %s (%zu patch lines%s)", g_mods[i].id, g_mods[i].name, g_mods[i].npatches,
                     g_mods[i].refresh ? ", asks for a vblank at its refresh rate" : "");
@@ -527,9 +531,12 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
                     g_nmods ? g_mods[0].id : "<mod>");
         /* (the manifest is still written: the mods that are off give a savestate its bytes back) */
     }
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    const bool have_disc = nc_disc_open(&disc, disc_fd); /* (not closed: the descriptor is the core's) */
     char manifest[1024];
     snprintf(manifest, sizeof(manifest), "%s/mods-run.txt", work_dir);
-    if (write_manifest(manifest, game_dir)) {
+    if (write_manifest(manifest, game_dir[0] ? game_dir : NULL, have_disc ? &disc : NULL, key, work_dir)) {
         nc_mods_set_manifest(manifest);
     }
 }
@@ -601,6 +608,7 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
         if (ok) {
             info->title_id = le32(h + off + 8);
             info->version = le32(h + off + 0xAC);
+            info->regions = le32(h + off + 0xA0);
             /* the title's name: 40 UTF-16LE characters at +0x0C; what is not ASCII becomes '?' */
             size_t n = 0;
             for (unsigned i = 0; i < 40 && n + 1 < sizeof(info->title); i++) {
@@ -630,19 +638,21 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
 {
     catalog_reset();
     char game_dir[1024];
-    if (!key || !key[0] || !find_game_dir(key, game_dir, sizeof(game_dir))) {
+    if (!key || !key[0]) {
         return 0;
     }
-    size_t nmods = 0;
-    char **ids = list_dir(game_dir, &nmods, true);
-    for (size_t i = 0; i < nmods; i++) {
-        load_mod(game_dir, ids[i]);
+    if (find_game_dir(key, game_dir, sizeof(game_dir))) {
+        size_t nmods = 0;
+        char **ids = list_dir(game_dir, &nmods, true);
+        for (size_t i = 0; i < nmods; i++) {
+            load_mod(game_dir, ids[i]);
+        }
+        free_names(ids, nmods);
+        char cheats[1100];
+        snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
+        load_cheats(cheats);
+        read_choices(key, pshakux_title_dir());
     }
-    free_names(ids, nmods);
-    char cheats[1100];
-    snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
-    load_cheats(cheats);
-    read_choices(key, pshakux_title_dir());
     int n = 0;
     for (unsigned i = 0; i < g_nmods && n < max; i++, n++) {
         OgboxModEntry *e = &out[n];
@@ -652,6 +662,23 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
         copy(e->description, sizeof(e->description), g_mods[i].description);
         e->refresh = g_mods[i].refresh;
         e->on = g_mods[i].on;
+    }
+    /* 0.1.45: the XBE patches */
+    {
+        static OgboxPatch patches[256];
+        const int np = ogbox_patches_catalog(key, patches, 256);
+        for (int i = 0; i < np && n < max; i++, n++) {
+            OgboxModEntry *e = &out[n];
+            memset(e, 0, sizeof(*e));
+            copy(e->id, sizeof(e->id), patches[i].id);
+            copy(e->name, sizeof(e->name), patches[i].name);
+            copy(e->description, sizeof(e->description), patches[i].note);
+            copy(e->category, sizeof(e->category), patches[i].category);
+            copy(e->author, sizeof(e->author), patches[i].author);
+            copy(e->source, sizeof(e->source), patches[i].source);
+            e->patch = true;
+            e->on = patches[i].on;
+        }
     }
     for (unsigned i = 0; i < g_ncheats && n < max; i++, n++) {
         OgboxModEntry *e = &out[n];
@@ -668,6 +695,11 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
 
 bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on)
 {
+    return ogbox_mods_choose_kind(key, cheat ? "cheat" : "mod", name, on);
+}
+
+bool ogbox_mods_choose_kind(const char *key, const char *kind, const char *name, bool on)
+{
     const char *path = "/data/ogbox/mods.txt";
     char *text = read_all(path);
     char tmp[1100];
@@ -678,7 +710,6 @@ bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on)
         pshakux_log("mods: %s cannot be written (%s)", tmp, strerror(errno));
         return false;
     }
-    const char *kind = cheat ? "cheat" : "mod";
     if (text) {
         for (char *save, *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
             char copyline[1024];
@@ -710,7 +741,8 @@ bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on)
         }
         free(text);
     } else {
-        fprintf(out, "# OGBox: the mods and cheats that are on, one a line: <game> mod <id> / <game> cheat <name>\n");
+        fprintf(out, "# OGBox: the mods, patches and cheats that are on, one a line: <game> mod <id> / <game> patch <id> / "
+                     "<game> cheat <name>\n");
     }
     if (on) {
         fprintf(out, "%s %s %s\n", key, kind, name);

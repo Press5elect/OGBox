@@ -54,16 +54,27 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
 defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
 cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
 timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
-Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left; USB drives
-hidden by default) and Interface (the FPS counter, the code rain). CROSS
+Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
+hidden by default; covers, a list or a grid of covers, file or short names, by name or last
+played first, disc sizes, the details panel) and Interface (the FPS counter, the code rain). CROSS
 picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
 any of the Graphics, Console and Console video ones for that game alone (TRIANGLE: back to the
 app's). They are kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`;
 the network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
 
-**Mods and cheats** (on the right) lists hakuX's for the disc (60 and 120 fps mods, game fixes;
-the `mods` folder is hakuX's own): CROSS turns one on or off, from the game's next start
-(`/data/ogbox/mods.txt`). **Xbox dashboard** (on the left) starts the dashboard from the
+**Mods, patches, cheats** (on the right) lists hakuX's mods for the disc (60 and 120 fps mods,
+game fixes; the `mods` folder is hakuX's own), the XBE patches OGBox ships for it (widescreen,
+720p/480p, 60 fps and fixes from Jay's PatchHub, icup321's XboxGraphicalPatches and OgXHD, in
+`gamedata/patches.db`; all off by default) and its cheats: CROSS turns one on or off, from the
+game's next start (`/data/ogbox/mods.txt`). A patch whose bytes aren't in the disc's XBE (another
+release) is left out at the start and the boot log says why.
+
+**Covers**: the list shows each disc's cover from libretro's thumbnails, found by the disc's
+Redump name (OGBox ships Redump's Xbox database, `gamedata/games.db`); a disc named as Redump
+names it (`Halo 2 (USA) (En,Fr,De).iso`) always matches, others by their title ID. The covers
+are downloaded once into `/data/ogbox/covers` (Game list > Covers turns that off). libretro has
+no game descriptions for the Xbox, so the details panel shows Redump's name, region, languages
+and serial. **Xbox dashboard** (on the left) starts the dashboard from the
 emulated hard disk; OGBox doesn't include one.
 
 `boot.txt` (copy `boot.example.txt`) holds hakuX's options (`scale=2`, `uncap`, ...) for every
@@ -144,6 +155,27 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.45 (bring-up)
+
+Added
+- **XBE patches**: Jay's PatchHub (jayxbox.com, its .JMP patches), icup321's
+  XboxGraphicalPatches (IPS and BPS) and OgXHD's patch lists, matched to the games by title ID,
+  in the disc's **Mods, patches, cheats** screen under PATCHES, each with its kind (widescreen,
+  720p, 480p, 60 fps, fixes), author and notes. Off until turned on; applied to a copy of the
+  XBE when the game starts, never to the disc. A patch made for another release of the game
+  (its bytes not found, another CRC or region) is left out and the boot log says so.
+- **Covers** from libretro's thumbnails, downloaded once into `/data/ogbox/covers`, in the
+  details panel and in the new grid view.
+- **Redump's Xbox database** (from libretro-database): the details panel shows the disc's Redump
+  name, region, languages and serial, and the number of patches.
+- Settings, Game list: **Covers** (download them or not), **Layout** (list or grid of covers),
+  **Names** (file names or short names), **Order** (by name or last played first), **Disc sizes**
+  and **Details panel**.
+
+Changed
+- "MODS AND CHEATS" is now "MODS, PATCHES, CHEATS", and it is there for every disc, also
+  without a `mods` folder.
 
 ### 0.1.44 (bring-up)
 

@@ -69,6 +69,11 @@
 
 // OGBox 0.1.26: the settings (a C++ namespace of OGBox's own: at file scope, not the sample's)
 #include "ogbox_settings.h"
+// OGBox 0.1.45: the game list's database, covers and history; the covers' textures
+#include "ogbox_library.h"
+#include "VulkanTexture.h"
+#include <cctype>
+#include <cfloat>
 
 // The UI module's glue and, through it, the kit's headers (ps5/ui/, when the
 // title has it)

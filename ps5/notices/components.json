@@ -486,6 +486,39 @@
     "url": "https://github.com/llvm/llvm-project (the payload SDK's and the build machine's LLVM 20)",
     "revision": "@sdk"
    }
+  },
+  {
+   "id": "gamedata-redump",
+   "name": "The Xbox disc database (gamedata/games.db: title IDs, regions, languages, serials and names), made by ps5/tools/import-gamedata.py from libretro-database's metadat/redump/Microsoft - Xbox.dat (Redump's data, as libretro distributes it)",
+   "licence": "CC-BY-SA-4.0 (games.db, derived from it, is under the same licence)",
+   "copyright": "libretro-database contributors; the data: Redump (redump.org)",
+   "modifications": "converted to a tab-separated file: a title ID made from each serial, the region, the languages and the name kept",
+   "texts": {
+    "CC-BY-SA-4.0.txt": "ps5/licenses/CC-BY-SA-4.0.txt"
+   },
+   "artifacts": [
+    "gamedata/games.db"
+   ],
+   "source": {
+    "url": "https://github.com/libretro/libretro-database",
+    "revision": "2fdd069d45883449cecf97deddd493492e77ff29"
+   }
+  },
+  {
+   "id": "gamedata-patches",
+   "name": "XBE patches (gamedata/patches.db and gamedata/files/), made by ps5/tools/import-gamedata.py from: Jay's PatchHub (jayxbox.com/Retail-Game-Modification/PatchHub.php: Jay's Magic Patcher .JMP files, each crediting its patch's author; github.com/JayYardley/Xbox-Magic-Patches-by-Jay), icup321's XboxGraphicalPatches (IPS and BPS files) and OgXHD's databases (hdb.dat, wdb.dat, in icup321's repository)",
+   "licence": "no licence stated by the sources; included with credit to every author as the collections give it, and removed on request",
+   "copyright": "the patches' authors, as patches.db names each one (its author field); Jay (jayxbox.com) for the .JMP conversions; icup321; OgXHD's author",
+   "modifications": "converted to one database by title ID: the .JMP records (search and replace, offset, append; records off by default left out), OgXHD's search-and-replace pairs, the IPS and BPS files as they are (renamed)",
+   "texts": {},
+   "artifacts": [
+    "gamedata/patches.db",
+    "gamedata/files/"
+   ],
+   "source": {
+    "url": "https://jayxbox.com/Retail-Game-Modification/PatchHub.php; https://github.com/icup321/XboxGraphicalPatches",
+    "revision": "PatchHub as of 2026-11-02; XboxGraphicalPatches 272d76cfc0c9dfedee5f229611bb50e23e8ef921"
+   }
   }
  ]
 }

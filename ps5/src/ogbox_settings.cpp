@@ -143,6 +143,22 @@ std::vector<Option> makeOptions()
 			{ { "0", "Hidden" }, { "1", "Connected ones" }, { "2", "All eight" } }, "0");
 		place("list_ext", "Extended storage", "The extended storage drives (/mnt/ext0, ext1), when there.", kOnOff, "1");
 		place("list_network", "Network shares", "The shares of /data/ogbox/network.cfg.", kOnOff, "1");
+		// 0.1.45: how the list looks
+		place("list_covers", "Covers",
+			"Each disc's box art from libretro's thumbnails (thumbnails.libretro.com), downloaded the first time it "
+			"is shown and kept in /data/ogbox/covers. Found by the disc's Redump name: the file's, else the one the "
+			"database has for its title ID.",
+			kOnOff, "1");
+		place("list_layout", "Layout", "The folder's discs as a list, or as a grid of their covers.",
+			{ { "list", "List" }, { "grid", "Grid of covers" } }, "list");
+		place("list_names", "Names", "The discs' names as their files have them, or without the extension and the "
+			"bracketed parts (region, languages, revision).",
+			{ { "file", "File names" }, { "short", "Short names" } }, "file");
+		place("list_sort", "Order", "The folder's discs by name, or the ones played last first.",
+			{ { "name", "By name" }, { "played", "Last played first" } }, "name");
+		place("list_sizes", "Disc sizes", "Each disc's size beside its name.", kOnOff, "1");
+		place("list_details", "Details panel", "The selected disc's details on the right: its cover, its database "
+			"entry (Redump's name, region, languages, serial), its mods and patches.", kOnOff, "1");
 	}
 	// ---- Interface (OGBox's)
 	o.push_back({ "show_fps", Section::Interface, "Show FPS counter",
