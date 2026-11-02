@@ -156,6 +156,22 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.46 (bring-up)
+
+Fixed
+- NFS Carbon closed a second after its loading screen. The console's crash report named it: the
+  emulator's kernel, clearing a block of memory the game had just asked for, wrote through the
+  Xbox's own view of that memory, where the graphics emulation still had the pages
+  write-protected from the frame buffer that had been there before (freed a moment earlier).
+  On the PS5 that fault inside a kernel call isn't one the title can catch, and the system ended
+  it. The emulator now clears and copies new memory through its own view, which is never
+  protected, and tells the graphics emulation the pages changed. Any game that frees and
+  reallocates a frame buffer or texture memory could hit this.
+
+Changed
+- The boot log's heartbeat no longer stops while a burst of lines is copied on to klog (it
+  went quiet for most of a second before Carbon's crash).
+
 ### 0.1.45 (bring-up)
 
 Added

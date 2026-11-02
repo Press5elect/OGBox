@@ -142,14 +142,20 @@ void ForwardLine(const char* line, size_t length)
 }
 
 // Copies the lines standard error has added to the log since the last look on to klog.
-void Forward()
+// 0.1.46: within a budget when the watcher calls it (budget_s > 0): with klog read over the
+// network (klogsrv), a burst of hakuX's lines took the watcher long enough to miss the heartbeats
+// before NFS Carbon's crash; what is left goes on at its next look.
+void Forward(double budget_s = 0)
 {
   if (s_read_fd < 0)
     return;
   pthread_mutex_lock(&s_forward_lock);
+  const double until = budget_s > 0 ? Since(s_start) + budget_s : 0;
   char chunk[4096];
   for (;;)
   {
+    if (until > 0 && Since(s_start) > until)
+      break;
     const ssize_t got = pread(s_read_fd, chunk, sizeof(chunk), s_forward_offset);
     if (got <= 0)
       break;
@@ -404,7 +410,7 @@ void* WatcherMain(void*)
   while (s_watcher_running.load(std::memory_order_relaxed))
   {
     usleep(50000);
-    Forward();
+    Forward(0.02);
     const double now = Since(s_start);
     if (now >= next_beat)
     {
