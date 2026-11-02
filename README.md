@@ -144,6 +144,20 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.41 (bring-up)
+
+Fixed
+- Controllers did nothing in 0.1.40 (Mortal Kombat, NFS): its fix refused every USB write to
+  the start of the Xbox's memory, but games keep USB buffers there (MK's at 0x364, NFS's at
+  0x3c4, a pad's report at 0x25b). Now only the few bytes the PS5 build itself keeps there are
+  protected; the game's buffers are written as before.
+
+Changed
+- The guard 0.1.37 put over that memory is off again by default: every USB write there became a
+  fault. `env NC_LOW_WATCH=1` in boot.txt turns it on for diagnostics.
+- The boot log now says what the USB interrupt handler is doing when it holds up the GPU's
+  interrupt for more than 40 ms (the ~130-225 ms freezes during NFS's movies).
+
 ### 0.1.40 (bring-up)
 
 Fixed
