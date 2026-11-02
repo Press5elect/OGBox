@@ -144,14 +144,28 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
-### 0.1.29 (bring-up, not built yet)
+### 0.1.29 (bring-up)
 
 Added
 - Frame pacing (Settings, Graphics; off by default): holds the game to the speed its frames are
   drawn at, for less input lag when drawing can't keep up. From hakuX pull request #14
   (pjperez).
 
+Changed
+- The emulated CPU's thread runs one step ahead of OGBox's other threads. Def Jam froze for about
+  half a second every 7 to 10 seconds: the 0.1.28 freeze probe showed that thread not getting the
+  processor, and the controller and video interrupts reaching the game a quarter to half a second
+  late. `OGBOX_VCPU_PRIORITY=700` in boot.txt puts it back.
+- Network shares: OGBox's connections ask for 4 MB send and receive buffers, so reads from an SMB
+  or NFS share are no longer limited to about 18 MB/s by the console's small default window.
+  `OGBOX_NET_BUFFER_KB` in boot.txt sets the size (0: the console's default).
+
 Fixed
+- The Graphics settings couldn't be entered: RIGHT from the first section (and from the last
+  ones) went nowhere, as did RIGHT from a game in the list to its Start, Game settings and Mods
+  buttons. The menus only moved sideways to an item level with the selected one; now a sideways
+  press that finds nothing goes to the next column, and LEFT in the settings goes back to the
+  current section. The settings screen was tested this time, headless, with OGBox's own ImGui.
 - From hakuX's open pull requests (not merged there yet):
   - #19 (pjperez): two threads changing a memory page's protection at once could leave it
     read-only by mistake, and the game crashed on its next write there. One lock now covers

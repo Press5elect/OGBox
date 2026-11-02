@@ -50,6 +50,23 @@ int SetPriority(pthread_t thread, int priority)
 	return pthread_setschedparam(thread, policy, &param);
 }
 
+/* OGBox 0.1.29: the guest CPU's thread one step ahead of the title's others (690). At 700 with
+ * them, Def Jam froze for about half a second every 7 to 10 s: the hitch monitor's "vCPU starved:
+ * 0 ms CPU of 111 (host)", a kernel call "held the CPU 27.4 ms", then the USB and GPU interrupts
+ * 250 and 480 ms late, the guest waiting for them; the stall probe found the thread inside the
+ * system library each time. Its processor (0) is its own among the title's threads, but threads
+ * the title doesn't place (the system's, the driver's) may run there, at the same priority. env
+ * OGBOX_VCPU_PRIORITY in boot.txt sets it (700: as up to 0.1.28). */
+int VcpuPriority()
+{
+	static const int priority = [] {
+		const char* e = std::getenv("OGBOX_VCPU_PRIORITY");
+		const int p = e && *e ? std::atoi(e) : 690;
+		return p >= 256 && p <= 767 ? p : 690;
+	}();
+	return priority;
+}
+
 int PriorityOf(Role role)
 {
 	switch (role)
@@ -63,7 +80,7 @@ int PriorityOf(Role role)
 		case Role::Sound: return 690;
 		case Role::Input: return 700;
 		case Role::Interface: return 700;
-		case Role::Emulation: return 700;
+		case Role::Emulation: return VcpuPriority();
 		case Role::Helper: return 700;
 		case Role::Background: return 730;
 	}

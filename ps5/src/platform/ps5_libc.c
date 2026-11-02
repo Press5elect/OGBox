@@ -498,4 +498,47 @@ __wrap_poll(struct pollfd *fds, nfds_t count, int timeout_ms)
       }
    }
 }
+
+#include <netinet/tcp.h>
+
+/* setsockopt: OGBox 0.1.29. A TCP connection the console opens gets its default buffers (a small
+ * receive window), so a game on a network share read at about 18 MB/s whatever the link: one
+ * window per round trip. libsmb2 sets TCP_NODELAY on its socket after making it and before it
+ * connects (socket.c, smb2_connect_async_next_addr; so does libnfs): at that point the socket's
+ * send and receive buffers are made large too, before the connection's window scale is agreed.
+ * The largest the console takes, from 4 MiB down. env OGBOX_NET_BUFFER_KB sets the size (0: the
+ * console's own). Every setsockopt in the title comes here (--wrap). */
+extern int __real_setsockopt(int fd, int level, int name, const void *value, socklen_t length);
+
+static int net_buffer_bytes(void)
+{
+   static int bytes = -1;
+   if (bytes < 0) {
+      const char *e = getenv("OGBOX_NET_BUFFER_KB");
+      bytes = e && *e ? atoi(e) * 1024 : 4 * 1024 * 1024;
+      if (bytes < 0)
+         bytes = 0;
+   }
+   return bytes;
+}
+
+int
+__wrap_setsockopt(int fd, int level, int name, const void *value, socklen_t length)
+{
+   const int result = __real_setsockopt(fd, level, name, value, length);
+   if (level == IPPROTO_TCP && name == TCP_NODELAY) {
+      const int want = net_buffer_bytes();
+      static int said;
+      for (int size = want; size >= 128 * 1024; size /= 2) {
+         const int rcv = __real_setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+         const int snd = __real_setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
+         if (rcv == 0 && snd == 0) {
+            if (!said++)
+               ps5px_log("network: a TCP connection's buffers %d KiB (receive and send)", size / 1024);
+            break;
+         }
+      }
+   }
+   return result;
+}
 #endif

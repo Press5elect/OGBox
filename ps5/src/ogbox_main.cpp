@@ -722,6 +722,20 @@ public:
 	std::string forGameKey, forGameTitle;
 	std::string help;
 	bool focusList{ false };
+	/* 0.1.29: LEFT and RIGHT between the screens' columns when ImGui's own move finds nothing.
+	 * ImGui 1.65 moves sideways only to an item level with the focused one, so the first settings
+	 * section (above the options, which start under their heading), the last sections (below a
+	 * short list) and a game-list row above the selected disc's buttons went nowhere. A press that
+	 * left the focus where it was two frames later puts it on the next column's first item
+	 * (columnItem); found with a headless ImGui test of the settings screen. In the settings LEFT
+	 * always goes back to the current section. */
+	struct ColumnNav {
+		int focusCol{ -1 };       // the column of the item focused this frame
+		int lastCol{ -1 };        // ... the frame before
+		int pressCol{ -1 }, pressDir{ 0 }, wait{ 0 };
+		ImGuiID pressId{ 0 };
+		int jump{ -1 };           // the column whose first item takes the focus
+	} colNav;
 	bool wantFocus{ true };                   // the next screen's window takes the controller
 	bool modsFocus{ false };
 	bool swallowNav{ false };                 // this frame's CROSS and CIRCLE are not ImGui's
@@ -1906,6 +1920,52 @@ public:
 			ImRect(ImGui::GetItemRectMin() - root->Pos, ImGui::GetItemRectMax() - root->Pos));
 	}
 
+	/* At the start of a screen with columns 0..count-1: a LEFT or RIGHT press ImGui didn't act on
+	 * becomes a jump to the next column (ColumnNav). */
+	void columnsBegin(int count, bool leftToFirst = false)
+	{
+		ColumnNav &n = colNav;
+		n.lastCol = n.focusCol;
+		n.focusCol = -1;
+		if (n.jump >= 0) {
+			n.jump = -1;                  // a column without items: nothing took it
+		}
+		if (n.wait > 0 && --n.wait == 0 && GImGui->NavId == n.pressId && n.pressCol >= 0) {
+			const int to = n.pressCol + n.pressDir;
+			if (to >= 0 && to < count) {
+				n.jump = to;
+			}
+		}
+		const uint32_t pressed = menuPad.pressed;
+		if ((pressed & (PAD_LEFT | PAD_RIGHT)) && n.lastCol >= 0) {
+			n.pressCol = n.lastCol;
+			n.pressDir = (pressed & PAD_RIGHT) ? 1 : -1;
+			n.pressId = GImGui->NavId;
+			n.wait = 2;
+			if (leftToFirst && n.pressDir < 0 && n.lastCol > 0) {
+				/* LEFT goes to the column's own item (the settings' current section), not the
+				 * level one ImGui would pick (from the options, another section) */
+				ImGui::NavMoveRequestCancel();
+				n.jump = n.lastCol - 1;
+				n.wait = 0;
+			}
+		}
+	}
+
+	/* After an item of column col: focused, it is the column's; the first of a column the jump is
+	 * for takes the focus (first: it is the column's first focusable item, or the one to land on). */
+	void columnItem(int col, bool first)
+	{
+		if (ImGui::IsItemFocused()) {
+			colNav.focusCol = col;
+		}
+		if (first && colNav.jump == col) {
+			focusLastItem();
+			colNav.jump = -1;
+			colNav.wait = 0;
+		}
+	}
+
 	/* The selected entry of the list, or nothing. */
 	const LibraryEntry *selectedEntry() const
 	{
@@ -2015,6 +2075,7 @@ public:
 
 		// the places, the settings, the dashboard, quit
 		int chosenPlace = -1;
+		columnsBegin(3);
 		ImGui::BeginChild("places", ImVec2(leftW, colH), true, child);
 		ImGui::TextColored(mx::label, "PLACES");
 		for (size_t i = 0; i < places.size(); i++) {
@@ -2022,12 +2083,16 @@ public:
 			if (row("p" + std::to_string(i), places[i].name, std::string(), false, here ? mx::bright : mx::text)) {
 				chosenPlace = static_cast<int>(i);
 			}
+			columnItem(0, i == 0);
 		}
 		ImGui::Spacing();
 		ImGui::TextColored(mx::label, "OGBOX");
 		const bool openSet = row("settings", "Settings", "TRIANGLE", false, mx::text);
+		columnItem(0, places.empty());
 		const bool dash = row("dash", "Xbox dashboard", std::string(), false, mx::text);
+		columnItem(0, false);
 		const bool leave = row("quit", "Quit OGBox", std::string(), false, mx::text);
+		columnItem(0, false);
 		ImGui::EndChild();
 
 		// the folder
@@ -2058,6 +2123,7 @@ public:
 				focusLastItem();
 				ImGui::SetScrollHere(0.5f);
 			}
+			columnItem(1, static_cast<int>(i) == (selected >= 0 && selected < static_cast<int>(entries.size()) ? selected : 0));
 			if (ImGui::IsItemFocused()) {
 				selected = static_cast<int>(i);
 				focusSet = true;
@@ -2172,8 +2238,14 @@ public:
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1));
 		const bool start = ImGui::Button("START", ImVec2(bw, bh));
 		ImGui::PopStyleColor(2);
-		const bool own = done && info.ok && ImGui::Button("GAME SETTINGS", ImVec2(bw, bh));
-		const bool modsButton = done && info.ok && ImGui::Button("MODS AND CHEATS", ImVec2(bw, bh));
+		columnItem(2, true);
+		bool own = false, modsButton = false;
+		if (done && info.ok) {
+			own = ImGui::Button("GAME SETTINGS", ImVec2(bw, bh));
+			columnItem(2, false);
+			modsButton = ImGui::Button("MODS AND CHEATS", ImVec2(bw, bh));
+			columnItem(2, false);
+		}
 		if (start && startPath.empty()) {
 			activate(*e);
 		} else if (own) {
@@ -2212,11 +2284,14 @@ public:
 		const float colH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH - helpH - style.ItemSpacing.y;
 		const float leftW = W * 0.2f;
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(style.WindowPadding.x * 0.5f, style.WindowPadding.y * 0.6f));
+		columnsBegin(2, true);
 		ImGui::BeginChild("sections", ImVec2(leftW, colH), true, ImGuiWindowFlags_NavFlattened);
+		ImGui::TextColored(mx::label, "SECTIONS");   // the rows level with the options' (ColumnNav)
 		bool reset = false;
 		for (size_t i = 0; i < sections.size(); i++) {
 			row("s" + std::to_string(i), ogbox::sectionName(sections[i]), std::string(), static_cast<int>(i) == section,
 				static_cast<int>(i) == section ? mx::bright : mx::text);
+			columnItem(0, static_cast<int>(i) == section);
 			if (!focusList && static_cast<int>(i) == section) {
 				focusLastItem();
 				focusList = true;
@@ -2230,6 +2305,7 @@ public:
 		if (forGame) {
 			ImGui::Spacing();
 			reset = row("reset", "Use the app's for all", std::string(), false, mx::label);
+			columnItem(0, false);
 			if (ImGui::IsItemFocused()) {
 				help = "Every setting of this game back to the app's.";
 			}
@@ -2240,6 +2316,7 @@ public:
 		const ogbox::Section current = sections.empty() ? ogbox::Section::Graphics : sections[static_cast<size_t>(section)];
 		ImGui::TextColored(mx::label, "%s", ogbox::sectionName(current));
 		const uint32_t pressed = menuPad.pressed;
+		bool firstOption = true;
 		for (const ogbox::Option &o : ogbox::options()) {
 			if (o.section != current || (forGame && !o.perGame)) {
 				continue;
@@ -2251,6 +2328,8 @@ public:
 				shown = "App setting: " + shown;
 			}
 			const bool chosen = row(o.key, o.label, shown, false, forGame && !own.empty() ? mx::bright : mx::text);
+			columnItem(1, firstOption);
+			firstOption = false;
 			if (ImGui::IsItemFocused()) {
 				help = std::string(o.description) + (o.text ? "" : " Takes effect at the next game start.");
 				int by = 0;
