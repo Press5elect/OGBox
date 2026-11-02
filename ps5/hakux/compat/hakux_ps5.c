@@ -140,7 +140,7 @@ static const ThreadRole k_entries[] = {
     {"nvnet_thread", PSHAKUX_ROLE_HELPER, "nvnet"},             /* the NIC's interrupts */
     {"net_thread", PSHAKUX_ROLE_HELPER, "net"},                 /* the NIC's network (polls) */
     {"closer_thread", PSHAKUX_ROLE_BACKGROUND, "io-closer"},    /* closing written files */
-    {"log_writer", PSHAKUX_ROLE_BACKGROUND, "nc-log"},          /* 0.1.30: the log's lines written (native/core/log.c) */
+    {"log_writer", PSHAKUX_ROLE_HELPER, "nc-log"},              /* 0.1.30: the log's lines written (native/core/log.c); 0.1.32: a helper (700), not behind the compiles: the vCPU shares its lock */
     {"ram_part", PSHAKUX_ROLE_BACKGROUND, "state-ram"},         /* savestates: RAM compressed */
     {"pz_piece", PSHAKUX_ROLE_BACKGROUND, "cache-pack"},        /* the caches compressed */
 };

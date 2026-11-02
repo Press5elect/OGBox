@@ -144,6 +144,15 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.32 (bring-up)
+
+Fixed
+- Def Jam froze for a third of a second and more at a time while the emulator wrote a line to
+  its log: the system library's number formatting (for decimals) takes a lock and allocates
+  memory, and the emulated CPU's thread waited on it (0.1.31's freeze probe found it there,
+  inside the system's printf). The emulator's log lines are now formatted by OGBox's own code,
+  without locks or allocation, and its writer thread runs at the helpers' priority.
+
 ### 0.1.31 (bring-up)
 
 Changed
