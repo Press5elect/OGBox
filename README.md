@@ -54,7 +54,8 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
 defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
 cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
 timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
-Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
+Console also has Memory (64 MB, or the 128 MB RAM upgrade the 720p patches need; Auto picks
+it when such a patch is on). Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
 hidden by default; covers, a list or a grid of covers, file or short names, by name or last
 played first, disc sizes, the details panel) and Interface (the FPS counter, the code rain). CROSS
 picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
@@ -155,6 +156,20 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.47 (bring-up)
+
+Added
+- Settings, Console, **Memory**: 64 MB as the console has it, or 128 MB, the RAM upgrade most
+  720p patches and some others need (Manhunt's 720p patch stopped the game at its first level
+  load with 64 MB). **Auto** (the default) gives a game 128 MB only while a patch that needs it
+  is on: a 720p patch, unless its notes say it runs on the stock RAM, or any patch whose notes
+  say 128 MB. The boot log says when. Per game too. The emulated GPU reports the size as well.
+
+Fixed
+- A patch checked against its release (a CRC-32) was left out when another patch was applied to
+  the same file before it: the check was of the file already changed. It is now of the disc's
+  file (Manhunt's widescreen patch with its 720p one).
 
 ### 0.1.46 (bring-up)
 

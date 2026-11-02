@@ -332,6 +332,11 @@ bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
 
 /* ---- the records ---- */
 
+/* 0.1.47: the CRC-32 of the target as the disc has it, while the patches for a game are applied in
+ * turn: a patch's CRC check is of the release it was made for, not of the file another patch already
+ * changed (Manhunt's widescreen patch after its 720p one). 0: the buffer's own (the tests). */
+static uint32_t g_original_crc;
+
 bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const char *files_dir, char *why,
                          size_t why_len)
 {
@@ -353,7 +358,8 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
         }
         const char kind = f[0][0];
         if (kind == 'C' && nf >= 2) {
-            const uint32_t want = (uint32_t)strtoul(f[1], NULL, 16), have = ogbox_crc32(work.data, work.size);
+            const uint32_t want = (uint32_t)strtoul(f[1], NULL, 16),
+                           have = g_original_crc ? g_original_crc : ogbox_crc32(work.data, work.size);
             if (want != have) {
                 if (why && why_len) {
                     snprintf(why, why_len, "the file is another release: its CRC-32 is %08x, the patch's %08x",
@@ -561,6 +567,37 @@ static void read_on(const char *key)
     }
 }
 
+static bool has_word(const char *s, const char *w)
+{
+    const size_t n = strlen(w);
+    for (; *s; s++) {
+        if (!strncasecmp(s, w, n)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ogbox_patches_need_128(const char *key)
+{
+    static OgboxPatch list[64];
+    const int n = ogbox_patches_catalog(key, list, 64);
+    for (int i = 0; i < n; i++) {
+        const OgboxPatch *p = &list[i];
+        if (!p->on) {
+            continue;
+        }
+        const bool says_128 = has_word(p->note, "128") || has_word(p->name, "128");
+        const bool stock = has_word(p->note, "stock ram") || has_word(p->note, "64mb") || has_word(p->note, "64 mb");
+        if (says_128 || (!strcmp(p->category, "720p") && !stock)) {
+            pshakux_log("patches: %s: %s (%s) needs the 128 MB RAM upgrade%s: the game gets 128 MB (Settings, Memory)",
+                        key, p->name, p->id, says_128 ? "" : " (a 720p patch)");
+            return true;
+        }
+    }
+    return false;
+}
+
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
 {
     db_load(key);
@@ -580,6 +617,7 @@ typedef struct Target {
     char path[512];     /* on the disc */
     OgboxBuf buf;
     bool changed;
+    uint32_t crc;       /* 0.1.47: the disc's file's, before any patch */
 } Target;
 
 /* A file anywhere on the disc by its name (case aside), depth first: its path. */
@@ -734,6 +772,7 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                     t = &targets[ntargets];
                     snprintf(t->name, sizeof(t->name), "%s", tname);
                     if (target_load(disc, t)) {
+                        t->crc = ogbox_crc32(t->buf.data, t->buf.size);
                         ntargets++;
                     } else {
                         free(t->buf.data);
@@ -748,7 +787,10 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                 }
                 OgboxBuf before = {0};
                 buf_copy(&before, &t->buf);
-                if (ogbox_apply_records(&t->buf, e->lines + start, k - start, files_dir, why, sizeof(why))) {
+                g_original_crc = t->crc;
+                const bool done = ogbox_apply_records(&t->buf, e->lines + start, k - start, files_dir, why, sizeof(why));
+                g_original_crc = 0;
+                if (done) {
                     undo[nundo] = t;
                     saved[nundo++] = before;
                 } else {
