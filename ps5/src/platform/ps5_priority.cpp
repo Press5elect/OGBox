@@ -112,7 +112,20 @@ std::atomic<bool> s_enabled{false};
  * everything else on 6-12. The Burnout 3 run that had it ended frozen with its frame rate
  * falling, and it was not what slowed the runs without it (0.1.19: the late wake-ups of the
  * driver's GPU waits), so it is off unless env OGBOX_GPU_PIN=1 in boot.txt asks for it. */
-constexpr uint64_t kVcpuMask = 0x1u;
+/* OGBox 0.1.40: the guest CPU's thread on logical processors 0 and 1 (core 0's two threads,
+ * nothing else of the title's there), not 0 alone: pinned to one, it had to wait whenever the
+ * system ran something on processor 0 (kernel calls as trivial as KeQueryInterruptTime "held the
+ * CPU" 8 ms, KeSetTimerEx 22 ms, in 0.1.39's logs), with nowhere else to go. env
+ * OGBOX_VCPU_CPUS=<mask> in boot.txt sets it (0x1: as before). */
+uint64_t VcpuMask()
+{
+	static const uint64_t mask = [] {
+		const char* e = std::getenv("OGBOX_VCPU_CPUS");
+		const uint64_t m = e && *e ? std::strtoull(e, nullptr, 0) : 0x3u;
+		return m && !(m & ~0x1FFFull) ? m : 0x3u;
+	}();
+	return mask;
+}
 constexpr uint64_t kDecoderMask = 0xCu;
 constexpr uint64_t kRenderMask = 0x30u;
 constexpr uint64_t kOthersMask = 0x1FFCu;
@@ -130,7 +143,7 @@ bool GpuPinWanted()
 uint64_t MaskFor(bool vcpu, const char* name)
 {
 	if (vcpu)
-		return kVcpuMask;
+		return VcpuMask();
 	if (!GpuPinWanted())
 		return kOthersMask;
 	if (name && std::strcmp(name, "hle-pb") == 0)

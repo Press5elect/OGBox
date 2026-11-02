@@ -144,6 +144,27 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.40 (bring-up)
+
+Fixed
+- Mortal Kombat Shaolin Monks crashed, and GTA San Andreas crashed the app and the console: the
+  emulated USB controller wrote gamepad data to the very start of the Xbox's memory (read from a
+  controller entry the game was in the middle of setting up), where the PS5 build keeps small
+  pieces of system-library code. Nothing of the controller's is ever there; such writes are now
+  refused. (Your MK log: 3 200 such writes, then the crash; NFS: 15 700.)
+- The guard over that memory that 0.1.37 added could itself end the app when a write came in at
+  the moment it was being switched on.
+- NFS Most Wanted always stopped at the same spot ("system op 11 at 00054281"): the game runs a
+  breakpoint instruction there. The Xbox kernel hands that to the game's own error handlers,
+  which OGBox now does too; if the game has none, it stops as before, with more detail in the
+  log.
+
+Changed
+- The emulated CPU's thread may now run on the PS5's first core's two hardware threads, not
+  only one: pinned to one, it had to wait whenever the system used it (some trivial kernel
+  calls "held the CPU" 8-22 ms in your logs). `env OGBOX_VCPU_CPUS=0x1` in boot.txt restores
+  the old setting.
+
 ### 0.1.39 (bring-up)
 
 Fixed
