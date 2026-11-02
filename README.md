@@ -162,6 +162,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.49 (bring-up)
+
+Fixed
+- Manhunt stopped at its first level load ("unhandled exception" in the boot log), with or
+  without its patches' 128 MB. The game keeps data of its own in the Xbox's first page of memory,
+  where the PS5 build had put a few bytes of the console's code (OGBox's takeover of the system's
+  C library); since 0.1.44 those bytes were put back at every kernel call, over the game's data,
+  and its next read of it took them (the address it crashed on held them). Once a game writes
+  there, the page is now the game's: the console never calls those bytes (none of the runs since
+  0.1.44 did), and they are written once more as the title exits. `env NC_LOW_KEEP=1` in boot.txt
+  puts them back as before.
+
 ### 0.1.48 (bring-up)
 
 Added

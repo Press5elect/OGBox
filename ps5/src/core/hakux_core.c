@@ -233,6 +233,7 @@ static void before_exit(const char *why)
     memcpy(phys + PSHAKUX_LIBC_DT_FINI, k_libc_stub, sizeof(k_libc_stub));
     uint32_t first = 0;
     const unsigned n = nc_vmhost_check_window_low(&first);
+    nc_vmhost_low_restore();   /* 0.1.49: also when the guest had the page (Manhunt) */
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     pshakux_log("takeover: %s: libc.prx's DT_FINI (0x%08x) and %u entries made stubs again (%u had changed)", why,
                 0x80000000u + PSHAKUX_LIBC_DT_FINI, pshakux_libc_entry_count, n);
