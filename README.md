@@ -144,6 +144,17 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.34 (bring-up)
+
+Fixed
+- Def Jam ran at under half speed (12 frames a second where 30 were due) and its main menu
+  stayed black. Its default.xbe shows why: the game's clock is a 120-a-second timer, served by
+  a system thread of the same priority as the game's main loop, which never pauses. On the
+  Xbox a thread woken from a wait gets a small priority boost and runs at once; OGBox's
+  emulated kernel had none, so the timer thread waited each time for the main loop's 20 ms turn
+  to end, and the game's clock ticked about 50 times a second instead of 120. Woken threads now
+  get the Xbox kernel's boost. `NC_WAIT_BOOST=0` in boot.txt turns it off.
+
 ### 0.1.33 (bring-up)
 
 Fixed
