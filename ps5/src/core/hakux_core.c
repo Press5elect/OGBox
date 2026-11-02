@@ -356,6 +356,7 @@ static void *vcpu_thread(void *arg)
     /* the crash report shows the guest's registers when the fault is in
      * compat-mode code (the native CPU's 32-bit segment) */
     pshakux_crash_set_guest_cs(0x33);
+    pshakux_stall_set_thread();   /* OGBox 0.1.28: where it is when a game stops giving frames */
     pshakux_log("core: vCPU thread: booting (guest memory, the kernel, the devices, the XBE, the CPU)");
     if (!nc_core_boot(&g_core, g_disc_fd)) {
         if (!nc_hle_fatal()) {

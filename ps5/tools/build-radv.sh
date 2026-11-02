@@ -57,6 +57,39 @@ if [[ -d "$native/radv-release" ]]; then
 fi
 restore() { [[ -n "$hold" && -d "$hold/radv-release" ]] && { rm -rf "$native/radv-release"; mv "$hold/radv-release" "$native/"; rmdir "$hold"; }; }
 trap restore EXIT
+# OGBox 0.1.28: PS5_Vulkan's script runs Meson through a wrapper made here, for two things:
+#  - the host mesa_clc build takes the newest llvm-config it finds (llvm-config-20 when clang-20 is
+#    installed), but the SPIR-V translator (LLVMSPIRVLib.pc) is built for one LLVM: the clc build is
+#    given that LLVM's llvm-config in a native file (.deps/work/ogbox-clc-native.ini, which Meson reads again when it regenerates). Not through
+#    LLVM_CONFIG: the SDK's compiler wrappers read it too, and RADV built by clang 18 leaves its weak
+#    entry points visible, which the title's link refuses.
+#  - it passes -Damd-use-llvm=false, which this Mesa deprecates in favour of the amd-options array;
+#    Meson 1.12 hands the old boolean's "false" to the array and refuses it: -Damd-options=[]
+#    instead (LLVM is disabled anyway).
+if [[ -z ${MESON:-} ]]; then
+	wrap=$(mktemp -d)
+	real=$(command -v meson || echo "$HOME/.local/bin/meson")
+	native_file=""
+	if spirv=$(pkg-config --modversion LLVMSPIRVLib 2>/dev/null); then
+		for config in "/usr/lib/llvm-${spirv%%.*}/bin/llvm-config" "$(command -v llvm-config-"${spirv%%.*}" || true)"; do
+			[[ -x $config ]] && { native_file="$vulkan/.deps/work/ogbox-clc-native.ini"; mkdir -p "${native_file%/*}"; printf "[binaries]\nllvm-config = '%s'\n" "$config" > "$native_file"; break; }
+		done
+	fi
+	cat > "$wrap/meson" <<WRAP
+#!/usr/bin/env bash
+args=()
+clc=0
+for a in "\$@"; do
+	[[ \$a == -Damd-use-llvm=false ]] && grep -q "'amd-options'" "$mesa/meson.options" && a=-Damd-options=[]
+	[[ \$a == */radv-clc-build ]] && clc=1
+	args+=("\$a")
+done
+[[ \${args[0]:-} == setup && \$clc == 1 && -n "$native_file" ]] && args+=(--native-file "$native_file")
+exec "$real" "\${args[@]}"
+WRAP
+	chmod +x "$wrap/meson"
+	export MESON="$wrap/meson"
+fi
 (cd "$vulkan" && PS5_MESA_REVISION="$revision" bash tools/build-radv.sh release)
 rm -rf "$native/radv-crux2"
 mv "$native/radv-release" "$native/radv-crux2"

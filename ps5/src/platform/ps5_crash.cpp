@@ -642,3 +642,117 @@ extern "C" void pshakux_crash_install(void)
              "be caught: a title the system kills ends with its last \"alive:\" line%s",
              s_pipe[0] >= 0 ? "" : "; no pipe: memory is not read in the report");
 }
+
+// ---- OGBox 0.1.28: the stall probe ------------------------------------------------------------
+// When a game stops giving frames (the front end asks, pshakux_stall_report), where the emulated
+// CPU's thread is: a SIGPROF to it (nothing else on the console uses it; hakuX's own sampler, the
+// kick signal, is blocked inside its signal handlers), whose handler takes the interrupted
+// context's PC and, in host code, the return addresses up its frames (the title is built with
+// frame pointers), through SafeRead. A thread that does not answer within 100 ms is not running
+// at all (not scheduled, or stopped in the kernel with SIGPROF blocked). The front end logs the
+// answer; the addresses are looked up in build/ps5/link/llvm-pie.elf of the same build.
+
+namespace {
+struct StallSample
+{
+  uintptr_t rip, rsp, rbp;
+  uint16_t cs;
+  int frames;
+  uintptr_t frame[12];
+};
+StallSample s_stall;
+std::atomic<uint32_t> s_stall_seq{0};
+std::atomic<pthread_t> s_stall_thread{};
+std::atomic<bool> s_stall_ready{false};
+
+void StallHandler(int, siginfo_t*, void* context)
+{
+  const int saved = errno;
+  const Regs r = ReadRegs(static_cast<const ucontext_t*>(context));
+  s_stall.rip = r.rip;
+  s_stall.rsp = r.rsp;
+  s_stall.rbp = r.rbp;
+  s_stall.cs = static_cast<uint16_t>(r.cs);
+  int n = 0;
+  if (r.cs != s_guest_cs.load(std::memory_order_relaxed))
+  {
+    uintptr_t frame = r.rbp, previous = r.rsp;
+    while (n < 12 && frame >= previous && frame - r.rsp < 0x1000000 && (frame & 7) == 0)
+    {
+      uintptr_t words[2];
+      if (!SafeRead(frame, words, sizeof(words)) || words[1] == 0)
+        break;
+      s_stall.frame[n++] = words[1];
+      previous = frame + 16;
+      frame = words[0];
+    }
+  }
+  s_stall.frames = n;
+  s_stall_seq.fetch_add(1, std::memory_order_release);
+  errno = saved;
+}
+} // namespace
+
+extern "C" void pshakux_stall_set_thread(void)
+{
+  struct sigaction sa;
+  std::memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = StallHandler;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(SIGPROF, &sa, nullptr) != 0)
+    return;
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGPROF);
+  pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
+  s_stall_thread.store(pthread_self(), std::memory_order_release);
+  s_stall_ready.store(true, std::memory_order_release);
+}
+
+extern "C" void pshakux_stall_report(double seconds)
+{
+  Out o;
+  SetStamp();
+  o.s("stall: ").udec(static_cast<uint64_t>(seconds * 1000.0)).s(" ms without a new frame: ");
+  if (!s_stall_ready.load(std::memory_order_acquire))
+  {
+    o.s("(no probe: the emulated CPU's thread has not started)").end();
+    return;
+  }
+  const uint32_t seq = s_stall_seq.load(std::memory_order_acquire);
+  if (pthread_kill(s_stall_thread.load(std::memory_order_acquire), SIGPROF) != 0)
+  {
+    o.s("(the signal could not be sent)").end();
+    return;
+  }
+  bool answered = false;
+  for (int i = 0; i < 1000 && !answered; i++)
+  {
+    answered = s_stall_seq.load(std::memory_order_acquire) != seq;
+    if (!answered)
+    {
+      const struct timespec ts = {0, 100000};
+      nanosleep(&ts, nullptr);
+    }
+  }
+  if (!answered)
+  {
+    o.s("the emulated CPU's thread did not run within 100 ms (not scheduled, or in the kernel with "
+        "SIGPROF blocked)").end();
+    return;
+  }
+  if (s_stall.cs == s_guest_cs.load(std::memory_order_relaxed))
+  {
+    o.s("the emulated CPU in the game's code, eip ").hex(s_stall.rip & 0xffffffffu, 8).s(" esp ")
+      .hex(s_stall.rsp & 0xffffffffu, 8).end();
+    return;
+  }
+  o.s("the emulated CPU's thread in host code at ");
+  Where(o, s_stall.rip).end();
+  for (int i = 0; i < s_stall.frames; i++)
+  {
+    o.s("    from ");
+    Where(o, s_stall.frame[i]).end();
+  }
+}

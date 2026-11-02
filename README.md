@@ -144,6 +144,27 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.28 (bring-up)
+
+Added
+- A freeze probe, for the pauses of a second or more seen in most games. When no new picture has
+  come for 0.4 s, the emulated CPU's thread is stopped for a moment and where it was is written to
+  the log, every 0.3 s until pictures come again ("stall:" lines in `ogbox-boot.log` in the title folder: the
+  place in OGBox or in the game's code, and the calls that led there). These lines say which
+  part of the emulator the freeze is in. `OGBOX_STALL_PROBE=0` turns it off.
+
+Changed
+- PS5_Vulkan updated to 6224e4c (its newest; the Mesa revision it pins is unchanged).
+- The graphics driver carries PS5_Mesa's newest RADV fix (53cc83ff82b, as patch 0018): a large
+  buffer is backed by several pieces of the console's memory when no single piece that big is
+  free, instead of failing.
+
+Fixed
+- OGBox answers the driver's variable refresh hook (Crux2's): the system function is looked up
+  while running, so a firmware without it refuses variable refresh instead of failing to link.
+- Building the driver again: the build scripts handle a newer Meson and a second LLVM installed
+  on the build machine.
+
 ### 0.1.27 (bring-up)
 
 Fixed

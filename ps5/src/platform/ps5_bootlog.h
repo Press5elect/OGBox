@@ -82,6 +82,10 @@ void pshakux_crash_set_note(pshakux_crash_note_fn note);
 /// The code segment the guest's 32-bit code runs in (the native CPU backend's), so a fault in it
 /// is reported as guest code (eip, esp, the guest stack); 0: none.
 void pshakux_crash_set_guest_cs(uint16_t cs);
+/* OGBox 0.1.28: the stall probe (ps5_crash.cpp): on the emulated CPU's thread, once; then, from
+ * the front end while a game gives no frames, where that thread is, said in the boot log. */
+void pshakux_stall_set_thread(void);
+void pshakux_stall_report(double seconds);
 
 /// Where the eboot was loaded (its first byte; 0 when not known), and the address it was linked
 /// at (0x30_0000_0000 on the console, 0 for the host's PIE): an address in a crash report is

@@ -33,3 +33,8 @@ the PS epilog; the SMEM cache line size used for uploads; and addrlib 10.9.
 
 Mesa's licences apply to all of them (the PS5 winsys is MIT, like the code around it;
 PS5CEMU-HAR's patches are published under GPL-3.0). Crux2's own changes: Crux2 by Press5elect.
+
+OGBox 0.1.28 adds `0018-radv-ps5-back-a-large-buffer-with-several-direct-memory-ranges.patch`:
+PS5_Mesa's own commit 53cc83ff82b (Mihawk, newer than PS5_Vulkan's pin), with its one conflict
+against `0001-diagnostic-breadcrumbs` merged (the breadcrumb kept before the fallback). A large
+GPU buffer is backed by several direct-memory ranges when no single free range is big enough.

@@ -747,6 +747,11 @@ public:
 	uint64_t fpsPictures{ 0 }, fpsDraws{ 0 };
 	float fps{ 0.0f }, drawRate{ 0.0f };
 	std::vector<std::string> bootLines;
+	// 0.1.28: the stall probe (a game without a new frame for 0.4 s: where its CPU's thread is)
+	uint64_t probePictures{ 0 };
+	double probeLastFrame{ -1.0 }, probeNext{ 0.0 };
+	unsigned probeThisStall{ 0 }, probeTotal{ 0 };
+	int probeWanted{ -1 };
 
 	/* Opens a folder ("" for the places), listing it on a thread of its own. */
 	void openFolder(const std::string &path, const std::string &select = std::string())
@@ -1650,6 +1655,7 @@ public:
 		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
 		VulkanExampleBase::prepareFrame();
 		fetchPicture();
+		probeStall(state);
 		if (shotWanted && upload && havePicture) {
 			shotWanted = false;
 			takeShot();
@@ -1657,6 +1663,35 @@ public:
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
 		framesDrawn++;
+	}
+
+	/* 0.1.28: a running game that has given no new frame for 0.4 s: where its emulated CPU's thread
+	 * is, every 0.3 s, at most 8 times a stall and 400 a run (pshakux_stall_report, the boot log's
+	 * "stall:" lines). env OGBOX_STALL_PROBE=0 in boot.txt: none. */
+	void probeStall(int state)
+	{
+		if (probeWanted < 0) {
+			const char *e = std::getenv("OGBOX_STALL_PROBE");
+			probeWanted = !(e && e[0] == '0');
+		}
+		const double now = now_seconds();
+		if (picturesTaken != probePictures) {
+			probePictures = picturesTaken;
+			probeLastFrame = now;
+			if (probeThisStall) {
+				pshakux_log("stall: over, a new frame after the probe's %u looks", probeThisStall);
+			}
+			probeThisStall = 0;
+			return;
+		}
+		if (!probeWanted || !havePicture || state != PSHX_CORE_RUNNING || probeLastFrame < 0.0 ||
+			now - probeLastFrame < 0.4 || now < probeNext || probeThisStall >= 8 || probeTotal >= 400) {
+			return;
+		}
+		pshakux_stall_report(now - probeLastFrame);
+		probeNext = now + 0.3;
+		probeThisStall++;
+		probeTotal++;
 	}
 
 	/* The frame just taken from the core (this frame's staging buffer) to /data/ogbox/shots. */

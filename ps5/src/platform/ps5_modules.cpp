@@ -173,3 +173,20 @@ namespace PS5SystemModules
 		return nullptr;
 	}
 } // namespace PS5SystemModules
+
+// The graphics driver's variable refresh (ps5/patches/mesa-27/0017): sceVideoOutVrrUnpegFromFixedRate
+// is looked up while the title runs, by its NID, since not every firmware's libSceVideoOut exports it,
+// and a title importing what the console lacks does not start. -1 when the console has none: the
+// driver then refuses variable refresh. Crux2's (ps5/frontend/ps5_host.cpp, 08c3507); OGBox 0.1.28,
+// which links the patched driver's weak hook as an import unless the title defines it.
+extern "C" int ps5_title_videoout_vrr_unpeg(int32_t handle)
+{
+	using UnpegFn = int (*)(int32_t);
+	static const UnpegFn unpeg = [] {
+		const UnpegFn found = reinterpret_cast<UnpegFn>(
+			PS5SystemModules::FindFunction("libSceVideoOut", "sceVideoOutVrrUnpegFromFixedRate", "T4ucGB8CsnM"));
+		ps5px_log("display: sceVideoOutVrrUnpegFromFixedRate %s", found ? "found" : "not on this console: no variable refresh");
+		return found;
+	}();
+	return unpeg ? unpeg(handle) : -1;
+}
