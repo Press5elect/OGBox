@@ -144,6 +144,21 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.37 (bring-up)
+
+Fixed
+- Legacy of Kain: Defiance stopped as it started: it asks the kernel for 668 KiB in one block,
+  and OGBox's kernel only gave such blocks from one unbroken run of memory, which there wasn't.
+  The Xbox kernel builds them from pages anywhere; OGBox now does too.
+- Grand Theft Auto: San Andreas crashed the app (and then the console): from its first movie on,
+  something writes over the small code entries the console's system library runs whenever one
+  of the app's threads ends, ten times a second. They were put back every 10 ms; now every
+  millisecond, and again as each of the emulator's threads ends.
+
+Changed
+- The boot log names whatever writes over those entries: a write by the emulator's own code is
+  caught with its address, and the first bytes found written over are shown.
+
 ### 0.1.36 (bring-up)
 
 Changed

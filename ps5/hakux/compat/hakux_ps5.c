@@ -185,6 +185,8 @@ static const char *keep_name(const char *name)
     return g_names[i];
 }
 
+unsigned nc_vmhost_check_window_low(uint32_t *first) __attribute__((weak));
+
 typedef struct Start {
     void *(*fn)(void *);
     void *arg;
@@ -208,6 +210,12 @@ static void *thread_start(void *opaque)
     }
     void *const result = s.fn(s.arg);
     pshakux_thread_gone();
+    /* OGBox 0.1.37: libkernel runs libc.prx's old entries at 0x80000000 as the
+     * thread ends (its destructors): put back first if something wrote over
+     * them since the last look (GTA San Andreas: ten times a second) */
+    if (nc_vmhost_check_window_low) {
+        nc_vmhost_check_window_low(NULL);
+    }
     return result;
 }
 
