@@ -144,6 +144,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.42 (bring-up)
+
+Changed
+- NFS Most Wanted always stopped at the same spot: the game hits a debug breakpoint there, an
+  internal check that something isn't as the game expects. A real Xbox without a debugger would
+  stop too; on a development kit the developer presses "go". OGBox now does the latter: it
+  goes on past the breakpoint and logs it. `env NC_INT3_CONTINUE=0` restores the stop.
+- For the hitches: 0.1.41's logs show the cause's shape. After the USB or the GPU interrupt is
+  delivered, its handler is ready to run but does not get to run for 150 ms to 1.4 s, and the
+  GPU's next interrupt waits behind it. The boot log now records the emulated kernel's last
+  48 steps whenever that happens, so the next log shows exactly which step holds it.
+
 ### 0.1.41 (bring-up)
 
 Fixed
