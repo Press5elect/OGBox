@@ -587,11 +587,12 @@ bool ogbox_patches_need_128(const char *key)
         if (!p->on) {
             continue;
         }
-        const bool says_128 = has_word(p->note, "128") || has_word(p->name, "128");
-        const bool stock = has_word(p->note, "stock ram") || has_word(p->note, "64mb") || has_word(p->note, "64 mb");
-        if (says_128 || (!strcmp(p->category, "720p") && !stock)) {
-            pshakux_log("patches: %s: %s (%s) needs the 128 MB RAM upgrade%s: the game gets 128 MB (Settings, Memory)",
-                        key, p->name, p->id, says_128 ? "" : " (a 720p patch)");
+        /* 0.1.51: only a patch whose notes say so (0.1.47 took every 720p patch for one: Manhunt's
+         * says only "720p", and with 128 MB its D3D's push buffer ran past its own limit and the game
+         * hung at its menu) */
+        if (has_word(p->note, "128") || has_word(p->name, "128")) {
+            pshakux_log("patches: %s: %s (%s) needs the 128 MB RAM upgrade, its notes say: the game gets 128 MB "
+                        "(Settings > Console > Memory: Auto)", key, p->name, p->id);
             return true;
         }
     }

@@ -3112,8 +3112,7 @@ public:
 					help += std::string("By ") + m.author + ", from " + m.source + ". Applied at the game's next start; a patch "
 						"whose bytes are not in this disc's XBE is left out (the boot log says so).";
 					const std::string all = std::string(m.name) + " " + m.description;
-					if (all.find("128") != std::string::npos || (!std::strcmp(m.category, "720p") &&
-							all.find("stock") == std::string::npos)) {
+					if (all.find("128") != std::string::npos) {
 						help += " Needs the 128 MB RAM upgrade: with Settings > Console > Memory on Auto, OGBox gives the game 128 MB while it's on.";
 					}
 				} else {

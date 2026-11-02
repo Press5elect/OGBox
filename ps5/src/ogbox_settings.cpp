@@ -75,7 +75,7 @@ std::vector<Option> makeOptions()
 		"Disc and hard disk reads take time, a quarter of the console's at its fastest, so a game's other threads run while it loads, as games expect (off, some can freeze). Loads are slower.",
 		kOnOff, "1", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
-		"The Xbox's RAM. Auto: 64 MB as the console has it, 128 MB (the RAM upgrade) when a patch that needs it is on (720p and other 128 MB patches). 128 MB: always.",
+		"The Xbox's RAM. Auto: 64 MB as the console has it, 128 MB (the RAM upgrade) when a patch whose notes say it needs 128 MB is on. 128 MB: always (some games and patches hang with it).",
 		{ { "auto", "Auto" }, { "64", "64 MB (the console's)" }, { "128", "128 MB (the RAM upgrade)" } }, "auto", true });
 	{
 		Option days{ "clock_days", Section::Console, "Clock: days from the console's time",

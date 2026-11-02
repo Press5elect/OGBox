@@ -40,8 +40,8 @@ typedef struct OgboxPatch {
  * version or any. With which are on (mods.txt). How many (at most max). */
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max);
 
-/* 0.1.47: whether a patch on for key needs the 128 MB RAM upgrade: its notes say 128 MB, or it is a
- * 720p patch whose notes don't say it runs on the stock RAM (the boot log names it). */
+/* 0.1.47: whether a patch on for key needs the 128 MB RAM upgrade: its notes say 128 MB (0.1.51: only
+ * then; the boot log names it). */
 bool ogbox_patches_need_128(const char *key);
 
 struct NcDisc;

@@ -57,8 +57,8 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
 defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
 cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
 timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
-Console also has Memory (64 MB, or the 128 MB RAM upgrade the 720p patches need; Auto picks
-it when such a patch is on). Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
+Console also has Memory (64 MB, or the 128 MB RAM upgrade some patches need; Auto picks it
+when a patch whose notes say 128 MB is on). Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
 hidden by default; covers, a list or a grid of covers, file or short names, by name or last
 played first, disc sizes, the details panel) and Interface (the FPS counter, the code rain). CROSS
 picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
@@ -161,6 +161,15 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.51 (bring-up)
+
+Changed
+- Memory on Auto gives a game 128 MB only when a patch that is on says in its notes that it
+  needs 128 MB. 0.1.47 also gave it for every 720p patch: Manhunt's (its notes say only
+  "720p") then hung at the game's menu, its graphics running past the memory limit it had set
+  itself at the top of the 128 MB. Games and patches that need 128 MB may still hang the same
+  way; that is being looked into.
 
 ### 0.1.50 (bring-up)
 
