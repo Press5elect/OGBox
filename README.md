@@ -144,6 +144,18 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.33 (bring-up)
+
+Fixed
+- The emulated Xbox's clock ran late. The Xbox interrupts every millisecond for its timers,
+  sleeps and timeouts; on the PS5 the timed wait OGBox used for it woke up to 18 ms late, so
+  while a game was busy its timers came about 55 times a second instead of 1000. Def Jam's
+  default.xbe shows what that did: its menu video waits for a sound stream whose timer thread
+  and streaming thread both run on those timers, so the menu stayed black at 12 frames a
+  second. The clock now sleeps short of the time and waits out the rest awake.
+  `NC_CLOCK_SPIN=0` in boot.txt puts the old wait back; the boot log says how late this
+  console's sleeps run ("clock: the host's sleeps overshoot by").
+
 ### 0.1.32 (bring-up)
 
 Fixed
