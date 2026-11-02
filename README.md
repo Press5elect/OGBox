@@ -144,6 +144,25 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.35 (bring-up)
+
+Fixed
+- Def Jam's main menu stayed black after the intro movies (at 30 frames a second since 0.1.34).
+  Its default.xbe shows the cause: the game moves on only when its 60-a-second frame clock posts
+  a frame, and that clock is a chain of Direct3D timer callbacks, each one asking for the next.
+  Once, a host stall delayed one callback by 845 ms. Its next request was then for a time
+  already past, which Direct3D refuses, and the game doesn't check, so the clock stopped for
+  good: no more frames posted, no pad reads, no menu. On an Xbox a callback is never that late.
+  Direct3D now arms a time already past at once, the game's own catch-up does the rest. Found by
+  reading the game; DefJamFFNY-recomp's notes (by Vlad Yanhursky) describe the same chain and
+  confirmed the reading, none of its code is used. `debug.hakux.d3dtimer=0` turns it off.
+
+Changed
+- The emulated kernel's scheduler follows the Xbox kernel (read from a 4627 kernel) more
+  closely: a wait that is satisfied without waiting uses up part of the thread's turn, and a
+  woken thread's priority boost depends on what woke it (1 for events, mutexes and semaphores,
+  none for timers and timeouts). `NC_WAIT_QUANTUM=0` and `NC_WAIT_BOOST=0` turn them off.
+
 ### 0.1.34 (bring-up)
 
 Fixed
