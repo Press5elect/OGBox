@@ -961,8 +961,15 @@ public:
 			t.set = ui.addTexture(t.tex.sampler, t.tex.view);
 			t.w = static_cast<uint32_t>(iw);
 			t.h = static_cast<uint32_t>(ih);
+			/* 0.1.50: drawn now (0.1.45 left it 0: the new cover was always the least used one, never
+			 * let go, and the cache grew until the overlay's 96 image slots ran out) */
+			t.used = framesDrawn;
+			if (t.set == VK_NULL_HANDLE) {
+				t.tex.destroy();   // (no slot: drawn as a placeholder, tried again later)
+				return nullptr;
+			}
 			it = coverTex.emplace(path, std::move(t)).first;
-			if (coverTex.size() > 64) {
+			while (coverTex.size() > 48) {
 				// the least recently drawn one goes (its image destroyed once no frame in flight draws it)
 				auto old = coverTex.begin();
 				for (auto c = coverTex.begin(); c != coverTex.end(); ++c) {
@@ -970,10 +977,11 @@ public:
 						old = c;
 					}
 				}
-				if (old != it) {
-					coverRetired.emplace_back(framesDrawn + 4, std::move(old->second));
-					coverTex.erase(old);
+				if (old == it) {
+					break;
 				}
+				coverRetired.emplace_back(framesDrawn + 4, std::move(old->second));
+				coverTex.erase(old);
 			}
 		}
 		CoverTex &t = it->second;
@@ -2531,6 +2539,12 @@ public:
 		const ImVec2 at = ImGui::GetCursorScreenPos();
 		const bool chosen = ImGui::Selectable("##row", current, 0, ImVec2(0.0f, h));
 		const bool focused = ImGui::IsItemFocused();
+		/* 0.1.50: a row scrolled out of sight draws nothing (975 discs in a folder, each with its
+		 * icon, overflowed the window's draw list) */
+		if (!ImGui::IsItemVisible()) {
+			ImGui::PopID();
+			return chosen;
+		}
 		ImDrawList *dl = ImGui::GetWindowDrawList();
 		const float ty = at.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
 		const float pad = ImGui::GetStyle().FramePadding.x;
@@ -2655,8 +2669,13 @@ public:
 				const ImVec2 at = ImGui::GetCursorScreenPos();
 				picked = ImGui::Selectable("##tile", false, 0, ImVec2(tileW, tileH));
 				const bool focused = ImGui::IsItemFocused();
+				const bool visible = ImGui::IsItemVisible();
 				ImGui::PopID();
 				ImDrawList *dl = ImGui::GetWindowDrawList();
+				/* 0.1.50: only the tiles in sight draw, and only theirs ask for a cover (all of a
+				 * 975-disc folder's asked each frame: the 64 kept were let go and loaded again, and
+				 * the covers came and went) */
+				if (visible) {
 				const float pad = tileW * 0.05f, artW = tileW - pad * 2.0f, artH = tileW * 1.4f - pad * 2.0f;
 				if (focused) {
 					const float pulse = 0.75f + 0.25f * static_cast<float>(std::sin(now_seconds() * 4.0));
@@ -2682,6 +2701,7 @@ public:
 				dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(at.x + pad, box1.y + pad * 0.5f),
 					focused ? mx::u32(mx::bright) : mx::u32(mx::text), label.c_str(), nullptr, tileW - pad * 2.0f);
 				dl->PopClipRect();
+				}
 			} else {
 				if (grid && tile % cols) {
 					tile = 0;   // (a row after tiles starts on its own line)

@@ -162,6 +162,19 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.50 (bring-up)
+
+Fixed
+- The game list drew scrambled names and covers that came and went. The menus' drawing used
+  16-bit vertex numbers, at most 65536 to a window, and a big folder (975 discs) drew far more:
+  every row's icon was drawn even out of sight, so the numbers wrapped and the shapes took parts
+  of the font and the covers. Rows and tiles out of sight now draw nothing, and the menus use
+  32-bit numbers.
+- Covers in the grid: every tile of the folder asked for its cover each frame, out of sight
+  too, so the covers kept were let go and loaded again; and a cover just loaded was never let go,
+  so the cache grew until the menus' image slots ran out and covers stopped showing. Only tiles in
+  sight ask now, and the least recently shown of 48 kept goes.
+
 ### 0.1.49 (bring-up)
 
 Fixed

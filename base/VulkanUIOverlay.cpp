@@ -419,7 +419,8 @@ namespace vks
 
 		VkDeviceSize offsets[1] = { 0 };
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, &buffers[currentBuffer].vertexBuffer.buffer, offsets);
-		vkCmdBindIndexBuffer(commandBuffer, buffers[currentBuffer].indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT16);
+		vkCmdBindIndexBuffer(commandBuffer, buffers[currentBuffer].indexBuffer.buffer, 0,
+			sizeof(ImDrawIdx) == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);   // OGBox 0.1.50 (imconfig.h)
 
 		for (int32_t i = 0; i < imDrawData->CmdListsCount; i++) {
 			const ImDrawList* cmd_list = imDrawData->CmdLists[i];

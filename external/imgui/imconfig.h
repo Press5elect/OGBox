@@ -62,6 +62,10 @@
 
 //---- Use 32-bit vertex indices (default is 16-bit) to allow meshes with more than 64K vertices. Render function needs to support it.
 //#define ImDrawIdx unsigned int
+// OGBox 0.1.50: 32-bit indices. The game list's window drew more than 65536 vertices with 975
+// discs in a folder (and the code rain behind): 16-bit indices wrapped, and the list's names came
+// out as scraps of the font and the covers (base/VulkanUIOverlay.cpp binds UINT32 to match).
+#define ImDrawIdx unsigned int
 
 //---- Tip: You can add extra functions within the ImGui:: namespace, here or in your own headers files.
 /*
