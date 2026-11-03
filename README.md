@@ -241,6 +241,11 @@ Changed
 - Every change OGBox makes to hakuX is now in this repository, as one patch over the pinned
   hakuX (`ps5/patches/hakux/ps5.patch`), and the release is built from it.
 
+Fixed
+- A game that sets a gamma ramp and then changes its display's size (one went from 640 x 960 to
+  640 x 480 at its first frames) crashed a few seconds in, at any resolution scale: the gamma pass
+  freed a picture's view twice. hakuX-lr has the same fix.
+
 ## Bring-up history
 
 The builds before the first release, 0.1.1 to 0.1.59.
