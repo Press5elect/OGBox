@@ -125,6 +125,23 @@
    }
   },
   {
+   "id": "xbmc4xbox-trainers",
+   "name": "XBMC4Xbox's trainer loading (xbmc/platform/xbox/utils/Trainer.cpp, \"generously donated by team xored\"): the .etm and .xbtf formats, the .xbtf unmangling, and the loader's toys (SM_Bus, PatchIt, HookIt, the in-game keys' handler and HookIGK) as machine code, in hakuX-native's native/core/trainer.c",
+   "licence": "GPL-2.0-or-later",
+   "copyright": "Team XBMC (2005-2013) and team xored",
+   "modifications": "the reading and unmangling rewritten in C, and the loader replaced by a stub at the title's entry, by Press5elect, 2026; HookIt given the trainer's base instead of reading it at 0x8000000C, the in-game keys' handler's state moved from 0x80000010-0x80000018 into the trainer's block, and the LCD functions replaced by ones that report their text through an I/O port",
+   "texts": {
+    "GPL-2.0.txt": "ps5/licenses/GPL-2.0.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/antonic901/xbmc4xbox-redux",
+    "revision": "0ce1ede5e1dd779436fa2f9c84fceac932e96865"
+   }
+  },
+  {
    "id": "xemu-apu",
    "name": "The MCPX APU (hakuX's native/dev/apu, ported from xemu): its files under the GNU LGPL 2 or later (apu.c, debug.c, dsp/dsp_dma.c, dsp/gp_ep.c, vp/vp.c and their headers); the DSP56300 emulator adapted from Hatari's DSP M56001 emulation (ARAnyM developer team), GPL-2.0-or-later; vp/svf.h after the SWH LADSPA plugins (Steve Harris), \"GPL\" with no version named (xemu's header says GPLv2), so any version, the 3rd included; vp/adpcm.h, the ADPCM-XQ decoder (David Bryant), BSD-3-Clause",
    "licence": "LGPL-2.1-or-later; GPL-2.0-or-later; GPL (any version); BSD-3-Clause",

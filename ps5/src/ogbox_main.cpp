@@ -103,6 +103,7 @@
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
 #include "core/ogbox_patches.h"
+#include "core/ogbox_trainers.h"
 #include "ogbox_settings.h"
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
@@ -802,6 +803,8 @@ public:
 		OgboxGameInfo info{};
 		int mods{ 0 }, modsOn{ 0 }, cheats{ 0 }, cheatsOn{ 0 }, overrides{ 0 };
 		int patches{ 0 }, patchesOn{ 0 };   // 0.1.45: gamedata/patches.db's
+		int trainers{ 0 };                  // 0.1.54: the trainers for it, and whether one is chosen
+		bool trainerOn{ false };
 	};
 	std::shared_ptr<Details> details;
 	std::string detailsPath, restingPath;
@@ -832,6 +835,19 @@ public:
 	// the mods and cheats screen
 	std::vector<OgboxModEntry> modList;
 	std::string modsKey, modsTitle;
+	// 0.1.54: the game's trainers on the Mods screen (core/ogbox_trainers.h)
+	struct TrainerView {
+		std::vector<OgboxTrainer> list;
+		unsigned generation{ ~0u };
+		uint32_t titleId{ 0 }, xbeTime{ 0 };
+		std::string chosen, bits, scroller;   // the chosen one's file under its folder, its options ('1' on)
+		std::vector<std::string> options;
+	} tv;
+	bool trainerScanStarted{ false };
+	uint32_t runXbeTime{ 0 };                 // the running game's default.xbe date
+	unsigned ledSeq{ 0x0F };                  // the console's LED as the trainer last set it
+	double ledUntil{ 0.0 };
+	std::string ledText;
 	// ---- 0.1.53: the in-game quick menu, the game page, the hard disk manager ----
 	std::string runKey;                       // the running game's title ID and version
 	int pictureBuffer{ -1 };                  // the staging buffer the shown picture came in
@@ -1395,10 +1411,14 @@ public:
 		 * options and the title's arguments after them, and they win. The game is its disc's
 		 * title ID and version: the game list's (--game), else read here. */
 		std::string key = boot.gameKey;
-		if (key.empty() && boot.image != "none") {
+		if (boot.image != "none") {
+			/* (0.1.54: its default.xbe's date too, the trainers' release check) */
 			OgboxGameInfo info{};
 			if (ogbox_game_info(boot.image.c_str(), &info)) {
-				key = info.key;
+				if (key.empty()) {
+					key = info.key;
+				}
+				runXbeTime = info.xbe_time;
 			}
 		}
 		prefs.load(key);
@@ -1418,6 +1438,26 @@ public:
 		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s, FXAA %s, upscaling %s, FPS counter %s",
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), fxaaOn ? "on" : "off",
 			sgsrOn ? "SGSR" : "bilinear", showFps ? "on" : "off");
+		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
+		static std::vector<std::string> fromTrainer;
+		fromTrainer.clear();
+		if (!key.empty()) {
+			char rel[384] = "", bits[128] = "", path[1024] = "";
+			if (ogbox_trainers_chosen(key.c_str(), rel, sizeof(rel), bits, sizeof(bits))) {
+				setTrainerRoots();
+				if (ogbox_trainers_resolve(rel, path, sizeof(path))) {
+					fromTrainer.push_back(std::string("trainer=") + path);
+					fromTrainer.push_back(std::string("trainer_options=") + bits);
+					pshakux_log("ogbox: trainer %s, options %s", path, bits[0] ? bits : "none on");
+				} else {
+					pshakux_log("ogbox: the trainer chosen for %s (%s) isn't in the trainers folders: the game starts without it",
+						key.c_str(), rel);
+				}
+			}
+		}
+		for (const std::string &option : fromTrainer) {
+			argv.push_back(option.c_str());
+		}
 		if (prefs.overrides()) {
 			pshakux_log("ogbox: %s has %d settings of its own (%s)", key.c_str(), prefs.overrides(),
 				ogbox::gameSettingsPath(key).c_str());
@@ -2006,6 +2046,200 @@ public:
 		pshakux_log("ogbox: settings%s%s", forGame ? " of " : "", forGame ? key.c_str() : "");
 	}
 
+	/* ---- 0.1.54: the trainers ------------------------------------------------------------------- */
+
+	/* Where they are looked for: the data folder's trainers, /data/ogbox/trainers, the USB drives'. */
+	void setTrainerRoots()
+	{
+		std::vector<std::string> roots = { ogbox::storagePath("trainers"), std::string(ogbox::kConfigRoot) + "/trainers" };
+		for (int i = 0; i < 8; i++) {
+			roots.push_back("/mnt/usb" + std::to_string(i) + "/OGBox/trainers");
+		}
+		std::vector<const char *> c;
+		for (const std::string &r : roots) {
+			c.push_back(r.c_str());
+		}
+		ogbox_trainers_set_roots(c.data(), static_cast<int>(c.size()));
+	}
+
+	/* The folders read on a thread of their own (the index makes it quick after the first time). */
+	void scanTrainers()
+	{
+		setTrainerRoots();
+		mkdir(ogbox::storagePath("trainers").c_str(), 0777);   // the folder to copy them into
+		const std::string cache = ogbox::storagePath("cache");
+		mkdir(cache.c_str(), 0777);
+		const std::string index = cache + "/trainers.idx";
+		std::thread([index]() { ogbox_trainers_scan(index.c_str()); }).detach();
+	}
+
+	/* The Mods screen's trainers for tv.titleId, and the one chosen with its options. */
+	void loadTrainerView()
+	{
+		unsigned gen = 0;
+		if (ogbox_trainers_state(&gen, nullptr) == 0) {
+			scanTrainers();
+		}
+		tv.generation = gen;
+		tv.list.assign(64, OgboxTrainer{});
+		tv.list.resize(static_cast<size_t>(std::max(0, ogbox_trainers_for_title(tv.titleId, tv.list.data(), 64))));
+		const uint32_t mine = tv.xbeTime;
+		std::stable_sort(tv.list.begin(), tv.list.end(), [mine](const OgboxTrainer &a, const OgboxTrainer &b) {
+			const bool ao = mine && a.xbe_time && a.xbe_time != mine, bo = mine && b.xbe_time && b.xbe_time != mine;
+			return !ao && bo;
+		});
+		char rel[384] = "", bits[128] = "";
+		tv.chosen.clear();
+		tv.bits.clear();
+		if (!modsKey.empty() && ogbox_trainers_chosen(modsKey.c_str(), rel, sizeof(rel), bits, sizeof(bits))) {
+			tv.chosen = rel;
+			tv.bits = bits;
+		}
+		loadTrainerOptions();
+	}
+
+	void loadTrainerOptions()
+	{
+		tv.options.clear();
+		tv.scroller.clear();
+		if (tv.chosen.empty()) {
+			return;
+		}
+		static char names[OGBOX_TRAINER_MAX_OPTIONS][OGBOX_TRAINER_TEXT];
+		char scroller[256] = "";
+		const int n = ogbox_trainers_options(tv.chosen.c_str(), names, OGBOX_TRAINER_MAX_OPTIONS, scroller, sizeof(scroller));
+		for (int i = 0; i < n; i++) {
+			tv.options.push_back(names[i]);
+		}
+		tv.scroller = scroller;
+		tv.bits.resize(tv.options.size(), '0');
+	}
+
+	void chooseTrainer(const std::string &rel)
+	{
+		ogbox_trainers_choose(modsKey.c_str(), rel.c_str());
+		tv.chosen = rel;
+		tv.bits.clear();
+		loadTrainerOptions();
+		detailsPath.clear();   // the details again, with the change
+	}
+
+	static bool hasIgk(const std::string &name)
+	{
+		std::string u = name;
+		for (char &ch : u) {
+			ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+		}
+		return u.find("IGK") != std::string::npos || u.find("IN GAME") != std::string::npos ||
+			u.find("IN-GAME") != std::string::npos;
+	}
+
+	/* The Mods screen's TRAINERS: none, each for the game (one chosen), the chosen one's options. */
+	void drawTrainerRows()
+	{
+		unsigned gen = 0, found = 0;
+		const int state = ogbox_trainers_state(&gen, &found);
+		if (state == 2 && gen != tv.generation) {
+			loadTrainerView();   // a scan finished meanwhile
+		}
+		if (!modList.empty()) {
+			ImGui::Spacing();
+		}
+		ImGui::TextColored(mx::label, "TRAINERS  (one at a time, run as the game starts)");
+		bool chosenListed = false;
+		for (const OgboxTrainer &t : tv.list) {
+			chosenListed |= tv.chosen == t.rel;
+		}
+		if (tv.list.empty() && tv.chosen.empty()) {
+			ImGui::PushTextWrapPos(0.0f);
+			if (state != 2) {
+				ImGui::TextColored(mx::text, "Reading the trainers folder...");
+			} else if (!found) {
+				ImGui::TextColored(mx::text, "No trainers yet. Copy the Xbox's .etm and .xbtf trainers into %s (subfolders are "
+					"fine) or a USB drive's OGBox/trainers: each game lists its own here.", ogbox::storagePath("trainers").c_str());
+			} else {
+				ImGui::TextColored(mx::text, "None of the %u trainers in the folders is for this game (title ID %08X).", found,
+					static_cast<unsigned>(tv.titleId));
+			}
+			ImGui::PopTextWrapPos();
+			return;
+		}
+		if (row("tnone", "No trainer", "", false, tv.chosen.empty() ? mx::bright : mx::text, Icon::None, tv.chosen.empty() ? 2 : 1)) {
+			chooseTrainer(std::string());
+		}
+		if (!modsFocus) {
+			focusLastItem();
+			modsFocus = true;
+		}
+		if (ImGui::IsItemFocused()) {
+			help = "The game starts without a trainer.";
+		}
+		for (size_t i = 0; i < tv.list.size(); i++) {
+			const OgboxTrainer &t = tv.list[i];
+			const bool on = tv.chosen == t.rel;
+			const bool other = tv.xbeTime && t.xbe_time && t.xbe_time != tv.xbeTime;
+			const std::string note = other ? std::string("for another release")
+				: std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options");
+			if (row("t" + std::to_string(i), t.name[0] ? t.name : baseName(t.rel), note, false,
+					on ? mx::bright : other ? mx::line : mx::text, Icon::None, on ? 2 : 1)) {
+				chooseTrainer(on ? std::string() : std::string(t.rel));
+			}
+			if (ImGui::IsItemFocused()) {
+				help = std::string(t.author[0] ? t.author : "A trainer") + ". " + (t.xbtf ? "XBTF" : "ETM") + ", " +
+					std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options") + ": " + t.rel + ". ";
+				if (other) {
+					char d[96];
+					std::snprintf(d, sizeof(d), "It was made for another release of the game (its XBE dated %08X, this disc's "
+						"%08X): it would find nothing to change. ", static_cast<unsigned>(t.xbe_time), static_cast<unsigned>(tv.xbeTime));
+					help += d;
+				}
+				help += on ? "Chosen: CROSS again for none. Its options are below it." : "CROSS chooses it (one trainer at a time).";
+			}
+			if (on) {
+				drawTrainerOptions();
+			}
+		}
+		if (!tv.chosen.empty() && !chosenListed) {
+			if (row("tgone", baseName(tv.chosen), "not in the folders now", false, mx::fail, Icon::None, 2)) {
+				chooseTrainer(std::string());
+			}
+			if (ImGui::IsItemFocused()) {
+				help = "The trainer chosen for this game (" + tv.chosen + ") isn't in the trainers folders any more: the game "
+					"starts without it. CROSS: none.";
+			}
+			drawTrainerOptions();
+		}
+	}
+
+	void drawTrainerOptions()
+	{
+		for (size_t k = 0; k < tv.options.size(); k++) {
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetFontSize() * 1.6f);
+			const bool o = k < tv.bits.size() && tv.bits[k] == '1';
+			const std::string &name = tv.options[k];
+			const bool igk = hasIgk(name);
+			if (row("to" + std::to_string(k), name.empty() ? "(option " + std::to_string(k + 1) + ")" : name,
+					igk ? "in-game keys" : "", false, o ? mx::bright : mx::text, Icon::None, o ? 2 : 1)) {
+				if (tv.bits.size() < tv.options.size()) {
+					tv.bits.resize(tv.options.size(), '0');
+				}
+				tv.bits[k] = o ? '0' : '1';
+				ogbox_trainers_set_options(modsKey.c_str(), tv.bits.c_str());
+				detailsPath.clear();
+			}
+			if (ImGui::IsItemFocused()) {
+				help = "One of the trainer's options: on, it's set as the game starts. ";
+				if (igk) {
+					help += "In-game keys: the trainer also turns it on and off in the game with a button combination "
+						"(its readme says which); the console's LED shows it, top right. ";
+				}
+				if (!tv.scroller.empty()) {
+					help += "The trainer says: " + tv.scroller;
+				}
+			}
+		}
+	}
+
 	void openMods(const std::string &key, const std::string &title, const std::string &image = std::string())
 	{
 		modsKey = key;
@@ -2020,6 +2254,16 @@ public:
 		}
 		modList.assign(480, OgboxModEntry{});
 		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 480))));
+		/* 0.1.54: the trainers for its title ID, those for this release (its default.xbe's date) first */
+		tv.titleId = static_cast<uint32_t>(std::strtoul(key.substr(0, 8).c_str(), nullptr, 16));
+		tv.xbeTime = runXbeTime;
+		if (!image.empty()) {
+			OgboxGameInfo info{};
+			if (ogbox_game_info(image.c_str(), &info)) {
+				tv.xbeTime = info.xbe_time;
+			}
+		}
+		loadTrainerView();
 		screen = Screen::Mods;
 		screenSince = now_seconds();
 		help.clear();
@@ -2029,6 +2273,10 @@ public:
 
 	void renderLibrary()
 	{
+		if (!trainerScanStarted && screen == Screen::Library) {
+			trainerScanStarted = true;   // 0.1.54: the trainers folders read once, in the background
+			scanTrainers();
+		}
 		collectListing();
 		coverHousekeeping();
 		if (!startPath.empty() && --startDelay < 0) {
@@ -2587,7 +2835,16 @@ public:
 				s.load(info.key);
 				overrides = s.overrides();
 			}
+			int trainers = 0;
+			bool trainerOn = false;
+			if (info.ok) {
+				char rel[384], bits[128];
+				trainers = ogbox_trainers_count(info.title_id);
+				trainerOn = ogbox_trainers_chosen(info.key, rel, sizeof(rel), bits, sizeof(bits));
+			}
 			std::lock_guard<std::mutex> lock(job->mutex);
+			job->trainers = trainers;
+			job->trainerOn = trainerOn;
 			job->info = info;
 			job->mods = mods;
 			job->modsOn = modsOn;
@@ -3022,7 +3279,7 @@ public:
 		}
 		bool done = false;
 		OgboxGameInfo info{};
-		int mods = 0, patches = 0, cheats = 0, onCount = 0, overrides = 0;
+		int mods = 0, patches = 0, cheats = 0, onCount = 0, overrides = 0, trainers = 0;
 		if (details && detailsPath == e->path) {
 			std::lock_guard<std::mutex> lock(details->mutex);
 			done = details->done;
@@ -3030,8 +3287,9 @@ public:
 			mods = details->mods;
 			patches = details->patches;
 			cheats = details->cheats;
-			onCount = details->modsOn + details->patchesOn + details->cheatsOn;
+			onCount = details->modsOn + details->patchesOn + details->cheatsOn + (details->trainerOn ? 1 : 0);
 			overrides = details->overrides;
+			trainers = details->trainers;
 		}
 		const bool full = prefs.global("list_details") != "0";
 		const ogbox::DiscRecord *rec = done && info.ok ? ogbox::GameDb::get().byTitle(info.title_id, e->name, info.regions)
@@ -3085,6 +3343,7 @@ public:
 		field("REGION", rec ? rec->region + (rec->languages.empty() ? std::string() : "  " + rec->languages) : wait);
 		field("SERIAL", rec ? rec->serial : wait);
 		field("EXTRAS", done && info.ok ? std::to_string(mods + patches + cheats) + " mods, patches, cheats" +
+			(trainers ? ", " + std::to_string(trainers) + (trainers == 1 ? " trainer" : " trainers") : std::string()) +
 			(onCount ? " (" + std::to_string(onCount) + " on)" : std::string()) : wait);
 		field("SETTINGS", done && info.ok ? (overrides ? std::to_string(overrides) + " of its own" : std::string("as in Settings")) : wait);
 		if (done && info.ok) {
@@ -3277,7 +3536,7 @@ public:
 		ImGui::BeginChild("list", ImVec2(0.0f, colH), true, ImGuiWindowFlags_NavFlattened);
 		if (modList.empty()) {
 			ImGui::PushTextWrapPos(0.0f);
-			ImGui::TextColored(mx::text, "No mods, patches or cheats for this game.");
+			ImGui::TextColored(mx::text, "No mods, patches or cheats of hakuX's for this game.");
 			ImGui::TextColored(mx::label, "OGBox has hakuX's (the title folder's mods/); a game's are in mods/%s/: a folder a mod, cheats.txt the cheats.", modsKey.c_str());
 			ImGui::PopTextWrapPos();
 		}
@@ -3330,12 +3589,13 @@ public:
 				}
 			}
 		}
+		drawTrainerRows();   // 0.1.54
 		ImGui::EndChild();
 		ImGui::PopStyleVar();
 		ImGui::BeginChild("help", ImVec2(0.0f, helpH), true, ImGuiWindowFlags_NoNav);
 		ImGui::PushTextWrapPos(0.0f);
 		ImGui::TextColored(mx::text, "%s", help.c_str());
-		ImGui::TextColored(mx::line, "/data/ogbox/mods.txt");
+		ImGui::TextColored(mx::line, "/data/ogbox/mods.txt     the trainers: %s", ogbox::storagePath("trainers").c_str());
 		ImGui::PopTextWrapPos();
 		ImGui::EndChild();
 		footer("{X} on / off     {O} back");
@@ -3343,6 +3603,56 @@ public:
 	}
 
 	/* In a game: the FPS panel, the quit ring, and what is happening until the first frame. */
+	/* 0.1.54: what the game's trainer shows: loaded and its LCD lines as a note at the foot, the
+	 * console's LED (its options going on and off, as on the Xbox) top right for a few seconds */
+	void pollTrainer()
+	{
+		int kind = 0;
+		unsigned led = 0;
+		char text[160];
+		while (pshx_core_trainer_message(&kind, &led, text, sizeof(text))) {
+			if (kind == 1) {
+				showToast(std::string("Trainer on: ") + text);
+			} else if (kind == 2) {
+				showToast(std::string("Trainer: ") + text);
+			} else if (kind == 3) {
+				ledSeq = led;
+				ledText = text;
+				ledUntil = now_seconds() + 4.0;
+			}
+		}
+	}
+
+	/* The LED like the console's power button: its colour now (a sequence turns through four
+	 * quarters of a second), "LED" and the colour in words beside it. */
+	void drawLed(bool belowFps)
+	{
+		const double now = now_seconds();
+		if (now > ledUntil) {
+			return;
+		}
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const float k = H / 1080.0f;
+		const float alpha = static_cast<float>(std::min(1.0, (ledUntil - now) / 0.5));
+		const int phase = static_cast<int>(now * 4.0) & 3;
+		const bool g = (ledSeq >> phase) & 1, r = (ledSeq >> (4 + phase)) & 1;
+		const ImVec4 col = r && g ? ImVec4(1.0f, 0.62f, 0.10f, 1.0f) : r ? ImVec4(1.0f, 0.18f, 0.12f, 1.0f)
+			: g ? ImVec4(0.30f, 1.0f, 0.25f, 1.0f) : ImVec4(0.15f, 0.15f, 0.15f, 1.0f);
+		ImDrawList *dl = ImGui::GetOverlayDrawList();
+		const float rad = 16.0f * k;
+		const ImVec2 c(W - H * 0.02f - rad - 8.0f * k, H * 0.02f + rad + 8.0f * k + (belowFps ? 70.0f * k : 0.0f));
+		const std::string label = "LED  " + ledText;
+		const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+		const ImVec2 b0(c.x - rad - 24.0f * k - ts.x - 20.0f * k, c.y - rad - 10.0f * k), b1(c.x + rad + 10.0f * k, c.y + rad + 10.0f * k);
+		dl->AddRectFilled(b0, b1, mx::u32(ImVec4(0, 0, 0, 0.72f), alpha), 12.0f * k);
+		if (r || g) {
+			dl->AddCircleFilled(c, rad * 1.6f, mx::u32(ImVec4(col.x, col.y, col.z, 0.25f), alpha), 32);   // the glow
+		}
+		dl->AddCircleFilled(c, rad, mx::u32(col, alpha), 32);
+		dl->AddCircle(c, rad, mx::u32(ImVec4(1, 1, 1, 0.5f), alpha), 32, 2.0f);
+		dl->AddText(ImVec2(b0.x + 20.0f * k, c.y - ts.y * 0.5f), mx::u32(mx::text, alpha), label.c_str());
+	}
+
 	void drawGame()
 	{
 		const float W = static_cast<float>(width), H = static_cast<float>(height);
@@ -3361,6 +3671,8 @@ public:
 			fpsSince = now;
 			fpsPictures = picturesTaken;
 		}
+		pollTrainer();
+		drawLed(showFps && havePicture);
 		if (showFps && havePicture) {
 			ImGui::SetNextWindowPos(ImVec2(W - pad, pad), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
 			ImGui::SetNextWindowBgAlpha(0.72f);
@@ -4481,17 +4793,19 @@ public:
 			field("REGION", rec ? rec->region + (rec->languages.empty() ? std::string() : "   " + rec->languages) : dash);
 			field("SERIAL", rec ? rec->serial : dash);
 			field("FILE", baseName(gp.path));
-			int mods = 0, patches = 0, cheats = 0, onCount = 0, own = 0;
+			int mods = 0, patches = 0, cheats = 0, onCount = 0, own = 0, trainers = 0;
 			if (details && detailsPath == gp.path) {
 				std::lock_guard<std::mutex> lock(details->mutex);
 				mods = details->mods;
 				patches = details->patches;
 				cheats = details->cheats;
-				onCount = details->modsOn + details->patchesOn + details->cheatsOn;
+				onCount = details->modsOn + details->patchesOn + details->cheatsOn + (details->trainerOn ? 1 : 0);
 				own = details->overrides;
+				trainers = details->trainers;
 			}
 			field("EXTRAS", std::to_string(mods) + " mods, " + std::to_string(patches) + " patches, " + std::to_string(cheats) +
-				" cheats" + (onCount ? "  (" + std::to_string(onCount) + " on)" : std::string()));
+				" cheats" + (trainers ? ", " + std::to_string(trainers) + (trainers == 1 ? " trainer" : " trainers") : std::string()) +
+				(onCount ? "  (" + std::to_string(onCount) + " on)" : std::string()));
 			field("SETTINGS", own ? std::to_string(own) + " of its own" : std::string("as in Settings"));
 			const std::vector<int> slots = gp.info.ok ? usedStateSlots(gp.info.key) : std::vector<int>();
 			field("STATES", slots.empty() ? std::string("none") : std::to_string(slots.size()) + " saved, the newest " +

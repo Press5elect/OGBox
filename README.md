@@ -90,6 +90,16 @@ all off by default; no resolution patches: Resolution scale does that) and its c
 game's next start (`/data/ogbox/mods.txt`). A patch whose bytes aren't in the disc's XBE (another
 release) is left out at the start and the boot log says why.
 
+**Trainers** (on the Mods screen, under TRAINERS): the Xbox's `.etm` and `.xbtf` trainers, as
+Evolution-X and XBMC4Xbox ran them. OGBox ships none: copy them into the data folder's `trainers`
+(made at the first start; subfolders are fine), `/data/ogbox/trainers` or a USB drive's
+`OGBox/trainers`. They are read once into an index (the cache's `trainers.idx`), and each game
+lists those made for its title ID, the same trainer in several files once, those made for another
+release of the game marked. Choose one (one a game), then its options: they are set as the game
+starts. Options marked IGK are turned on and off in the game with the pad as well, as on the Xbox;
+trainers show that with the console's LED, which OGBox draws top right when it changes, and a
+trainer's LCD text comes up at the top of the screen.
+
 **Covers**: the list shows each disc's cover from libretro's thumbnails, found by the disc's
 Redump name (OGBox ships Redump's Xbox database, `gamedata/games.db`); a disc named as Redump
 names it (`Halo 2 (USA) (En,Fr,De).iso`) always matches, others by their title ID. The covers
@@ -166,6 +176,8 @@ the full front end comes later on the same calls.
   and the high-base link.
 - **PS5 Vulkan Template, PS5_Vulkan, PS5_Mesa and the payload SDK fork** by Mihawk: the
   foundation, RADV on the console and the platform layer.
+- **XBMC4Xbox** (Team XBMC, from team xored; GPL-2.0-or-later): the trainers' formats and the
+  loader's functions that trainers call (hakuX-native's `native/core/trainer.c`).
 - libslirp, nv2a_vsh_cpu, xxHash, glslang, volk, Dear ImGui, libktx, tinygltf, GLM, libsmb2,
   libnfs, zlib, Mesa, LLVM's runtime: every part, its authors and its licence are in
   `ps5/notices/components.json`, and in `licenses/README.txt` in the title folder.
@@ -182,6 +194,26 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.54 (bring-up)
+
+Added
+- **Trainers**: the Xbox's `.etm` and `.xbtf` trainers (Evolution-X's and XBMC4Xbox's), run before
+  the game as XBMC4Xbox's loader runs them.
+  - Copied into the data folder's `trainers` (subfolders too), `/data/ogbox/trainers` or a USB
+    drive's `OGBox/trainers`; OGBox ships none. Read once into an index, so later starts are quick.
+  - The Mods screen lists a game's under TRAINERS: one is chosen, then its options, set as the game
+    starts. Trainers made for another release of the game are marked; the same trainer in several
+    files is listed once.
+  - In-game keys (options marked IGK) work with the pad; the console's LED, which trainers use to
+    show an option going on or off, is drawn top right when it changes, and a trainer's LCD text
+    shows at the top of the screen.
+  - The details panel and the game page count a game's trainers; the boot log says which trainer
+    ran, with which options, and whether it was made for this release.
+
+Fixed
+- Moving the data folder (Settings > Storage) left the save states and the saves copied out of the
+  hard disk behind; they move with it now, and so do the trainers.
 
 ### 0.1.53 (bring-up)
 

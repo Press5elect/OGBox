@@ -609,6 +609,7 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
             info->title_id = le32(h + off + 8);
             info->version = le32(h + off + 0xAC);
             info->regions = le32(h + off + 0xA0);
+            info->xbe_time = le32(h + 0x114);
             /* the title's name: 40 UTF-16LE characters at +0x0C; what is not ASCII becomes '?' */
             size_t n = 0;
             for (unsigned i = 0; i < 40 && n + 1 < sizeof(info->title); i++) {
@@ -783,5 +784,90 @@ bool ogbox_mods_choose_kind(const char *key, const char *kind, const char *name,
         return false;
     }
     pshakux_log("mods: %s %s %s: %s", key, kind, name, on ? "on" : "off");
+    return true;
+}
+
+/* ---- OGBox 0.1.54: one value a game (the trainer chosen, its options) ---- */
+
+/* A line "<key> <kind> <value>": its value, else NULL (in line, which is changed). */
+static char *line_value(char *line, const char *key, const char *kind)
+{
+    char *s = content(line);
+    if (!s) {
+        return NULL;
+    }
+    char *w1 = s, *rest = s;
+    while (*rest && !isspace((unsigned char)*rest)) {
+        rest++;
+    }
+    if (!*rest) {
+        return NULL;
+    }
+    *rest++ = 0;
+    rest = trim(rest);
+    char *value = rest;
+    while (*value && !isspace((unsigned char)*value)) {
+        value++;
+    }
+    if (*value) {
+        *value++ = 0;
+    }
+    value = trim(value);
+    return !strcasecmp(w1, key) && !strcasecmp(rest, kind) ? value : NULL;
+}
+
+bool ogbox_mods_get(const char *key, const char *kind, char *value, size_t n)
+{
+    char *text = read_all("/data/ogbox/mods.txt");
+    bool found = false;
+    if (text) {
+        for (char *save, *line = strtok_r(text, "\n", &save); line && !found; line = strtok_r(NULL, "\n", &save)) {
+            const char *v = line_value(line, key, kind);
+            if (v) {
+                copy(value, n, v);
+                found = true;
+            }
+        }
+        free(text);
+    }
+    if (!found && n) {
+        value[0] = 0;
+    }
+    return found;
+}
+
+bool ogbox_mods_set(const char *key, const char *kind, const char *value)
+{
+    const char *path = "/data/ogbox/mods.txt";
+    char *text = read_all(path);
+    char tmp[1100];
+    snprintf(tmp, sizeof(tmp), "%s.new", path);
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        free(text);
+        pshakux_log("mods: %s cannot be written (%s)", tmp, strerror(errno));
+        return false;
+    }
+    if (text) {
+        for (char *save, *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+            char copyline[1024];
+            copy(copyline, sizeof(copyline), line);
+            if (!line_value(copyline, key, kind)) {
+                fprintf(out, "%s\n", line);
+            }
+        }
+        free(text);
+    } else {
+        fprintf(out, "# OGBox: the mods, patches and cheats that are on, one a line: <game> mod <id> / <game> patch <id> / "
+                     "<game> cheat <name> / <game> trainer <file> / <game> trainer-options <0 and 1 an option>\n");
+    }
+    if (value && value[0]) {
+        fprintf(out, "%s %s %s\n", key, kind, value);
+    }
+    if (fclose(out) != 0 || rename(tmp, path) != 0) {
+        pshakux_log("mods: %s cannot be written (%s)", path, strerror(errno));
+        return false;
+    }
+    pshakux_log("mods: %s %s: %s", key, kind, value && value[0] ? value : "none");
     return true;
 }

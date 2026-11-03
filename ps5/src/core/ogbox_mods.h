@@ -19,6 +19,7 @@
 #define OGBOX_CORE_MODS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -37,6 +38,7 @@ typedef struct OgboxGameInfo {
     char key[32];     /* "%08X.%u": the mods' and the game's settings' key */
     char title[48];   /* the certificate's title name (ASCII; '?' for other characters) */
     uint32_t regions; /* 0.1.45: the certificate's game regions (1 North America, 2 Japan, 4 the rest) */
+    uint32_t xbe_time; /* 0.1.54: default.xbe's date (its header's 0x114: the trainers' release check) */
 } OgboxGameInfo;
 
 /* A disc image's default.xbe certificate (on a share, through ps5vfs_disc_open). */
@@ -64,6 +66,10 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max);
 bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on);
 /* 0.1.45: the same of any kind ("mod", "cheat", "patch"). */
 bool ogbox_mods_choose_kind(const char *key, const char *kind, const char *name, bool on);
+/* 0.1.54: a game's one line of a kind ("trainer", "trainer-options"): its value (the rest of the
+ * line), or false; and set (every line of that kind for the game replaced by one; "" none). */
+bool ogbox_mods_get(const char *key, const char *kind, char *value, size_t n);
+bool ogbox_mods_set(const char *key, const char *kind, const char *value);
 
 #ifdef __cplusplus
 }

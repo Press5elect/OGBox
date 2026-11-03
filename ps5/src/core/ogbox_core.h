@@ -103,6 +103,11 @@ void pshx_core_pause(bool on);
  * loaded by starting the title again with it (--loadstate). */
 bool pshx_core_save_state(const char *path, char *why, unsigned why_size);
 
+/* OGBox 0.1.54: what the game's trainer shows, oldest first (native/core/trainer.h): kind 1 it
+ * was loaded (text: its name), 2 its LCD's lines (text), 3 the console's LED changed (led: the
+ * sequence, bits 7-4 red and 3-0 green a quarter each; text in words); false when nothing new. */
+bool pshx_core_trainer_message(int *kind, unsigned *led, char *text, unsigned text_size);
+
 /* OGBox 0.1.25: before the title is replaced (back to the game list): the guest paused, its GPU
  * work finished. Says each step in the boot log. */
 void pshx_core_quiesce(void);

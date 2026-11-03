@@ -31,6 +31,7 @@
 #include "native/core/core.h"
 #include "native/core/irq.h"
 #include "native/core/options.h"
+#include "native/core/trainer.h"
 #include "native/dev/usb.h"
 #include "native/hle/hle_native.h"
 #include "native/kernel/kernel.h"
@@ -690,4 +691,18 @@ void pshx_core_quiesce(void)
     usleep(150000);
     const int r = hle_vk_exit_idle();
     pshakux_log("core: the emulated GPU's work done (%d)", r);
+}
+
+bool pshx_core_trainer_message(int *kind, unsigned *led, char *text, unsigned text_size)
+{
+    NcTrainerMessage m;
+    if (!nc_trainer_take_message(&m)) {
+        return false;
+    }
+    *kind = m.kind;
+    *led = m.led;
+    if (text && text_size) {
+        snprintf(text, text_size, "%s", m.text);
+    }
+    return true;
 }
