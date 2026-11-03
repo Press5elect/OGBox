@@ -58,6 +58,13 @@ std::vector<Option> makeOptions()
 		"How a picture smaller than the screen is scaled up. Snapdragon GSR keeps edges sharper. (With FXAA on, the "
 		"picture is scaled bilinearly.)",
 		{ { "bilinear", "Bilinear (smooth)" }, { "sgsr", "Snapdragon GSR (sharper)" } }, "bilinear", true });
+	/* 0.0.1: the depth vertex programs store, exactly their screen-space z (hakuX-native's
+	 * shader/ff.h HLE_ZEXACT_IN_GLSL); off: the GPU's own, with its early depth test */
+	o.push_back({ "exact_depth", Section::Graphics, "Exact depth",
+		"Surfaces the game draws at one depth (a sky's layers) get exactly that depth, as on the console, "
+		"instead of flickering where they overlap. Costs some GPU time: turn it off for a game that "
+		"needs the speed and shows no flicker.",
+		kOnOff, "1", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
 		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
@@ -547,6 +554,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("audio_resampler") == "linear") {
 		a.push_back("NC_APU_RESAMPLER=linear");
+	}
+	if (value("exact_depth") == "0") {   // 0.0.1
+		a.push_back("NC_HLE_EXACT_DEPTH=0");
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");

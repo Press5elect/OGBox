@@ -115,6 +115,7 @@ native core's work tree (oldest first; author: subject):
   9e3f4c24f5 Press5elect: state: the whole-struct size lock is the Android build's (the PS5's host types differ)
   90f7e047b6 Press5elect: net: the wake-up on the console's eventfd stand-in (a pipe)
   9c7982c119 Claude: vk: the gamma pass empties its view table when the display is made again
+  0f0fb1a8f0 Claude: hle: exact depth for vertex programs under Z-buffering (a sky's flickering layers)
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -1808,10 +1809,20 @@ index 81628b8749c933646684aad2d5be58e5239917a3..adb40190f6cf406965918fc0f64ee3a4
  {
      hle_prop_get(name, v);
 diff --git a/hw/xbox/hle/shader/ff.h b/hw/xbox/hle/shader/ff.h
-index 1029e14fd869df55bfeb99fbb61c1cdaae5c2b12..62fc742789146a826ea701316832547dcdbaf4be 100644
+index 1029e14fd869df55bfeb99fbb61c1cdaae5c2b12..aa5af12867e8ffc7f3c64b81f97149be9e971ae4 100644
 --- a/hw/xbox/hle/shader/ff.h
 +++ b/hw/xbox/hle/shader/ff.h
-@@ -159,7 +159,9 @@ typedef struct HleFfPush {
+@@ -139,7 +139,8 @@ typedef struct HleFfPsKey {
+                                          (texture stage 3, see HLE_FF_SPRITE_STAGE)
+                                          samples at the point's coordinates */
+     uint8_t out_bgra;                 /* 8-bit (B8) target: it stores blue */
+-    uint8_t wbuf;                     /* W-buffering: depth = vW (HLE_WBUF_*_GLSL) */
++    uint8_t wbuf;                     /* W-buffering: depth = vW (HLE_WBUF_*_GLSL); 2 (OGBox):
++                                         exact depth, vW the screen z (HLE_ZEXACT_IN_GLSL) */
+     uint8_t sblend;                   /* the NV2A's signed blend equations, ONE / ONE (the
+                                          fixed-function blend is off): the output and
+                                          the target's pixel (uFb, set 2) as two's-
+@@ -159,7 +160,9 @@ typedef struct HleFfPush {
                                           -2 aa / target h, then + (-1, 1) (aa: the
                                           NV2A's antialiasing scale, else 1) */
      uint32_t bump3[2];                /* stage 3's BUMPENVMAT (as bump) */
@@ -1822,7 +1833,7 @@ index 1029e14fd869df55bfeb99fbb61c1cdaae5c2b12..62fc742789146a826ea701316832547d
      uint32_t tfactor;                 /* TEXTUREFACTOR (D3DCOLOR) */
      uint32_t bumpl[3];                /* stages 1..3: BUMPENVLSCALE, LOFFSET (half
                                           pair) */
-@@ -253,8 +255,9 @@ extern bool g_hle_glsl_zclamp;
+@@ -253,8 +256,9 @@ extern bool g_hle_glsl_zclamp;
  
  /* No descriptor indexing (HleCaps.bindless off: Mali's Bifrost, PowerVR's
   * Rogue): a pixel shader's bindless arrays become the draw's own set (vk/draw.c
@@ -1834,7 +1845,27 @@ index 1029e14fd869df55bfeb99fbb61c1cdaae5c2b12..62fc742789146a826ea701316832547d
   * for the whole draw). g_hle_glsl_fixed: hle_glsl_fixed_slots rewrites the
   * generated text; its new length, 0 if it doesn't fit in cap. */
  extern bool g_hle_glsl_fixed;
-@@ -305,11 +308,13 @@ static inline const char *hle_push_glsl(void)
+@@ -271,6 +275,19 @@ static inline const char *hle_push_glsl(void)
+  * (psc[18], psc[19], float bits; zero when SOLIDOFFSETENABLE is off). The
+  * pixel generators declare vW (location 9, from the program vertex shader). */
+ #define HLE_WBUF_IN_GLSL "layout(location = 9) in float vW;\n"
++/* OGBox 0.0.1: exact depth (the keys' wbuf 2, vertex programs under Z-buffering): the depth
++ * the pixel stage stores is the screen-space z the program left (oPos.z, in depth units),
++ * interpolated linearly in screen space as the rasterizer's z is, through vW, with the polygon
++ * offset added as W-buffering adds it (HLE_WBUF_CALC_GLSL). The rasterizer's z came from the
++ * clip-space round trip, z * w / w at each corner: a triangle whose corners have one z and
++ * different w (a sky's layers, drawn at a constant depth over each other) got a depth a step
++ * off here and there, and the layers took turns winning the depth test (flickering triangles:
++ * xemu found the same in Shenmue II's sky on AMD's driver, coldhex, d6cb7536a2). Interpolated
++ * from the corners' z with the hardware's own differences (P0 + i (P1 - P0) + j (P2 - P0)), a
++ * triangle of one z gets that z at every pixel. The depth the shader writes turns the early
++ * depth test off for these draws. */
++#define HLE_ZEXACT_IN_GLSL "layout(location = 9) noperspective in float vW;\n"
++#define HLE_WBUF_IN(k) ((k)->wbuf == 2 ? HLE_ZEXACT_IN_GLSL : HLE_WBUF_IN_GLSL)
+ /* Screen-space depth z (0 .. the buffer's maximum, 2^n - 1) to [0, 1] as
+  * `out`: pc.zscale is 2^-n for the integer formats (pbdraw.c), and
+  * z 2^-n + z 2^-2n is z / (2^n - 1) to float precision, both products exact
+@@ -305,11 +322,13 @@ static inline const char *hle_push_glsl(void)
  #define HLE_IA_DEPTH 7
  #define HLE_ZEQ_DECL_GLSL \
      "layout(input_attachment_index = 7, set = 2, binding = 1) uniform subpassInput uZ;\n"
@@ -1853,7 +1884,7 @@ index 1029e14fd869df55bfeb99fbb61c1cdaae5c2b12..62fc742789146a826ea701316832547d
  /* NV2A's projective texture division: coordinates times 1/q, with 1/0 the
   * largest float and 0 times it 0, so q = 0 projects (0, 0, 0) to 0, never
 diff --git a/hw/xbox/hle/shader/ff_gen.c b/hw/xbox/hle/shader/ff_gen.c
-index fdb2d6540f84ebc9c3300eeb40d27e632626c777..2b466ecdca0d75240b4df10a6d63b1330500993c 100644
+index fdb2d6540f84ebc9c3300eeb40d27e632626c777..b003421d05368c69af55aa12e74c6cf8d2129ad6 100644
 --- a/hw/xbox/hle/shader/ff_gen.c
 +++ b/hw/xbox/hle/shader/ff_gen.c
 @@ -21,6 +21,7 @@ typedef struct Buf {
@@ -1874,12 +1905,22 @@ index fdb2d6540f84ebc9c3300eeb40d27e632626c777..2b466ecdca0d75240b4df10a6d63b133
      };
      const size_t nrw = sizeof(k_rw) / sizeof(k_rw[0]);
      size_t n = strlen(src), o = 0;
-@@ -590,7 +592,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
+@@ -505,7 +507,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
+         put(&b, "layout(location = 6) in float vFog;\n");
+     }
+     if (k->wbuf) {
+-        put(&b, HLE_WBUF_IN_GLSL);
++        put(&b, "%s", HLE_WBUF_IN(k));
+     }
+     put(&b, "layout(location = 0) out vec4 oColor;\n" HLE_NVPROJ_GLSL);
+     if (k->sblend || (k->fbfetch & ~HLE_FB_ZEQ)) {
+@@ -590,7 +592,8 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
              k_cmp[k->alpha_func]);
      }
      if (k->fbfetch & HLE_FB_ZEQ) {
 -        put(&b, "%s", HLE_ZEQ_TEST_GLSL(k->fbfetch));
-+        put(&b, "%s", HLE_ZEQ_TEST_GLSL(k->fbfetch, "gl_FragCoord.z"));
++        put(&b, "%s", k->wbuf ? HLE_ZEQ_TEST_GLSL(k->fbfetch, "wDepth")    /* OGBox: the depth stored */
++                              : HLE_ZEQ_TEST_GLSL(k->fbfetch, "gl_FragCoord.z"));
      }
      put(&b, "  oColor = %s;\n", k->out_bgra ? "cur.bgra" : "cur");
      if (k->sblend) {
@@ -2161,7 +2202,7 @@ index 3cc32f0ef4a5a4c2a5c765c9ef8e42a9d2a14bfe..470706ece90238edff29a35c3014f040
 +
  #endif
 diff --git a/hw/xbox/hle/shader/psh.c b/hw/xbox/hle/shader/psh.c
-index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..2dcdeff0d891c6c948f4b691d19c659bd56581bc 100644
+index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..b8eb64d09935d64d1a9c6b0b9cc306a5d329516d 100644
 --- a/hw/xbox/hle/shader/psh.c
 +++ b/hw/xbox/hle/shader/psh.c
 @@ -28,6 +28,7 @@ typedef struct Buf {
@@ -2454,7 +2495,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..2dcdeff0d891c6c948f4b691d19c659b
 -            "  vec4 vTex3 = %s;\n", interp, interp, k->wbuf ? HLE_WBUF_IN_GLSL : "",
 -        (k->fbfetch & ~HLE_FB_ZEQ) || k->sblend ?
 +            "%s"
-+            "  vec4 vTex3 = %s;\n", interp, interp, back, k->wbuf ? HLE_WBUF_IN_GLSL : "",
++            "  vec4 vTex3 = %s;\n", interp, interp, back, k->wbuf ? HLE_WBUF_IN(k) : "",
 +        (k->fbfetch & ~HLE_FB_ZEQ) || k->sblend || k->fblend ?
              "layout(input_attachment_index = 0, set = 2, binding = 0) "
              "uniform subpassInput uFb;\n" : "",
@@ -2618,7 +2659,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..2dcdeff0d891c6c948f4b691d19c659b
          alpha_kill(&b, k, s, m);
      }
      put(&b, "  vec4 r0 = vec4(0.0, 0.0, 0.0, t0.a), r1 = vec4(0.0);\n"
-@@ -567,8 +819,45 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
+@@ -567,8 +819,46 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
          put(&b, "  { float a = outc.a, r = pc.alpha_ref; if (!(%s)) discard; }\n",
              k_cmp[k->alpha_func]);
      }
@@ -2638,6 +2679,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..2dcdeff0d891c6c948f4b691d19c659b
      if (k->fbfetch & HLE_FB_ZEQ) {
 -        put(&b, "%s", HLE_ZEQ_TEST_GLSL(k->fbfetch));
 +        put(&b, "%s", zr ? HLE_ZEQ_TEST_GLSL(k->fbfetch, "zrep")
++                         : k->wbuf ? HLE_ZEQ_TEST_GLSL(k->fbfetch, "wDepth")   /* OGBox: the depth stored */
 +                         : HLE_ZEQ_TEST_GLSL(k->fbfetch, "gl_FragCoord.z"));
 +    }
 +    if (k->aa_grid) {
@@ -2665,7 +2707,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..2dcdeff0d891c6c948f4b691d19c659b
      }
      static const char *const k_dbg[17] = {
          "outc", "t0", "v0", "r0", "vec4(vec3(fogf), 1.0)", "v1", "t3", "vec4(vec3(r0.a), 1.0)",
-@@ -599,7 +888,31 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
+@@ -599,7 +889,31 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
          "    ivec4 r = clamp(dv %s sv, ivec4(-128), ivec4(127));\n"
          "    oColor = vec4(r & 255) / 255.0; }\n", "oColor", k->sblend == 1 ? "+" : "-");
      }
@@ -2699,7 +2741,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..2dcdeff0d891c6c948f4b691d19c659b
          *unsupported = unsup;
      }
 diff --git a/hw/xbox/hle/shader/psh.h b/hw/xbox/hle/shader/psh.h
-index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..11a77910868a0aac73591301bbf8958156ade099 100644
+index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..e17fb05a87a2d2f285bf3ed11b80ba7d5e7e9547 100644
 --- a/hw/xbox/hle/shader/psh.h
 +++ b/hw/xbox/hle/shader/psh.h
 @@ -10,6 +10,7 @@
@@ -2720,7 +2762,17 @@ index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..11a77910868a0aac73591301bbf89581
      uint8_t shadow;
      uint8_t shadow_fmt;
      uint8_t out_bgra;                   /* 8-bit (B8) target: it stores blue */
-@@ -90,14 +92,78 @@ typedef struct HlePshKey {
+@@ -82,7 +84,8 @@ typedef struct HlePshKey {
+                                            texture kept to its own size, part of a
+                                            larger surface (ff.h HLE_NVRECT_GLSL); bits
+                                            5-7 free */
+-    uint8_t wbuf;                       /* W-buffering: depth = vW (HLE_WBUF_*_GLSL) */
++    uint8_t wbuf;                       /* W-buffering: depth = vW (HLE_WBUF_*_GLSL); 2 (OGBox):
++                                           exact depth, vW the screen z (HLE_ZEXACT_IN_GLSL) */
+     uint8_t fbfetch;                    /* stages (bits 0-3) whose texture is the colour
+                                            target drawn into: its pixel, read as the
+                                            input attachment (set 2) */
+@@ -90,14 +93,78 @@ typedef struct HlePshKey {
                                             v1 (a shader without one) */
      uint8_t sblend;                     /* the NV2A's signed blend equations (ff.h
                                             HleFfPsKey.sblend) */
@@ -2801,7 +2853,7 @@ index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..11a77910868a0aac73591301bbf89581
  
  #endif
 diff --git a/hw/xbox/hle/shader/vsh.c b/hw/xbox/hle/shader/vsh.c
-index c4a5d76824dc72ae2ff091a1abf270b8d1d61792..2cbc59912a36d899282535cfb9f33abc655c9d10 100644
+index c4a5d76824dc72ae2ff091a1abf270b8d1d61792..47c772130152cfe4727af7f3acbfecbe5f20cf55 100644
 --- a/hw/xbox/hle/shader/vsh.c
 +++ b/hw/xbox/hle/shader/vsh.c
 @@ -26,6 +26,7 @@ typedef struct Buf {
@@ -2812,6 +2864,54 @@ index c4a5d76824dc72ae2ff091a1abf270b8d1d61792..2cbc59912a36d899282535cfb9f33abc
  static void put(Buf *b, const char *fmt, ...)
  {
      va_list ap;
+@@ -221,8 +222,9 @@ static void head(Buf *bp, const HleVshKey *k)
+             "layout(location = 6) out float vFog;\n"
+             "layout(location = 7) %sout vec4 vBack0;\n"
+             "layout(location = 8) %sout vec4 vBack1;\n", interp, interp, interp, interp);
+-    if (k->wbuf) {      /* W-buffering: perspective-correct w for the depth */
+-        put(&b, "layout(location = 9) out float vW;\n");
++    if (k->wbuf) {      /* W-buffering: perspective-correct w for the depth; 2 (OGBox, exact
++                         * depth, ff.h HLE_ZEXACT_IN_GLSL): the screen-space z, linear */
++        put(&b, "layout(location = 9) %sout float vW;\n", k->wbuf == 2 ? "noperspective " : "");
+     }
+     put(&b, "%s", k_lib);
+     put(&b, "void main() {\n");
+@@ -350,16 +352,18 @@ static void tail(Buf *bp, const HleVshKey *k, bool fogw)
+      * pixel stage's), and without a depth test nothing. The program's z then
+      * must not clip the primitive (Forza's sky dome past the far plane, its
+      * minimap at z far below 0), so the clip z only keeps w >= 0. */
+-    if (!k->wbuf && !k->zfree) {
++    if (k->wbuf != 1 && !k->zfree) {
+         put(&b, HLE_ZNORM_GLSL("oPos.z", "zN"));
+     }
+-    put(&b, "  gl_Position = vec4(ndc * w, %s, w);\n", k->wbuf || k->zfree ? "0.0" : "zN * w");
++    /* (exact depth keeps the clip z: the primitive is clipped as before, its depth the pixel
++     * stage's) */
++    put(&b, "  gl_Position = vec4(ndc * w, %s, w);\n", k->wbuf == 1 || k->zfree ? "0.0" : "zN * w");
+     if (k->zclamp && g_hle_glsl_zclamp) {
+         put(&b, HLE_ZCLAMP_GLSL);
+     }
+     if (g_hle_glsl_zw) {
+         put(&b, HLE_ZW_NUDGE_GLSL);
+     }
+-    put(&b, "%s}\n", k->wbuf ? "  vW = w;\n" : "");
++    put(&b, "%s}\n", k->wbuf == 1 ? "  vW = w;\n" : k->wbuf == 2 ? "  vW = oPos.z;\n" : "");
+     *bp = b;
+ }
+diff --git a/hw/xbox/hle/shader/vsh.h b/hw/xbox/hle/shader/vsh.h
+index cca4a35a3e530b665943633ba90d5f5d3ea15cc8..92d34ea5f4e81b523e1212e47a709d0afce7f92c 100644
+--- a/hw/xbox/hle/shader/vsh.h
++++ b/hw/xbox/hle/shader/vsh.h
+@@ -29,7 +29,8 @@ typedef struct HleVshKey {
+     uint16_t cmp_mask;          /* of those, packed 11:11:10 dwords */
+     uint8_t flat;               /* SHADEMODE FLAT */
+     uint8_t spec_off;           /* specular off: oD1 / oB1 read as (0, 0, 0, 1) */
+-    uint8_t wbuf;               /* W-buffering: oPos.w to the pixel stage (vW) */
++    uint8_t wbuf;               /* W-buffering: oPos.w to the pixel stage (vW); 2 (OGBox):
++                                   exact depth, oPos.z (ff.h HLE_ZEXACT_IN_GLSL) */
+     uint8_t zfree;              /* no depth test: the program's z clips nothing */
+     uint8_t fog_table;          /* FOGTABLEMODE other than NONE (a program writing
+                                    no oFog: distance 0, else factor 1) */
 diff --git a/hw/xbox/hle/tex/xdk_res.c b/hw/xbox/hle/tex/xdk_res.c
 index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..b29567ae551763c49c0d3b0eeba2704a3fc94eec 100644
 --- a/hw/xbox/hle/tex/xdk_res.c
@@ -3173,7 +3273,7 @@ index bf187bc5967efb39fbb05bc92fc2f7076e58a489..b41b6858562f8c32a5cec61646677549
 +    return (int)r;
 +}
 diff --git a/hw/xbox/hle/vk/draw.c b/hw/xbox/hle/vk/draw.c
-index b72476d61628d9ded95d4d3ac5371168570f590c..f5c722760d2b238257f05c5361c2423b7b82973b 100644
+index b72476d61628d9ded95d4d3ac5371168570f590c..cb908a698fb65a9401e7015cad5d37a814f59feb 100644
 --- a/hw/xbox/hle/vk/draw.c
 +++ b/hw/xbox/hle/vk/draw.c
 @@ -41,7 +41,7 @@
@@ -4340,16 +4440,53 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..f5c722760d2b238257f05c5361c2423b
      if (k.blend_en && (k.op == 0xF005 || k.op == 0xF006)) {
          unsigned sb = signed_blend(s);
          if (sb && rt && (rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
-@@ -3789,6 +4301,8 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3779,8 +4291,21 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+      * them instead of clipping the primitive (MechAssault 2's sky, drawn past
+      * the far plane, was black): the rasterizer's depth clamp */
+     bool zclamp = ds && s->rs[RS_ZENABLE] != 0 && s->zclamp;
++    /* OGBox 0.0.1: exact depth (shader/ff.h HLE_ZEXACT_IN_GLSL), vertex programs under
++     * Z-buffering: the pixel stage stores the program's screen-space z, a triangle of one z at
++     * exactly that depth (a sky's layers flickered). NC_HLE_EXACT_DEPTH=0 (the setting "Exact
++     * depth" off): the rasterizer's z, with the early depth test. */
++    static int s_zexact = -1;
++    if (s_zexact < 0) {
++        const char *e = getenv("NC_HLE_EXACT_DEPTH");
++        s_zexact = !(e && e[0] == '0');
++        hle_log("hakuX-hle-back", "exact depth: %s", s_zexact ? "on (vertex programs under Z-buffering)" : "off");
++    }
++    const bool zexact = prog && !wbuf && s_zexact && ds && s->rs[RS_ZENABLE] == 1 && !(dbgf & 8) &&
++                        !hle_quirk(HLE_QUIRK_NO_WBUF);
++    const uint8_t wmode = wbuf ? 1 : zexact ? 2 : 0;
+     if (prog) {
+-        k.vk.wbuf = wbuf;
++        k.vk.wbuf = wmode;
+         k.vk.zfree = !ds || s->rs[RS_ZENABLE] == 0;
+         k.vk.zclamp = zclamp;
+     } else {
+@@ -3788,9 +4313,11 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+         k.vs.zclamp = zclamp;
      }
      if (s->psh) {
-         k.pk.wbuf = wbuf;
+-        k.pk.wbuf = wbuf;
++        k.pk.wbuf = wmode;
 +        /* a depth DOT_ZW replaces is clamped the same way (psh.c) */
 +        k.pk.zclamp = zclamp && hle_psh_zrep(k.pk.tex_modes);
      } else {
-         k.ps.wbuf = wbuf;
+-        k.ps.wbuf = wbuf;
++        k.ps.wbuf = wmode;
      }
-@@ -3950,16 +4464,19 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+     /* Polygon offset (decals over coplanar surfaces): NV2A adds the offset in
+      * depth-buffer units and the slope factor times the polygon's depth slope,
+@@ -3845,7 +4372,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+         zofs *= f;
+         zslope *= f;
+     }
+-    if (wbuf) {
++    if (wbuf || zexact) {               /* the pixel stage adds them (exact depth: to its z) */
+         memcpy(&pc.psc[18], bias ? &zofs : &(float){ 0.0f }, 4);
+         memcpy(&pc.psc[19], bias ? &zslope : &(float){ 0.0f }, 4);
+         bias = false;
+@@ -3950,16 +4477,19 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
      VkRect2D sc = full ? (VkRect2D){ { 0, 0 }, { sw, sh } } :
                           (VkRect2D){ { (int32_t)(vpc->x * rs), (int32_t)(vpc->y * rs) },
                                       { vpc->w * rs, vpc->h * rs } };
@@ -4375,7 +4512,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..f5c722760d2b238257f05c5361c2423b
      }
      VkViewport v = { 0, (float)sh, (float)sw, -(float)sh, 0.0f, 1.0f };
      if (!prog && !rhw && !full) {
-@@ -3995,7 +4512,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3995,7 +4525,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          pc.scr[2] = (vx + vw * 0.5f) / aax + vpc->offx;
          pc.scr[3] = (vy + vh * 0.5f) / aay + vpc->offy;
      }
@@ -4386,7 +4523,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..f5c722760d2b238257f05c5361c2423b
      pc.tfactor = s->rs[RS_TEXTUREFACTOR];
      pc.alpha_ref = (s->rs[RS_ALPHAREF] & 0xFF) / 255.0f;
      memcpy(&pc.fog[3], &rect, 4);       /* (bits: HLE_NVRECT_GLSL) */
-@@ -4044,6 +4563,27 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -4044,6 +4576,27 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          T.vkCmdSetDepthCompareOp(cb, (VkCompareOp)g_rec.zop);
          g_dr.emits[EM_DYN]++;
      }
@@ -4414,7 +4551,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..f5c722760d2b238257f05c5361c2423b
      if (REC_CHANGED(bias_en, bias) && eds2) {
          T.vkCmdSetDepthBiasEnable(cb, bias);
          g_dr.emits[EM_DYN]++;
-@@ -4244,44 +4784,14 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -4244,44 +4797,14 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          mp.prim = c->prim;
          mp.end = vfirst + c->count;
      }

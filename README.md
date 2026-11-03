@@ -75,7 +75,7 @@ has. **Empty the cache drives** clears X:, Y: and Z:, which games fill again as 
 
 **Settings** (OPTIONS, or Settings on the left) has hakuX's every setting and OGBox's own, in
 eight sections: **Graphics** (resolution scale, anti-aliasing: FXAA, SMAA or SSAA, aspect ratio,
-the upscaling filter, crop overscan), **Performance** (GPU on separate cores, frame pacing,
+the upscaling filter, exact depth, crop overscan), **Performance** (GPU on separate cores, frame pacing,
 uncapped frame rate, compiling shaders in the background, building cached shaders at start),
 **Audio** (Fast or Full DSP processing, the resampler), **Console** (language, memory: 64 MB, or
 the 128 MB RAM upgrade some patches need, which Auto picks when such a patch is on; drive timing,
@@ -228,6 +228,8 @@ Added
 - A notice at every start, before the splash: this is a highly experimental build, expect
   crashes and freezes. CROSS goes on.
 - **Performance** and **Audio** sections in Settings.
+- **Exact depth** (Settings > Graphics, on by default): surfaces a game draws at one depth get
+  exactly that depth, as on the console. Off, the GPU's own depth is used, a little faster.
 - **Updates** (as Crux2 has them): a newer release on GitHub, looked for at each start or from
   Settings > Updates, offered with its notes, downloaded, checked and put in place.
 
@@ -245,6 +247,10 @@ Fixed
 - A game that sets a gamma ramp and then changes its display's size (one went from 640 x 960 to
   640 x 480 at its first frames) crashed a few seconds in, at any resolution scale: the gamma pass
   freed a picture's view twice. hakuX-lr has the same fix.
+- Layers drawn at one depth over each other (a game's sky) flickered as triangles fighting each
+  other: the GPU's depth for a triangle whose corners share one depth came out a step off here and
+  there. Exact depth stores the depth the game gave (xemu found and fixed the same in its
+  renderer).
 
 ## Bring-up history
 
