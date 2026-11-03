@@ -41,8 +41,9 @@ clang++ -std=c++20 -g -O1 -Wall -Wextra -Werror -fsanitize=address,undefined -fn
 	-fno-omit-frame-pointer -pthread -DOGBOX_UPDATE_TEST -I "$root/ps5/src/platform" \
 	-isystem "$root/.deps/src/rapidjson/include" \
 	"$here/update_test.cpp" "$root/ps5/src/platform/ps5_update.cpp" "${zipflags[@]}" -o "$work/update_test"
-# A real release ZIP as well, when one was made here (dist/release-<tag>/OGBox-<tag>.zip, the newest).
-real=$(ls -1 "$root"/dist/release-*/OGBox-v*.zip 2>/dev/null | grep -v -e '-source\.zip$' -e '-part[0-9]' | sort -V | tail -n 1 || true)
+# A real release ZIP as well, when one was made here (dist/release-<tag>/OGBox-<tag>.zip, the one made
+# last: 0.0.1 came after the bring-up builds 0.1.x).
+real=$(ls -1t "$root"/dist/release-*/OGBox-v*.zip 2>/dev/null | grep -v -e '-source\.zip$' -e '-part[0-9]' | head -n 1 || true)
 rm -rf "$work/run"
 # The steps go to update_test.log; the summary line to the screen. On a failure, the log too.
 "$work/update_test" "$work/run" ${real:+"$real"} 2> "$work/update_test.log" || { cat "$work/update_test.log"; exit 1; }
