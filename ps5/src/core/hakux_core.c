@@ -27,6 +27,7 @@
 #include "platform/ps5_priority.h"
 #include "platform/ps5_takeover.h"
 
+#include "native/state/save.h"
 #include "native/core/core.h"
 #include "native/core/irq.h"
 #include "native/core/options.h"
@@ -651,6 +652,28 @@ bool pshx_core_widescreen(void)
 void pshx_core_pause(bool on)
 {
     nc_pause_set(on);
+}
+
+bool pshx_core_save_state(const char *path, char *why, unsigned why_size)
+{
+    if (pshx_core_state() != PSHX_CORE_RUNNING) {
+        snprintf(why, why_size, "the game isn't running");
+        return false;
+    }
+    const double t0 = pshakux_uptime();
+    const char *err = nc_state_save(path);
+    /* a game writing a save of its own: again in a moment (hakuX's own answer) */
+    for (int tries = 0; err && strstr(err, "try again") && tries < 30; tries++) {
+        usleep(100000);
+        err = nc_state_save(path);
+    }
+    pshakux_log("states: %s %s in %.0f ms%s%s", path, err ? "NOT saved" : "saved", (pshakux_uptime() - t0) * 1000.0,
+                err ? ": " : "", err ? err : "");
+    if (err) {
+        snprintf(why, why_size, "%s", err);
+        return false;
+    }
+    return true;
 }
 
 int hle_vk_exit_idle(void); /* hw/xbox/hle/vk/display.c */

@@ -72,6 +72,7 @@
 // OGBox 0.1.45: the game list's database, covers and history; the covers' textures
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
+#include "ogbox_saves.h"
 #include "VulkanTexture.h"
 #include <cctype>
 #include <cfloat>

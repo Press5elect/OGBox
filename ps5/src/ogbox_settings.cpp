@@ -173,6 +173,14 @@ std::vector<Option> makeOptions()
 		theme.now = true;
 		o.push_back(theme);
 	}
+	{
+		/* 0.1.53 */
+		Option qm{ "quick_menu", Section::Interface, "Quick menu button",
+			"Which button opens the quick menu in a game (save states, the game's settings, quit). OPTIONS: the Xbox's Start and Back are the touch pad's right and left halves. OPTIONS held: a short press is the Xbox's Start, held half a second it opens the menu; the touch pad is Back.",
+			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" } }, "options", false };
+		qm.now = true;
+		o.push_back(qm);
+	}
 	o.push_back({ "show_fps", Section::Interface, "Show FPS counter",
 		"Frame rate and frame time overlay while playing.", kOnOff, "1", false });
 	{

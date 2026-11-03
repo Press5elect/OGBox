@@ -116,7 +116,18 @@ catchReturnFromMain(int status)
 struct pad_sample {
    uint32_t buttons;
    uint8_t left_x, left_y, right_x, right_y, l2, r2;
-   uint8_t reserved[66];
+   uint8_t padding[2];
+   float orientation[4];
+   float acceleration[3];
+   float angular_velocity[3];
+   uint8_t touch_count;   /* OGBox 0.1.53: the touch pad's fingers (Crux2's layout) */
+   uint8_t touch_reserved[3];
+   uint32_t touch_reserved2;
+   struct {
+      uint16_t x, y;      /* x 0..1919 */
+      uint8_t id;
+      uint8_t reserved[3];
+   } touch[2];
    int32_t connected;
    uint64_t timestamp_us;
    uint8_t extension[16];
@@ -125,6 +136,7 @@ struct pad_sample {
 };
 _Static_assert(sizeof(struct pad_sample) == 120, "the console's pad samples are 120 bytes");
 _Static_assert(offsetof(struct pad_sample, connected) == 0x4c, "connection state sits at 0x4c");
+_Static_assert(offsetof(struct pad_sample, touch_count) == 52, "the touch data sits at 52");
 _Static_assert(offsetof(struct pad_sample, timestamp_us) == 0x50, "the timestamp sits at 0x50");
 
 /* The two-motor rumble, as PS5_vkQuake and ProsperoLight drive it (the other
@@ -280,6 +292,7 @@ pad_fill(const struct pad_player_state *state, struct pad *pad)
    pad->right_y = stick(state->last.right_y);
    pad->l2 = state->last.l2 / 255.0f;
    pad->r2 = state->last.r2 / 255.0f;
+   pad->touch_x = state->last.touch_count > 0 && state->last.touch_count <= 2 ? state->last.touch[0].x : -1;
 }
 
 void
@@ -302,7 +315,8 @@ pad_poll(struct pad *pad)
          const struct pad_sample *s = &samples[i];
          state->taken[state->taken_count++] = (struct pad_reading){
             s->buttons, s->left_x, s->left_y, s->right_x, s->right_y, s->l2, s->r2,
-            s->connected != 0, s->timestamp_us};
+            s->connected != 0, s->timestamp_us,
+            (int16_t)(s->touch_count > 0 && s->touch_count <= 2 ? s->touch[0].x : -1)};
          state->connected = s->connected != 0;
          if (s->connected && !(s->buttons & PAD_INTERCEPTED))
             state->last = *s;

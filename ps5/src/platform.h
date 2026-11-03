@@ -46,6 +46,7 @@ struct pad {
    uint32_t pressed; /* buttons that went down since the last poll */
    float left_x, left_y, right_x, right_y; /* -1..1, a dead zone removed; y is down-positive */
    float l2, r2;                           /* 0..1 */
+   int touch_x;                            /* OGBox 0.1.53: the first finger on the touch pad, 0..1919; -1 none */
 };
 
 /* Up to four players, one per signed-in user: the console pairs each controller
@@ -79,6 +80,7 @@ struct pad_reading {
    uint8_t l2, r2;                           /* 0..255 */
    bool connected;
    uint64_t timestamp_us;
+   int16_t touch_x;                          /* OGBox 0.1.53: the first finger, 0..1919; -1 none */
 };
 
 /* Every reading the last pad_poll took, oldest first (the console keeps up to

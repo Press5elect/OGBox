@@ -96,6 +96,13 @@ bool pshx_core_widescreen(void);
 
 /* Paused: the guest's clock and sound stop, the frame stays (the quick menu, the home screen). */
 void pshx_core_pause(bool on);
+/* OGBox 0.1.53: the running game saved to path (hakuX's savestate: the whole console, its hard disk's
+ * open files included). Not on the emulated CPU's thread: it waits for the guest to reach its pause
+ * point (paused or not) and for the write, a second or so; a game writing a file of its own at
+ * that moment is waited for up to about 3 s. true, or false with the reason in why. A state is
+ * loaded by starting the title again with it (--loadstate). */
+bool pshx_core_save_state(const char *path, char *why, unsigned why_size);
+
 /* OGBox 0.1.25: before the title is replaced (back to the game list): the guest paused, its GPU
  * work finished. Says each step in the boot log. */
 void pshx_core_quiesce(void);

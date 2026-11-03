@@ -50,10 +50,26 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
    the data. Then pick a game from the list: the places on the left, the
    folder in the middle, the selected disc on the right (its name, title ID, mods and settings).
    D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back, L2 / R2 to jump a
-   letter back or on, TRIANGLE for the settings. In a game, hold **OPTIONS and the touch pad** for two seconds to go back to the
-   list; in the list, the same quits.
+   letter back or on, TRIANGLE on a disc for its **game page**, OPTIONS for the settings.
+4. In a game, **OPTIONS** opens the **quick menu**: the game pauses and a panel comes in from the
+   right with Resume, Save state and Load state (10 slots, each with a picture of the moment),
+   Where you left off, the game's settings and mods, Restart and Quit. Quit asks whether to save
+   where you are first; the game page then offers to go on from there. No button combination is
+   needed any more to leave a game.
 
-**Settings** (TRIANGLE, or Settings on the left) has hakuX's every setting, with hakuX's
+**The game page** (TRIANGLE on a disc in the list) is a fixed panel in the middle of the screen:
+the cover, the disc's details and Play, Load state (the game's states with their pictures and
+dates), Game settings, Mods, patches, cheats and Saves (the game's saves on the hard disk).
+
+**Hard disk** (on the left, and in Settings) is the emulated Xbox hard disk's manager: every game
+with saves on it, newest played first, and each game's saves by name, date and size. A save can be
+copied out, moved out or deleted; a game's saves can be copied out together, or its saves and its
+own data (TDATA) deleted. **Bring saves in** brings saves back from the data folder's
+`backups/saves` or a USB drive's `OGBox/saves` (folders `<title ID>/<save>`, or
+`UDATA/<title ID>/<save>` as other tools copy them out), asking before it replaces one the hard disk
+has. **Empty the cache drives** clears X:, Y: and Z:, which games fill again as they need.
+
+**Settings** (OPTIONS, or Settings on the left) has hakuX's every setting, with hakuX's
 defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
 cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
 timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
@@ -87,10 +103,14 @@ game, over the settings. Its first line may name a disc image; with an `autoboot
 image boots straight away, without the list.
 
 The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
-L1 white, L2/R2 the triggers, OPTIONS start, the touch pad back. The menus draw the DualSense's
+L1 white, L2/R2 the triggers, a click on the touch pad's left half back and on its right half
+start (OPTIONS is the quick menu's; for the other players OPTIONS is start). Settings > Interface >
+**Quick menu button** can make OPTIONS start again, with the quick menu on holding it for half a
+second (the whole touch pad is then back). The menus draw the DualSense's
 buttons, each face button in its Xbox button's colour (A green, B red, X blue, Y yellow). Each
 signed-in user's controller is a player (1-4). The emulated hard disk lives in the data
-folder's `hdd`, the shader caches in its `cache` (`/data/ogbox` unless you chose another),
+folder's `hdd`, the save states in its `states`, the shader caches in its `cache` (`/data/ogbox`
+unless you chose another),
 outside the title folder, so an update is just replacing the folder.
 (Up to 0.1.5 the folder was `/data/pshakux`: the first start of 0.1.6 renames it to
 `/data/ogbox` when there is no `/data/ogbox` yet, and the boot log says so.)
@@ -162,6 +182,39 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.53 (bring-up)
+
+Added
+- **Quick menu** in a game (OPTIONS), after PSFlyCast's and Crux2's: the game pauses and dims, a
+  panel comes in from the right with the game's cover.
+  - **Save state** and **Load state** in 10 slots; a slot's card beside the panel shows the picture
+    of the moment it was saved and when. Left / right changes the slot.
+  - **Where you left off**: Quit offers "Quit, and save where I am", kept apart from the 10 slots.
+  - The game's **settings** and **mods, patches, cheats** without leaving the game (they apply at
+    its next start), **Restart** (press twice), **Quit** back to the list.
+- **Game page** (TRIANGLE on a disc in the list): the cover and details in a fixed panel, with Play,
+  Load state (the game's states, with pictures, newest first), Game settings, Mods and Saves.
+- **Hard disk** manager (on the left and in Settings), after PSFlyCast's game card manager: the
+  games with saves on the emulated hard disk; copy, move or delete a save; copy all of a game's;
+  delete a game's saves or its own data; bring saves in from the data folder's `backups/saves` or a
+  USB drive's `OGBox/saves`; empty the cache drives.
+- The touch pad's halves: a click on the left half is the Xbox's back, on the right half start.
+- Settings > Interface > **Quick menu button**: OPTIONS (default), or holding OPTIONS (a short press
+  is then start).
+
+Changed
+- The details panel beside the list is drawn in fixed places (cover, name, then the same rows for
+  every disc) and is no longer something the D-pad can move into: moving right from the list
+  no longer jumped to another title. TRIANGLE opens the game page instead.
+- The OPTIONS + touch pad hold that left a game (and quit OGBox in the list) is gone: the quick
+  menu's Quit does it. In the list OPTIONS opens Settings.
+- The Emerald theme moves: the light bands sway and breathe, a glint runs along each, and specks of
+  light rise and twinkle.
+
+Fixed
+- Loading a save state with the native CPU: the state held the address of the CPU's gate from the
+  run that saved it, so the loaded game crashed at its first kernel call (hakuX-native).
 
 ### 0.1.52 (bring-up)
 
