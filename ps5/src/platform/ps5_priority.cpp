@@ -111,7 +111,8 @@ std::atomic<bool> s_enabled{false};
  * push-buffer decoder (hle-pb) on processors 2-3, the render thread (hle.render) on 4-5 and
  * everything else on 6-12. The Burnout 3 run that had it ended frozen with its frame rate
  * falling, and it was not what slowed the runs without it (0.1.19: the late wake-ups of the
- * driver's GPU waits), so it is off unless env OGBOX_GPU_PIN=1 in boot.txt asks for it. */
+ * driver's GPU waits), so it was off unless env OGBOX_GPU_PIN=1 in boot.txt asked for it (0.0.1: on,
+ * the setting "GPU on separate cores"). */
 /* OGBox 0.1.40: the guest CPU's thread on logical processors 0 and 1 (core 0's two threads,
  * nothing else of the title's there), not 0 alone: pinned to one, it had to wait whenever the
  * system ran something on processor 0 (kernel calls as trivial as KeQueryInterruptTime "held the
@@ -131,13 +132,20 @@ constexpr uint64_t kRenderMask = 0x30u;
 constexpr uint64_t kOthersMask = 0x1FFCu;
 constexpr uint64_t kOthersPinnedMask = 0x1FC0u;
 
+/* OGBox 0.0.1: the GPU's threads on cores of their own is the setting "GPU on separate cores"
+ * (on by default: in the runs since 0.1.59, with the guest CPU on core 0 and the rest moved off
+ * the GPU's cores, games ran much faster than with everything sharing processors 2-12). The
+ * setting is known only once a game's settings are read, after the interface thread is pinned,
+ * so the flag is read at each Pin() and the creator re-pins its own thread (pshakux_priority_
+ * gpu_pin). env OGBOX_GPU_PIN=0 or 1 in boot.txt wins over the setting. */
+std::atomic<bool> s_gpuPin{true};
+
 bool GpuPinWanted()
 {
-	static const bool wanted = [] {
-		const char* e = std::getenv("OGBOX_GPU_PIN");
-		return e && e[0] == '1';
-	}();
-	return wanted;
+	const char* e = std::getenv("OGBOX_GPU_PIN");
+	if (e && (e[0] == '0' || e[0] == '1'))
+		return e[0] == '1';
+	return s_gpuPin.load(std::memory_order_relaxed);
 }
 
 uint64_t MaskFor(bool vcpu, const char* name)
@@ -241,4 +249,18 @@ extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const ch
 extern "C" void pshakux_priority_enable(int on)
 {
 	PS5Priority::SetEnabled(on != 0);
+}
+
+// OGBox 0.0.1: the setting "GPU on separate cores", before the core's threads start; the calling
+// thread (the interface's, pinned before the settings were read) is placed again by it.
+extern "C" void pshakux_priority_gpu_pin(int on)
+{
+	PS5Priority::s_gpuPin.store(on != 0, std::memory_order_relaxed);
+	const int pinned = PS5Priority::Pin(pthread_self(), false);
+	ps5px_log("priority: GPU on separate cores %s%s; the interface thread on processors %#llx: %#x",
+		PS5Priority::GpuPinWanted() ? "on" : "off",
+		std::getenv("OGBOX_GPU_PIN") && (std::getenv("OGBOX_GPU_PIN")[0] == '0' || std::getenv("OGBOX_GPU_PIN")[0] == '1')
+			? " (env OGBOX_GPU_PIN)" : "",
+		static_cast<unsigned long long>(!PS5Priority::LayoutWanted() ? 0 : PS5Priority::MaskFor(false, nullptr)),
+		static_cast<unsigned>(pinned));
 }

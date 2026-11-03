@@ -19,20 +19,16 @@ xemu's work and neither project supports it.
 
 ## Where it is
 
-Bring-up. The title builds and links hakuX's native core with its **native CPU backend**: the
-Xbox's x86 code runs on the console's own processor in compatibility mode (hakuX-native's
+**Highly experimental.** 0.0.1 is the first public release, after the bring-up builds 0.1.1 to
+0.1.59. Some games boot and play; many don't start, or stop, slow down, lose graphics or sound
+partway. Expect crashes and freezes: OGBox says so every time it starts.
+
+The title builds and links hakuX's native core with its **native CPU backend**: the Xbox's x86
+code runs on the console's own processor in compatibility mode (hakuX-native's
 `native/cpu/cpu_native.c`, branch `ps5-native`), with kernel calls through a far-call gate, its
-HLE GPU on the console's RADV, its APU on the console's sound output, a bring-up front end and
-the console's platform code. On the console (firmware 13.09) 0.1.1 and 0.1.2 boot nxdk's `hello`
-from an XISO and show its picture. Games built with Microsoft's XDK read the Xbox kernel's header
-at 0x80010000, where the console loads the title's own runtime module (`libc.prx`, execute-only),
-and the console ended the title there (Burnout 3 with 0.1.2 and 0.1.3). 0.1.4 takes that range
-back from `libc.prx` at start-up, as PSHakuX System Check 0.0.5 did on the console, and puts the
-guest's kernel at 0x80010000; whether XDK games then boot is what 0.1.4's console runs will show.
-`ogbox-boot.log` says whether the takeover was done (`takeover:` lines) and which layout the
-core used (`core:` lines). With 0.1.4 Burnout 3 boots, runs its loading screen at 60 fps and
-stays there; 0.1.5 adds the boot-log diagnostics that say what it waits for, and 0.1.8 logs
-the APU's voices and the guest threads' waits, to find what that loading screen waits for.
+HLE GPU on the console's RADV, its APU on the console's sound output, OGBox's front end and the
+console's platform code. `ogbox-boot.log` in the title folder says what a run did (the run
+before is kept as `ogbox-boot.previous.log`): include it when you report a problem.
 
 ## Using it
 
@@ -44,7 +40,8 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
    `nfs://192.168.1.20/volume1/games/xbox` for NFS. With the payload loader (elfldr, port 9021)
    running, OGBox leaves its sandbox at start, so USB drives and extended storage are visible.
    A file named `elevation-off.txt` in the title folder keeps it inside the sandbox.
-3. Start OGBox from the home screen. The first time, it asks where to keep its data (the Xbox
+3. Start OGBox from the home screen. A notice says first that this is an experimental build
+   (CROSS goes on). The first time, it then asks where to keep its data (the Xbox
    hard disk, the caches, the covers, the screenshots): the console's storage, a folder of your
    own on it, a USB drive or extended storage. Settings > Data folder changes it later and moves
    the data. Then pick a game from the list: the places on the left, the
@@ -69,18 +66,23 @@ own data (TDATA) deleted. **Bring saves in** brings saves back from the data fol
 `UDATA/<title ID>/<save>` as other tools copy them out), asking before it replaces one the hard disk
 has. **Empty the cache drives** clears X:, Y: and Z:, which games fill again as they need.
 
-**Settings** (OPTIONS, or Settings on the left) has hakuX's every setting, with hakuX's
-defaults: Graphics (resolution scale, uncapped frame rate, asynchronous shaders, building
-cached shaders first, aspect ratio, FXAA, the upscaling filter), Console (language, drive
-timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
-Console also has Memory (64 MB, or the 128 MB RAM upgrade some patches need; Auto picks it
-when a patch whose notes say 128 MB is on). Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
-hidden by default; covers, a list or a grid of covers, file or short names, by name or last
-played first, disc sizes, the details panel) and Interface (the theme: Code or Emerald, the FPS counter, the code rain). CROSS
-picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
-any of the Graphics, Console and Console video ones for that game alone (TRIANGLE: back to the
-app's). They are kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`;
-the network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
+**Settings** (OPTIONS, or Settings on the left) has hakuX's every setting and OGBox's own, in
+eight sections: **Graphics** (resolution scale, anti-aliasing: FXAA, SMAA or SSAA, aspect ratio,
+the upscaling filter, crop overscan), **Performance** (GPU on separate cores, frame pacing,
+uncapped frame rate, compiling shaders in the background, building cached shaders at start),
+**Audio** (Fast or Full DSP processing, the resampler), **Console** (language, memory: 64 MB, or
+the 128 MB RAM upgrade some patches need, which Auto picks when such a patch is on; drive timing,
+the clock), **Video modes** (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
+**Network** (off, LAN, XLink Kai, Insignia), **Game list** (the places shown on the left, USB
+drives hidden by default; covers, a list or a grid of covers, file or short names, by name or
+last played first, disc sizes, the details panel) and **Interface** (the theme: Code or Emerald,
+the code rain, the FPS counter, the quick menu button). The box below the list says what the
+focused section or setting does, and the setting's default. The picture's enhancements
+(higher resolution scales, anti-aliasing, crop overscan) are off until you turn them on. CROSS picks the next choice, SQUARE the
+one before. A disc's **Game settings** (on the right) override any of the Graphics, Performance,
+Audio, Console and Video modes ones for that game alone (TRIANGLE: back to the app's). They are
+kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`; the
+network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
 
 **Mods, patches, cheats** (on the right) lists hakuX's mods for the disc (60 and 120 fps mods,
 game fixes; the `mods` folder is hakuX's own), the XBE patches OGBox ships for it (widescreen,
@@ -199,6 +201,32 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.1 (initial release)
+
+The first public release, after the bring-up builds 0.1.1 to 0.1.59 (their notes are under
+Bring-up history, below).
+
+Added
+- **GPU on separate cores** (Settings > Performance, on by default): the emulated GPU's command
+  reader and its renderer run on processor cores of their own, apart from the Xbox CPU and
+  everything else. Faster; a game that freezes with it can have it off in its Game settings.
+  `env OGBOX_GPU_PIN=0` or `1` in `boot.txt` still overrides the setting.
+- A notice at every start, before the splash: this is a highly experimental build, expect
+  crashes and freezes. CROSS goes on.
+- **Performance** and **Audio** sections in Settings.
+
+Changed
+- Settings are in eight sections (Graphics, Performance, Audio, Console, Video modes, Network,
+  Game list, Interface), with shorter words; each section says what it holds and each setting its
+  default. The audio settings moved from Console to Audio; frame pacing, the frame rate cap and
+  the shader options from Graphics to Performance. Settings already saved carry over.
+- The splash no longer shows "X to skip"; CROSS or CIRCLE still skips it.
+- Version numbers start again at 0.0.1 with the first release.
+
+## Bring-up history
+
+The builds before the first release, 0.1.1 to 0.1.59.
 
 ### 0.1.59 (bring-up)
 

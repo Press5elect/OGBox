@@ -773,8 +773,9 @@ public:
 	unsigned shotsTaken{ 0 };
 
 	// ---- OGBox 0.1.26: the menus (the boot screen, the game list, the settings, the mods) ----
-	enum class Screen { Boot, Library, Settings, Mods, Storage, Hdd };
+	enum class Screen { Notice, Boot, Library, Settings, Mods, Storage, Hdd };
 	Screen screen{ Screen::Library };
+	Screen afterNotice{ Screen::Boot };       // 0.0.1: where the experimental build's notice goes on CROSS
 	double screenSince{ 0.0 };
 	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
@@ -1409,6 +1410,13 @@ public:
 			if (!ogbox::storageChosen() && !boot.back) {
 				openStorage(true);   // 0.1.48: the first start asks where the data goes
 			}
+			/* 0.0.1: each start (not back from a game) first says what this build is: CROSS, then the
+			 * splash (or the first start's question) */
+			if (!boot.back) {
+				afterNotice = screen;
+				screen = Screen::Notice;
+				screenSince = now_seconds();
+			}
 			return;
 		}
 		if (boot.image != "none") {
@@ -1447,6 +1455,8 @@ public:
 		}
 		prefs.load(key);
 		runKey = key;   // 0.1.53: the quick menu's states and settings
+		/* 0.0.1: the GPU's threads on cores of their own (on by default), before the core starts them */
+		pshakux_priority_gpu_pin(prefs.on("gpu_cores") ? 1 : 0);
 		themeEmerald = prefs.global("theme") == "emerald";   // 0.1.52: the in-game panels too
 		aspectMode = prefs.value("aspect");
 		cropOn = prefs.on("crop_overscan");   // 0.1.59
@@ -2291,7 +2301,20 @@ public:
 			hddInput(pressed);
 			return;
 		}
+		if (screen == Screen::Notice) {
+			/* 0.0.1: CROSS, after a second (a press held from the launch is not an answer) */
+			if ((pressed & PAD_CROSS) && now_seconds() - screenSince > 1.0) {
+				screen = afterNotice;
+				screenSince = now_seconds();
+				focusSet = false;
+				wantFocus = true;
+				swallowNav = true;
+				pshakux_log("ogbox: the experimental build's notice read");
+			}
+			return;
+		}
 		if (screen == Screen::Boot) {
+			/* CROSS or CIRCLE skips the splash (0.0.1: no longer said on it) */
 			if ((pressed & (PAD_CROSS | PAD_CIRCLE)) || now_seconds() - screenSince > 3.2) {
 				screen = Screen::Library;
 				screenSince = now_seconds();
@@ -3037,12 +3060,42 @@ public:
 			}
 			y += ImGui::GetTextLineHeightWithSpacing();
 		}
-		{
-			const std::string skip = "{X} skip";
-			ImDrawList *bl = ImGui::GetWindowDrawList();
-			const float sw = richText(bl, ImVec2(0, 0), skip, 0, 1.0f, true);
-			richText(bl, ImVec2(W - ImGui::GetStyle().WindowPadding.x - sw, H - ImGui::GetStyle().WindowPadding.y -
-				ImGui::GetTextLineHeightWithSpacing() * 1.2f), skip, mx::u32(mx::label));
+		endScreen();
+	}
+
+	/* 0.0.1: before the splash, what this build is: an experimental one, crashes and freezes
+	 * expected; no games with it. CROSS goes on. */
+	void drawNotice()
+	{
+		beginScreen("##notice", 0.25f);
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const ImGuiStyle &style = ImGui::GetStyle();
+		const float colW = std::min(W - style.WindowPadding.x * 2.0f, ImGui::GetFontSize() * 46.0f);
+		const float x = (W - colW) * 0.5f;
+		ImGui::SetCursorPos(ImVec2(x, H * 0.2f));
+		glowTitle("EXPERIMENTAL BUILD", 1.6f);
+		ImGui::SetCursorPosX(x);
+		ImGui::TextColored(mx::label, "OGBox %s for PS5", pshakux_build_version());
+		ImGui::Spacing();
+		ImGui::Spacing();
+		ImGui::PushTextWrapPos(x + colW);
+		const auto para = [&](const ImVec4 &color, const char *text) {
+			ImGui::SetCursorPosX(x);
+			ImGui::TextColored(color, "%s", text);
+			ImGui::Spacing();
+		};
+		para(mx::bright, "This is a highly experimental build of an original Xbox emulator. Expect crashes and freezes.");
+		para(mx::text, "Many games don't start yet, and the ones that do can stop, slow down, or show missing graphics "
+			"or sound problems at any point. Save in game often, and keep a copy of anything you care about.");
+		para(mx::text, "If something goes wrong, ogbox-boot.log in OGBox's title folder says what happened: please "
+			"include it when you report a problem.");
+		para(mx::label, "OGBox comes with no games, BIOS or keys. Use it only with backups of games you own.");
+		ImGui::PopTextWrapPos();
+		if (now_seconds() - screenSince > 1.0) {
+			const std::string next = "{X} continue";
+			ImDrawList *dl = ImGui::GetWindowDrawList();
+			const float nw = richText(dl, ImVec2(0, 0), next, 0, 1.0f, true);
+			richText(dl, ImVec2((W - nw) * 0.5f, H * 0.82f), next, mx::u32(mx::bright));
 		}
 		endScreen();
 	}
@@ -3717,8 +3770,9 @@ public:
 			}
 			if (ImGui::IsItemFocused()) {
 				section = static_cast<int>(i);
-				help = forGame ? "These apply to this game only; the others follow the app's settings. Changes take effect at the game's next start."
-					: "OGBox's settings, hakuX's every one. Changes take effect at the next game start.";
+				help = std::string(ogbox::sectionHelp(sections[i])) + (forGame
+					? " These apply to this game only; the others follow the app's settings."
+					: "");
 			}
 		}
 		bool storageRow = false, diskRow = false;
@@ -3773,6 +3827,9 @@ public:
 			firstOption = false;
 			if (ImGui::IsItemFocused()) {
 				help = std::string(o.description) + (o.text || o.now ? "" : " Takes effect at the next game start.");
+				if (!o.text) {   // 0.0.1: what it is out of the box
+					help += " Default: " + ogbox::Settings::label(o, o.def) + ".";
+				}
 				int by = 0;
 				if (pressed & PAD_SQUARE) {
 					by = -1;
@@ -4358,6 +4415,7 @@ public:
 			}
 		} else {
 			switch (screen) {
+			case Screen::Notice: drawNotice(); break;
 			case Screen::Boot: drawBoot(); break;
 			case Screen::Library: drawLibrary(); break;
 			case Screen::Settings: drawSettings(); break;

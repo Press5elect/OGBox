@@ -20,8 +20,11 @@
 
 namespace ogbox {
 
-enum class Section { Graphics, Console, Video, Network, Library, Interface, Count };
+/* 0.0.1: Performance and Audio of their own; the order is the settings screen's */
+enum class Section { Graphics, Performance, Audio, Console, Video, Network, Library, Interface, Count };
 const char *sectionName(Section s);
+/* 0.0.1: a line on what a section holds */
+const char *sectionHelp(Section s);
 
 struct Choice {
 	const char *value;

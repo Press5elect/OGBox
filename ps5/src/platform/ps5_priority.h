@@ -69,6 +69,8 @@ void pshakux_priority_set(int role);
 void pshakux_priority_set_thread(pthread_t thread, int role, const char *name, const char *how);
 /* [PS5] ThreadPriorities: off until enabled (as Crux2's setting). */
 void pshakux_priority_enable(int on);
+/* OGBox 0.0.1: the GPU's threads on cores of their own (the setting), and the caller placed again */
+void pshakux_priority_gpu_pin(int on);
 #ifdef __cplusplus
 }
 #endif

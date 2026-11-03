@@ -33,85 +33,98 @@ const std::vector<Choice> kOnOff = { { "0", "Off" }, { "1", "On" } };
 std::vector<Option> makeOptions()
 {
 	std::vector<Option> o;
-	// ---- Graphics (hakuX: Graphics, Display)
+	/* OGBox 0.0.1: the settings in eight sections, each about one thing (the picture, how games
+	 * run, the sound, the Xbox, its video modes, the network, the game list, the menus), with
+	 * shorter words; the keys and values are as before, so settings.txt and a game's own carry
+	 * over. */
+	// ---- Graphics: how the picture looks
 	o.push_back({ "render_scale", Section::Graphics, "Resolution scale",
-		"The game's picture drawn at this many times its resolution. Higher is sharper and heavier.",
-		{ { "1", "1x (native)" }, { "2", "2x the game's resolution" }, { "3", "3x the game's resolution" },
-			{ "4", "4x the game's resolution" }, { "5", "5x (above a 4K screen: heavy)" },
-			{ "6", "6x (above a 4K screen: heaviest)" } },
+		"Draws the game at a multiple of its own resolution: sharper, and heavier. 2x suits a 1080p screen, 4x a 4K "
+		"one.",
+		{ { "1", "1x (original)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x (very heavy)" },
+			{ "6", "6x (heaviest)" } },
 		"1", true });
-	o.push_back({ "uncapped", Section::Graphics, "Uncapped frame rate",
-		"Present every frame at once instead of waiting for the display.", kOnOff, "0", true });
-	// OGBox 0.1.29: hakuX PR #14 (pjperez), the app's "Frame pacing" (on there by default; off
-	// here, as an enhancement is the user's choice).
-	o.push_back({ "frame_pacing", Section::Graphics, "Frame pacing",
-		"Hold the game to the speed frames are drawn at, two frames ahead at most, so the controller "
-		"is read close to what is on screen. Helps a game whose drawing can't keep up (input lag); "
-		"no change when it keeps up.",
-		kOnOff, "0", true });
-	o.push_back({ "async_shaders", Section::Graphics, "Asynchronous shader compilation",
-		"Compile new shaders in the background instead of stopping the game; what needs them can be missing for a few frames.",
-		kOnOff, "1", true });
-	o.push_back({ "prebuild_shaders", Section::Graphics, "Build cached shaders before starting",
-		"Build the shaders a game used before, before it starts, so they are ready when it needs them.", kOnOff, "1",
-		true });
-	o.push_back({ "aspect", Section::Graphics, "Aspect ratio", "The picture's shape on the screen.",
-		{ { "auto", "Auto (the game's own; 16:9 when the console is widescreen)" }, { "4:3", "4:3" },
-			{ "16:9", "16:9 (widescreen games)" }, { "stretch", "Stretch to the screen" } },
-		"auto", true });
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
-		"Smooths jagged edges. FXAA: light and soft. SMAA: sharper edges, a little heavier. SSAA: the game drawn above "
-		"the screen's resolution (raises the resolution scale: 4x on a 1080p screen, 6x on 4K) and averaged down, "
-		"the best and by far the heaviest.",
-		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA (supersampling)" } }, "0", true });
+		"Smooths jagged edges. FXAA: light, a little soft. SMAA: sharper, a little heavier. SSAA: the game drawn above "
+		"the screen's resolution and scaled down (the resolution scale goes up to 4x on a 1080p screen, 6x on 4K): "
+		"the best, and by far the heaviest.",
+		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA (heaviest)" } }, "0", true });
+	o.push_back({ "aspect", Section::Graphics, "Aspect ratio",
+		"The picture's shape. Auto: the game's own (16:9 when the Xbox's screen format is widescreen).",
+		{ { "auto", "Auto" }, { "4:3", "4:3" }, { "16:9", "16:9" }, { "stretch", "Stretch to the screen" } },
+		"auto", true });
+	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
+		"How a picture smaller than the screen is scaled up. Snapdragon GSR keeps edges sharper. (With FXAA on, the "
+		"picture is scaled bilinearly.)",
+		{ { "bilinear", "Bilinear (smooth)" }, { "sgsr", "Snapdragon GSR (sharper)" } }, "bilinear", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
-		"Hide the picture's edges as a TV of the time did (3.75% a side), where some games leave garbage or black "
+		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
 		"borders.", kOnOff, "0", true });
-	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
-		"For a picture smaller than the screen. (With FXAA on, FXAA's picture is scaled bilinearly; SMAA's is scaled by this.)",
-		{ { "bilinear", "Bilinear" }, { "sgsr", "Snapdragon GSR (sharper edges)" } }, "bilinear", true });
-	// ---- Console
+	// ---- Performance: how games run
+	/* 0.0.1: the HLE GPU's two threads (the push-buffer decoder, the renderer) on cores of their own */
+	o.push_back({ "gpu_cores", Section::Performance, "GPU on separate cores",
+		"Runs the Xbox GPU's emulation (its command reader and its renderer) on processor cores of its own, apart "
+		"from the Xbox CPU and everything else. Faster; turn it off for a game that freezes or stutters with it.",
+		kOnOff, "1", true });
+	// OGBox 0.1.29: hakuX PR #14 (pjperez), the app's "Frame pacing" (on there by default; off
+	// here, as an enhancement is the user's choice).
+	o.push_back({ "frame_pacing", Section::Performance, "Frame pacing",
+		"Keeps the game at most two frames ahead of the picture, so the controller is read close to what is on "
+		"screen. Helps the input lag of a game whose drawing can't keep up; no change in the others.",
+		kOnOff, "0", true });
+	o.push_back({ "uncapped", Section::Performance, "Uncapped frame rate",
+		"Shows each frame as soon as it is ready instead of waiting for the display.", kOnOff, "0", true });
+	o.push_back({ "async_shaders", Section::Performance, "Compile shaders in the background",
+		"New shaders are compiled without stopping the game; what needs them can be missing for a few frames. Off: "
+		"the game waits for them (a short stutter).",
+		kOnOff, "1", true });
+	o.push_back({ "prebuild_shaders", Section::Performance, "Build cached shaders at start",
+		"Builds the shaders a game used before while it starts, so they are ready when it needs them.", kOnOff, "1",
+		true });
+	// ---- Audio (0.1.59's APU, hakuX-lr's: its DSP programs run, or the fast mix; the voices' resampler)
+	o.push_back({ "audio_dsp", Section::Audio, "Audio processing",
+		"Fast: the game's voices mixed directly, as hakuX does. Full DSP: the Xbox's own audio programs run (effects, "
+		"reverb, the mix as the console makes it): accurate, much heavier, and some games slow down.",
+		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
+	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
+		"How each voice is brought to the output rate. Sinc: clean highs. Linear: lighter, a little dull.",
+		{ { "sinc", "Sinc" }, { "linear", "Linear" } }, "sinc", true });
+	// ---- Console: the Xbox itself
 	o.push_back({ "language", Section::Console, "Language",
 		"Games show their text and speech in it where they have it; the others keep their own.",
 		{ { "auto", "Auto (English)" }, { "en", "English" }, { "ja", "Japanese" }, { "de", "Deutsch" },
 			{ "fr", "Fran\xC3\xA7" "ais" }, { "es", "Espa\xC3\xB1ol" }, { "it", "Italiano" }, { "ko", "Korean" },
 			{ "zh", "Chinese" }, { "pt", "Portugu\xC3\xAAs" } },
 		"auto", true });
-	o.push_back({ "console_timing", Section::Console, "Console drive timing",
-		"Disc and hard disk reads take time, a quarter of the console's at its fastest, so a game's other threads run while it loads, as games expect (off, some can freeze). Loads are slower.",
-		kOnOff, "1", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
-		"The Xbox's RAM. Auto: 64 MB as the console has it, 128 MB (the RAM upgrade) when a patch whose notes say it needs 128 MB is on. 128 MB: always (some games and patches hang with it).",
-		{ { "auto", "Auto" }, { "64", "64 MB (the console's)" }, { "128", "128 MB (the RAM upgrade)" } }, "auto", true });
-	/* 0.1.59: the APU (hakuX-lr's): its DSP programs run, or the fast mix; the voices' resampler */
-	o.push_back({ "audio_dsp", Section::Console, "Audio processing",
-		"Fast: the voices mixed directly, as hakuX does. Full DSP: the Xbox's own audio programs run (its effects, "
-		"reverb, the game's mix as the console makes it), much heavier: some games slow down.",
-		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
-	o.push_back({ "audio_resampler", Section::Console, "Audio resampler",
-		"How each voice is brought to the output rate. Sinc: band-limited, clean highs. Linear: lighter, a little dull "
-		"and aliased.",
-		{ { "sinc", "Sinc" }, { "linear", "Linear" } }, "sinc", true });
+		"The Xbox's RAM. Auto: 64 MB as the console has, 128 MB (the RAM upgrade) when a patch that needs it is on. "
+		"128 MB: always (a few games hang with it).",
+		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
+	o.push_back({ "console_timing", Section::Console, "Drive timing",
+		"Disc and hard disk reads take time as on the console (a quarter of it at its fastest), so a game's other "
+		"threads run while it loads, as games expect. Off: faster loads, but some games freeze.",
+		kOnOff, "1", true });
 	{
-		Option days{ "clock_days", Section::Console, "Clock: days from the console's time",
-			"Games date their saves by it, and some hold events on given days. 0 with 0 hours: the PS5's time.", {},
+		Option days{ "clock_days", Section::Console, "Clock offset: days",
+			"Moves the Xbox's clock from the PS5's time. Games date their saves by it, and some hold events on given "
+			"days. 0 days and 0 hours: the PS5's time.", {},
 			"0", false };
 		days.minimum = -3650;
 		days.maximum = 3650;
 		days.unit = " days";
 		o.push_back(days);
-		Option hours{ "clock_hours", Section::Console, "Clock: hours from the console's time",
+		Option hours{ "clock_hours", Section::Console, "Clock offset: hours",
 			"Added to the days above.", {}, "0", false };
 		hours.minimum = -23;
 		hours.maximum = 23;
 		hours.unit = " hours";
 		o.push_back(hours);
 	}
-	// ---- Console video
+	// ---- Video modes: the Xbox's own video settings
 	o.push_back({ "screen_format", Section::Video, "Screen format",
-		"The Xbox's own video settings, as its dashboard sets them. Games that support a mode use it.",
+		"The TV the Xbox thinks it has. Games that support widescreen or letterbox use it.",
 		{ { "normal", "Normal (4:3)" }, { "letterbox", "Letterbox" }, { "widescreen", "Widescreen (16:9)" } },
 		"normal", true });
 	o.push_back({ "480p", Section::Video, "480p", "Progressive 640x480 instead of interlaced.", kOnOff, "1", true });
@@ -121,7 +134,7 @@ std::vector<Option> makeOptions()
 		"1920x1080 in the few games that offer it. Much heavier: use resolution scale 1x.", kOnOff, "0", true });
 	o.push_back({ "pal60", Section::Video, "PAL 60 Hz",
 		"European games run at 60 Hz instead of 50 Hz where they offer it.", kOnOff, "0", true });
-	o.push_back({ "av_pack", Section::Video, "Video cable", "The cable the console thinks it has.",
+	o.push_back({ "av_pack", Section::Video, "Video cable", "The cable the Xbox thinks it has.",
 		{ { "hdtv", "HDTV (component): all modes" }, { "standard", "Standard AV (composite): 480i only" },
 			{ "svideo", "S-Video: 480i only" } },
 		"hdtv", true });
@@ -181,30 +194,33 @@ std::vector<Option> makeOptions()
 		place("list_details", "Details panel", "The selected disc's details on the right: its cover, its database "
 			"entry (Redump's name, region, languages, serial), its mods and patches.", kOnOff, "1");
 	}
-	// ---- Interface (OGBox's)
+	// ---- Interface: OGBox's menus
 	{
 		/* 0.1.52 */
 		Option theme{ "theme", Section::Interface, "Theme",
-			"How the menus look. Code: black, with the falling code. Emerald: green, glowing light streaks and glossy menu bars.",
+			"How the menus look. Code: black, with the falling code. Emerald: green, with glowing light streaks and "
+			"glossy bars.",
 			{ { "code", "Code" }, { "emerald", "Emerald" } }, "code", false };
 		theme.now = true;
 		o.push_back(theme);
 	}
 	{
-		/* 0.1.53 */
-		Option qm{ "quick_menu", Section::Interface, "Quick menu button",
-			"Which button opens the quick menu in a game (save states, the game's settings, quit). OPTIONS: the Xbox's Start and Back are the touch pad's right and left halves. OPTIONS held: a short press is the Xbox's Start, held half a second it opens the menu; the touch pad is Back.",
-			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" } }, "options", false };
-		qm.now = true;
-		o.push_back(qm);
-	}
-	o.push_back({ "show_fps", Section::Interface, "Show FPS counter",
-		"Frame rate and frame time overlay while playing.", kOnOff, "1", false });
-	{
 		Option rain{ "rain", Section::Interface, "Code rain",
 			"The falling code behind the game list and the menus (the Code theme).", kOnOff, "1", false };
 		rain.now = true;
 		o.push_back(rain);
+	}
+	o.push_back({ "show_fps", Section::Interface, "FPS counter",
+		"The frame rate and frame time in a corner while playing.", kOnOff, "1", false });
+	{
+		/* 0.1.53 */
+		Option qm{ "quick_menu", Section::Interface, "Quick menu button",
+			"The button that opens the quick menu in a game (save states, the game's settings, quit). OPTIONS: the "
+			"Xbox's Start and Back are the touch pad's right and left halves. OPTIONS held: a short press is Start, "
+			"held half a second it opens the menu; the touch pad is Back.",
+			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" } }, "options", false };
+		qm.now = true;
+		o.push_back(qm);
 	}
 	return o;
 }
@@ -271,11 +287,28 @@ const char *sectionName(Section s)
 {
 	switch (s) {
 	case Section::Graphics: return "Graphics";
+	case Section::Performance: return "Performance";
+	case Section::Audio: return "Audio";
 	case Section::Console: return "Console";
-	case Section::Video: return "Console video";
+	case Section::Video: return "Video modes";
 	case Section::Network: return "Network";
 	case Section::Library: return "Game list";
 	case Section::Interface: return "Interface";
+	default: return "";
+	}
+}
+
+const char *sectionHelp(Section s)
+{
+	switch (s) {
+	case Section::Graphics: return "How the picture looks: its resolution, anti-aliasing, shape and scaling.";
+	case Section::Performance: return "How games run: the processor cores, frame pacing and shaders.";
+	case Section::Audio: return "How the Xbox's sound is made.";
+	case Section::Console: return "The Xbox itself: its language, memory, drive timing and clock.";
+	case Section::Video: return "The Xbox's own video settings, as its dashboard sets them. Games that support a mode use it.";
+	case Section::Network: return "Xbox Live through Insignia, or system link with consoles on your network or over XLink Kai.";
+	case Section::Library: return "Which places the game list shows, and how it looks. Changes apply at once.";
+	case Section::Interface: return "OGBox's menus: the theme, the FPS counter and the quick menu button.";
 	default: return "";
 	}
 }
