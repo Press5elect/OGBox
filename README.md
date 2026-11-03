@@ -195,6 +195,13 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.56 (bring-up)
+
+Fixed
+- Games whose loading screen ran forever without loading: a timer function at the start of a
+  game's code read the PS5's clock while the matching one read the Xbox's, so the game never
+  thought it had time to load.
+
 ### 0.1.55 (bring-up)
 
 Fixed
