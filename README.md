@@ -4,6 +4,10 @@
 emulator, to the PlayStation 5, as a homebrew title (`PPSA99251`) for a jailbroken console.**
 OGBox by Press5elect. It was called PSHakuX up to 0.1.5.
 
+**Latest release: [v0.0.1](https://github.com/Press5elect/OGBox/releases/tag/v0.0.1)**, the first
+(a pre-release: highly experimental). Download `OGBox-v0.0.1.zip` there; later versions install
+themselves (Settings > Updates).
+
 OGBox is built on hakuX (rfandango and contributors, GPL-3.0-or-later) and on the parts of hakuX
 that come from xemu (the MCPX APU, LGPL-2.1-or-later and GPL-2.0-or-later). It is not hakuX's or
 xemu's work and neither project supports it.
