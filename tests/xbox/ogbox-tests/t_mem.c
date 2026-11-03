@@ -97,6 +97,60 @@ void test_mem(void)
         }
     }
 
+    /* 600 regions of one page each, then all that is left in one region: the Xbox hands memory out
+     * in 4 KiB pages, so the large one fits whatever the host's pages (OGBox 0.1.58: Forza's map,
+     * which on the PS5's 16 KiB pages ran out with 5 MiB still free); and one page more doesn't */
+    {
+        enum { SMALL = 600 };
+        static PVOID small[SMALL];
+        unsigned made = 0;
+        for (unsigned i = 0; i < SMALL; i++) {
+            PVOID b = NULL;
+            SIZE_T sz = 4096;
+            if (!NT_SUCCESS(NtAllocateVirtualMemory(&b, 0, &sz, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))) {
+                break;
+            }
+            ((volatile uint8_t *)b)[0] = (uint8_t)i;
+            small[made++] = b;
+        }
+        MM_STATISTICS m2;
+        memset(&m2, 0, sizeof(m2));
+        m2.Length = sizeof(m2);
+        MmQueryStatistics(&m2);
+        /* left for the large one: what is available less a margin for the page tables it needs */
+        const unsigned long avail = (unsigned long)m2.AvailablePages;
+        const unsigned long want = avail > 64 ? avail - 64 : 0;
+        PVOID big = NULL;
+        SIZE_T bsz = want * 4096;
+        const NTSTATUS st = want ? NtAllocateVirtualMemory(&big, 0, &bsz, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+                                 : 0xC0000017;
+        unsigned bad = 0;
+        for (unsigned i = 0; i < made; i++) {
+            bad += ((volatile uint8_t *)small[i])[0] != (uint8_t)i;
+        }
+        check(made == SMALL && NT_SUCCESS(st) && bad == 0,
+              "%u one-page regions (%u), then %lu KB in one (of %lu available): status %08lx, %u small ones changed",
+              made, (unsigned)SMALL, want * 4, avail * 4, (unsigned long)st, bad);
+        /* past the 64 MB: twice what is left can't be had */
+        if (NT_SUCCESS(st)) {
+            MmQueryStatistics(&m2);
+            PVOID over = NULL;
+            SIZE_T osz = ((SIZE_T)m2.AvailablePages + 256) * 4096;
+            const NTSTATUS st2 = NtAllocateVirtualMemory(&over, 0, &osz, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            check(!NT_SUCCESS(st2), "1 MB more than available: status %08lx (fails)", (unsigned long)st2);
+            if (NT_SUCCESS(st2)) {
+                SIZE_T fs = 0;
+                NtFreeVirtualMemory(&over, &fs, MEM_RELEASE);
+            }
+            SIZE_T fs = 0;
+            NtFreeVirtualMemory(&big, &fs, MEM_RELEASE);
+        }
+        for (unsigned i = 0; i < made; i++) {
+            SIZE_T fs = 0;
+            NtFreeVirtualMemory(&small[i], &fs, MEM_RELEASE);
+        }
+    }
+
     /* the kernel's pool */
     {
         uint8_t *p = ExAllocatePool(64 * 1024);
