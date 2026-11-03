@@ -2529,7 +2529,7 @@ public:
 				help = std::string(t.author[0] ? t.author : "A trainer") + ". " + (t.xbtf ? "XBTF" : "ETM") + ", " +
 					std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options") + ": " + t.rel + ". ";
 				if (other) {
-					char d[96];
+					char d[192];   // 0.0.1: 96 cut the sentence short
 					std::snprintf(d, sizeof(d), "It was made for another release of the game (its XBE dated %08X, this disc's "
 						"%08X): it would find nothing to change. ", static_cast<unsigned>(t.xbe_time), static_cast<unsigned>(tv.xbeTime));
 					help += d;
