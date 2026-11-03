@@ -195,6 +195,12 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.57 (bring-up)
+
+Fixed
+- Long loads in games that rebuild a cache file on the hard disk each time: the old file is now
+  taken back at once instead of being copied back byte by byte.
+
 ### 0.1.56 (bring-up)
 
 Fixed

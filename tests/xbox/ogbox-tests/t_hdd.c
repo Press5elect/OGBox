@@ -189,6 +189,24 @@ static void partition(const char *path, const char *name)
     }
     NtClose(h);
 
+    /* opened again with an overwrite (empty), then grown back with SetEndOfFile: FATX's clusters
+     * still hold the old bytes and the file reads them again (Forza's unpacked caches) */
+    {
+        st = open_file(path, &h, FILE_OVERWRITE);
+        const uint64_t emptied = NT_SUCCESS(st) ? file_size(h) : ~0ull;
+        NTSTATUS st2 = st;
+        if (NT_SUCCESS(st)) {
+            FILE_END_OF_FILE_INFORMATION eof = {.EndOfFile = {.QuadPart = g_size}};
+            IO_STATUS_BLOCK iosb;
+            st2 = NtSetInformationFile(h, &iosb, &eof, sizeof(eof), FileEndOfFileInformation);
+            bad = verify(h);
+            NtClose(h);
+        }
+        check(NT_SUCCESS(st2) && emptied == 0 && bad < 0,
+              "%s: overwritten, then grown back: status %08lx, size after the overwrite %llu, first wrong byte %lld",
+              name, (unsigned long)st2, (unsigned long long)emptied, (long long)bad);
+    }
+
     /* gone */
     {
         ANSI_STRING an;
