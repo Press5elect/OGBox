@@ -111,6 +111,7 @@ def pins() -> dict:
         "@nv2a_vsh_cpu": read(deps / "nv2a_vsh_cpu/.pshakux-revision"),
         "@xxhash": read(deps / "xxhash/.pshakux-revision"),
         "@libnfs": read(deps / "libnfs/.pshakux-revision"),
+        "@libchdr": read(deps / "libchdr/.pshakux-revision"),
     }
 
 

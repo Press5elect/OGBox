@@ -559,6 +559,41 @@
     "url": "https://github.com/iryoku/smaa",
     "revision": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
    }
+  },
+  {
+   "id": "libchdr",
+   "name": "libchdr (CHD disc images: hakuX-native's native/core/chd.c reads them through it), with its LZMA SDK decoder (deps/lzma-26.02), zstd's decoder (deps/zstd-1.5.7) and dr_flac",
+   "licence": "BSD-3-Clause (libchdr); the LZMA SDK public domain; zstd BSD-3-Clause; dr_flac public domain (or MIT-0)",
+   "copyright": "Romain Tisserand and the libchdr contributors (from MAME's chd code, Aaron Giles); Igor Pavlov (LZMA SDK); Meta Platforms, Inc. and affiliates (zstd); David Reid (dr_flac)",
+   "modifications": "none; built with the console's zlib (CHDR_SYSTEM_ZLIB) and LZMA's C decoder",
+   "texts": {
+    "libchdr-LICENSE.txt": ".deps/src/libchdr/LICENSE.txt",
+    "LZMA-SDK-LICENSE.txt": ".deps/src/libchdr/deps/lzma-26.02/LICENSE"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/rtissera/libchdr",
+    "revision": "@libchdr"
+   }
+  },
+  {
+   "id": "hakux-lr",
+   "name": "hakuX-lr (PortareOS's hakuX fork): its HLE GPU accuracy work (two-sided lighting, colour sign and key, convolution filters, line width, dithering, antialiasing control, window clip, DOT_ZW / BRDF, texture formats), its APU (the sinc resampler, SSE2/AVX2 mixing, stereo downmix and 3D routing, guards), CHD images, disc, DVD security, cheat, SEH and kernel-pool fixes, merged into hakuX-native",
+   "licence": "GPL-3.0-or-later",
+   "copyright": "PortareOS (portare-ch) and the hakuX-lr contributors; rfandango and the hakuX contributors",
+   "modifications": "taken commit by commit onto hakuX-native's native CPU by Press5elect, 2026: its libretro core, Linux front end, KVM backend and DSP56300 JIT (a Rust crate) left out",
+   "texts": {
+    "hakuX-COPYING.txt": "build/hakux-src/COPYING"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/portare-ch/hakuX-lr",
+    "revision": "3cc0d0ccab"
+   }
   }
  ]
 }

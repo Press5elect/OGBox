@@ -19,7 +19,7 @@
 #     nv2a_vsh_cpu, the vertex shader interpreter, at 89315e8, the revision xemu pins
 #     (subprojects/nv2a_vsh_cpu.wrap; hakuX names "561fe80", which neither xemu-project's nor
 #     abaire's repository has). xxHash is its header, v0.8.4, its newest release (hakuX takes FEX's copy, which
-#     OGBox does not have).
+#     OGBox does not have). libchdr (47d7941, hakuX-lr's pin) for CHD disc images.
 #
 # Everything lands in .deps/ (ignored): src/ the sources, ports/ the prefix the build reads,
 # build/ the build trees and their logs. Prints nothing on success but the steps it took.
@@ -82,6 +82,9 @@ fetch() {
 fetch libslirp https://gitlab.freedesktop.org/slirp/libslirp.git 26be815b86e8d49add8c9a8b320239b9594ff03d
 fetch nv2a_vsh_cpu https://github.com/xemu-project/nv2a_vsh_cpu 89315e8eff62605d2a96fe14429ebeac1dacaa8c
 fetch xxhash https://github.com/Cyan4973/xxHash refs/tags/v0.8.4
+# libchdr: hakuX-lr's pin (tools/native/linux-deps.json), master's newest (2026-10-11): CHD disc
+# images (hakuX-native's native/core/chd.c), with its LZMA, zstd and FLAC decoders.
+fetch libchdr https://github.com/rtissera/libchdr 47d794151b2b64f6aba60304e6480f4f5a2bc24b
 # libnfs: Crux2's pin (its 8.0.0 release and the four commits after it on master up to 7613236).
 fetch libnfs https://github.com/sahlberg/libnfs 7613236464317bee2d9636f087f995148de4db27
 

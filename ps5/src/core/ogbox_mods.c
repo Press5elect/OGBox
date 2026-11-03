@@ -16,6 +16,7 @@
 
 #include "native/core/mods.h"
 #include "native/core/xdvdfs.h"
+#include "native/core/chd.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -192,6 +193,16 @@ static void free_names(char **names, size_t n)
 
 /* ---- the game's key ---- */
 
+/* 0.1.59: a disc opened here on a descriptor someone else closes: its CHD reader (hunk cache and
+ * all) freed, the descriptor left open (nc_disc_close would close it too) */
+static void disc_release(NcDisc *d)
+{
+    if (d->chd) {
+        nc_chd_close(d->chd);
+        d->chd = NULL;
+    }
+}
+
 static uint32_t le32(const uint8_t *p)
 {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -207,8 +218,10 @@ static bool game_key(int disc_fd, char *key, size_t n)
     }
     NcDiscFile f;
     uint8_t h[0x1000];
-    if (!nc_disc_find(&disc, "\\default.xbe", &f) || f.size < sizeof(h) ||
-        !nc_disc_read(&disc, &f, 0, h, sizeof(h))) {
+    const bool read = nc_disc_find(&disc, "\\default.xbe", &f) && f.size >= sizeof(h) &&
+                      nc_disc_read(&disc, &f, 0, h, sizeof(h));
+    disc_release(&disc);
+    if (!read) {
         return false;
     }
     const uint32_t base = le32(h + 0x104), cert_va = le32(h + 0x118);
@@ -539,6 +552,7 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
     if (write_manifest(manifest, game_dir[0] ? game_dir : NULL, have_disc ? &disc : NULL, key, work_dir)) {
         nc_mods_set_manifest(manifest);
     }
+    disc_release(&disc);
 }
 
 /* ---- OGBox 0.1.26: the game list's questions ---- */
@@ -626,6 +640,7 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
             }
         }
     }
+    disc_release(&disc);
     if (virt) {
         ps5vfs_disc_close(fd);
     } else {
@@ -658,6 +673,7 @@ bool ogbox_game_xbe_crc(const char *image, uint32_t *crc)
         *crc = ogbox_crc32(buf, f.size);
     }
     free(buf);
+    disc_release(&disc);
     if (virt) {
         ps5vfs_disc_close(fd);
     } else {

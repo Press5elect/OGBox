@@ -312,7 +312,7 @@ std::string stemOf(const std::string &fileName)
 	const size_t dot = s.rfind('.');
 	if (dot != std::string::npos) {
 		const std::string ext = lower(s.substr(dot + 1));
-		if (ext == "iso" || ext == "xiso" || ext == "png") {
+		if (ext == "iso" || ext == "xiso" || ext == "chd" || ext == "png") {
 			s.erase(dot);
 		}
 	}

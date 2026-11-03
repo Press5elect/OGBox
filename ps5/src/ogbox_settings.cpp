@@ -65,6 +65,10 @@ std::vector<Option> makeOptions()
 		"the screen's resolution (raises the resolution scale: 4x on a 1080p screen, 6x on 4K) and averaged down, "
 		"the best and by far the heaviest.",
 		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA (supersampling)" } }, "0", true });
+	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
+	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
+		"Hide the picture's edges as a TV of the time did (3.75% a side), where some games leave garbage or black "
+		"borders.", kOnOff, "0", true });
 	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
 		"For a picture smaller than the screen. (With FXAA on, FXAA's picture is scaled bilinearly; SMAA's is scaled by this.)",
 		{ { "bilinear", "Bilinear" }, { "sgsr", "Snapdragon GSR (sharper edges)" } }, "bilinear", true });
@@ -81,6 +85,15 @@ std::vector<Option> makeOptions()
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 64 MB as the console has it, 128 MB (the RAM upgrade) when a patch whose notes say it needs 128 MB is on. 128 MB: always (some games and patches hang with it).",
 		{ { "auto", "Auto" }, { "64", "64 MB (the console's)" }, { "128", "128 MB (the RAM upgrade)" } }, "auto", true });
+	/* 0.1.59: the APU (hakuX-lr's): its DSP programs run, or the fast mix; the voices' resampler */
+	o.push_back({ "audio_dsp", Section::Console, "Audio processing",
+		"Fast: the voices mixed directly, as hakuX does. Full DSP: the Xbox's own audio programs run (its effects, "
+		"reverb, the game's mix as the console makes it), much heavier: some games slow down.",
+		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
+	o.push_back({ "audio_resampler", Section::Console, "Audio resampler",
+		"How each voice is brought to the output rate. Sinc: band-limited, clean highs. Linear: lighter, a little dull "
+		"and aliased.",
+		{ { "sinc", "Sinc" }, { "linear", "Linear" } }, "sinc", true });
 	{
 		Option days{ "clock_days", Section::Console, "Clock: days from the console's time",
 			"Games date their saves by it, and some hold events on given days. 0 with 0 hours: the PS5's time.", {},
@@ -485,6 +498,13 @@ std::vector<std::string> Settings::coreArgs() const
 	const std::string ram = value("console_ram");
 	if (ram == "128" || (ram == "auto" && !gameKey.empty() && ogbox_patches_need_128(gameKey.c_str()))) {
 		a.push_back("NC_RAM_MB=128");
+	}
+	// 0.1.59: the APU (native/dev/apu/apu.c config_init)
+	if (value("audio_dsp") == "full") {
+		a.push_back("NC_APU_DSP=1");
+	}
+	if (value("audio_resampler") == "linear") {
+		a.push_back("NC_APU_RESAMPLER=linear");
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");

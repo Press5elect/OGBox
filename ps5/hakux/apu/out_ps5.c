@@ -148,6 +148,16 @@ int apu_out_open(int capacity_bytes, int samples, pthread_cond_t *wake)
     return OUT_GRAIN * OUT_FRAME_BYTES;
 }
 
+/* 0.1.59: hakuX-lr's APU stops its output (nc_dev_apu_stop; a core restarted in its process, which
+ * OGBox, relaunching, never does): the port closed, the thread left draining without sound. */
+void apu_out_close(void)
+{
+    const int32_t port = __atomic_exchange_n(&g_out.port, -1, __ATOMIC_ACQ_REL);
+    if (port >= 0) {
+        sceAudioOutClose(port);
+    }
+}
+
 /* The title in front or not: silence meanwhile (the ring kept). */
 void nc_audio_set_paused(bool on)
 {

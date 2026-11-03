@@ -36,7 +36,7 @@ foreach(required native/CMakeLists.txt native/core/core.c hw/xbox/hle/hle.c)
 		message(FATAL_ERROR "no hakuX source in ${HAKUX_DIR} (${required}): run ps5/tools/prepare-hakux.sh")
 	endif()
 endforeach()
-foreach(required libslirp/src/slirp.c nv2a_vsh_cpu/src/nv2a_vsh_cpu.c xxhash/xxhash.h)
+foreach(required libslirp/src/slirp.c nv2a_vsh_cpu/src/nv2a_vsh_cpu.c xxhash/xxhash.h libchdr/src/libchdr_chd.c)
 	if(NOT EXISTS ${PSHAKUX_DEPS}/${required})
 		message(FATAL_ERROR "no ${required} in ${PSHAKUX_DEPS}: run ps5/tools/build-deps.sh")
 	endif()
@@ -99,7 +99,7 @@ target_compile_options(hakux_slirp PRIVATE -w)
 
 # ---- the native core (hakuX's hakux_native), without native/cpu/cpu.cpp (FEX)
 set(hakux_core_sources
-	core/log.c core/jmp.c core/vm.c core/xdvdfs.c core/xbe_load.c core/mods.c core/options.c
+	core/log.c core/jmp.c core/vm.c core/xdvdfs.c core/chd.c core/xbe_load.c core/mods.c core/options.c
 	core/cheats.c core/trainer.c core/memscan.c core/core.c core/mmio.c core/irq.c
 	dev/nv2a.c dev/ports.c dev/usb.c dev/usb_hub.c dev/xid.c dev/ohci.c dev/aci.c dev/nvnet.c
 	net/net.c net/lan.c net/kai.c net/nat.c
@@ -170,8 +170,27 @@ if(NC_CPU STREQUAL "native" AND EXISTS ${HAKUX_DIR}/native/cpu/cpu_native.c)
 endif()
 list(APPEND hakux_core_sources ${PSHAKUX_HX}/cpu/cpu_stub.c)
 message(STATUS "OGBox: hakuX from ${HAKUX_DIR}; CPU backend ${PSHAKUX_CPU}${PSHAKUX_CPU_NOTE}")
+# ---- libchdr (rtissera/libchdr, BSD-3-Clause): CHD disc images (native/core/chd.c), its decoders
+# over the RADV archive's zlib, its own LZMA (the C decoder: the optimised one is arm64's), zstd
+set(NC_CHDR ${PSHAKUX_DEPS}/libchdr)
+file(GLOB NC_CHDR_LZMA LIST_DIRECTORIES true "${NC_CHDR}/deps/lzma-*")
+file(GLOB NC_CHDR_ZSTD LIST_DIRECTORIES true "${NC_CHDR}/deps/zstd-*")
+add_library(hakux_chdr OBJECT
+	${NC_CHDR}/src/libchdr_bitstream.c ${NC_CHDR}/src/libchdr_cdrom.c ${NC_CHDR}/src/libchdr_chd.c
+	${NC_CHDR}/src/libchdr_codec_avhuff.c ${NC_CHDR}/src/libchdr_codec_cdfl.c ${NC_CHDR}/src/libchdr_codec_cdlz.c
+	${NC_CHDR}/src/libchdr_codec_cdzl.c ${NC_CHDR}/src/libchdr_codec_cdzs.c ${NC_CHDR}/src/libchdr_codec_flac.c
+	${NC_CHDR}/src/libchdr_codec_huff.c ${NC_CHDR}/src/libchdr_codec_lzma.c ${NC_CHDR}/src/libchdr_codec_zlib.c
+	${NC_CHDR}/src/libchdr_codec_zstd.c ${NC_CHDR}/src/libchdr_flac.c ${NC_CHDR}/src/libchdr_huffman.c
+	${NC_CHDR_LZMA}/src/LzmaDec.c ${NC_CHDR_ZSTD}/zstddeclib.c)
+set_target_properties(hakux_chdr PROPERTIES C_STANDARD 11)
+target_include_directories(hakux_chdr PRIVATE ${NC_CHDR}/include ${NC_CHDR_LZMA}/include ${ROOT}/.deps/ports/include)
+target_compile_definitions(hakux_chdr PRIVATE CHDR_SYSTEM_ZLIB)
+target_compile_options(hakux_chdr PRIVATE -w)
+
 add_library(hakux_core OBJECT ${hakux_core_sources})
 hakux_target(hakux_core)
+target_include_directories(hakux_core PRIVATE ${NC_CHDR}/include)
+target_compile_definitions(hakux_core PRIVATE NC_HAVE_CHD)
 target_include_directories(hakux_core PRIVATE ${PSHAKUX_DEPS}/xxhash ${CMAKE_BINARY_DIR}/slirp
 	${HAKUX_DIR}/native/compat/glib)
 target_compile_definitions(hakux_core PRIVATE HLE_HOST_TEST)
@@ -186,7 +205,7 @@ add_library(hakux_hle OBJECT
 	${NC_HLE}/front/arena.c ${NC_HLE}/front/fe.c ${NC_HLE}/front/ring.c
 	${NC_HLE}/mem/barrier.c ${NC_HLE}/mem/guestmem.c ${NC_HLE}/mem/pageuse.c
 	${NC_HLE}/pb/kelvin.c ${NC_HLE}/pb/pbdraw.c ${NC_HLE}/pb/pbmode.c ${NC_HLE}/pb/pbres.c
-	${NC_HLE}/pb/pbstate.c ${NC_HLE}/pb/pusher.c
+	${NC_HLE}/pb/pbstate.c ${NC_HLE}/pb/pusher.c ${NC_HLE}/pb/objslot.c ${NC_HLE}/pb/wclip.c
 	${NC_HLE}/shader/ff_gen.c ${NC_HLE}/shader/ffhw.c ${NC_HLE}/shader/glsl_compile.c
 	${NC_HLE}/shader/psh.c ${NC_HLE}/shader/vsh.c
 	${NC_HLE}/tex/xdk_res.c ${NC_HLE}/tex/xg_swizzle.c
@@ -213,9 +232,12 @@ set(NC_APU ${HAKUX_DIR}/native/dev/apu)
 add_library(hakux_apu OBJECT
 	${NC_APU}/apu.c ${NC_APU}/state.c
 	${NC_APU}/dsp/debug.c ${NC_APU}/dsp/dsp.c ${NC_APU}/dsp/dsp_cpu.c ${NC_APU}/dsp/dsp_dma.c ${NC_APU}/dsp/gp_ep.c
-	${NC_APU}/vp/resample.c ${NC_APU}/vp/vp.c
+	${NC_APU}/dsp/gp_probe.c
+	${NC_APU}/vp/resample.c ${NC_APU}/vp/resample_sinc.c ${NC_APU}/vp/simd.c ${NC_APU}/vp/vp.c
 	${PSHAKUX_HX}/apu/out_ps5.c)
 hakux_target(hakux_apu)
+# (hakuX-lr's DSP56300 JIT is a Rust crate: not built for the console; the DSP interpreter runs)
+target_compile_definitions(hakux_apu PRIVATE NC_HAVE_DSP_JIT=0)
 target_include_directories(hakux_apu PRIVATE ${HAKUX_DIR}/native/compat/glib)
 target_compile_options(hakux_apu PRIVATE -Wno-unused-variable)
 
@@ -225,6 +247,6 @@ hakux_target(hakux_ps5)
 target_include_directories(hakux_ps5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 set(PSHAKUX_HAKUX_OBJECTS
-	$<TARGET_OBJECTS:hakux_glib> $<TARGET_OBJECTS:hakux_slirp> $<TARGET_OBJECTS:hakux_core>
+	$<TARGET_OBJECTS:hakux_glib> $<TARGET_OBJECTS:hakux_slirp> $<TARGET_OBJECTS:hakux_chdr> $<TARGET_OBJECTS:hakux_core>
 	$<TARGET_OBJECTS:hakux_hle> $<TARGET_OBJECTS:hakux_apu> $<TARGET_OBJECTS:hakux_ps5>)
-set(PSHAKUX_HAKUX_TARGETS hakux_glib hakux_slirp hakux_core hakux_hle hakux_apu hakux_ps5)
+set(PSHAKUX_HAKUX_TARGETS hakux_glib hakux_slirp hakux_chdr hakux_core hakux_hle hakux_apu hakux_ps5)

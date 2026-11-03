@@ -11,7 +11,7 @@
  *    arguments. It browses the console's internal storage (/data), USB drives (/mnt/usb0-7),
  *    extended storage (/mnt/ext0-1) and network shares (SMB or NFS, from
  *    /data/ogbox/network.cfg, Crux2's format: src/platform/vfs/ps5_vfs.h), showing folders and
- *    Xbox disc images (.iso, .xiso). D-pad to move, CROSS to open a folder or start a game,
+ *    Xbox disc images (.iso, .xiso, .chd). D-pad to move, CROSS to open a folder or start a game,
  *    CIRCLE for the folder above. The folder last opened is remembered (/data/ogbox/library.txt).
  *    Starting a game relaunches the title with --boot <image> (src/platform/ps5_relaunch.h): the
  *    game boots in a fresh instance, the one way hakuX's core is known to start.
@@ -344,7 +344,7 @@ bool isDiscImage(const std::string &name)
 		return false;
 	}
 	const char *ext = name.c_str() + dot + 1;
-	return !strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso");
+	return !strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso") || !strcasecmp(ext, "chd");   // 0.1.59: CHD (chdman createdvd)
 }
 
 std::string sizeText(int64_t bytes)
@@ -946,6 +946,7 @@ public:
 	 * into images of its own, then shown as the picture is) and SSAA (the resolution scale raised
 	 * above the screen, the picture averaged down over every texel a pixel covers) */
 	bool smaaOn{ false }, ssaaOn{ false };
+	bool cropOn{ false };       // 0.1.59: the overscan cropped (3/80 a side, hakuX-lr's)
 	struct AaImage {
 		VkImage image{ VK_NULL_HANDLE };
 		VkDeviceMemory memory{ VK_NULL_HANDLE };
@@ -1448,6 +1449,7 @@ public:
 		runKey = key;   // 0.1.53: the quick menu's states and settings
 		themeEmerald = prefs.global("theme") == "emerald";   // 0.1.52: the in-game panels too
 		aspectMode = prefs.value("aspect");
+		cropOn = prefs.on("crop_overscan");   // 0.1.59
 		/* 0.1.58: "fxaa" is the anti-aliasing: 0 off, 1 FXAA (as before), smaa, ssaa */
 		fxaaOn = prefs.on("fxaa");
 		smaaOn = prefs.value("fxaa") == "smaa";
@@ -1472,8 +1474,8 @@ public:
 			argv.push_back(option.c_str());
 			said += " " + option;
 		}
-		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s, anti-aliasing %s, upscaling %s, FPS counter %s",
-			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(),
+		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s%s, anti-aliasing %s, upscaling %s, FPS counter %s",
+			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
 			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaOn ? "SSAA" : "off",
 			sgsrOn ? "SGSR" : "bilinear", showFps ? "on" : "off");
 		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
@@ -2155,14 +2157,20 @@ public:
 			const float x = std::floor((static_cast<float>(width) - w) * 0.5f);
 			const float y = splash ? std::floor(static_cast<float>(height) * 0.12f) : std::floor((static_cast<float>(height) - h) * 0.5f);
 			VkViewport viewport{ x, y, w, h, 0.0f, 1.0f };
+			if (cropOn && havePicture && !showingLogo) {
+				/* the overscan cropped: the picture drawn 1 / (1 - 2 * 3/80) larger about its
+				 * middle, the scissor keeping its place (its shape kept: both sides alike) */
+				const float k = 1.0f / (1.0f - 2.0f * 3.0f / 80.0f);
+				viewport = VkViewport{ x - (k - 1.0f) * w * 0.5f, y - (k - 1.0f) * h * 0.5f, w * k, h * k, 0.0f, 1.0f };
+			}
 			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
 			VkRect2D scissor{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
 			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 			VkPipeline chosen = pipeline;
 			VkDescriptorSet set = descriptorSet;
 			if (havePicture && !showingLogo) {
-				const bool smaller = static_cast<float>(picture.width) < w - 0.5f || static_cast<float>(picture.height) < h - 0.5f;
-				const bool larger = static_cast<float>(picture.width) > w + 0.5f || static_cast<float>(picture.height) > h + 0.5f;
+				const bool smaller = static_cast<float>(picture.width) < viewport.width - 0.5f || static_cast<float>(picture.height) < viewport.height - 0.5f;
+				const bool larger = static_cast<float>(picture.width) > viewport.width + 0.5f || static_cast<float>(picture.height) > viewport.height + 0.5f;
 				if (smaaNow && smaaValid) {
 					set = smaaPresentSet;   // SMAA's result, scaled as the picture would be
 				}
@@ -2177,7 +2185,7 @@ public:
 			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
 			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
 			if (chosen == pipelineSsaa) {
-				const float metrics[4] = { 0.0f, 0.0f, w, h };
+				const float metrics[4] = { 0.0f, 0.0f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			}
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
@@ -3409,7 +3417,7 @@ public:
 			cursor();
 		}
 		if (folder.empty()) {
-			ImGui::TextColored(mx::label, "Choose a place on the left: your discs (.iso, .xiso) are in its folders.");
+			ImGui::TextColored(mx::label, "Choose a place on the left: your discs (.iso, .xiso, .chd) are in its folders.");
 		}
 		const bool grid = prefs.global("list_layout") == "grid" && !folder.empty();
 		const bool sizes = prefs.global("list_sizes") != "0";
@@ -3500,7 +3508,7 @@ public:
 		}
 		jumpTo = -1;   // one frame at most
 		if (!listing && entries.size() <= 1 && !folder.empty() && listError.empty()) {
-			ImGui::TextColored(mx::label, "No folders or Xbox disc images (.iso, .xiso) here.");
+			ImGui::TextColored(mx::label, "No folders or Xbox disc images (.iso, .xiso, .chd) here.");
 		}
 		if (!listError.empty()) {
 			ImGui::PushTextWrapPos(0.0f);

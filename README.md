@@ -37,7 +37,7 @@ the APU's voices and the guest threads' waits, to find what that loading screen 
 ## Using it
 
 1. Copy the `PPSA99251` folder to `/data/homebrew/` on the console.
-2. Put your Xbox disc images (XISOs, `.iso` or `.xiso`) on the console (`/data/...`), a USB
+2. Put your Xbox disc images (XISOs, `.iso` or `.xiso`, or CHDs made with `chdman createdvd`) on the console (`/data/...`), a USB
    drive, extended storage or a network share. For a share, add a `path =` line for it to
    `/data/ogbox/network.cfg` (written with examples on the first start): `192.168.1.10/Games/Xbox`
    for SMB, with `user =` and `password =` lines if the share needs them, or
@@ -176,6 +176,9 @@ the full front end comes later on the same calls.
   and the high-base link.
 - **PS5 Vulkan Template, PS5_Vulkan, PS5_Mesa and the payload SDK fork** by Mihawk: the
   foundation, RADV on the console and the platform layer.
+- **hakuX-lr** (PortareOS and its contributors; GPL-3.0-or-later): graphics, audio, disc and kernel
+  improvements taken into the core.
+- **libchdr** (Romain Tisserand; BSD-3-Clause), with the LZMA SDK, zstd and dr_flac: CHD images.
 - **SMAA** (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, Diego Gutierrez; MIT):
   the SMAA anti-aliasing shader and its area and search textures.
 - **XBMC4Xbox** (Team XBMC, from team xored; GPL-2.0-or-later): the trainers' formats and the
@@ -196,6 +199,32 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.59 (bring-up)
+
+Added
+- **CHD disc images** (`.chd`, made with `chdman createdvd`): listed and played as XISOs are, also
+  from network shares.
+- **Audio processing** setting (Settings > Console): Fast, as before, or Full DSP, which runs the
+  Xbox's own audio programs (effects, reverb) and is much heavier.
+- **Audio resampler** setting: Sinc (the new default, clean highs) or Linear.
+- **Crop overscan** setting (Settings > Graphics): hides the picture's edges as a TV of the time
+  did; off by default.
+
+Changed
+- The emulator core takes in hakuX-lr's improvements (PortareOS's hakuX fork):
+  - Graphics: two-sided lighting, texture colour sign and colour key, the NV2A's quincunx and
+    gaussian filters, line width, dithering into 16-bit targets, antialiasing control (sample
+    mask, alpha-to-coverage), several and exclusive window clips, the DOT_ZW, BRDF and reflection
+    shader modes, more texture formats, anisotropic filtering, defined border colours.
+  - Audio: a band-limited resampler, the mix in SSE2/AVX2, 2D voices by their stereo downmix and
+    3D voices by their ears as the Xbox's own audio program mixes them, ADPCM and stream fixes.
+  - Discs with very deep folder trees, DVD security checks in late XDK titles, cheats compiled
+    while the game runs, a game's own exception handlers for more faults.
+
+Fixed
+- A game that asks for small blocks of contiguous memory at its first level's load (as some do
+  below 16 MB) no longer finds them taken by the emulator's own memory.
 
 ### 0.1.58 (bring-up)
 
