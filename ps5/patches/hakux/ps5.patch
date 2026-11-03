@@ -114,6 +114,7 @@ native core's work tree (oldest first; author: subject):
   52f223ebdd Claude: chd.cmake: the arm64 LZMA decoder only on arm64
   9e3f4c24f5 Press5elect: state: the whole-struct size lock is the Android build's (the PS5's host types differ)
   90f7e047b6 Press5elect: net: the wake-up on the console's eventfd stand-in (a pipe)
+  9c7982c119 Claude: vk: the gamma pass empties its view table when the display is made again
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -4465,6 +4466,22 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..f5c722760d2b238257f05c5361c2423b
      }
      g_rec.valid = true;
      g_dr.draws++;
+diff --git a/hw/xbox/hle/vk/gamma.c b/hw/xbox/hle/vk/gamma.c
+index 10030afeb9cf43dedddd680727937fa532e7c29c..a47aa543890de7c5b6e718903aed1dfa4ed16936 100644
+--- a/hw/xbox/hle/vk/gamma.c
++++ b/hw/xbox/hle/vk/gamma.c
+@@ -205,6 +205,11 @@ static VkImageView dst_view(VkImage img)
+         for (unsigned i = 0; i < g_gm.ndst; i++) {
+             T.vkDestroyImageView(g_hvk.dev, g_gm.dst[i].view, NULL);
+         }
++        /* OGBox 0.0.1: the table emptied as well. Kept, the first view made after it destroyed
++         * the old view at its place again below (a double free in the driver): Shenmue II, a
++         * gamma ramp and its display made again at 640 x 480, ended at its first frames with
++         * the heap corrupt (RADV, 0.1.58 to 0.0.1). */
++        memset(g_gm.dst, 0, sizeof(g_gm.dst));
+         g_gm.ndst = 0;
+         g_gm.dst_gen = hle_disp_gen();
+     }
 diff --git a/hw/xbox/hle/vk/guest_ram.c b/hw/xbox/hle/vk/guest_ram.c
 index 912d05c3f52f67b0a2d0cf09c3896afabe80fe3c..8c2d43bf22b80ab9751f6a9a18e252084e6688e4 100644
 --- a/hw/xbox/hle/vk/guest_ram.c
