@@ -165,11 +165,19 @@ std::vector<Option> makeOptions()
 			"entry (Redump's name, region, languages, serial), its mods and patches.", kOnOff, "1");
 	}
 	// ---- Interface (OGBox's)
+	{
+		/* 0.1.52 */
+		Option theme{ "theme", Section::Interface, "Theme",
+			"How the menus look. Code: black, with the falling code. Emerald: green, glowing light streaks and glossy menu bars.",
+			{ { "code", "Code" }, { "emerald", "Emerald" } }, "code", false };
+		theme.now = true;
+		o.push_back(theme);
+	}
 	o.push_back({ "show_fps", Section::Interface, "Show FPS counter",
 		"Frame rate and frame time overlay while playing.", kOnOff, "1", false });
 	{
 		Option rain{ "rain", Section::Interface, "Code rain",
-			"The falling code behind the game list and the menus.", kOnOff, "1", false };
+			"The falling code behind the game list and the menus (the Code theme).", kOnOff, "1", false };
 		rain.now = true;
 		o.push_back(rain);
 	}

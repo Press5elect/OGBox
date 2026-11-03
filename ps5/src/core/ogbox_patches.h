@@ -40,9 +40,13 @@ typedef struct OgboxPatch {
  * version or any. With which are on (mods.txt). How many (at most max). */
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max);
 
-/* 0.1.47: whether a patch on for key needs the 128 MB RAM upgrade: its notes say 128 MB (0.1.51: only
- * then; the boot log names it). */
+/* 0.1.47: whether a patch on for key needs the 128 MB RAM upgrade: its notes say so (0.1.52: PatchHub's
+ * own flag, "(needs 128 MB)" in the notes, or "128 MB required / only / mandatory"; the boot log names it). */
 bool ogbox_patches_need_128(const char *key);
+
+/* 0.1.52: the disc's default.xbe's CRC-32 for key (0: unknown): the catalog leaves out the patches made
+ * for another release (their CRC-32 another), as they would be left out at the start anyway. */
+void ogbox_patches_set_disc_crc(const char *key, uint32_t crc);
 
 struct NcDisc;
 /* At the game's start: the patches on for key applied to the disc's files, each patched file

@@ -117,6 +117,16 @@ namespace vks
 		ps5OverlayFont(filename, fontSize);
 #endif
 		io.Fonts->AddFontFromFileTTF(filename.c_str(), fontSize * scale);
+#if defined(VK_EXAMPLE_PS5)
+		{
+			// OGBox 0.1.52: the second theme's typeface (Fonts[1]), when there is one
+			std::string extra = filename;
+			float extraSize = fontSize;
+			if (ps5OverlayExtraFont(extra, extraSize)) {
+				io.Fonts->AddFontFromFileTTF(extra.c_str(), extraSize * scale);
+			}
+		}
+#endif
 #endif
 		io.Fonts->GetTexDataAsRGBA32(&fontData, &texWidth, &texHeight);
 		VkDeviceSize uploadSize = texWidth*texHeight * 4 * sizeof(char);

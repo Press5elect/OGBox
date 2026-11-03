@@ -41,6 +41,8 @@ typedef struct OgboxGameInfo {
 
 /* A disc image's default.xbe certificate (on a share, through ps5vfs_disc_open). */
 bool ogbox_game_info(const char *image, OgboxGameInfo *info);
+/* 0.1.52: the CRC-32 of a disc image's default.xbe (the patches' release check); false if unread. */
+bool ogbox_game_xbe_crc(const char *image, uint32_t *crc);
 
 typedef struct OgboxModEntry {
     char id[128];          /* a mod's folder name; a cheat's name; a patch's id */

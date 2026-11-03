@@ -102,6 +102,7 @@
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
+#include "core/ogbox_patches.h"
 #include "ogbox_settings.h"
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
@@ -689,13 +690,15 @@ std::mutex g_discInfoMutex;
 // ---- OGBox 0.1.26: the look (black and green, "the code"), in the overlay's hooks ------------
 
 namespace mx {
-const ImVec4 bright(0.0f, 1.0f, 0.255f, 1.0f);    // #00ff41: titles, values, the selection
-const ImVec4 text(0.49f, 1.0f, 0.61f, 1.0f);      // #7dff9c: the body
-const ImVec4 label(0.24f, 0.78f, 0.40f, 1.0f);    // #3dc766: labels, hints
-const ImVec4 line(0.05f, 0.36f, 0.13f, 1.0f);     // #0d5c22: borders
-const ImVec4 panel(0.0f, 0.03f, 0.01f, 0.86f);    // the panels over the rain
-const ImVec4 head(0.71f, 1.0f, 0.78f, 1.0f);      // #b6ffc8: a drop's head
-const ImVec4 fail(1.0f, 0.45f, 0.38f, 1.0f);
+/* 0.1.52: the theme's (applyTheme): Code's below, Emerald's in applyTheme */
+ImVec4 bright(0.0f, 1.0f, 0.255f, 1.0f);    // #00ff41: titles, values, the selection
+ImVec4 text(0.49f, 1.0f, 0.61f, 1.0f);      // #7dff9c: the body
+ImVec4 label(0.24f, 0.78f, 0.40f, 1.0f);    // #3dc766: labels, hints
+ImVec4 line(0.05f, 0.36f, 0.13f, 1.0f);     // #0d5c22: borders
+ImVec4 panel(0.0f, 0.03f, 0.01f, 0.86f);    // the panels over the rain
+ImVec4 head(0.71f, 1.0f, 0.78f, 1.0f);      // #b6ffc8: a drop's head
+ImVec4 fail(1.0f, 0.45f, 0.38f, 1.0f);
+bool emerald{ false };                       // the Emerald theme is on
 inline ImU32 u32(const ImVec4 &c, float alpha = 1.0f)
 {
 	return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha));
@@ -837,6 +840,17 @@ public:
 	uint64_t storageHave{ 0 };                // what the data folder holds now
 	std::vector<ogbox::StoragePlace> storageList;
 	bool storageFocus{ false };
+	// 0.1.52: the theme (Settings > Interface > Theme), applied at the next frame's start
+	bool themeEmerald{ false };
+	int themeApplied{ -1 };
+	vks::Texture2D logoTex{};                 // OGBox's logo for the Emerald theme's head
+	VkDescriptorSet logoSet{ VK_NULL_HANDLE };
+	bool logoTried{ false };
+	struct WebPoint {
+		float x, y;
+	};
+	std::vector<WebPoint> web;                // the Emerald backdrop's faint web
+	float webW{ 0.0f }, webH{ 0.0f };
 	// the code rain
 	struct Drop {
 		float x, y, speed;
@@ -1250,6 +1264,7 @@ public:
 			library = true;
 			prefs.load();
 			rainOn = prefs.on("rain");
+			themeEmerald = prefs.global("theme") == "emerald";   // 0.1.52
 			ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
 			screen = Screen::Boot;
 			screenSince = now_seconds();
@@ -1318,6 +1333,7 @@ public:
 			}
 		}
 		prefs.load(key);
+		themeEmerald = prefs.global("theme") == "emerald";   // 0.1.52: the in-game panels too
 		aspectMode = prefs.value("aspect");
 		fxaaOn = prefs.on("fxaa");
 		sgsrOn = prefs.value("upscale") == "sgsr";
@@ -1895,11 +1911,18 @@ public:
 		pshakux_log("ogbox: settings%s%s", forGame ? " of " : "", forGame ? key.c_str() : "");
 	}
 
-	void openMods(const std::string &key, const std::string &title)
+	void openMods(const std::string &key, const std::string &title, const std::string &image = std::string())
 	{
 		modsKey = key;
 		modsTitle = title;
 		std::lock_guard<std::mutex> disc(g_discInfoMutex);
+		/* 0.1.52: the disc's default.xbe's CRC-32, so the patches made for another release of the game
+		 * are left out of the list (they would be left out at the start anyway) */
+		uint32_t crc = 0;
+		if (!image.empty() && ogbox_game_xbe_crc(image.c_str(), &crc)) {
+			ogbox_patches_set_disc_crc(key.c_str(), crc);
+			pshakux_log("ogbox: %s: default.xbe's CRC-32 %08X", key.c_str(), static_cast<unsigned>(crc));
+		}
 		modList.assign(480, OgboxModEntry{});
 		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 480))));
 		screen = Screen::Mods;
@@ -2112,7 +2135,7 @@ public:
 		const float pad = static_cast<float>(height) * 0.03f;
 		ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)), ImGuiCond_Always);
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, transparent ? ImVec4(0, 0, 0, 0) : ImVec4(0, 0, 0, 1));
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, transparent || mx::emerald ? ImVec4(0, 0, 0, 0) : ImVec4(0, 0, 0, 1));
 		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.4f, pad));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(pad * 0.4f, pad * 0.3f));
@@ -2137,7 +2160,11 @@ public:
 			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
 			ImGuiWindowFlags_NoCollapse);
-		drawRain(ImGui::GetWindowDrawList(), rainAlpha, hole);
+		if (mx::emerald) {
+			drawBackdrop(ImGui::GetWindowDrawList(), !transparent, fade);
+		} else {
+			drawRain(ImGui::GetWindowDrawList(), rainAlpha, hole);
+		}
 		return open;
 	}
 
@@ -2154,6 +2181,14 @@ public:
 		ImGui::SetWindowFontScale(scale);
 		const ImVec2 at = ImGui::GetCursorScreenPos();
 		ImDrawList *dl = ImGui::GetWindowDrawList();
+		if (mx::emerald) {
+			// 0.1.52: Emerald: a soft shadow under it
+			const float d = ImGui::GetFontSize() * 0.05f;
+			dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(at.x + d, at.y + d), mx::u32(ImVec4(0, 0, 0, 0.55f)), text);
+			ImGui::TextColored(mx::bright, "%s", text);
+			ImGui::SetWindowFontScale(1.0f);
+			return;
+		}
 		const float spread = ImGui::GetFontSize() * 0.06f;
 		for (int i = 1; i <= 2; i++) {
 			const float d = spread * static_cast<float>(i);
@@ -2549,8 +2584,24 @@ public:
 		const float ty = at.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
 		const float pad = ImGui::GetStyle().FramePadding.x;
 		const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-		const ImU32 c = focused ? mx::u32(ImVec4(0, 0, 0, 1)) : mx::u32(color);
-		if (focused) {
+		ImU32 c = focused ? mx::u32(ImVec4(0, 0, 0, 1)) : mx::u32(color);
+		if (mx::emerald) {
+			/* 0.1.52: Emerald: each row a dark glass bar; the focused one a glossy green bar, white text */
+			const float r = h * 0.22f;
+			if (focused) {
+				const float pulse = 0.88f + 0.12f * static_cast<float>(std::sin(now_seconds() * 3.0));
+				dl->AddRectFilled(at, ImVec2(right, at.y + h), mx::u32(ImVec4(0.38f, 0.72f, 0.10f, pulse)), r);
+				dl->AddRectFilledMultiColor(ImVec2(at.x + r * 0.5f, at.y + 1.5f), ImVec2(right - r * 0.5f, at.y + h * 0.5f),
+					mx::u32(ImVec4(1, 1, 0.8f, 0.30f)), mx::u32(ImVec4(1, 1, 0.8f, 0.30f)), mx::u32(ImVec4(1, 1, 0.8f, 0.04f)),
+					mx::u32(ImVec4(1, 1, 0.8f, 0.04f)));
+				dl->AddRect(at, ImVec2(right, at.y + h), mx::u32(mx::bright), r, ImDrawCornerFlags_All, 2.0f);
+				c = mx::u32(ImVec4(1, 1, 1, 1));
+			} else {
+				dl->AddRectFilled(at, ImVec2(right, at.y + h), mx::u32(ImVec4(0.02f, 0.13f, 0.03f, current ? 0.75f : 0.45f)), r);
+				dl->AddRect(at, ImVec2(right, at.y + h), mx::u32(mx::line, current ? 0.9f : 0.35f), r, ImDrawCornerFlags_All,
+					current ? 2.0f : 1.0f);
+			}
+		} else if (focused) {
 			const float pulse = 0.80f + 0.20f * static_cast<float>(std::sin(now_seconds() * 4.0));
 			dl->AddRectFilled(at, ImVec2(right, at.y + h), mx::u32(mx::bright, pulse), h * 0.18f);
 		} else if (current) {
@@ -2579,6 +2630,9 @@ public:
 			richText(dl, ImVec2(limit - nw, ty), note, focused ? c : mx::u32(mx::label));
 		}
 		dl->PushClipRect(ImVec2(x, at.y), ImVec2(limit - nw - pad, at.y + h), true);
+		if (mx::emerald && focused) {
+			dl->AddText(ImVec2(x + 1.5f, ty + 1.5f), mx::u32(ImVec4(0, 0.15f, 0, 0.65f)), text.c_str());
+		}
 		dl->AddText(ImVec2(x, ty), c, text.c_str());
 		dl->PopClipRect();
 		ImGui::PopID();
@@ -2597,14 +2651,52 @@ public:
 		const float W = static_cast<float>(width), H = static_cast<float>(height);
 		const ImGuiStyle &style = ImGui::GetStyle();
 		// the head
-		glowTitle("OGBOX", 1.9f);
-		ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
-		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.55f);
-		ImGui::TextColored(mx::label, "%s", folder.empty() ? "/ the places" : folder.c_str());
-		cursor();
-		const std::string version = std::string(pshakux_build_version()) + "  hakuX native";
-		ImGui::SameLine(W - style.WindowPadding.x - ImGui::CalcTextSize(version.c_str()).x);
-		ImGui::TextColored(mx::line, "%s", version.c_str());
+		if (mx::emerald) {
+			// 0.1.52: Emerald: OGBox's logo, the folder, the date and time in a panel on the right
+			const float lh = ImGui::GetFontSize() * 2.4f;
+			const ImTextureID logo = logoImage();
+			const float top = ImGui::GetCursorPosY();
+			if (logo && logoHeight) {
+				// the logo as it is, its corners rounded and framed like the panels
+				const float lw = lh * static_cast<float>(logoWidth) / static_cast<float>(logoHeight);
+				const ImVec2 l0 = ImGui::GetCursorScreenPos(), l1(l0.x + lw, l0.y + lh);
+				ImDrawList *ld = ImGui::GetWindowDrawList();
+				ld->AddImageRounded(logo, l0, l1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, lh * 0.18f);
+				ld->AddRect(l0, l1, mx::u32(mx::line), lh * 0.18f, ImDrawCornerFlags_All, 1.5f);
+				ImGui::Dummy(ImVec2(lw, lh));
+			} else {
+				glowTitle("OGBOX", 1.9f);
+			}
+			ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+			ImGui::SetCursorPosY(top + lh * 0.5f - ImGui::GetTextLineHeight() * 0.5f);
+			ImGui::TextColored(mx::text, "%s", folder.empty() ? "Choose a place" : folder.c_str());
+			const time_t now = std::time(nullptr);
+			struct tm lt {};
+			localtime_r(&now, &lt);
+			char date[64], clock[16];
+			std::strftime(date, sizeof(date), "%a %d %b %Y", &lt);
+			std::strftime(clock, sizeof(clock), "%H:%M", &lt);
+			ImDrawList *hd = ImGui::GetWindowDrawList();
+			const float bw = W * 0.17f, bh = lh * 0.95f;
+			const ImVec2 b0(W - style.WindowPadding.x - bw, ImGui::GetWindowPos().y + top + (lh - bh) * 0.5f);
+			hd->AddRectFilled(b0, ImVec2(b0.x + bw, b0.y + bh), mx::u32(mx::panel), bh * 0.25f);
+			hd->AddRect(b0, ImVec2(b0.x + bw, b0.y + bh), mx::u32(mx::line), bh * 0.25f, ImDrawCornerFlags_All, 1.5f);
+			const float pad = bh * 0.12f;
+			hd->AddText(ImVec2(b0.x + pad * 1.5f, b0.y + pad), mx::u32(mx::label), date);
+			const float cs = ImGui::GetFontSize() * 1.25f;
+			const ImVec2 cw = ImGui::GetFont()->CalcTextSizeA(cs, FLT_MAX, 0.0f, clock);
+			hd->AddText(ImGui::GetFont(), cs, ImVec2(b0.x + bw - pad * 1.5f - cw.x, b0.y + bh - pad - cw.y), mx::u32(mx::bright), clock);
+			ImGui::SetCursorPosY(top + lh + style.ItemSpacing.y);
+		} else {
+			glowTitle("OGBOX", 1.9f);
+			ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.55f);
+			ImGui::TextColored(mx::label, "%s", folder.empty() ? "/ the places" : folder.c_str());
+			cursor();
+			const std::string version = std::string(pshakux_build_version()) + "  hakuX native";
+			ImGui::SameLine(W - style.WindowPadding.x - ImGui::CalcTextSize(version.c_str()).x);
+			ImGui::TextColored(mx::line, "%s", version.c_str());
+		}
 
 		const float footH = ImGui::GetTextLineHeightWithSpacing() * 2.6f;
 		const float colH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH;
@@ -2904,7 +2996,7 @@ public:
 		} else if (own) {
 			openSettings(info.key, info.title[0] ? info.title : e->name);
 		} else if (modsButton) {
-			openMods(info.key, info.title[0] ? info.title : e->name);
+			openMods(info.key, info.title[0] ? info.title : e->name, e->path);
 		}
 	}
 
@@ -3024,6 +3116,9 @@ public:
 						if (std::string(o.key) == "rain") {
 							rainOn = next == "1";
 						}
+						if (std::string(o.key) == "theme") {
+							themeEmerald = next == "emerald";   // 0.1.52: from the next frame
+						}
 						if (o.section == ogbox::Section::Library) {
 							placesRead = -100.0;   // the game list's places again, as set
 							ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
@@ -3091,7 +3186,16 @@ public:
 				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : m.patch ? "PATCHES  (applied to a copy of the disc's XBE at the start)" : "MODS");
 				first = false;
 			}
-			const std::string text = (m.patch ? std::string(m.category) + "  " : std::string()) + m.name;
+			/* 0.1.52: the patches by kind, each under its own heading */
+			if (m.patch && (i == 0 || !modList[i - 1].patch || std::strcmp(modList[i - 1].category, m.category) != 0)) {
+				const std::string c = m.category;
+				const char *heading = c == "Widescreen" ? "Widescreen (16:9)" : c == "60 FPS" ? "60 FPS"
+					: c == "480i fix" ? "480i fix (for games that misbehave in interlaced video)"
+					: c == "480p" ? "480p (progressive video for games without it)" : "Other fixes";
+				ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetFontSize());
+				ImGui::TextColored(mx::text, "%s", heading);
+			}
+			const std::string text = m.name;
 			std::string note = m.cheat ? (m.once ? "once" : std::string())
 				: m.patch ? std::string(m.author)
 				: (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
@@ -3523,17 +3627,200 @@ public:
 	void OnUpdateUIOverlay(vks::UIOverlay *overlay) override
 	{
 		(void)overlay;
+		if (themeApplied != (themeEmerald ? 1 : 0)) {
+			applyTheme(themeEmerald);
+		}
+		ImGuiIO &io = ImGui::GetIO();
+		const bool font = mx::emerald && io.Fonts->Fonts.Size > 1;
+		if (font) {
+			ImGui::PushFont(io.Fonts->Fonts[1]);
+		}
 		if (!library) {
 			drawGame();
+		} else {
+			switch (screen) {
+			case Screen::Boot: drawBoot(); break;
+			case Screen::Library: drawLibrary(); break;
+			case Screen::Settings: drawSettings(); break;
+			case Screen::Mods: drawMods(); break;
+			case Screen::Storage: drawStorage(); break;
+			}
+		}
+		if (font) {
+			ImGui::PopFont();
+		}
+	}
+
+	/* ---- 0.1.52: the themes -------------------------------------------------------------------- */
+
+	/* The palette and ImGui's colours for Code (black and green, the rain) or Emerald (green light). */
+	void applyTheme(bool em)
+	{
+		themeApplied = em ? 1 : 0;
+		mx::emerald = em;
+		ImGuiStyle &st = ImGui::GetStyle();
+		ImVec4 *c = st.Colors;
+		const float k = ui.scale > 0.0f ? ui.scale : 1.0f;
+		if (em) {
+			mx::bright = ImVec4(0.80f, 0.98f, 0.22f, 1.0f);   // yellow-green: titles, the selection's edge
+			mx::text = ImVec4(0.93f, 1.0f, 0.90f, 1.0f);      // near white
+			mx::label = ImVec4(0.64f, 0.90f, 0.34f, 1.0f);
+			mx::line = ImVec4(0.36f, 0.70f, 0.13f, 1.0f);
+			mx::panel = ImVec4(0.01f, 0.09f, 0.02f, 0.62f);
+			mx::head = ImVec4(1.0f, 1.0f, 0.75f, 1.0f);
+			st.ChildRounding = 12.0f * k;
+			st.FrameRounding = 6.0f * k;
+			st.WindowRounding = 10.0f * k;
+			st.ScrollbarRounding = 6.0f * k;
+			st.GrabRounding = 6.0f * k;
+			c[ImGuiCol_WindowBg] = ImVec4(0.01f, 0.10f, 0.02f, 0.88f);
+			c[ImGuiCol_Button] = ImVec4(0.12f, 0.36f, 0.05f, 0.92f);
+			c[ImGuiCol_ButtonHovered] = ImVec4(0.42f, 0.72f, 0.12f, 1.0f);
+			c[ImGuiCol_ButtonActive] = ImVec4(0.62f, 0.90f, 0.18f, 1.0f);
+			c[ImGuiCol_Header] = ImVec4(0.30f, 0.62f, 0.10f, 0.0f);       // rows draw their own
+			c[ImGuiCol_HeaderHovered] = ImVec4(0.30f, 0.62f, 0.10f, 0.0f);
+			c[ImGuiCol_HeaderActive] = ImVec4(0.30f, 0.62f, 0.10f, 0.0f);
+			c[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.05f, 0.0f, 0.35f);
+			c[ImGuiCol_FrameBg] = ImVec4(0.02f, 0.16f, 0.03f, 0.85f);
+		} else {
+			mx::bright = ImVec4(0.0f, 1.0f, 0.255f, 1.0f);
+			mx::text = ImVec4(0.49f, 1.0f, 0.61f, 1.0f);
+			mx::label = ImVec4(0.24f, 0.78f, 0.40f, 1.0f);
+			mx::line = ImVec4(0.05f, 0.36f, 0.13f, 1.0f);
+			mx::panel = ImVec4(0.0f, 0.03f, 0.01f, 0.86f);
+			mx::head = ImVec4(0.71f, 1.0f, 0.78f, 1.0f);
+			st.ChildRounding = st.FrameRounding = st.WindowRounding = st.ScrollbarRounding = st.GrabRounding = 0.0f;
+			c[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.94f);
+			c[ImGuiCol_Button] = ImVec4(0.0f, 0.20f, 0.07f, 0.9f);
+			c[ImGuiCol_ButtonHovered] = ImVec4(0.0f, 0.55f, 0.16f, 1.0f);
+			c[ImGuiCol_ButtonActive] = mx::bright;
+			c[ImGuiCol_Header] = ImVec4(0.0f, 0.35f, 0.11f, 0.85f);
+			c[ImGuiCol_HeaderHovered] = ImVec4(0.0f, 0.55f, 0.16f, 0.9f);
+			c[ImGuiCol_HeaderActive] = ImVec4(0.0f, 0.75f, 0.20f, 1.0f);
+			c[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.5f);
+			c[ImGuiCol_FrameBg] = ImVec4(0.0f, 0.10f, 0.03f, 0.9f);
+		}
+		c[ImGuiCol_Text] = mx::text;
+		c[ImGuiCol_TextDisabled] = mx::label;
+		c[ImGuiCol_ChildBg] = mx::panel;
+		c[ImGuiCol_Border] = mx::line;
+		c[ImGuiCol_ScrollbarGrab] = mx::line;
+		c[ImGuiCol_ScrollbarGrabHovered] = mx::label;
+		c[ImGuiCol_ScrollbarGrabActive] = mx::bright;
+		c[ImGuiCol_NavHighlight] = mx::bright;
+		c[ImGuiCol_Separator] = mx::line;
+		c[ImGuiCol_CheckMark] = mx::bright;
+		pshakux_log("ogbox: theme %s", em ? "Emerald" : "Code");
+	}
+
+	/* A band of light across the screen, from p0 to p1, bright along its middle and fading out. */
+	void lightBand(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float half, ImU32 mid)
+	{
+		const float dx = p1.x - p0.x, dy = p1.y - p0.y;
+		const float len = std::sqrt(dx * dx + dy * dy);
+		if (len <= 0.0f) {
 			return;
 		}
-		switch (screen) {
-		case Screen::Boot: drawBoot(); break;
-		case Screen::Library: drawLibrary(); break;
-		case Screen::Settings: drawSettings(); break;
-		case Screen::Mods: drawMods(); break;
-		case Screen::Storage: drawStorage(); break;
+		const ImVec2 n(-dy / len * half, dx / len * half);
+		const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+		const ImU32 clear = mid & ~IM_COL32_A_MASK;
+		for (int side = -1; side <= 1; side += 2) {
+			const ImVec2 e0(p0.x + n.x * side, p0.y + n.y * side), e1(p1.x + n.x * side, p1.y + n.y * side);
+			dl->PrimReserve(6, 4);
+			const ImDrawIdx base = static_cast<ImDrawIdx>(dl->_VtxCurrentIdx);
+			dl->PrimWriteVtx(p0, uv, mid);
+			dl->PrimWriteVtx(p1, uv, mid);
+			dl->PrimWriteVtx(e1, uv, clear);
+			dl->PrimWriteVtx(e0, uv, clear);
+			dl->PrimWriteIdx(base);
+			dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + 1));
+			dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + 2));
+			dl->PrimWriteIdx(base);
+			dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + 2));
+			dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + 3));
 		}
+	}
+
+	/* The Emerald backdrop: a green gradient, a glow, slow bands of light and a faint web. opaque:
+	 * the gradient too (the boot screen keeps its logo picture behind). */
+	void drawBackdrop(ImDrawList *dl, bool opaque, float alpha)
+	{
+		const float W = static_cast<float>(width), H = static_cast<float>(height);
+		const float t = static_cast<float>(std::fmod(now_seconds(), 3600.0));
+		if (opaque) {
+			dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H), mx::u32(ImVec4(0.13f, 0.45f, 0.05f, 1.0f)),
+				mx::u32(ImVec4(0.04f, 0.24f, 0.02f, 1.0f)), mx::u32(ImVec4(0.01f, 0.09f, 0.01f, 1.0f)),
+				mx::u32(ImVec4(0.06f, 0.30f, 0.03f, 1.0f)));
+			// the glow, upper left: circles one over another
+			for (int i = 0; i < 9; i++) {
+				const float r = H * (0.95f - static_cast<float>(i) * 0.09f);
+				dl->AddCircleFilled(ImVec2(W * 0.24f, H * 0.30f), r, mx::u32(ImVec4(0.55f, 0.92f, 0.18f, 0.035f * alpha)), 48);
+			}
+		}
+		// the bands of light, rising to the right, drifting slowly
+		static const float kBands[][4] = {   // left height, right height (of H), half width (of H), strength
+			{ 0.92f, 0.30f, 0.050f, 0.20f }, { 0.80f, 0.22f, 0.018f, 0.32f }, { 1.02f, 0.46f, 0.030f, 0.16f },
+			{ 0.70f, 0.08f, 0.010f, 0.30f }, { 0.88f, 0.40f, 0.012f, 0.26f }, { 1.10f, 0.58f, 0.060f, 0.12f },
+		};
+		for (size_t i = 0; i < sizeof(kBands) / sizeof(kBands[0]); i++) {
+			const float drift = std::sin(t * 0.07f + static_cast<float>(i) * 1.7f) * H * 0.025f;
+			const float y0 = kBands[i][0] * H + drift, y1 = kBands[i][1] * H - drift;
+			lightBand(dl, ImVec2(-W * 0.05f, y0), ImVec2(W * 1.05f, y1), kBands[i][2] * H,
+				mx::u32(ImVec4(0.85f, 1.0f, 0.45f, kBands[i][3] * alpha)));
+		}
+		// the web: a jittered grid joined to its neighbours, made once for the screen's size
+		if (web.empty() || webW != W || webH != H) {
+			web.clear();
+			webW = W;
+			webH = H;
+			std::minstd_rand r(4711u);
+			const int cols = 18, rows = 11;
+			for (int y = 0; y <= rows; y++) {
+				for (int x = 0; x <= cols; x++) {
+					const float jx = (static_cast<float>(r() % 1000) / 1000.0f - 0.5f) * 0.7f;
+					const float jy = (static_cast<float>(r() % 1000) / 1000.0f - 0.5f) * 0.7f;
+					web.push_back({ (static_cast<float>(x) + jx) * W / cols, (static_cast<float>(y) + jy) * H / rows });
+				}
+			}
+		}
+		const int cols = 18, rows = 11;
+		const ImU32 wc = mx::u32(ImVec4(0.75f, 1.0f, 0.45f, 0.07f * alpha));
+		for (int y = 0; y <= rows; y++) {
+			for (int x = 0; x <= cols; x++) {
+				const WebPoint &a = web[static_cast<size_t>(y * (cols + 1) + x)];
+				if (x < cols) {
+					const WebPoint &b = web[static_cast<size_t>(y * (cols + 1) + x + 1)];
+					dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), wc, 1.0f);
+				}
+				if (y < rows) {
+					const WebPoint &b = web[static_cast<size_t>((y + 1) * (cols + 1) + x)];
+					dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), wc, 1.0f);
+					if (x < cols && (x + y) % 2) {
+						const WebPoint &d = web[static_cast<size_t>((y + 1) * (cols + 1) + x + 1)];
+						dl->AddLine(ImVec2(a.x, a.y), ImVec2(d.x, d.y), wc, 1.0f);
+					}
+				}
+			}
+		}
+		if (opaque) {
+			// darker toward the foot, where the hints are
+			dl->AddRectFilledMultiColor(ImVec2(0, H * 0.72f), ImVec2(W, H), 0, 0, mx::u32(ImVec4(0, 0, 0, 0.35f)),
+				mx::u32(ImVec4(0, 0, 0, 0.35f)));
+		}
+	}
+
+	/* OGBox's logo (Press5elect's, assets/ogbox-logo.png) as an image ImGui draws, once. */
+	ImTextureID logoImage()
+	{
+		if (!logoTried) {
+			logoTried = true;
+			if (!logoPixels.empty() && logoWidth && logoHeight) {
+				logoTex.fromBuffer(logoPixels.data(), static_cast<VkDeviceSize>(logoPixels.size()), VK_FORMAT_R8G8B8A8_UNORM,
+					logoWidth, logoHeight, vulkanDevice, queue);
+				logoSet = ui.addTexture(logoTex.sampler, logoTex.view);
+			}
+		}
+		return logoSet ? reinterpret_cast<ImTextureID>(logoSet) : nullptr;
 	}
 };
 

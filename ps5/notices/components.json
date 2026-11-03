@@ -509,15 +509,15 @@
    "name": "XBE patches (gamedata/patches.db and gamedata/files/), made by ps5/tools/import-gamedata.py from: Jay's PatchHub (jayxbox.com/Retail-Game-Modification/PatchHub.php: Jay's Magic Patcher .JMP files, each crediting its patch's author; github.com/JayYardley/Xbox-Magic-Patches-by-Jay), icup321's XboxGraphicalPatches (IPS and BPS files) and OgXHD's databases (hdb.dat, wdb.dat, in icup321's repository)",
    "licence": "no licence stated by the sources; included with credit to every author as the collections give it, and removed on request",
    "copyright": "the patches' authors, as patches.db names each one (its author field); Jay (jayxbox.com) for the .JMP conversions; icup321; OgXHD's author",
-   "modifications": "converted to one database by title ID: the .JMP records (search and replace, offset, append; records off by default left out), OgXHD's search-and-replace pairs, the IPS and BPS files as they are (renamed)",
+   "modifications": "converted to one database by title ID: the .JMP records (search and replace, offset, append; records off by default left out), OgXHD's search-and-replace pairs (widescreen), the IPS and BPS files as they are (renamed); resolution patches (720p, 1080i, 128 MB D3D) and patches that need a hard disk install or separate downloads left out; the same patch from several sources merged into one entry that credits the others",
    "texts": {},
    "artifacts": [
     "gamedata/patches.db",
     "gamedata/files/"
    ],
    "source": {
-    "url": "https://jayxbox.com/Retail-Game-Modification/PatchHub.php; https://github.com/icup321/XboxGraphicalPatches",
-    "revision": "PatchHub as of 2026-11-02; XboxGraphicalPatches 272d76cfc0c9dfedee5f229611bb50e23e8ef921"
+    "url": "https://jayxbox.com/Retail-Game-Modification/PatchHub.php; https://github.com/JayYardley/Xbox-Magic-Patches-by-Jay; https://github.com/icup321/XboxGraphicalPatches",
+    "revision": "PatchHub as of 2026-11-02; Xbox-Magic-Patches-by-Jay 9f82bd38b0484e5cbb559f1db818b681e7a520dd; XboxGraphicalPatches 272d76cfc0c9dfedee5f229611bb50e23e8ef921"
    }
   }
  ]

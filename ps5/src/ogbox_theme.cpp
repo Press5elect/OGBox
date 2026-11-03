@@ -69,6 +69,21 @@ void ps5StyleOverlay(ImGuiStyle &style)
 	c[ImGuiCol_TextSelectedBg] = ImVec4(0.0f, 0.45f, 0.13f, 0.6f);
 }
 
+/* 0.1.52: the Emerald theme's typeface, Roboto Medium (the base class's, in assets/ already). */
+bool ps5OverlayExtraFont(std::string &path, float &size)
+{
+	const size_t slash = path.find_last_of('/');
+	const std::string roboto = (slash == std::string::npos ? std::string() : path.substr(0, slash + 1)) +
+		"Roboto-Medium.ttf";
+	struct stat st;
+	if (stat(roboto.c_str(), &st) != 0) {
+		return false;
+	}
+	path = roboto;
+	size = 20.0f;
+	return true;
+}
+
 /* The menus' typeface: Share Tech Mono (assets.json), when it is in the title's assets. */
 bool ps5OverlayFont(std::string &path, float &size)
 {

@@ -589,8 +589,15 @@ bool ogbox_patches_need_128(const char *key)
         }
         /* 0.1.51: only a patch whose notes say so (0.1.47 took every 720p patch for one: Manhunt's
          * says only "720p", and with 128 MB its D3D's push buffer ran past its own limit and the game
-         * hung at its menu) */
-        if (has_word(p->note, "128") || has_word(p->name, "128")) {
+         * hung at its menu). 0.1.52: the words that say it needs it, not any "128" ("probably not
+         * much better on 128MB") */
+        static const char *const k_needs[] = {"needs 128 MB", "128MB required", "128 MB required", "128MB only",
+                                              "128 MB only", "128MB mandatory", "128 MB mandatory"};
+        bool needs = false;
+        for (size_t w = 0; w < sizeof(k_needs) / sizeof(k_needs[0]); w++) {
+            needs |= has_word(p->note, k_needs[w]) || has_word(p->name, k_needs[w]);
+        }
+        if (needs) {
             pshakux_log("patches: %s: %s (%s) needs the 128 MB RAM upgrade, its notes say: the game gets 128 MB "
                         "(Settings > Console > Memory: Auto)", key, p->name, p->id);
             return true;
@@ -599,12 +606,40 @@ bool ogbox_patches_need_128(const char *key)
     return false;
 }
 
+static char g_crc_key[32];
+static uint32_t g_crc;
+
+void ogbox_patches_set_disc_crc(const char *key, uint32_t crc)
+{
+    snprintf(g_crc_key, sizeof(g_crc_key), "%s", key ? key : "");
+    g_crc = crc;
+}
+
+/* An entry's release check (its C line, before its first target), 0 when it has none. */
+static uint32_t entry_crc(const Entry *e)
+{
+    for (unsigned k = 0; k < e->nlines; k++) {
+        if (e->lines[k][0] == 'T' && e->lines[k][1] == '\t') {
+            break;
+        }
+        if (e->lines[k][0] == 'C' && e->lines[k][1] == '\t') {
+            return (uint32_t)strtoul(e->lines[k] + 2, NULL, 16);
+        }
+    }
+    return 0;
+}
+
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
 {
     db_load(key);
     read_on(key);
+    const uint32_t disc = key && g_crc && !strcasecmp(key, g_crc_key) ? g_crc : 0;
     int n = 0;
     for (unsigned i = 0; i < g_ndb && n < max; i++) {
+        const uint32_t crc = disc ? entry_crc(&g_db[i]) : 0;
+        if (crc && crc != disc && !g_db[i].p.on) {
+            continue;   /* made for another release of the game (0.1.52); one turned on stays, to be turned off */
+        }
         out[n++] = g_db[i].p;
     }
     db_reset();

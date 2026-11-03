@@ -30,6 +30,8 @@
 // defines both; without it ps5/src/example_ps5.cpp's weak ones keep upstream's look.
 void ps5StyleOverlay(ImGuiStyle &style);
 bool ps5OverlayFont(std::string &path, float &size);
+// OGBox 0.1.52: a second typeface for a second theme (io.Fonts->Fonts[1]); path holds the first's
+bool ps5OverlayExtraFont(std::string &path, float &size);
 #endif
 
 #if defined(__ANDROID__)

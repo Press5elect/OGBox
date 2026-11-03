@@ -634,6 +634,37 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
     return ok;
 }
 
+bool ogbox_game_xbe_crc(const char *image, uint32_t *crc)
+{
+    *crc = 0;
+    const bool virt = ps5vfs_is_virtual(image) != 0;
+    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    NcDiscFile f;
+    bool ok = nc_disc_open(&disc, fd) && nc_disc_find(&disc, "\\default.xbe", &f) && f.size && f.size <= (64u << 20);
+    uint8_t *buf = ok ? malloc(f.size) : NULL;
+    ok = ok && buf;
+    for (uint32_t at = 0; ok && at < f.size;) {
+        const uint32_t n = f.size - at < (1u << 20) ? f.size - at : (1u << 20);
+        ok = nc_disc_read(&disc, &f, at, buf + at, n);
+        at += n;
+    }
+    if (ok) {
+        *crc = ogbox_crc32(buf, f.size);
+    }
+    free(buf);
+    if (virt) {
+        ps5vfs_disc_close(fd);
+    } else {
+        close(fd);
+    }
+    return ok;
+}
+
 int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
 {
     catalog_reset();

@@ -60,7 +60,7 @@ timing, clock), Console video (screen format, 480p, 720p, 1080i, PAL 60, the vid
 Console also has Memory (64 MB, or the 128 MB RAM upgrade some patches need; Auto picks it
 when a patch whose notes say 128 MB is on). Network (off, LAN, XLink Kai, Insignia), Game list (the places shown on the left, USB drives
 hidden by default; covers, a list or a grid of covers, file or short names, by name or last
-played first, disc sizes, the details panel) and Interface (the FPS counter, the code rain). CROSS
+played first, disc sizes, the details panel) and Interface (the theme: Code or Emerald, the FPS counter, the code rain). CROSS
 picks the next choice, SQUARE the one before. A disc's **Game settings** (on the right) override
 any of the Graphics, Console and Console video ones for that game alone (TRIANGLE: back to the
 app's). They are kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`;
@@ -68,8 +68,9 @@ the network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, 
 
 **Mods, patches, cheats** (on the right) lists hakuX's mods for the disc (60 and 120 fps mods,
 game fixes; the `mods` folder is hakuX's own), the XBE patches OGBox ships for it (widescreen,
-720p/480p, 60 fps and fixes from Jay's PatchHub, icup321's XboxGraphicalPatches and OgXHD, in
-`gamedata/patches.db`; all off by default) and its cheats: CROSS turns one on or off, from the
+60 fps, 480i/480p and other fixes from Jay's PatchHub and GitHub collection, icup321's
+XboxGraphicalPatches and OgXHD, merged where they are the same patch, in `gamedata/patches.db`;
+all off by default; no resolution patches: Resolution scale does that) and its cheats: CROSS turns one on or off, from the
 game's next start (`/data/ogbox/mods.txt`). A patch whose bytes aren't in the disc's XBE (another
 release) is left out at the start and the boot log says why.
 
@@ -161,6 +162,30 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.52 (bring-up)
+
+Added
+- Settings > Interface > **Theme**: **Emerald**, a green look with glowing light bands, glossy
+  menu bars, rounded panels, OGBox's logo and the date and time at the top (all drawn by OGBox;
+  Roboto for the type). **Code**, the black and green look with the falling code, stays the default.
+- Patches from Jay's GitHub collection that PatchHub's site doesn't list (widescreen, 480i fixes, a
+  few 60 FPS and 21:9 ones).
+
+Changed
+- The patch list is sorted out: 1169 entries down to 465.
+  - Resolution patches (720p, 1080i, 128 MB D3D) are gone: Resolution scale renders the game
+    sharper without them, and they changed the game's memory layout (Manhunt's hung).
+  - The same patch from several places is one entry crediting the others: the same PatchHub file
+    under a version and under "any", Nemesis2000's widescreen patches again in OgXHD's database,
+    icup321's IPS files again as PatchHub files, one author's patch inside another's.
+  - Patches that only work installed on a hard disk (FATX file name fixes), need files downloaded
+    separately, or patch an XBE the disc doesn't have, are gone.
+  - Kinds from the notes: most of PatchHub's "Misc" were 60 FPS patches; "480i fix" and "480p"
+    are told apart. The Mods screen groups the patches under their kind.
+  - The Mods screen leaves out patches made for another release of the disc (it reads the disc's
+    XBE checksum when it opens).
+- Memory on Auto reads PatchHub's own "needs 128 MB" flag; 0.1.45 missed it ("yes", not "Yes").
 
 ### 0.1.51 (bring-up)
 
