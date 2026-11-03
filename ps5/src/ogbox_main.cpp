@@ -99,6 +99,8 @@
 #include "platform/ps5_relaunch.h"
 #include <unistd.h>
 #include "platform/ps5_sandbox.h"
+#include "platform/ps5_update.h"
+#include "platform/ps5_update_net.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
@@ -776,6 +778,10 @@ public:
 	enum class Screen { Notice, Boot, Library, Settings, Mods, Storage, Hdd };
 	Screen screen{ Screen::Library };
 	Screen afterNotice{ Screen::Boot };       // 0.0.1: where the experimental build's notice goes on CROSS
+	/* 0.0.1: the updater (Crux2's): the state last answered, whether the user asked (a check by
+	 * hand says "the newest" too) and whether an install was chosen */
+	PS5Update::State updateSeen{ PS5Update::State::Idle };
+	bool updateByHand{ false }, updateWanted{ false };
 	double screenSince{ 0.0 };
 	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
@@ -1351,6 +1357,10 @@ public:
 
 		pshakux_priority_enable(1);
 		pshakux_priority_set(PSHAKUX_ROLE_INTERFACE);
+		/* 0.0.1: an update a power cut stopped is undone before anything of the title is read */
+		if (OGBoxUpdate::Recover()) {
+			pshakux_log("update: an interrupted install was undone");
+		}
 		mkdir(kDataRoot, 0777);
 		chmod(kDataRoot, 0777);
 		const std::string props = std::string(kDataRoot) + "/props.txt";
@@ -1373,6 +1383,12 @@ public:
 		if (boot.image.empty()) {
 			library = true;
 			prefs.load();
+			/* 0.0.1: a newer OGBox on GitHub, asked at each start (not back from a game) unless
+			 * Settings > Interface says not to; nothing is downloaded without asking */
+			OGBoxUpdate::Start();
+			if (!boot.back && prefs.global("update_check") != "0") {
+				PS5Update::Check();
+			}
 			rainOn = prefs.on("rain");
 			themeEmerald = prefs.global("theme") == "emerald";   // 0.1.52
 			ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
@@ -3775,7 +3791,7 @@ public:
 					: "");
 			}
 		}
-		bool storageRow = false, diskRow = false;
+		bool storageRow = false, diskRow = false, updateRow = false;
 		if (forGame) {
 			ImGui::Spacing();
 			reset = row("reset", "Use the app's for all", std::string(), false, mx::label);
@@ -3795,6 +3811,13 @@ public:
 			columnItem(0, false);
 			if (ImGui::IsItemFocused()) {
 				help = "The games' saves on the Xbox hard disk: copy them to a USB drive or the console's backups, bring saves in, delete them; empty the cache drives.";
+			}
+			updateRow = row("update", "Updates", updateLine(), false, mx::text, Icon::Check);   // 0.0.1
+			columnItem(0, false);
+			if (ImGui::IsItemFocused()) {
+				help = "Looks on GitHub for a newer OGBox (CROSS). A newer one is offered with what is new in it; "
+					"nothing is downloaded without asking. Your settings, the hard disk, states and games stay. "
+					"Now: " + updateLine() + ".";
 			}
 		}
 		// 0.1.48: the controller, the DualSense's buttons as the Xbox's
@@ -3887,6 +3910,9 @@ public:
 		}
 		if (diskRow) {
 			openHdd(0);
+		}
+		if (updateRow) {
+			checkForUpdate();
 		}
 		if (reset) {
 			prefs.clearOverrides();
@@ -4426,6 +4452,7 @@ public:
 			if (gp.open) {
 				drawGamePage();
 			}
+			updateTick();
 		}
 		drawPopup();
 		drawToast();
@@ -4560,6 +4587,119 @@ public:
 		quiesceForExit();
 		pshakux_relaunch(args.data());
 		relaunchAsked = false;
+	}
+
+	/* ---- 0.0.1: the updater (Crux2's, ps5_update.h) --------------------------------------------
+	 * Asked at each start or from Settings > Updates; what it finds is answered here, a frame at a
+	 * time, on the game list or in the settings (never over the notice, the splash or a game): a newer release
+	 * is offered with its notes, its download shown, and once it is checked and unpacked it is put
+	 * in place and OGBox closes. */
+
+	void checkForUpdate()
+	{
+		OGBoxUpdate::Start();
+		updateByHand = true;
+		updateSeen = PS5Update::State::Idle;   // the same answer as before is answered again
+		PS5Update::Check();
+		showToast("Looking for a newer OGBox...");
+	}
+
+	static std::string updateLine()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		switch (st.state) {
+		case PS5Update::State::Checking: return "asking GitHub";
+		case PS5Update::State::UpToDate: return "this is the newest (" + std::string(pshakux_build_version()) + ")";
+		case PS5Update::State::Available: return st.tag + " is out";
+		case PS5Update::State::NoRelease: return "no release found";
+		case PS5Update::State::Downloading:
+			return st.total ? "downloading " + std::to_string(static_cast<int>(100.0 * static_cast<double>(st.done) /
+				static_cast<double>(st.total))) + "%" : std::string("downloading");
+		case PS5Update::State::Verifying: return "checking the download";
+		case PS5Update::State::Ready: return "ready to install";
+		case PS5Update::State::Installed: return "installed";
+		case PS5Update::State::Failed: return "did not work";
+		default: return std::string("OGBox ") + pshakux_build_version();
+		}
+	}
+
+	/* The release notes for the offer: from "Added" on when they have it (the notice and the
+	 * warnings at their top are on GitHub), at most about 700 characters. */
+	static std::string updateNotes(const std::string &notes)
+	{
+		std::string text = notes;
+		const size_t added = text.find("Added");
+		if (added != std::string::npos && added < 4000) {
+			text = text.substr(added);
+		}
+		if (text.size() > 700) {
+			size_t cut = text.rfind('\n', 700);
+			text = text.substr(0, cut == std::string::npos || cut < 300 ? 700 : cut) + "\n...";
+		}
+		return text;
+	}
+
+	void updateTick()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		if (st.state == PS5Update::State::Downloading || st.state == PS5Update::State::Verifying) {
+			if (updateWanted) {
+				toast = "Updating to OGBox " + st.tag + ": " + updateLine();   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			}
+		}
+		if (st.state == updateSeen) {
+			return;
+		}
+		/* answered on the game list or in the settings, with nothing else open */
+		if ((screen != Screen::Library && screen != Screen::Settings) || pop.open || gp.open || !startPath.empty()) {
+			return;
+		}
+		updateSeen = st.state;
+		switch (st.state) {
+		case PS5Update::State::Available:
+			pshakux_log("update: %s is offered", st.tag.c_str());
+			openPopup("OGBox " + st.tag + " is out", updateNotes(st.notes) +
+				"\n\nDownload and install it? Your settings, the Xbox hard disk, states and games stay.",
+				{ "Install", "Not now" }, [this](int choice) {
+					if (choice == 0) {
+						updateWanted = true;
+						pshakux_log("update: the install was chosen");
+						PS5Update::Download();
+					}
+				});
+			break;
+		case PS5Update::State::UpToDate:
+			if (updateByHand) {
+				showToast("This is the newest OGBox (" + std::string(pshakux_build_version()) + ").");
+			}
+			updateByHand = false;
+			break;
+		case PS5Update::State::NoRelease:
+		case PS5Update::State::Failed:
+			if (updateWanted) {
+				openPopup("The update did not work", st.error + "\nOGBox is as it was.", { "OK" }, nullptr);
+			} else if (updateByHand) {
+				showToast(st.error.empty() ? std::string("No release of OGBox was found.") : st.error);
+			}
+			updateWanted = updateByHand = false;
+			break;
+		case PS5Update::State::Ready:
+			if (updateWanted) {
+				if (PS5Update::Install()) {
+					pshakux_log("update: installed; OGBox closes");
+					openPopup("OGBox was updated", "The update is installed. OGBox will now close: start it again "
+						"from the home screen.", { "Close OGBox" }, [this](int) { quit = true; });
+				} else {
+					openPopup("The update was not installed", PS5Update::GetStatus().error + "\nOGBox is as it was.",
+						{ "OK" }, nullptr);
+				}
+				updateWanted = false;
+			}
+			break;
+		default:
+			break;
+		}
 	}
 
 	void showToast(const std::string &text)

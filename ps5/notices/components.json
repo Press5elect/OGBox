@@ -25,10 +25,10 @@
   },
   {
    "id": "crux2",
-   "name": "Crux2's console platform code, by way of Kelvin: the boot log, the crash report, the processor-counter clock, the sleep and frame-limiter timing, the thread priorities, the system-module lookup (ps5/src/platform), Crux2's libc additions (ps5_libc.c) and virtual file layer (ps5/src/platform/vfs), and its build and release tools",
+   "name": "Crux2's console platform code, by way of Kelvin: the boot log, the crash report, the processor-counter clock, the sleep and frame-limiter timing, the thread priorities, the system-module lookup (ps5/src/platform), Crux2's libc additions (ps5_libc.c) and virtual file layer (ps5/src/platform/vfs), its updater (ps5/src/platform/ps5_update.cpp, with its PC test in tests/update), and its build and release tools",
    "licence": "GPL-3.0-or-later, with Crux2's attribution term (GPL-3.0 section 7(b): keep \"Crux2 by Press5elect\"; NOTICE.txt)",
    "copyright": "Copyright (C) 2026 Press5elect (Crux2 by Press5elect)",
-   "modifications": "adapted to OGBox: the boot log's probe lines replaced by the core's status line, the crash report's by the core's note, a helper role in the priorities",
+   "modifications": "adapted to OGBox: the boot log's probe lines replaced by the core's status line, the crash report's by the core's note, a helper role in the priorities; the updater for OGBox's title folder, releases and names (0.0.1)",
    "texts": {},
    "artifacts": [
     "eboot.bin"
@@ -593,6 +593,109 @@
    "source": {
     "url": "https://github.com/portare-ch/hakuX-lr",
     "revision": "3cc0d0ccab"
+   }
+  },
+  {
+   "id": "curl",
+   "name": "curl (the updater's HTTPS requests)",
+   "copyright": "Daniel Stenberg and contributors",
+   "licence": "curl",
+   "modifications": "none",
+   "source": {
+    "revision": "v0.40.2",
+    "url": "https://github.com/ps5-payload-dev/pacbrew-repo (release v0.40.2, prebuilt for the console)"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "curl-copyright.txt": "/usr/share/doc/libcurl4t64/copyright"
+   }
+  },
+  {
+   "id": "openssl",
+   "name": "OpenSSL (curl's TLS)",
+   "copyright": "The OpenSSL Project Authors",
+   "licence": "Apache-2.0",
+   "modifications": "none",
+   "source": {
+    "revision": "v0.40.2",
+    "url": "https://github.com/ps5-payload-dev/pacbrew-repo (release v0.40.2, prebuilt for the console)"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "Apache-2.0.txt": "ps5/licenses/Apache-2.0.txt",
+    "openssl-copyright.txt": "/usr/share/doc/libssl3t64/copyright"
+   }
+  },
+  {
+   "id": "libpsl",
+   "name": "libpsl (curl's public suffix list)",
+   "copyright": "Tim Ruehsen and contributors",
+   "licence": "MIT",
+   "modifications": "none",
+   "source": {
+    "revision": "v0.40.2",
+    "url": "https://github.com/ps5-payload-dev/pacbrew-repo (release v0.40.2, prebuilt for the console)"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "libpsl-copyright.txt": "/usr/share/doc/libpsl5t64/copyright"
+   }
+  },
+  {
+   "id": "libzip",
+   "name": "libzip (the updater reads a release's ZIP with it)",
+   "copyright": "Dieter Baron and Thomas Klausner",
+   "licence": "BSD-3-Clause",
+   "modifications": "none; built with zlib (the RADV archive's) only (ps5/tools/build-deps.sh)",
+   "source": {
+    "revision": "@libzip",
+    "url": "https://github.com/nih-at/libzip"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "libzip-LICENSE.txt": ".deps/src/libzip/LICENSE"
+   }
+  },
+  {
+   "id": "rapidjson",
+   "name": "RapidJSON (the updater reads GitHub's answers with it)",
+   "copyright": "THL A29 Limited, a Tencent company, and Milo Yip",
+   "licence": "MIT",
+   "modifications": "none",
+   "source": {
+    "revision": "@rapidjson",
+    "url": "https://github.com/Tencent/rapidjson"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "rapidjson-license.txt": ".deps/src/rapidjson/license.txt"
+   }
+  },
+  {
+   "id": "cacert",
+   "name": "Certificate bundle (cacert.pem): Mozilla's list, as the certifi package carries it",
+   "copyright": "Mozilla Foundation",
+   "licence": "MPL-2.0",
+   "modifications": "none",
+   "source": {
+    "revision": "@certifi",
+    "url": "https://github.com/certifi/python-certifi"
+   },
+   "artifacts": [
+    "cacert.pem"
+   ],
+   "texts": {
+    "MPL-2.0.txt": "/usr/share/common-licenses/MPL-2.0"
    }
   }
  ]

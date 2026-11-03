@@ -24,8 +24,8 @@ xemu's work and neither project supports it.
 partway. Expect crashes and freezes: OGBox says so every time it starts.
 
 The title builds and links hakuX's native core with its **native CPU backend**: the Xbox's x86
-code runs on the console's own processor in compatibility mode (hakuX-native's
-`native/cpu/cpu_native.c`, branch `ps5-native`), with kernel calls through a far-call gate, its
+code runs on the console's own processor in compatibility mode (`native/cpu/cpu_native.c`, in
+`ps5/patches/hakux/ps5.patch`), with kernel calls through a far-call gate, its
 HLE GPU on the console's RADV, its APU on the console's sound output, OGBox's front end and the
 console's platform code. `ogbox-boot.log` in the title folder says what a run did (the run
 before is kept as `ogbox-boot.previous.log`): include it when you report a problem.
@@ -54,6 +54,13 @@ before is kept as `ogbox-boot.previous.log`): include it when you report a probl
    where you are first; the game page then offers to go on from there. No button combination is
    needed any more to leave a game.
 
+**Updates**: OGBox asks GitHub for a newer release each time it starts (Settings > Interface >
+Look for updates at start), or when you pick **Updates** in Settings. A newer one is offered with
+what is new in it; nothing is downloaded without asking. It is downloaded into the title folder,
+checked against GitHub's SHA-256 of the file, unpacked, and only OGBox's own files are replaced
+(your settings, the Xbox hard disk, states, `boot.txt` and games stay); then OGBox closes, to be
+started again. An update a power cut stops is undone at the next start.
+
 **The game page** (TRIANGLE on a disc in the list) is a fixed panel in the middle of the screen:
 the cover, the disc's details and Play, Load state (the game's states with their pictures and
 dates), Game settings, Mods, patches, cheats and Saves (the game's saves on the hard disk).
@@ -76,7 +83,7 @@ the clock), **Video modes** (screen format, 480p, 720p, 1080i, PAL 60, the video
 **Network** (off, LAN, XLink Kai, Insignia), **Game list** (the places shown on the left, USB
 drives hidden by default; covers, a list or a grid of covers, file or short names, by name or
 last played first, disc sizes, the details panel) and **Interface** (the theme: Code or Emerald,
-the code rain, the FPS counter, the quick menu button). The box below the list says what the
+the code rain, looking for updates at start, the FPS counter, the quick menu button). The box below the list says what the
 focused section or setting does, and the setting's default. The picture's enhancements
 (higher resolution scales, anti-aliasing, crop overscan) are off until you turn them on. CROSS picks the next choice, SQUARE the
 one before. A disc's **Game settings** (on the right) override any of the Graphics, Performance,
@@ -140,9 +147,10 @@ to make the RADV archive again, `PS5_Mesa`.
 
 ```bash
 PS5_CLANG=/usr/lib/llvm-20/bin/clang bash ps5/tools/build.sh       # dist/PPSA99251/
-PS5_CLANG=/usr/lib/llvm-20/bin/clang HAKUX_SRC=../hakuX-native bash ps5/tools/build.sh
-                                                    # hakuX from a work tree (the native CPU backend)
+PS5_CLANG=/usr/lib/llvm-20/bin/clang HAKUX_SRC=<a hakuX tree> bash ps5/tools/build.sh
+                                                    # hakuX from a work tree instead
 python3 ps5/tools/stage-notices.py --check dist/PPSA99251   # the release check
+tests/update/run-update-tests.sh <work folder>              # the updater on the PC
 ps5/tools/deploy.sh                                 # upload over the console's FTP server
 ```
 
@@ -150,8 +158,11 @@ LLVM 20's clang is needed: with clang 18, RADV's weak imports do not link.
 
 hakuX's source is not kept here. `ps5/tools/fetch-hakux.sh` fetches it at the pinned revision into
 `vendor/hakuX`, untouched; `ps5/tools/prepare-hakux.sh` copies it, or the tree `HAKUX_SRC` names,
-into `build/hakux-src` and lays `ps5/patches/hakux/*.patch` over the copy (a patch a work tree
-already has, or changed, is left out and said). What the console needs instead of hakuX's
+into `build/hakux-src` and lays `ps5/patches/hakux/ps5.patch` over the copy (a patch a work tree
+already has, or changed, is left out and said). That one patch is every change OGBox makes to
+hakuX (the native CPU backend, savestates, trainers, CHD images, the PS5's host adaptations and
+hakuX-lr's work, merged); its head lists the commits it was made from, with their authors. So this
+repository at a release's tag, with hakuX at the pin, is the whole source of that release. What the console needs instead of hakuX's
 Android parts is in `ps5/hakux/`, not in hakuX:
 
 | hakuX on Android | OGBox on the PS5 |
@@ -185,6 +196,8 @@ the full front end comes later on the same calls.
   the SMAA anti-aliasing shader and its area and search textures.
 - **XBMC4Xbox** (Team XBMC, from team xored; GPL-2.0-or-later): the trainers' formats and the
   loader's functions that trainers call (hakuX-native's `native/core/trainer.c`).
+- curl, OpenSSL, libpsl, libzip, RapidJSON and Mozilla's certificate list (as certifi carries it):
+  the updater, as Crux2 has it.
 - libslirp, nv2a_vsh_cpu, xxHash, glslang, volk, Dear ImGui, libktx, tinygltf, GLM, libsmb2,
   libnfs, zlib, Mesa, LLVM's runtime: every part, its authors and its licence are in
   `ps5/notices/components.json`, and in `licenses/README.txt` in the title folder.
@@ -215,6 +228,8 @@ Added
 - A notice at every start, before the splash: this is a highly experimental build, expect
   crashes and freezes. CROSS goes on.
 - **Performance** and **Audio** sections in Settings.
+- **Updates** (as Crux2 has them): a newer release on GitHub, looked for at each start or from
+  Settings > Updates, offered with its notes, downloaded, checked and put in place.
 
 Changed
 - Settings are in eight sections (Graphics, Performance, Audio, Console, Video modes, Network,
@@ -223,6 +238,8 @@ Changed
   the shader options from Graphics to Performance. Settings already saved carry over.
 - The splash no longer shows "X to skip"; CROSS or CIRCLE still skips it.
 - Version numbers start again at 0.0.1 with the first release.
+- Every change OGBox makes to hakuX is now in this repository, as one patch over the pinned
+  hakuX (`ps5/patches/hakux/ps5.patch`), and the release is built from it.
 
 ## Bring-up history
 

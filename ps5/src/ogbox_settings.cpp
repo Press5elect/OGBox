@@ -210,6 +210,15 @@ std::vector<Option> makeOptions()
 		rain.now = true;
 		o.push_back(rain);
 	}
+	{
+		/* 0.0.1: the updater (Crux2's) */
+		Option up{ "update_check", Section::Interface, "Look for updates at start",
+			"Asks GitHub whether a newer OGBox is out each time OGBox starts, and offers it with what is new. "
+			"Nothing is downloaded without asking. Settings > Updates asks at any time.",
+			kOnOff, "1", false };
+		up.now = true;
+		o.push_back(up);
+	}
 	o.push_back({ "show_fps", Section::Interface, "FPS counter",
 		"The frame rate and frame time in a corner while playing.", kOnOff, "1", false });
 	{
@@ -308,7 +317,7 @@ const char *sectionHelp(Section s)
 	case Section::Video: return "The Xbox's own video settings, as its dashboard sets them. Games that support a mode use it.";
 	case Section::Network: return "Xbox Live through Insignia, or system link with consoles on your network or over XLink Kai.";
 	case Section::Library: return "Which places the game list shows, and how it looks. Changes apply at once.";
-	case Section::Interface: return "OGBox's menus: the theme, the FPS counter and the quick menu button.";
+	case Section::Interface: return "OGBox's menus: the theme, updates, the FPS counter and the quick menu button.";
 	default: return "";
 	}
 }

@@ -34,9 +34,10 @@ stage="$root/build/hakux-stage"
 mkdir -p "$out"
 rm -rf "$stage"
 mkdir -p "$stage"
-# What the build compiles or includes: native/ and hw/ (not the Android app, the tests, the tools)
-# and the licence files.
+# What the build compiles or includes: native/ and hw/ (not the Android app, the tools), the
+# licence files, and (0.0.1) hakuX's tests, which ps5/patches/hakux/ps5.patch also changes.
 rsync -a --delete --exclude .git "$src/native" "$src/hw" "$stage/"
+[[ -d $src/tests ]] && rsync -a --exclude .git "$src/tests" "$stage/"
 for file in COPYING LICENSE README.md; do
     [[ -f $src/$file ]] && cp -p "$src/$file" "$stage/"
 done

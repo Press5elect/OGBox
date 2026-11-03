@@ -112,7 +112,20 @@ def pins() -> dict:
         "@xxhash": read(deps / "xxhash/.pshakux-revision"),
         "@libnfs": read(deps / "libnfs/.pshakux-revision"),
         "@libchdr": read(deps / "libchdr/.pshakux-revision"),
+        "@libzip": read(deps / "libzip/.pshakux-revision"),
+        "@rapidjson": read(deps / "rapidjson/.pshakux-revision"),
+        "@certifi": certifi_version(),
     }
+
+
+def certifi_version() -> str:
+    """The certifi release whose cacert.pem tools/link-title.sh put into the title folder."""
+    try:
+        version = subprocess.run(["python3", "-c", "import certifi; print(certifi.__version__)"], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+        return f"{version} (PyPI's certifi)" if version else "unknown"
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
 def artifact_record(app: Path, name: str) -> dict:

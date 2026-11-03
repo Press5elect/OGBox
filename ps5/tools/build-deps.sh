@@ -14,6 +14,8 @@
 #   - built here with the SDK's compilers: libnfs, for its NFS shares (as Crux2 builds it: its
 #     8.0.0 release and the fixes after it), and glslang (ps5/tools/build-glslang.sh), for the HLE
 #     GPU's run-time GLSL -> SPIR-V compiles.
+#   - (0.0.1) curl, OpenSSL and libpsl from the same ports release, and libzip (built here)
+#     and RapidJSON (headers), for the updater.
 #   - sources the build compiles itself (ps5/cmake/hakux.cmake), at the revisions hakuX's own
 #     build names (its android/README.md): libslirp 4.7.0+ (26be815b), unmodified, the NAT's TCP/IP stack;
 #     nv2a_vsh_cpu, the vertex shader interpreter, at 89315e8, the revision xemu pins
@@ -62,6 +64,22 @@ if ! have ports-copy; then
     cp "$pacbrew/lib/libsmb2.a" "$sys/lib/"
     mark ports-copy
 fi
+# OGBox 0.0.1: HTTPS for the updater (ps5/src/platform/ps5_update.cpp), as Crux2 has it: curl with
+# OpenSSL and libpsl, from the same ports release. zlib is still the RADV archive's; curl's zstd
+# decoding is libchdr's copy of zstd's decoder, which the build compiles. (libpsl names iconv, but
+# nothing of it is linked in.)
+if ! have ports-https; then
+    step "copying the HTTPS ports (curl, OpenSSL, libpsl)"
+    cp "$pacbrew/include/libpsl.h" "$sys/include/"
+    for folder in curl openssl; do
+        rm -rf "$sys/include/$folder"
+        cp -r "$pacbrew/include/$folder" "$sys/include/"
+    done
+    for library in libcurl.a libssl.a libcrypto.a libpsl.a libz.a; do
+        cp "$pacbrew/lib/$library" "$sys/lib/"
+    done
+    mark ports-https
+fi
 
 # --------------------------------------------------------------------- sources
 fetch() {
@@ -87,6 +105,11 @@ fetch xxhash https://github.com/Cyan4973/xxHash refs/tags/v0.8.4
 fetch libchdr https://github.com/rtissera/libchdr 47d794151b2b64f6aba60304e6480f4f5a2bc24b
 # libnfs: Crux2's pin (its 8.0.0 release and the four commits after it on master up to 7613236).
 fetch libnfs https://github.com/sahlberg/libnfs 7613236464317bee2d9636f087f995148de4db27
+# OGBox 0.0.1, the updater's: libzip's newest release (v1.12.1) for the release's ZIP, and
+# RapidJSON's master (24b5e7a, 2025: its last release, v1.1.0, is of 2016) for GitHub's answers,
+# as Crux2 has them (PCSX2's 3rdparty copies).
+fetch libzip https://github.com/nih-at/libzip refs/tags/v1.12.1
+fetch rapidjson https://github.com/Tencent/rapidjson 24b5e7a8b27f42fa16b96fc70aade9106cf7102f
 
 # ---------------------------------------------------------------- cross builds
 common=(-G Ninja -DCMAKE_TOOLCHAIN_FILE="$sdk/toolchain/prospero.cmake" -DCMAKE_BUILD_TYPE=Release
@@ -114,6 +137,29 @@ if ! have libnfs; then
     build libnfs -S "$src/libnfs" -DENABLE_TLS=OFF -DENABLE_MULTITHREADING=OFF -DENABLE_UTILS=OFF \
         -DENABLE_EXAMPLES=OFF -DENABLE_TESTS=OFF -DENABLE_DOCUMENTATION=OFF "-DCMAKE_C_FLAGS=$nfs_flags"
     rm -rf "$sys/lib/cmake/libnfs" "$sys/lib/pkgconfig/libnfs.pc"
+fi
+
+# libzip: reading only, with zlib (deflate) and nothing else; its headers and libzip.a.
+# (libz.a is there for its configure step: the title links the RADV archive's zlib.) The SDK's
+# stubs have functions the console's headers do not declare (memcpy_s and the other _s ones,
+# _close, arc4random, getprogname): libzip is told they are not there, as Crux2's build is.
+if ! have libzip; then
+    step "libzip v1.12.1"
+    rm -rf "$sys/include/zip.h" "$sys/include/zipconf.h" "$sys/lib/libzip.a" "$sys/lib/cmake/libzip"
+    build libzip -S "$src/libzip" -DENABLE_COMMONCRYPTO=OFF -DENABLE_GNUTLS=OFF -DENABLE_MBEDTLS=OFF \
+        -DENABLE_OPENSSL=OFF -DENABLE_WINDOWS_CRYPTO=OFF -DENABLE_BZIP2=OFF -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF \
+        -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF \
+        -DZLIB_INCLUDE_DIR="$sys/include" -DZLIB_LIBRARY="$sys/lib/libz.a" \
+        -DHAVE_MEMCPY_S=OFF -DHAVE_STRNCPY_S=OFF -DHAVE_STRERROR_S=OFF -DHAVE_STRERRORLEN_S=OFF \
+        -DHAVE__CLOSE=OFF -DHAVE_ARC4RANDOM=OFF -DHAVE_GETPROGNAME=OFF \
+        "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections -fno-omit-frame-pointer"
+    rm -rf "$sys/lib/cmake/libzip" "$sys/lib/pkgconfig/libzip.pc"
+fi
+# RapidJSON: headers only.
+if ! have rapidjson; then
+    rm -rf "$sys/include/rapidjson"
+    cp -r "$src/rapidjson/include/rapidjson" "$sys/include/"
+    mark rapidjson
 fi
 
 # glslang (its own script: it is also built for the PC's tests).

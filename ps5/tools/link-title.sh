@@ -253,6 +253,13 @@ done
 cp "$(bash "$ps5/tools/build-elevator.sh")" "$app/sandbox-elevator.elf"
 # What a user writes: an example boot.txt (the title reads /data/homebrew/<TITLE_ID>/boot.txt).
 cp "$ps5/package/boot.example.txt" "$app/boot.example.txt"
+# OGBox 0.0.1, Crux2's: the certificates the updater's HTTPS requests are checked with: Mozilla's
+# list as the certifi package carries it, not the build machine's own store, which may hold
+# certificates of that machine's network (a proxy's, a company's) that a console must not trust.
+ca_bundle=${CA_BUNDLE:-$(python3 -c 'import certifi; print(certifi.where())' 2>/dev/null || true)}
+[[ -n $ca_bundle && -f $ca_bundle ]] ||
+    { echo "no certificate bundle: pip install certifi, or set CA_BUNDLE to a cacert.pem" >&2; exit 2; }
+cp "$ca_bundle" "$app/cacert.pem"
 [[ -f $root/README.md ]] && cp "$root/README.md" "$app/README.md"
 mv "$work/eboot.elf.new" "$work/eboot.elf"
 archive_revision=$(sed -n 's/^revision: //p' "$(dirname "$(dirname "$archive")")/PROVENANCE.txt" 2>/dev/null || true)
