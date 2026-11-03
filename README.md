@@ -195,6 +195,12 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### 0.1.55 (bring-up)
+
+Fixed
+- Loading a save state crashed games that keep their own data in the Xbox's first page of memory:
+  the load wrote OGBox's own entries back over it. That page is now restored as it was saved.
+
 ### 0.1.54 (bring-up)
 
 Added
