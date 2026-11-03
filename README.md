@@ -176,6 +176,8 @@ the full front end comes later on the same calls.
   and the high-base link.
 - **PS5 Vulkan Template, PS5_Vulkan, PS5_Mesa and the payload SDK fork** by Mihawk: the
   foundation, RADV on the console and the platform layer.
+- **SMAA** (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, Diego Gutierrez; MIT):
+  the SMAA anti-aliasing shader and its area and search textures.
 - **XBMC4Xbox** (Team XBMC, from team xored; GPL-2.0-or-later): the trainers' formats and the
   loader's functions that trainers call (hakuX-native's `native/core/trainer.c`).
 - libslirp, nv2a_vsh_cpu, xxHash, glslang, volk, Dear ImGui, libktx, tinygltf, GLM, libsmb2,
@@ -194,6 +196,20 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.1.58 (bring-up)
+
+Added
+- **SMAA** and **SSAA** anti-aliasing (Settings > Graphics > Anti-aliasing, beside FXAA; off by
+  default). SMAA smooths edges more sharply than FXAA. SSAA raises the resolution scale above the
+  screen's (4x on a 1080p screen, 6x on a 4K one) and averages the picture down; it is by far the
+  heaviest.
+- Resolution scales 5x and 6x.
+
+Fixed
+- Games that use nearly all of the Xbox's 64 MB froze when they loaded more (a race's track): the
+  PS5's larger memory pages wasted part of it. Games now get the full 64 MB, and no more, as on
+  the console.
 
 ### 0.1.57 (bring-up)
 

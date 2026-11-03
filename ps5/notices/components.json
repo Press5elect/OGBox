@@ -536,6 +536,29 @@
     "url": "https://jayxbox.com/Retail-Game-Modification/PatchHub.php; https://github.com/JayYardley/Xbox-Magic-Patches-by-Jay; https://github.com/icup321/XboxGraphicalPatches",
     "revision": "PatchHub as of 2026-11-02; Xbox-Magic-Patches-by-Jay 9f82bd38b0484e5cbb559f1db818b681e7a520dd; XboxGraphicalPatches 272d76cfc0c9dfedee5f229611bb50e23e8ef921"
    }
+  },
+  {
+   "id": "smaa",
+   "name": "SMAA (Enhanced Subpixel Morphological Antialiasing): SMAA.hlsl, the presenter's SMAA 1x shaders (shaders/glsl/ogbox/smaa_*.vert/frag, SMAA.hlsl) and its area and search textures (ps5/src/third_party/smaa/AreaTex.h, SearchTex.h)",
+   "licence": "MIT",
+   "copyright": "Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, Diego Gutierrez (2013)",
+   "modifications": "none to SMAA.hlsl or the textures; the three passes' GLSL entry points written for the presenter by Press5elect, 2026",
+   "texts": {
+    "SMAA-LICENSE.txt": "ps5/licenses/SMAA-LICENSE.txt"
+   },
+   "artifacts": [
+    "eboot.bin",
+    "shaders/glsl/ogbox/smaa_edge.vert.spv",
+    "shaders/glsl/ogbox/smaa_edge.frag.spv",
+    "shaders/glsl/ogbox/smaa_weight.vert.spv",
+    "shaders/glsl/ogbox/smaa_weight.frag.spv",
+    "shaders/glsl/ogbox/smaa_blend.vert.spv",
+    "shaders/glsl/ogbox/smaa_blend.frag.spv"
+   ],
+   "source": {
+    "url": "https://github.com/iryoku/smaa",
+    "revision": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
+   }
   }
  ]
 }

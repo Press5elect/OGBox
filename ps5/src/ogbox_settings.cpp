@@ -37,7 +37,8 @@ std::vector<Option> makeOptions()
 	o.push_back({ "render_scale", Section::Graphics, "Resolution scale",
 		"The game's picture drawn at this many times its resolution. Higher is sharper and heavier.",
 		{ { "1", "1x (native)" }, { "2", "2x the game's resolution" }, { "3", "3x the game's resolution" },
-			{ "4", "4x the game's resolution" } },
+			{ "4", "4x the game's resolution" }, { "5", "5x (above a 4K screen: heavy)" },
+			{ "6", "6x (above a 4K screen: heaviest)" } },
 		"1", true });
 	o.push_back({ "uncapped", Section::Graphics, "Uncapped frame rate",
 		"Present every frame at once instead of waiting for the display.", kOnOff, "0", true });
@@ -58,11 +59,14 @@ std::vector<Option> makeOptions()
 		{ { "auto", "Auto (the game's own; 16:9 when the console is widescreen)" }, { "4:3", "4:3" },
 			{ "16:9", "16:9 (widescreen games)" }, { "stretch", "Stretch to the screen" } },
 		"auto", true });
-	o.push_back({ "fxaa", Section::Graphics, "FXAA anti-aliasing",
-		"Smooths jagged edges of each frame. Most useful at low resolution scales: a scale above the screen's already smooths them.",
-		kOnOff, "0", true });
+	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
+	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
+		"Smooths jagged edges. FXAA: light and soft. SMAA: sharper edges, a little heavier. SSAA: the game drawn above "
+		"the screen's resolution (raises the resolution scale: 4x on a 1080p screen, 6x on 4K) and averaged down, "
+		"the best and by far the heaviest.",
+		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA (supersampling)" } }, "0", true });
 	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
-		"For a picture smaller than the screen. (With FXAA on, FXAA's picture is scaled bilinearly.)",
+		"For a picture smaller than the screen. (With FXAA on, FXAA's picture is scaled bilinearly; SMAA's is scaled by this.)",
 		{ { "bilinear", "Bilinear" }, { "sgsr", "Snapdragon GSR (sharper edges)" } }, "bilinear", true });
 	// ---- Console
 	o.push_back({ "language", Section::Console, "Language",

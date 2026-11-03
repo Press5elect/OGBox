@@ -109,6 +109,8 @@
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
 #include "VulkanTexture.h"
+#include "third_party/smaa/AreaTex.h"     // SMAA (MIT): its area and search textures
+#include "third_party/smaa/SearchTex.h"
 
 #include "stb_image.h"   // (its implementation is the base class's: base/VulkanglTFModel.cpp)
 
@@ -940,6 +942,27 @@ public:
 	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };
 	std::string aspectMode{ "auto" };
 	bool fxaaOn{ false }, sgsrOn{ false }, showFps{ true }, rainOn{ true };
+	/* 0.1.58: the settings' anti-aliasing beside FXAA: SMAA 1x (three passes at the picture's size
+	 * into images of its own, then shown as the picture is) and SSAA (the resolution scale raised
+	 * above the screen, the picture averaged down over every texel a pixel covers) */
+	bool smaaOn{ false }, ssaaOn{ false };
+	struct AaImage {
+		VkImage image{ VK_NULL_HANDLE };
+		VkDeviceMemory memory{ VK_NULL_HANDLE };
+		VkImageView view{ VK_NULL_HANDLE };
+	};
+	AaImage smaaEdges{}, smaaWeights{}, smaaOut{}, smaaArea{}, smaaSearch{};
+	uint32_t smaaW{ 0 }, smaaH{ 0 };
+	VkImageView smaaPictureView{ VK_NULL_HANDLE };   // the picture the sets were written for
+	bool smaaValid{ false };                         // smaaOut holds the current picture
+	VkSampler pointSampler{ VK_NULL_HANDLE };
+	VkDescriptorPool smaaPool{ VK_NULL_HANDLE };
+	VkDescriptorSetLayout smaaSetLayout{ VK_NULL_HANDLE };
+	VkPipelineLayout smaaPipelineLayout{ VK_NULL_HANDLE };
+	VkDescriptorSet smaaEdgeSet{ VK_NULL_HANDLE }, smaaWeightSet{ VK_NULL_HANDLE }, smaaBlendSet{ VK_NULL_HANDLE },
+		smaaPresentSet{ VK_NULL_HANDLE };
+	VkPipeline smaaEdge{ VK_NULL_HANDLE }, smaaWeight{ VK_NULL_HANDLE }, smaaBlend{ VK_NULL_HANDLE },
+		pipelineSsaa{ VK_NULL_HANDLE };
 	double fpsSince{ -1.0 };
 	uint64_t fpsPictures{ 0 }, fpsDraws{ 0 };
 	float fps{ 0.0f }, drawRate{ 0.0f };
@@ -1425,18 +1448,33 @@ public:
 		runKey = key;   // 0.1.53: the quick menu's states and settings
 		themeEmerald = prefs.global("theme") == "emerald";   // 0.1.52: the in-game panels too
 		aspectMode = prefs.value("aspect");
+		/* 0.1.58: "fxaa" is the anti-aliasing: 0 off, 1 FXAA (as before), smaa, ssaa */
 		fxaaOn = prefs.on("fxaa");
+		smaaOn = prefs.value("fxaa") == "smaa";
+		ssaaOn = prefs.value("fxaa") == "ssaa";
 		sgsrOn = prefs.value("upscale") == "sgsr";
 		showFps = prefs.on("show_fps");
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
+		if (ssaaOn) {
+			/* SSAA: the scale that draws a 480-line picture at 1.5 times the screen's height or more
+			 * (4x on a 1080p screen, 6x on a 4K one; hakuX keeps a wider picture within 3840 at
+			 * scales above 4), or the setting's if higher */
+			const int want = std::min(6, std::max(1, static_cast<int>(std::ceil(1.5 * height / 480.0))));
+			for (std::string &option : fromSettings) {
+				if (option.rfind("scale=", 0) == 0 && std::atoi(option.c_str() + 6) < want) {
+					option = "scale=" + std::to_string(want);
+				}
+			}
+		}
 		std::string said;
 		for (const std::string &option : fromSettings) {
 			argv.push_back(option.c_str());
 			said += " " + option;
 		}
-		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s, FXAA %s, upscaling %s, FPS counter %s",
-			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), fxaaOn ? "on" : "off",
+		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s, anti-aliasing %s, upscaling %s, FPS counter %s",
+			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(),
+			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaOn ? "SSAA" : "off",
 			sgsrOn ? "SGSR" : "bilinear", showFps ? "on" : "off");
 		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
 		static std::vector<std::string> fromTrainer;
@@ -1492,6 +1530,7 @@ public:
 		vkDestroyPipeline(device, pipeline, nullptr);
 		vkDestroyPipeline(device, pipelineFxaa, nullptr);
 		vkDestroyPipeline(device, pipelineSgsr, nullptr);
+		destroySmaa();
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -1661,6 +1700,10 @@ public:
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
 
 		VkPipelineLayoutCreateInfo pipelineLayoutCI = vks::initializers::pipelineLayoutCreateInfo(&descriptorSetLayout, 1);
+		/* 0.1.58: a vec4 for ssaa.frag (the viewport's size) */
+		const VkPushConstantRange presentPush{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
+		pipelineLayoutCI.pushConstantRangeCount = 1;
+		pipelineLayoutCI.pPushConstantRanges = &presentPush;
 		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout));
 
 		VkPipelineInputAssemblyStateCreateInfo inputAssembly =
@@ -1704,7 +1747,8 @@ public:
 		const struct {
 			const char *file;
 			VkPipeline *out;
-		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/sgsr.frag.spv", &pipelineSgsr } };
+		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/sgsr.frag.spv", &pipelineSgsr },
+			{ "ogbox/ssaa.frag.spv", &pipelineSsaa } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
 			pipelineCI.pStages = stages.data();
@@ -1713,6 +1757,256 @@ public:
 				pshakux_log("presenter: %s cannot be made: that filter is off", v.file);
 			}
 		}
+		prepareSmaa(pipelineCI, rasterization);
+	}
+
+	// ---- 0.1.58: SMAA 1x (iryoku/smaa, MIT: shaders/glsl/ogbox/SMAA.hlsl, third_party/smaa) -------
+	void destroyAaImage(AaImage &a)
+	{
+		vkDestroyImageView(device, a.view, nullptr);
+		vkDestroyImage(device, a.image, nullptr);
+		vkFreeMemory(device, a.memory, nullptr);
+		a = AaImage{};
+	}
+
+	void createAaImage(AaImage &a, VkFormat format, uint32_t w, uint32_t h, VkImageUsageFlags usage)
+	{
+		VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+		imageCI.imageType = VK_IMAGE_TYPE_2D;
+		imageCI.format = format;
+		imageCI.extent = { w, h, 1 };
+		imageCI.mipLevels = 1;
+		imageCI.arrayLayers = 1;
+		imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageCI.usage = usage;
+		imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &a.image));
+		VkMemoryRequirements req;
+		vkGetImageMemoryRequirements(device, a.image, &req);
+		VkMemoryAllocateInfo alloc = vks::initializers::memoryAllocateInfo();
+		alloc.allocationSize = req.size;
+		alloc.memoryTypeIndex = vulkanDevice->getMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_CHECK_RESULT(vkAllocateMemory(device, &alloc, nullptr, &a.memory));
+		VK_CHECK_RESULT(vkBindImageMemory(device, a.image, a.memory, 0));
+		VkImageViewCreateInfo viewCI = vks::initializers::imageViewCreateInfo();
+		viewCI.image = a.image;
+		viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewCI.format = format;
+		viewCI.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		VK_CHECK_RESULT(vkCreateImageView(device, &viewCI, nullptr, &a.view));
+	}
+
+	/* A constant texture (SMAA's area and search tables) up once, left shader-readable. */
+	void uploadAaImage(AaImage &a, VkFormat format, uint32_t w, uint32_t h, const void *data, VkDeviceSize bytes)
+	{
+		createAaImage(a, format, w, h, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		Staging s{};
+		ensureStaging(s, bytes);
+		std::memcpy(s.mapped, data, static_cast<size_t>(bytes));
+		VkCommandBuffer cmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, a.image, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, range);
+		VkBufferImageCopy copy{};
+		copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.imageExtent = { w, h, 1 };
+		vkCmdCopyBufferToImage(cmd, s.buffer, a.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		vks::tools::insertImageMemoryBarrier(cmd, a.image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
+		vulkanDevice->flushCommandBuffer(cmd, queue, true);
+		destroyStaging(s);
+	}
+
+	/* The three passes' pipelines, their sets and SMAA's two tables; none of it if a part can't be
+	 * made (SMAA is then off: the picture as it is). */
+	void prepareSmaa(VkGraphicsPipelineCreateInfo pipelineCI, const VkPipelineRasterizationStateCreateInfo &)
+	{
+		VkSamplerCreateInfo samplerCI = vks::initializers::samplerCreateInfo();
+		samplerCI.magFilter = samplerCI.minFilter = VK_FILTER_NEAREST;
+		samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerCI.addressModeU = samplerCI.addressModeV = samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerCI.maxLod = 0.0f;
+		samplerCI.maxAnisotropy = 1.0f;
+		VK_CHECK_RESULT(vkCreateSampler(device, &samplerCI, nullptr, &pointSampler));
+
+		const VkDescriptorSetLayoutBinding bindings[3] = {
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 0),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 1),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 2),
+		};
+		VkDescriptorSetLayoutCreateInfo layoutCI = vks::initializers::descriptorSetLayoutCreateInfo(bindings, 3);
+		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &layoutCI, nullptr, &smaaSetLayout));
+		const VkPushConstantRange push{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
+		VkPipelineLayoutCreateInfo plCI = vks::initializers::pipelineLayoutCreateInfo(&smaaSetLayout, 1);
+		plCI.pushConstantRangeCount = 1;
+		plCI.pPushConstantRanges = &push;
+		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &plCI, nullptr, &smaaPipelineLayout));
+
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 4);
+		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &smaaPool));
+		const VkDescriptorSetLayout three[3] = { smaaSetLayout, smaaSetLayout, smaaSetLayout };
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(smaaPool, three, 3);
+		VkDescriptorSet sets[3];
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, sets));
+		smaaEdgeSet = sets[0];
+		smaaWeightSet = sets[1];
+		smaaBlendSet = sets[2];
+		allocInfo = vks::initializers::descriptorSetAllocateInfo(smaaPool, &descriptorSetLayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &smaaPresentSet));
+
+		const struct {
+			const char *vert, *frag;
+			VkFormat format;
+			VkPipeline *out;
+		} passes[] = {
+			{ "ogbox/smaa_edge.vert.spv", "ogbox/smaa_edge.frag.spv", VK_FORMAT_R8G8_UNORM, &smaaEdge },
+			{ "ogbox/smaa_weight.vert.spv", "ogbox/smaa_weight.frag.spv", VK_FORMAT_R8G8B8A8_UNORM, &smaaWeight },
+			{ "ogbox/smaa_blend.vert.spv", "ogbox/smaa_blend.frag.spv", picture.format, &smaaBlend },
+		};
+		bool ok = true;
+		for (const auto &pass : passes) {
+			std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+				loadShader(getShadersPath() + pass.vert, VK_SHADER_STAGE_VERTEX_BIT),
+				loadShader(getShadersPath() + pass.frag, VK_SHADER_STAGE_FRAGMENT_BIT),
+			};
+			VkPipelineRenderingCreateInfoKHR renderingCI{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+			renderingCI.colorAttachmentCount = 1;
+			renderingCI.pColorAttachmentFormats = &pass.format;
+			pipelineCI.pNext = &renderingCI;
+			pipelineCI.layout = smaaPipelineLayout;
+			pipelineCI.stageCount = 2;
+			pipelineCI.pStages = stages.data();
+			pipelineCI.pDepthStencilState = nullptr;
+			if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, pass.out) != VK_SUCCESS) {
+				*pass.out = VK_NULL_HANDLE;
+				ok = false;
+			}
+		}
+		uploadAaImage(smaaArea, VK_FORMAT_R8G8_UNORM, AREATEX_WIDTH, AREATEX_HEIGHT, areaTexBytes, sizeof(areaTexBytes));
+		uploadAaImage(smaaSearch, VK_FORMAT_R8_UNORM, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, searchTexBytes,
+			sizeof(searchTexBytes));
+		pshakux_log("presenter: SMAA %s (preset high: luma edges, area %ux%u, search %ux%u)",
+			ok ? "ready" : "cannot be made: it is off", AREATEX_WIDTH, AREATEX_HEIGHT, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT);
+	}
+
+	bool smaaReady() const
+	{
+		return smaaEdge != VK_NULL_HANDLE && smaaWeight != VK_NULL_HANDLE && smaaBlend != VK_NULL_HANDLE;
+	}
+
+	/* The passes' images at the picture's size, and the sets pointed at the picture of now. */
+	void ensureSmaa()
+	{
+		if (picture.view == VK_NULL_HANDLE) {
+			return;
+		}
+		if (smaaW != picture.width || smaaH != picture.height) {
+			vkDeviceWaitIdle(device);
+			destroyAaImage(smaaEdges);
+			destroyAaImage(smaaWeights);
+			destroyAaImage(smaaOut);
+			const VkImageUsageFlags rt = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+			createAaImage(smaaEdges, VK_FORMAT_R8G8_UNORM, picture.width, picture.height, rt);
+			createAaImage(smaaWeights, VK_FORMAT_R8G8B8A8_UNORM, picture.width, picture.height, rt);
+			createAaImage(smaaOut, picture.format, picture.width, picture.height, rt);
+			smaaW = picture.width;
+			smaaH = picture.height;
+			smaaPictureView = VK_NULL_HANDLE;
+			smaaValid = false;
+			VkDescriptorImageInfo edges{ sampler, smaaEdges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkDescriptorImageInfo area{ sampler, smaaArea.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkDescriptorImageInfo search{ pointSampler, smaaSearch.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkDescriptorImageInfo weights{ sampler, smaaWeights.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkDescriptorImageInfo out{ sampler, smaaOut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			const VkWriteDescriptorSet writes[] = {
+				vks::initializers::writeDescriptorSet(smaaWeightSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &edges),
+				vks::initializers::writeDescriptorSet(smaaWeightSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, &area),
+				vks::initializers::writeDescriptorSet(smaaWeightSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, &search),
+				vks::initializers::writeDescriptorSet(smaaBlendSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, &weights),
+				vks::initializers::writeDescriptorSet(smaaPresentSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &out),
+			};
+			vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+			pshakux_log("presenter: SMAA's images %ux%u", smaaW, smaaH);
+		}
+		if (smaaPictureView != picture.view) {
+			VkDescriptorImageInfo color{ sampler, picture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			const VkWriteDescriptorSet writes[] = {
+				vks::initializers::writeDescriptorSet(smaaEdgeSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color),
+				vks::initializers::writeDescriptorSet(smaaBlendSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color),
+			};
+			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+			smaaPictureView = picture.view;
+			smaaValid = false;
+		}
+	}
+
+	/* One pass: its target cleared and drawn at the picture's size, then left shader-readable. */
+	void smaaPass(VkCommandBuffer cmd, AaImage &target, VkPipeline pipe, VkDescriptorSet set)
+	{
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, target.image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, range);
+		VkRenderingAttachmentInfoKHR color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		color.imageView = target.view;
+		color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		color.clearValue.color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+		VkRenderingInfoKHR info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+		info.renderArea = { { 0, 0 }, { smaaW, smaaH } };
+		info.layerCount = 1;
+		info.colorAttachmentCount = 1;
+		info.pColorAttachments = &color;
+		vkCmdBeginRendering(cmd, &info);
+		VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(smaaW), static_cast<float>(smaaH), 0.0f, 1.0f };
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		VkRect2D scissor{ { 0, 0 }, { smaaW, smaaH } };
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, smaaPipelineLayout, 0, 1, &set, 0, nullptr);
+		const float metrics[4] = { 1.0f / static_cast<float>(smaaW), 1.0f / static_cast<float>(smaaH),
+			static_cast<float>(smaaW), static_cast<float>(smaaH) };
+		vkCmdPushConstants(cmd, smaaPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+			sizeof(metrics), metrics);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+		vkCmdEndRendering(cmd);
+		vks::tools::insertImageMemoryBarrier(cmd, target.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
+	}
+
+	/* The three passes over a new picture (an unchanged one keeps its result). */
+	void recordSmaa(VkCommandBuffer cmd)
+	{
+		ensureSmaa();
+		if (smaaValid && !upload) {
+			return;
+		}
+		smaaPass(cmd, smaaEdges, smaaEdge, smaaEdgeSet);
+		smaaPass(cmd, smaaWeights, smaaWeight, smaaWeightSet);
+		smaaPass(cmd, smaaOut, smaaBlend, smaaBlendSet);
+		smaaValid = true;
+	}
+
+	void destroySmaa()
+	{
+		destroyAaImage(smaaEdges);
+		destroyAaImage(smaaWeights);
+		destroyAaImage(smaaOut);
+		destroyAaImage(smaaArea);
+		destroyAaImage(smaaSearch);
+		vkDestroyPipeline(device, smaaEdge, nullptr);
+		vkDestroyPipeline(device, smaaWeight, nullptr);
+		vkDestroyPipeline(device, smaaBlend, nullptr);
+		vkDestroyPipeline(device, pipelineSsaa, nullptr);
+		vkDestroyPipelineLayout(device, smaaPipelineLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, smaaSetLayout, nullptr);
+		vkDestroyDescriptorPool(device, smaaPool, nullptr);
+		vkDestroySampler(device, pointSampler, nullptr);
 	}
 
 	void prepare() override
@@ -1840,6 +2134,11 @@ public:
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
 			picture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
+		const bool smaaNow = smaaOn && smaaReady() && havePicture && !showingLogo &&
+			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		if (smaaNow) {
+			recordSmaa(cmdBuffer);
+		}
 		beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
 		const bool splash = library && screen == Screen::Boot && showingLogo;
 		if ((havePicture || (showingLogo && (!library || splash))) &&
@@ -1860,16 +2159,27 @@ public:
 			VkRect2D scissor{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
 			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 			VkPipeline chosen = pipeline;
+			VkDescriptorSet set = descriptorSet;
 			if (havePicture && !showingLogo) {
 				const bool smaller = static_cast<float>(picture.width) < w - 0.5f || static_cast<float>(picture.height) < h - 0.5f;
+				const bool larger = static_cast<float>(picture.width) > w + 0.5f || static_cast<float>(picture.height) > h + 0.5f;
+				if (smaaNow && smaaValid) {
+					set = smaaPresentSet;   // SMAA's result, scaled as the picture would be
+				}
 				if (fxaaOn && pipelineFxaa != VK_NULL_HANDLE) {
 					chosen = pipelineFxaa;
 				} else if (sgsrOn && smaller && pipelineSgsr != VK_NULL_HANDLE) {
 					chosen = pipelineSgsr;
+				} else if (ssaaOn && larger && pipelineSsaa != VK_NULL_HANDLE) {
+					chosen = pipelineSsaa;   // averaged down over every texel a pixel covers
 				}
 			}
 			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
-			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
+			if (chosen == pipelineSsaa) {
+				const float metrics[4] = { 0.0f, 0.0f, w, h };
+				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
+			}
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 		}
 		drawUI(cmdBuffer);
