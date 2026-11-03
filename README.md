@@ -214,6 +214,8 @@ Added
 Fixed
 - Moving the data folder (Settings > Storage) left the save states and the saves copied out of the
   hard disk behind; they move with it now, and so do the trainers.
+- The source beside a release lacked the changes to hakuX the build used (the native CPU,
+  savestates, trainers): `hakux-native-<revision>.patch` now carries them over the pinned hakuX.
 
 ### 0.1.53 (bring-up)
 

@@ -22,6 +22,10 @@
 #                                  and Mesa, the tools and the tests (what is not fetched)
 #   hakux-<revision>.tar.xz        hakuX at the pinned revision, as fetched (the patches are in the
 #                                  project archive)
+#   hakux-native-<revision>.patch  OGBox 0.1.54: with HAKUX_SRC (the work tree the build used, its
+#                                  native CPU, savestates and trainers), the tree's commits over the
+#                                  pinned revision as one patch (git diff --binary), which
+#                                  git apply lays over the archive above
 #   SOURCES.txt                    every other part: its repository and the exact revision
 #   SHA256SUMS                     of everything above
 #
@@ -32,6 +36,7 @@
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -205,12 +210,38 @@ def main() -> int:
             return 1
     produced.append(upstream)
 
+    # OGBox 0.1.54: the work tree the build used (HAKUX_SRC), its changes over the pinned revision:
+    # without them the source beside the binary was the upstream's alone
+    native_patch = None
+    work = os.environ.get("HAKUX_SRC")
+    if work:
+        work_tree = (ROOT / work).resolve() if not Path(work).is_absolute() else Path(work)
+        head = subprocess.run(["git", "-C", str(work_tree), "rev-parse", "HEAD"], capture_output=True, text=True)
+        if head.returncode != 0:
+            print(f"HAKUX_SRC {work_tree} is not a git work tree: its changes can't be packed", file=sys.stderr)
+            return 1
+        head_rev = head.stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(work_tree), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+        if dirty:
+            print(f"HAKUX_SRC {work_tree} has uncommitted changes: commit them first", file=sys.stderr)
+            return 1
+        if head_rev != revision:
+            native_patch = out / f"hakux-native-{head_rev[:12]}.patch"
+            with native_patch.open("wb") as sink:
+                subprocess.run(["git", "-C", str(work_tree), "diff", "--binary", revision, head_rev], stdout=sink,
+                               check=True)
+            produced.append(native_patch)
+
     components = json.loads((app / "licenses/components.json").read_text())
     lines = [f"OGBox {args.tag}: where the source of every part is", "",
              f"Build identity: {components['build_identity']}", "",
              f"In this folder: OGBox-{args.tag}-source.zip (the port, its patches, tools and tests) and",
              f"hakux-{revision[:12]}.tar.xz (hakuX at the pinned revision; ps5/patches/hakux/*.patch of the",
-             "project archive are laid over it by ps5/tools/prepare-hakux.sh).", "",
+             "project archive are laid over it by ps5/tools/prepare-hakux.sh)." + (
+                 f" {native_patch.name}: the hakuX work tree this build used, its commits over that revision"
+                 f" (git apply it in the unpacked archive; the patches above are already in it)."
+                 if native_patch else ""), "",
              "Every other part is fetched by the build (ps5/tools/bootstrap.sh, build-deps.sh) from a public",
              "repository at the revision below:", ""]
     grouped = {}
