@@ -431,6 +431,43 @@ std::vector<LibraryEntry> listPlaces(const PlaceFilter *filter = nullptr)
 	return places;
 }
 
+/* OGBox 0.0.2: the game list's tabs, as Crux2's: the console's own storage, USB drives, network
+ * shares. Each place is under one. */
+enum LibraryTab { TabInternal = 0, TabUsb = 1, TabNetwork = 2, TabCount = 3 };
+
+int tabOfPath(const std::string &path)
+{
+	if (path.rfind("/mnt/usb", 0) == 0) {
+		return TabUsb;
+	}
+	if (path.rfind("/smb", 0) == 0 || path.rfind("/nfs", 0) == 0) {
+		return TabNetwork;
+	}
+	return TabInternal;
+}
+
+const char *tabName(int tab)
+{
+	return tab == TabUsb ? "USB" : tab == TabNetwork ? "Network" : "Internal";
+}
+
+/* OGBox 0.0.2: the Xbox dashboard is there when the hard disk's C: drive (its Partition2) holds
+ * xboxdash.xbe, whatever the case of its name. */
+bool dashboardPresent(const std::string &hdd)
+{
+	bool found = false;
+	if (DIR *d = opendir((hdd + "/Partition2").c_str())) {
+		while (struct dirent *e = readdir(d)) {
+			if (strcasecmp(e->d_name, "xboxdash.xbe") == 0) {
+				found = true;
+				break;
+			}
+		}
+		closedir(d);
+	}
+	return found;
+}
+
 /* OGBox 0.1.43: the letter a list entry files under, for L2 / R2 ('#' digits and the rest). */
 char letterOf(const std::string &name)
 {
@@ -787,6 +824,16 @@ public:
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
 	std::vector<LibraryEntry> places;         // the left column
 	double placesRead{ -100.0 };
+	// 0.0.2: the tabs (Internal, USB, Network: L1 / R1) and the folder each was left at; whether
+	// the hard disk has the Xbox dashboard (its row shows only then)
+	int tab{ TabInternal };
+	std::string tabFolder[TabCount];
+	bool haveDash{ false };
+	// 0.0.2: a game that started another XBE: its last frame, shown until the new XBE's first
+	std::vector<uint8_t> frozenPixels;
+	uint32_t frozenWidth{ 0 }, frozenHeight{ 0 };
+	float frozenAspect{ 0.0f };
+	bool showingFrozen{ false };
 	// 0.1.43: back from a game, the list fades in (no boot screen); L2 / R2 a letter on
 	double fadeSince{ -1.0 };
 	float trigL{ 0.0f }, trigR{ 0.0f };      // the triggers last frame
@@ -981,6 +1028,37 @@ public:
 	double probeLastFrame{ -1.0 }, probeNext{ 0.0 };
 	unsigned probeThisStall{ 0 }, probeTotal{ 0 };
 	int probeWanted{ -1 };
+
+	/* 0.0.2: the tabs shown: Internal always, USB while the settings show USB drives, Network while
+	 * they show the shares. */
+	std::vector<int> tabsShown() const
+	{
+		const PlaceFilter f = placeFilter();
+		std::vector<int> t{ TabInternal };
+		if (f.usb > 0) {
+			t.push_back(TabUsb);
+		}
+		if (f.network) {
+			t.push_back(TabNetwork);
+		}
+		return t;
+	}
+
+	/* 0.0.2: L1 (-1) or R1 (+1): the tab before or after, round and round, at the folder it was
+	 * left at. */
+	void switchTab(int dir)
+	{
+		const std::vector<int> t = tabsShown();
+		const int n = static_cast<int>(t.size());
+		int at = static_cast<int>(std::find(t.begin(), t.end(), tab) - t.begin());
+		at = at >= n ? 0 : (at + dir + n) % n;
+		if (t[static_cast<size_t>(at)] == tab) {
+			return;
+		}
+		tab = t[static_cast<size_t>(at)];
+		pshakux_log("library: the %s tab", tabName(tab));
+		openFolder(tabFolder[tab]);
+	}
 
 	/* 0.1.43: the places the settings' Game list section shows. */
 	PlaceFilter placeFilter() const
@@ -1178,6 +1256,10 @@ public:
 	void openFolder(const std::string &path, const std::string &select = std::string())
 	{
 		folder = path;
+		if (!path.empty()) {
+			tab = tabOfPath(path);   // 0.0.2: a folder is in its place's tab
+		}
+		tabFolder[tab] = path;
 		selectName = select;
 		entries.clear();
 		listError.clear();
@@ -1187,7 +1269,11 @@ public:
 		listing.reset();
 		if (path.empty()) {
 			const PlaceFilter f = placeFilter();
-			entries = listPlaces(&f);
+			for (const LibraryEntry &place : listPlaces(&f)) {
+				if (tabOfPath(place.path) == tab) {
+					entries.push_back(place);
+				}
+			}
 			pickSelection();
 			return;
 		}
@@ -1262,6 +1348,13 @@ public:
 	void goUp()
 	{
 		if (folder.empty()) {
+			/* 0.0.2: nothing above a tab's places: CIRCLE asks before closing OGBox (Crux2's way) */
+			openPopup("Close OGBox?", "Are you sure?", { "No", "Yes, close it" }, [this](int i) {
+				if (i == 1) {
+					pshakux_log("library: Quit OGBox (CIRCLE, confirmed)");
+					quit = true;
+				}
+			});
 			return;
 		}
 		for (const LibraryEntry &place : listPlaces()) {
@@ -1355,8 +1448,74 @@ public:
 			args.push_back(word.c_str());
 		}
 		args.push_back(nullptr);
+		saveFrozenFrame();
 		quiesceForExit();
 		pshakux_relaunch(args.data());
+	}
+
+	/* 0.0.2: a game starting another XBE keeps its picture: the last frame, kept for the title as it
+	 * starts again (the frozen frame, shown until the new XBE's first instead of the boot screen). */
+	static std::string frozenPath()
+	{
+		return ogbox::storagePath("cache") + "/xbe-switch-frame.bin";
+	}
+
+	void saveFrozenFrame()
+	{
+		if (!havePicture || showingLogo || pictureBuffer < 0 || !picture.width || !picture.height) {
+			return;
+		}
+		const Staging &s = staging[static_cast<size_t>(pictureBuffer)];
+		const size_t bytes = size_t(picture.width) * picture.height * 4;
+		if (!s.mapped || s.size < bytes) {
+			return;
+		}
+		mkdir(ogbox::storagePath("cache").c_str(), 0777);
+		const std::string path = frozenPath();
+		FILE *f = std::fopen(path.c_str(), "wb");
+		if (!f) {
+			return;
+		}
+		const float aspect = displayAspect();
+		const uint32_t head[4] = { 0x4652474fu /* "OGRF" */, picture.width, picture.height, 0 };
+		bool ok = std::fwrite(head, sizeof(head), 1, f) == 1 && std::fwrite(&aspect, sizeof(aspect), 1, f) == 1 &&
+			std::fwrite(s.mapped, 1, bytes, f) == bytes;
+		ok = std::fclose(f) == 0 && ok;
+		pshakux_log("presenter: the last frame (%ux%u) kept for the game's next XBE: %s", picture.width, picture.height,
+			ok ? "saved" : std::strerror(errno));
+		if (!ok) {
+			std::remove(path.c_str());
+		}
+	}
+
+	/* The kept frame, read once and removed (true: it is the picture until the first frame). */
+	bool loadFrozenFrame()
+	{
+		const std::string path = frozenPath();
+		FILE *f = std::fopen(path.c_str(), "rb");
+		if (!f) {
+			return false;
+		}
+		uint32_t head[4] = {};
+		float aspect = 0.0f;
+		bool ok = std::fread(head, sizeof(head), 1, f) == 1 && head[0] == 0x4652474fu && head[1] && head[2] &&
+			head[1] <= 8192 && head[2] <= 8192 && std::fread(&aspect, sizeof(aspect), 1, f) == 1;
+		if (ok) {
+			frozenPixels.resize(size_t(head[1]) * head[2] * 4);
+			ok = std::fread(frozenPixels.data(), 1, frozenPixels.size(), f) == frozenPixels.size();
+		}
+		std::fclose(f);
+		std::remove(path.c_str());
+		if (!ok) {
+			std::vector<uint8_t>().swap(frozenPixels);
+			pshakux_log("presenter: the kept frame at %s could not be read: the boot screen instead", path.c_str());
+			return false;
+		}
+		frozenWidth = head[1];
+		frozenHeight = head[2];
+		frozenAspect = aspect > 0.1f && aspect < 10.0f ? aspect : 0.0f;
+		pshakux_log("presenter: the game's last frame (%ux%u) shown until this XBE's first", frozenWidth, frozenHeight);
+		return true;
 	}
 
 	VulkanExample() : VulkanExampleBase()
@@ -2073,6 +2232,12 @@ public:
 	/* OGBox's logo, the picture until the game's first frame (none when the file is missing). */
 	void loadLogo()
 	{
+		/* 0.0.2: the game started another XBE: its last frame instead of the boot screen; a kept
+		 * frame left from before (no relaunch now) is removed unread */
+		const bool xbeSwitch = !library && std::find(boot.options.begin(), boot.options.end(), "relaunch") != boot.options.end();
+		if (xbeSwitch ? loadFrozenFrame() : (std::remove(frozenPath().c_str()), false)) {
+			return;
+		}
 		const std::string path = getAssetPath() + "ogbox-logo.png";
 		int w = 0, h = 0, n = 0;
 		stbi_uc *pixels = stbi_load(path.c_str(), &w, &h, &n, STBI_rgb_alpha);
@@ -2093,6 +2258,15 @@ public:
 	/* The logo into this frame's staging buffer, once, while no game frame has come. */
 	bool fetchLogo()
 	{
+		if (!havePicture && !showingLogo && !frozenPixels.empty()) {
+			Staging &s = staging[currentBuffer];
+			ensureStaging(s, VkDeviceSize(frozenPixels.size()));
+			std::memcpy(s.mapped, frozenPixels.data(), frozenPixels.size());
+			ensurePicture(frozenWidth, frozenHeight);
+			showingLogo = showingFrozen = true;
+			std::vector<uint8_t>().swap(frozenPixels);
+			return true;
+		}
 		if (havePicture || showingLogo || logoPixels.empty()) {
 			return false;
 		}
@@ -2129,6 +2303,7 @@ public:
 		havePicture = true;
 		pictureBuffer = static_cast<int>(currentBuffer);   // 0.1.53: a save state's picture comes from it
 		showingLogo = false;
+		showingFrozen = false;
 		if (!picturesTaken++) {
 			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames", fw, fh,
 				static_cast<unsigned long long>(framesDrawn));
@@ -2142,7 +2317,7 @@ public:
 	{
 		float aspect = static_cast<float>(picture.width) / static_cast<float>(picture.height);
 		if (showingLogo) {
-			return aspect;   // the logo at its own shape
+			return showingFrozen && frozenAspect > 0.0f ? frozenAspect : aspect;   // the logo at its own shape
 		}
 		/* 0.1.26: the settings' aspect ratio (hakuX's: auto, 4:3, 16:9, stretch) */
 		if (aspectMode == "4:3") {
@@ -2203,7 +2378,7 @@ public:
 			const float x = std::floor((static_cast<float>(width) - w) * 0.5f);
 			const float y = splash ? std::floor(static_cast<float>(height) * 0.12f) : std::floor((static_cast<float>(height) - h) * 0.5f);
 			VkViewport viewport{ x, y, w, h, 0.0f, 1.0f };
-			if (cropOn && havePicture && !showingLogo) {
+			if (cropOn && ((havePicture && !showingLogo) || showingFrozen)) {
 				/* the overscan cropped: the picture drawn 1 / (1 - 2 * 3/80) larger about its
 				 * middle, the scissor keeping its place (its shape kept: both sides alike) */
 				const float k = 1.0f / (1.0f - 2.0f * 3.0f / 80.0f);
@@ -2372,6 +2547,10 @@ public:
 			}
 			if ((pressed & PAD_OPTIONS) && startPath.empty()) {
 				openSettings(std::string(), std::string());
+			}
+			/* 0.0.2: L1 / R1 the tabs */
+			if ((pressed & (PAD_L1 | PAD_R1)) && startPath.empty()) {
+				switchTab((pressed & PAD_R1) ? 1 : -1);
 			}
 			/* 0.1.43: L2 / R2 a letter back or on; held, again every 0.12 s after 0.4 s */
 			const double tnow = now_seconds();
@@ -3418,6 +3597,13 @@ public:
 			const PlaceFilter f = placeFilter();
 			places = listPlaces(&f);
 			placesRead = now_seconds();
+			haveDash = dashboardPresent(boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd);
+			/* a tab the settings no longer show: the first one's */
+			const std::vector<int> t = tabsShown();
+			if (std::find(t.begin(), t.end(), tab) == t.end()) {
+				tab = TabInternal;
+				openFolder(tabFolder[tab]);
+			}
 		}
 		beginScreen("##library", 0.35f);
 		const float W = static_cast<float>(width), H = static_cast<float>(height);
@@ -3470,6 +3656,25 @@ public:
 			ImGui::TextColored(mx::line, "%s", version.c_str());
 		}
 
+		/* 0.0.2: the tabs, as Crux2's: Internal, USB, Network, L1 / R1 between them */
+		{
+			const std::vector<int> t = tabsShown();
+			richLine("{L1}", mx::label);
+			for (const int id : t) {
+				ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+				const bool on = id == tab;
+				ImGui::SetWindowFontScale(1.15f);
+				ImGui::TextColored(on ? mx::bright : mx::label, "%s", tabName(id));
+				ImGui::SetWindowFontScale(1.0f);
+				if (on) {
+					const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+					ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x, b.y + 2.0f), ImVec2(b.x, b.y + 5.0f), mx::u32(mx::bright));
+				}
+			}
+			ImGui::SameLine(0.0f, style.ItemSpacing.x * 3.0f);
+			richLine("{R1}", mx::label);
+			ImGui::Spacing();
+		}
 		const float footH = ImGui::GetTextLineHeightWithSpacing() * 2.6f;
 		const float colH = H - ImGui::GetCursorPosY() - style.WindowPadding.y - footH;
 		const float leftW = W * 0.19f, rightW = W * 0.29f;
@@ -3482,7 +3687,11 @@ public:
 		columnsBegin(2);
 		ImGui::BeginChild("places", ImVec2(leftW, colH), true, child);
 		ImGui::TextColored(mx::label, "PLACES");
+		bool firstPlace = true;
 		for (size_t i = 0; i < places.size(); i++) {
+			if (tabOfPath(places[i].path) != tab) {
+				continue;   // 0.0.2: another tab's
+			}
 			const bool here = !folder.empty() && folder.compare(0, places[i].path.size(), places[i].path) == 0;
 			const std::string &pp = places[i].path;
 			const Icon pi = pp.rfind("/mnt/usb", 0) == 0 ? Icon::Usb : pp.rfind("/smb", 0) == 0 || pp.rfind("/nfs", 0) == 0 ? Icon::Network
@@ -3490,16 +3699,23 @@ public:
 			if (row("p" + std::to_string(i), places[i].name, std::string(), here, here ? mx::bright : mx::text, pi)) {
 				chosenPlace = static_cast<int>(i);
 			}
-			columnItem(0, i == 0);
+			columnItem(0, firstPlace);
+			firstPlace = false;
+		}
+		if (firstPlace) {
+			ImGui::TextColored(mx::label, tab == TabUsb ? "No USB drive" : tab == TabNetwork ? "No share" : "None");
 		}
 		ImGui::Spacing();
 		ImGui::TextColored(mx::label, "OGBOX");
 		const bool openSet = row("settings", "Settings", "{OPT}", false, mx::text, Icon::Gear);
-		columnItem(0, places.empty());
+		columnItem(0, firstPlace);
 		const bool openDisk = row("hdd", "Hard disk", std::string(), false, mx::text, Icon::Console);   // 0.1.53
 		columnItem(0, false);
-		const bool dash = row("dash", "Xbox dashboard", std::string(), false, mx::text, Icon::Dash);
-		columnItem(0, false);
+		bool dash = false;
+		if (haveDash) {   // 0.0.2: only when the hard disk has one
+			dash = row("dash", "Xbox dashboard", std::string(), false, mx::text, Icon::Dash);
+			columnItem(0, false);
+		}
 		const bool leave = row("quit", "Quit OGBox", std::string(), false, mx::text, Icon::Power);
 		columnItem(0, false);
 		ImGui::EndChild();
@@ -3512,8 +3728,12 @@ public:
 			ImGui::TextColored(mx::label, "Reading the folder");
 			cursor();
 		}
-		if (folder.empty()) {
-			ImGui::TextColored(mx::label, "Choose a place on the left: your discs (.iso, .xiso, .chd) are in its folders.");
+		if (folder.empty() && entries.empty()) {
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(mx::label, "%s", tab == TabUsb ? "No USB drive is plugged in (or the settings' Game list hides them)."
+				: tab == TabNetwork ? "No network share: add one in /data/ogbox/network.cfg."
+				: "Nothing to show: the settings' Game list hides every place here.");
+			ImGui::PopTextWrapPos();
 		}
 		const bool grid = prefs.global("list_layout") == "grid" && !folder.empty();
 		const bool sizes = prefs.global("list_sizes") != "0";
@@ -3639,7 +3859,7 @@ public:
 		if (!startPath.empty()) {
 			footer(("Starting " + (startPath == "none" ? std::string("the Xbox dashboard") : baseName(startPath)) + " ...").c_str());
 		} else {
-			footer("{X} open / play     {T} game page     {O} back     {L2} {R2} jump a letter     {OPT} settings",
+			footer("{X} open / play     {T} game page     {O} back     {L1} {R1} tabs     {L2} {R2} jump a letter     {OPT} settings",
 				"Network shares: " + g_networkStatus);
 		}
 		endScreen();
@@ -3684,7 +3904,9 @@ public:
 			dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.2f, ImVec2(x0 + lh * 2.6f, y0 + lh * 0.3f), mx::u32(mx::bright), what,
 				nullptr, x1 - x0 - lh * 2.6f);
 			dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(x0, y0 + lh * 3.0f), mx::u32(mx::label),
-				"The Xbox dashboard (on the left) starts C:\\xboxdash.xbe from the hard disk; OGBox doesn't include one.", nullptr, x1 - x0);
+				haveDash ? "The Xbox dashboard (on the left) starts C:\\xboxdash.xbe from the hard disk."
+					: "No Xbox dashboard on the hard disk: OGBox doesn't include one (the settings' Game list says where it goes).",
+				nullptr, x1 - x0);
 			if (e && e->kind != LibraryEntry::Image) {
 				richText(dl, ImVec2(x0, hintY), "{X} open", mx::u32(mx::label));
 			}
@@ -3861,6 +4083,14 @@ public:
 		ImGui::BeginChild("options", ImVec2(0.0f, colH), true, ImGuiWindowFlags_NavFlattened);
 		const ogbox::Section current = sections.empty() ? ogbox::Section::Graphics : sections[static_cast<size_t>(section)];
 		ImGui::TextColored(mx::label, "%s", ogbox::sectionName(current));
+		if (current == ogbox::Section::Library && !forGame && !haveDash) {
+			/* 0.0.2: the game list hides the Xbox dashboard while the hard disk has none */
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextColored(mx::fail, "No Xbox dashboard: the game list hides it. OGBox doesn't include one; to use "
+				"yours, put xboxdash.xbe (with its files) on the hard disk's C: drive, %s/Partition2.",
+				(boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd).c_str());
+			ImGui::PopTextWrapPos();
+		}
 		const uint32_t pressed = menuPad.pressed;
 		bool firstOption = true;
 		for (const ogbox::Option &o : ogbox::options()) {
@@ -4139,7 +4369,8 @@ public:
 			ImGui::End();
 		}
 		const bool trouble = !problem.empty() || state == PSHX_CORE_FAILED || state == PSHX_CORE_STOPPED;
-		if (trouble || !havePicture) {
+		/* 0.0.2: no panel over a game's frozen last frame (its next XBE is starting), only trouble */
+		if (trouble || (!havePicture && !showingFrozen)) {
 			ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Always);
 			ImGui::SetNextWindowBgAlpha(0.85f);
 			ImGui::Begin("##status", nullptr, flags);

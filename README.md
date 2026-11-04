@@ -48,10 +48,12 @@ before is kept as `ogbox-boot.previous.log`): include it when you report a probl
    (CROSS goes on). The first time, it then asks where to keep its data (the Xbox
    hard disk, the caches, the covers, the screenshots): the console's storage, a folder of your
    own on it, a USB drive or extended storage. Settings > Data folder changes it later and moves
-   the data. Then pick a game from the list: the places on the left, the
-   folder in the middle, the selected disc on the right (its name, title ID, mods and settings).
-   D-pad to move, CROSS to open a folder or start a game, CIRCLE to go back, L2 / R2 to jump a
-   letter back or on, TRIANGLE on a disc for its **game page**, OPTIONS for the settings.
+   the data. Then pick a game from the list: three tabs, **Internal**, **USB** and **Network**
+   (L1 / R1 between them; each keeps its folder), the tab's places on the left, the folder in the
+   middle, the selected disc on the right (its name, title ID, mods and settings). D-pad to move,
+   CROSS to open a folder or start a game, CIRCLE to go back (at a tab's places it asks before
+   closing OGBox), L2 / R2 to jump a letter back or on, TRIANGLE on a disc for its **game page**,
+   OPTIONS for the settings.
 4. In a game, **OPTIONS** opens the **quick menu**: the game pauses and a panel comes in from the
    right with Resume, Save state and Load state (10 slots, each with a picture of the moment),
    Where you left off, the game's settings and mods, Restart and Quit. Quit asks whether to save
@@ -123,7 +125,10 @@ names it (`Halo 2 (USA) (En,Fr,De).iso`) always matches, others by their title I
 are downloaded once into the data folder's `covers` (Game list > Covers turns that off). libretro has
 no game descriptions for the Xbox, so the details panel shows Redump's name, region, languages
 and serial. **Xbox dashboard** (on the left) starts the dashboard from the
-emulated hard disk; OGBox doesn't include one.
+emulated hard disk; OGBox doesn't include one, and the row shows only when the hard disk has
+`xboxdash.xbe` on its C: drive (`hdd/Partition2`; Settings > Game list says so when it hasn't).
+A game that starts another of its XBEs keeps its last frame on screen while it does, instead of
+the boot screen.
 
 `boot.txt` (copy `boot.example.txt`) holds hakuX's options (`scale=2`, `uncap`, ...) for every
 game, over the settings. Its first line may name a disc image; with an `autoboot` line that
