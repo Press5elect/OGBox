@@ -131,6 +131,7 @@ native core's work tree (oldest first; author: subject):
   0518226e5e Claude: io: host writes on the reader thread, as reads are; what reads a host file waits for them
   80f6dfcf3f Claude: report gate: a page whose reports are never written isn't waited for until one is
   72ebe37d33 Claude: report gate: never-written reports tracked by their address, not their page
+  565faa818d Claude: report gate: misses start again only at a write in time
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..576189c5492a7f32688bbe5607ce343bf338df39 100644
@@ -494,7 +495,7 @@ index cb83ba68311d1c7af4c102380d86e44b37ff0eb1..61a7f2096863ee8cb61a5dce9c5920b1
   * (diagnostics: the hitch monitor); false if the host doesn't count them. */
  bool hle_host_disc_stats(uint64_t *ops, uint64_t *bytes, uint64_t *ns);
 diff --git a/hw/xbox/hle/mem/barrier.c b/hw/xbox/hle/mem/barrier.c
-index 36b8509d5e968c05ddd70e125354eeb6500e5419..a08efb7bcdc9351bbb6539515e23f5304cfff341 100644
+index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bbd56f087d 100644
 --- a/hw/xbox/hle/mem/barrier.c
 +++ b/hw/xbox/hle/mem/barrier.c
 @@ -1,6 +1,7 @@
@@ -541,9 +542,9 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..a08efb7bcdc9351bbb6539515e23f530
      uint32_t seq;
      uint64_t waits, ns, timeouts, held, lost;
 +    /* OGBox 0.0.2: a report (its address) given up on RPT_MISSES times in a row, none of it
-+     * written meanwhile, isn't gated any more (read as it is) until the back end writes it again.
-+     * The Punisher reads tests the back end never writes ~4 times a second (others on the same
-+     * page are written): each read waited out the 250 ms, the game at 4-6 fps for a minute. */
++     * written in time meanwhile, isn't gated any more (read as it is). The Punisher reads one
++     * from its GPU interrupt handler ~4 times a second, which the decoder reaches only after the
++     * handler is done: each read waited out the 250 ms, the game at 4-6 fps for a minute. */
 +    struct {
 +        uint32_t pa;
 +        uint8_t misses;
@@ -584,25 +585,20 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..a08efb7bcdc9351bbb6539515e23f530
          g_rpt.lost++;                   /* not gated: read as before */
          rpt_unlock();
          return;
-@@ -746,7 +800,17 @@ void hle_barrier_report_written(uint32_t pa)
+@@ -746,6 +800,12 @@ void hle_barrier_report_written(uint32_t pa)
      if (best >= 0) {
          g_rpt.e[best].seq = 0;
      }
-+    RptMiss *m = rpt_miss(pa, false);
-+    bool back = false;
-+    if (m) {
++    /* written while still waited for: its misses start again (one given up on and written
++     * later, past the wait, doesn't count) */
++    RptMiss *m = best >= 0 ? rpt_miss(pa, false) : NULL;
++    if (m && !m->off) {
 +        m->misses = 0;
-+        back = m->off;
-+        m->off = false;
 +    }
      rpt_unlock();
-+    if (back) {
-+        hle_log("hakuX-hle-pb", "report gate: the report at %08x written again: gated again", pa);
-+    }
      if (best >= 0 && __atomic_load_n(&g_rpt_waiting, __ATOMIC_ACQUIRE)) {
          hle_sem_post(&g_rpt_sem);
-     }
-@@ -807,17 +871,32 @@ static bool rpt_access(uint32_t pa)
+@@ -807,17 +867,32 @@ static bool rpt_access(uint32_t pa)
              if (late && (stuck || hle_now_ns() - t0 > RPT_WAIT_NS)) {
                  /* the back end won't write them now (stuck), or at all (a
                   * test the decoder dropped): not waited for again */
@@ -618,7 +614,7 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..a08efb7bcdc9351bbb6539515e23f530
 +                            (m->at = g_rpt.timeouts, ++m->misses >= RPT_MISSES)) {
 +                            m->off = true;  /* 0.0.2: never written: not waited for any more */
 +                            hle_log("hakuX-hle-pb", "report gate: the report at %08x was given up on %u times in a "
-+                                    "row: read as it is from now on (until it is written)", m->pa,
++                                    "row: read as it is from now on", m->pa,
 +                                    (unsigned)RPT_MISSES);
 +                        }
                      }
