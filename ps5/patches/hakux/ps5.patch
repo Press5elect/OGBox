@@ -123,6 +123,7 @@ native core's work tree (oldest first; author: subject):
   012e63636c Claude: xemu's fixes since the fork (26fcbe54f1, Jan 2026) that hakuX's own code lacked
   593ece4aba Claude: pbdraw: one memory bound in two 32-bit colour formats is one image; the host can ask for a draw log
   30e65b1af3 Claude: io: file times set with futimes where futimens isn't there; the running guest thread's id for samplers
+  55a22208db Claude: pbdraw: a linear texture's pitch is CONTROL1's, in bytes, not the size word's 64-byte units
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -610,7 +611,7 @@ index 0000000000000000000000000000000000000000..90e2a0c0c29c3d6a2c795ca9a25197a6
 +
 +#endif
 diff --git a/hw/xbox/hle/pb/pbdraw.c b/hw/xbox/hle/pb/pbdraw.c
-index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed13779dadd98 100644
+index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..f4fdfb47d4291ff13750fbc4582f5032d89fa8f1 100644
 --- a/hw/xbox/hle/pb/pbdraw.c
 +++ b/hw/xbox/hle/pb/pbdraw.c
 @@ -8,8 +8,10 @@
@@ -637,8 +638,8 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
   * palette changed. */
  typedef struct PbTex {
 -    uint32_t key[4];                    /* offset, format, size, palette; id 0: free */
-+    uint32_t key[5];                    /* offset, format, size, palette, sign XOR; id 0:
-+                                           free */
++    uint32_t key[6];                    /* offset, format, size, palette, sign XOR, a linear
++                                           texture's pitch (0.0.2); id 0: free */
      uint32_t id;
      uint32_t pa, bytes;                 /* the memory its texels came from */
      uint32_t pal_hash;
@@ -1299,7 +1300,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
      const bool last = pl != p0 && edge_dirty(pl) && span_hash(pl, hi - pl) != t->edge_hash[1];
      return mid || first || last;
  }
-@@ -2667,7 +2924,11 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2667,7 +2924,17 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          return best->id;
      }
      uint32_t pal_reg = code == HLE_XFMT_P8 ? R(NV097_SET_TEXTURE_PALETTE + b) : 0;
@@ -1308,12 +1309,23 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
 +     * object apart from the texture read unsigned */
 +    const uint32_t sign = R(NV097_SET_TEXTURE_FILTER + b) >> 28;
 +    const uint32_t sxor = hle_fmt_sign_xor(code, sign);
-+    uint32_t key[5] = { off, fmt, size, pal_reg, sxor };
++    /* OGBox 0.0.2: a linear texture's pitch as CONTROL1 has it, in bytes: size holds it in units of
++     * 64 (the D3D header's), which a pitch the title sets itself needn't be. Legacy of Kain:
++     * Defiance's logo is 518 x 493 at 2072 bytes (518 * 4), size's 2048; its rows read 24 bytes
++     * short of the next, and the logo leaned (and 0.0.1, the pitch under the width, refused it:
++     * white). Another texture, 652 x 170 at 2608, read at 2560. */
++    const uint32_t lpitch = *lin ? R(NV097_SET_TEXTURE_CONTROL1 + b) >> 16 : 0;
++    uint32_t key[6] = { off, fmt, size, pal_reg, sxor, lpitch };
      uint32_t h = hash32(key, sizeof(key)) % TEX_SLOTS;
      PbTex *t = &g_pd.tex[h];
      while (t->id && memcmp(t->key, key, sizeof(key))) {
-@@ -2735,7 +2996,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
-         const uint32_t h5[5] = { HLE_COMMON_TYPE_TEXTURE | 1, off, 0, fmt, size };
+@@ -2732,10 +2999,11 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+         memcpy(pal, pal_mem, 4 * npal);
+     }
+     if (redefine) {
+-        const uint32_t h5[5] = { HLE_COMMON_TYPE_TEXTURE | 1, off, 0, fmt, size };
++        /* (the header's third word, its lock, isn't the push buffer's: its pitch, pbres.c tex_desc) */
++        const uint32_t h5[5] = { HLE_COMMON_TYPE_TEXTURE | 1, off, lpitch, fmt, size };
          uint32_t bytes = 0;
          coh_pend_wait(pa, hle_draw_tex_bytes(h5));  /* a copy queued into its texels lands first */
 -        t->ok = hle_draw_tex_define(t->id, h5, pal, npal, &bytes) != 0;
@@ -1321,7 +1333,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
          t->pa = pa;
          t->bytes = bytes;
          t->pal_hash = pal_hash;
-@@ -2810,8 +3071,28 @@ static void state(void)
+@@ -2810,8 +3078,28 @@ static void state(void)
  /* debug: a new value of debug.hakux.pbdraws=<n> logs the next n draws: the
   * target, each stage's texture registers and object, the vertex source, the
   * skinning mode and the first two attributes' formats (position, weights) */
@@ -1350,7 +1362,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
  #ifdef __ANDROID__
      static HleProp prop;
      static unsigned polls;
-@@ -2968,7 +3249,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, bool gpu_newer, const
+@@ -2968,7 +3256,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, bool gpu_newer, const
                  ol = !o->cube && fi && !(fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) ? o->d.pitch * o->d.h : 0;
              }
              if (ol && o->written > after && (!next || o->written < next->written) && o->d.pa < end &&
@@ -1359,7 +1371,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
                  next = o;
                  len = ol;
              }
-@@ -3139,6 +3420,181 @@ void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks)
+@@ -3139,6 +3427,181 @@ void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks)
      *kicks = g_pd.vis_kicks;
  }
  
@@ -1541,7 +1553,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
  /* The rest of a draw whose vertices and indices d holds: the stages'
   * textures, the constants (a program's, or the fixed-function stage's from
   * its methods) and the attributes' current values after them, the state
-@@ -3148,17 +3604,20 @@ static void emit(HleCmdDraw *d)
+@@ -3148,17 +3611,20 @@ static void emit(HleCmdDraw *d)
      const bool ff = (R(NV097_SET_TRANSFORM_EXECUTION_MODE) & 3) != 2;
      uint8_t *cb;
      uint32_t c_off;
@@ -1564,7 +1576,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
          if (c_off == HLE_ARENA_FULL) {
              skip(SK_EMIT_ARENA);
              return;
-@@ -3169,6 +3628,8 @@ static void emit(HleCmdDraw *d)
+@@ -3169,6 +3635,8 @@ static void emit(HleCmdDraw *d)
              memcpy(cb, g_pd.consts, sizeof(g_pd.consts));
          }
          memcpy(cb + sizeof(g_pd.consts), g_pd.cur, sizeof(g_pd.cur));
@@ -1573,7 +1585,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed137
          g_pd.blk_ok = true;
          g_pd.blk_ff = ff;
          g_pd.blk_ffgen = g_pd.ffgen;
-@@ -4983,6 +5444,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
+@@ -4983,6 +5451,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
      memcpy(g_pd.r, s->r, sizeof(g_pd.r));
      memcpy(g_pd.pmem, s->pmem, sizeof(g_pd.pmem));
      g_pd.pgen++;
@@ -1816,7 +1828,7 @@ index dfcb98b4216a3f4596b21fc9b9194c27cd97f170..4ef4b7c8babf06d9be049610af4b71c5
  
  #endif
 diff --git a/hw/xbox/hle/pb/pbres.c b/hw/xbox/hle/pb/pbres.c
-index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba91e565ef7 100644
+index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4902b0351 100644
 --- a/hw/xbox/hle/pb/pbres.c
 +++ b/hw/xbox/hle/pb/pbres.c
 @@ -159,14 +159,30 @@ static void dxt_volume(uint32_t xfmt, const uint8_t *s, uint32_t w, uint32_t h,
@@ -1865,7 +1877,22 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
      c->w = d->w;
      c->h = d->h;
      c->d = 1;
-@@ -267,14 +284,14 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
+@@ -240,7 +257,13 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
+ {
+     HleResDesc d;
+     HleResInfo ri;
+-    if (!hle_res_from_header(h5[0], h5[3], h5[4], &d) || !hle_res_info(&d, &ri)) {
++    /* OGBox 0.0.2: h5[2] (a header's lock word, the push buffer's own here): a linear texture's
++     * pitch in bytes, CONTROL1's (pbdraw.c texture); the size word holds it in units of 64 */
++    const bool from_header = hle_res_from_header(h5[0], h5[3], h5[4], &d);
++    if (from_header && h5[2] && d.pitch && d.kind == HLE_RK_TEXTURE) {
++        d.pitch = h5[2];
++    }
++    if (!from_header || !hle_res_info(&d, &ri)) {
+         static unsigned s_logged;
+         if (s_logged++ < 8) {
+             hle_log("hakuX-hle-front", "texture header not understood: %08x %08x %08x %08x "
+@@ -267,14 +290,14 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
   * unswizzled or converted into the arena as object id's image (HLE_OP_TEX);
   * false if they can't be (format, memory, arena). */
  static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
@@ -1883,7 +1910,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
          static uint32_t s_seen[8];
          for (unsigned i = 0; i < 8; i++) {
              if (s_seen[i] == d.fmt + 1) {
-@@ -299,14 +316,14 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -299,14 +322,14 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
       * blocks in groups of four slices), depth halving per level */
      bool vol = d.kind == HLE_RK_VOLUME;
      bool dxtd = (fi->flags & HLE_FI_DXT) && (vol || !g_hvk.caps.bc);
@@ -1905,7 +1932,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
      uint32_t faces = d.kind == HLE_RK_CUBE ? 6 : 1, levels = MAX(ri.levels, 1u), total = 0;
      uint32_t depth = vol ? MAX(d.d, 1u) : 1;
      for (uint32_t l = 0; l < levels; l++) {
-@@ -332,13 +349,13 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -332,13 +355,13 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
              uint32_t sw, sh, bo;
              hle_res_level(&d, l, &sw, &sh, &bo);
              HleXgRect img = { bo, bo, w, h };
@@ -1924,7 +1951,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
              }
              if (dxtd && !vol) {
                  dxt_volume(d.fmt, s, w, h, 1, (uint32_t *)(dst + pos));
-@@ -368,8 +385,23 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -368,8 +391,23 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                      memcpy(out + y * orow, s + y * sp, orow);
                  }
              }
@@ -1950,7 +1977,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
              }
              pos += n;
          }
-@@ -401,6 +433,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -401,6 +439,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
      HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
      c->id = id;
      c->xfmt = oxfmt;
@@ -1958,7 +1985,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
      c->w = d.w;
      c->h = d.h;
      c->d = depth;
-@@ -408,6 +441,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -408,6 +447,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
      c->faces = faces;
      c->arena_off = off;
      c->arena_len = total;
@@ -1966,7 +1993,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
      return true;
  }
  
-@@ -419,7 +453,7 @@ uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
+@@ -419,7 +459,7 @@ uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
  }
  
  uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *pal, uint32_t npal,
@@ -1975,7 +2002,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..cfbbe02c700fa7a1086a6ccca527bba9
  {
      HleResDesc d;
      HleResInfo ri;
-@@ -430,7 +464,7 @@ uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *
+@@ -430,7 +470,7 @@ uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *
      if (d.fmt == HLE_XFMT_YUY2 || d.fmt == HLE_XFMT_UYVY) {
          return yuv_define(id, h5, &d) ? id : 0;        /* movies: converted to A8R8G8B8 */
      }
@@ -3431,7 +3458,7 @@ index cca4a35a3e530b665943633ba90d5f5d3ea15cc8..11c2e7a1429a2f7b680902c9bd362fc5
      uint8_t fog_table;          /* FOGTABLEMODE other than NONE (a program writing
                                     no oFog: distance 0, else factor 1) */
 diff --git a/hw/xbox/hle/tex/xdk_res.c b/hw/xbox/hle/tex/xdk_res.c
-index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..56b08d8c102e061a1eee46ab448ed0dc482e6a1d 100644
+index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..a84fc3a678cb0ebd0e10e2ee7bfdf7efd2cceeaf 100644
 --- a/hw/xbox/hle/tex/xdk_res.c
 +++ b/hw/xbox/hle/tex/xdk_res.c
 @@ -36,6 +36,175 @@ const HleFmtInfo *hle_fmt_info(uint32_t code)
@@ -3610,27 +3637,35 @@ index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..56b08d8c102e061a1eee46ab448ed0dc
  static int log2_exact(uint32_t v)
  {
      if (!v || (v & (v - 1))) {
-@@ -176,12 +345,17 @@ bool hle_res_info(const HleResDesc *d, HleResInfo *o)
+@@ -176,16 +345,24 @@ bool hle_res_info(const HleResDesc *d, HleResInfo *o)
          }
          uint32_t min = lin_min_pitch(fi, d->w);
          uint32_t pitch = d->pitch ? d->pitch : min;
 -        if (pitch % LIN_PITCH_ALIGN || pitch < min || pitch > LIN_PITCH_MAX) {
-+        /* OGBox 0.0.2: a texture's pitch below its width's bytes is the NV2A's to read as it is (a
-+         * texel at y * pitch + x * bpp: a row runs on into the next); a surface's isn't (an image
-+         * made at its width). Legacy of Kain: Defiance's logo is 518 x 493 at a 2048-byte pitch,
-+         * another 652 x 170 at 2560: refused, they were never bound and drew white. The last row
-+         * then ends past pitch * h. */
-+        if (pitch % LIN_PITCH_ALIGN || (pitch < min && d->kind != HLE_RK_TEXTURE) || pitch > LIN_PITCH_MAX) {
++        const uint32_t row = d->w * fi->bpp / 8;
++        /* OGBox 0.0.2: a texture's pitch is the NV2A's to read as it is, in bytes (CONTROL1's, which
++         * a title setting it itself needn't make a multiple of 64: pbres.c tex_desc), a row running
++         * on into the next if it is below the row's bytes (a texel at y * pitch + x * bpp); a
++         * surface's is the D3D header's (64-byte units, at least its width's bytes: an image made at
++         * its width). The last row then ends past pitch * h. Legacy of Kain: Defiance's logo is
++         * 518 x 493 at 2072 bytes, another 652 x 170 at 2608. */
++        if ((d->kind != HLE_RK_TEXTURE && (pitch % LIN_PITCH_ALIGN || pitch < min)) || !pitch ||
++            pitch > LIN_PITCH_MAX) {
              return false;
          }
          o->levels = 1;
          o->pitch = pitch;
 -        o->bytes = pitch * d->h;
-+        o->bytes = pitch >= min ? pitch * d->h : pitch * (d->h - 1) + d->w * fi->bpp / 8;
++        o->bytes = pitch >= row ? pitch * d->h : pitch * (d->h - 1) + row;
          o->format = base | (2u << HLE_FMT_DIM_SHIFT) |
                      (d->fmt << HLE_FMT_FORMAT_SHIFT) | (1u << HLE_FMT_MIPMAP_SHIFT);
          o->size = (d->w - 1) | ((d->h - 1) << HLE_SIZE_HEIGHT_SHIFT) |
-@@ -275,7 +449,8 @@ bool hle_res_from_header(uint32_t common, uint32_t format, uint32_t size,
+-                  ((pitch / LIN_PITCH_ALIGN - 1) << HLE_SIZE_PITCH_SHIFT);
++                  ((align_up(pitch, LIN_PITCH_ALIGN) / LIN_PITCH_ALIGN - 1) << HLE_SIZE_PITCH_SHIFT);
+         return true;
+     }
+     int lw = log2_exact(d->w), lh = log2_exact(d->h), ld = log2_exact(depth);
+@@ -275,7 +452,8 @@ bool hle_res_from_header(uint32_t common, uint32_t format, uint32_t size,
          out->d = 1;
          out->levels = 1;
          out->pitch = ((size >> HLE_SIZE_PITCH_SHIFT) + 1) * LIN_PITCH_ALIGN;
@@ -26853,10 +26888,10 @@ index 0000000000000000000000000000000000000000..adfe08ad047ae2f15bc8de37aa81b287
 +    HT_DONE();
 +}
 diff --git a/tests/hle/test_xdk_res.c b/tests/hle/test_xdk_res.c
-index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..a81fccf4e7150a2562101a1490e31fed18313677 100644
+index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..d5c7ab4bc6e086e475d0be72b092dc02450bfe99 100644
 --- a/tests/hle/test_xdk_res.c
 +++ b/tests/hle/test_xdk_res.c
-@@ -84,13 +84,28 @@ static void test_linear_custom_pitch(void)
+@@ -84,13 +84,41 @@ static void test_linear_custom_pitch(void)
      HT_EQ_U32(back.pitch, 4096);
      hle_res_subresource(&back, 0, 0, &pitch);
      HT_EQ_U32(pitch, 4096);
@@ -26870,15 +26905,29 @@ index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..a81fccf4e7150a2562101a1490e31fed
 +    HT_EQ_U32(back.pitch, 2496);
 +    HT_CHECK(!hle_res_from_header((0x01040001 & ~HLE_COMMON_TYPE_MASK) | HLE_COMMON_TYPE_SURFACE, 0x00011221,
                                    639 | (479u << 12) | (38u << 24), &back));
+-    d.pitch = 3000;                             /* not a multiple of 64 */
 +    HT_CHECK(hle_res_from_header(0x00040001, 0x00011229, 0x1f1ec205, &back)); /* Defiance's */
 +    HT_EQ_U32(back.w, 518);
 +    HT_EQ_U32(back.h, 493);
 +    HT_EQ_U32(back.pitch, 2048);
 +    HT_CHECK(hle_res_info(&back, &ri2));
 +    HT_EQ_U32(ri2.bytes, 2048 * 492 + 518 * 4);  /* the last row ends past pitch * h */
-     d.pitch = 3000;                             /* not a multiple of 64 */
++    /* ... and CONTROL1's pitch in bytes, 2072 (518 * 4: the header's 64-byte units made it 2048,
++     * and the logo leaned), as pbres.c tex_desc sets it: read as it is */
++    back.pitch = 2072;
++    HT_CHECK(hle_res_info(&back, &ri2));
++    HT_EQ_U32(ri2.pitch, 2072);
++    HT_EQ_U32(ri2.bytes, 2072 * 493);
++    hle_res_subresource(&back, 0, 0, &pitch);
++    HT_EQ_U32(pitch, 2072);
++    d.pitch = 3000;                             /* not a multiple of 64: a texture's is read as it is */
++    HT_CHECK(hle_res_info(&d, &ri));
++    HT_EQ_U32(ri.pitch, 3000);
++    HT_EQ_U32(ri.bytes, 3000 * 480);
++    d.kind = HLE_RK_SURFACE;                    /* a surface's (a D3D header's) isn't */
      HT_CHECK(!hle_res_info(&d, &ri));
 -    d.pitch = 2496;                             /* below the minimum */
++    d.kind = HLE_RK_TEXTURE;
 +    d.pitch = 2496;                             /* below the minimum: a texture's is read as it is */
 +    HT_CHECK(hle_res_info(&d, &ri));
 +    HT_EQ_U32(ri.bytes, 2496 * 479 + 640 * 4);
@@ -26888,7 +26937,7 @@ index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..a81fccf4e7150a2562101a1490e31fed
      d.pitch = 16448;                            /* past Size[31:24] */
      HT_CHECK(!hle_res_info(&d, &ri));
      d.pitch = 16384;
-@@ -187,6 +202,110 @@ static void test_format_helpers(void)
+@@ -187,6 +215,110 @@ static void test_format_helpers(void)
      HT_EQ_U32(hle_res_data_pa(0x80123000), 0x00123000);
  }
  
@@ -26999,7 +27048,7 @@ index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..a81fccf4e7150a2562101a1490e31fed
  int main(void)
  {
      HT_RUN(test_texture_full_chain);
-@@ -197,5 +316,7 @@ int main(void)
+@@ -197,5 +329,7 @@ int main(void)
      HT_RUN(test_border_texture);
      HT_RUN(test_buffers_and_rejects);
      HT_RUN(test_format_helpers);
