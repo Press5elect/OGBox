@@ -139,6 +139,7 @@ native core's work tree (oldest first; author: subject):
   917cb67c56 Claude: hle: the frame buffers' pictures into memory when the title stops flipping
   a24d3d0fc1 Claude: Revert "hle: the frame buffers' pictures into memory when the title stops flipping"
   7b5b9bdeb5 Claude: hle: textures skip the object search at addresses no object starts at
+  227a622271 Claude: hle: a big palettized texture's first level described when defined
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -2502,7 +2503,7 @@ index dfcb98b4216a3f4596b21fc9b9194c27cd97f170..4ef4b7c8babf06d9be049610af4b71c5
  
  #endif
 diff --git a/hw/xbox/hle/pb/pbres.c b/hw/xbox/hle/pb/pbres.c
-index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4902b0351 100644
+index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805869d6cb5 100644
 --- a/hw/xbox/hle/pb/pbres.c
 +++ b/hw/xbox/hle/pb/pbres.c
 @@ -159,14 +159,30 @@ static void dxt_volume(uint32_t xfmt, const uint8_t *s, uint32_t w, uint32_t h,
@@ -2625,7 +2626,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4
              }
              if (dxtd && !vol) {
                  dxt_volume(d.fmt, s, w, h, 1, (uint32_t *)(dst + pos));
-@@ -368,8 +391,23 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -368,12 +391,50 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                      memcpy(out + y * orow, s + y * sp, orow);
                  }
              }
@@ -2651,7 +2652,34 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4
              }
              pos += n;
          }
-@@ -401,6 +439,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+     }
++    if (p8 && d.w * d.h >= 65536u) {
++        /* OGBox 0.0.2: a big palettized texture's first level as defined (the first 8):
++         * The Punisher's loading picture (1024 x 512, 8-bit), drawn blended, showed nothing */
++        static unsigned s_p8;
++        if (s_p8++ < 8) {
++            const uint32_t *t32 = (const uint32_t *)dst;
++            const uint32_t n0 = d.w * d.h;
++            uint64_t r = 0, g = 0, b = 0;
++            uint32_t a0 = 0, aff = 0;
++            for (uint32_t i = 0; i < n0; i++) {
++                const uint32_t v = t32[i];
++                a0 += (v >> 24) == 0;
++                aff += (v >> 24) == 0xFF;
++                r += (v >> 16) & 0xFF;
++                g += (v >> 8) & 0xFF;
++                b += v & 0xFF;
++            }
++            hle_log("hakuX-hle-front", "texture %u: 8-bit %ux%u, %u levels, format %02x as %02x: alpha 0 %u, alpha ff %u "
++                    "of %u, mean rgb %llu %llu %llu, the middle %08x (first 8 logged)", id, d.w, d.h, levels, d.fmt,
++                    oxfmt, a0, aff, n0, (unsigned long long)(r / n0), (unsigned long long)(g / n0),
++                    (unsigned long long)(b / n0), t32[n0 / 2 + d.w / 2]);
++        }
++    }
+     {   /* debug: HAKUX_HLE_TEXDUMP=<id>, that texture's linear texels once */
+         static int64_t want = -2;
+         if (want == -2) {
+@@ -401,6 +462,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
      HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
      c->id = id;
      c->xfmt = oxfmt;
@@ -2659,7 +2687,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4
      c->w = d.w;
      c->h = d.h;
      c->d = depth;
-@@ -408,6 +447,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -408,6 +470,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
      c->faces = faces;
      c->arena_off = off;
      c->arena_len = total;
@@ -2667,7 +2695,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4
      return true;
  }
  
-@@ -419,7 +459,7 @@ uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
+@@ -419,7 +482,7 @@ uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
  }
  
  uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *pal, uint32_t npal,
@@ -2676,7 +2704,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..9a54afdf8174705f89124c6abac270b4
  {
      HleResDesc d;
      HleResInfo ri;
-@@ -430,7 +470,7 @@ uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *
+@@ -430,7 +493,7 @@ uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *
      if (d.fmt == HLE_XFMT_YUY2 || d.fmt == HLE_XFMT_UYVY) {
          return yuv_define(id, h5, &d) ? id : 0;        /* movies: converted to A8R8G8B8 */
      }
