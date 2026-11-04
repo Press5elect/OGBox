@@ -12,9 +12,7 @@
 #include <array>
 #include <cstdarg>
 #include <cstdio>
-#include <cerrno>
 #include <fcntl.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace
@@ -114,29 +112,6 @@ elevation::Status exchange(int socket, const elevation::wire::Message &request) 
     {
         step("the exchange after prepare broke off");
         return Status::transport_error;
-    }
-    // OGBox 0.0.2 (protocol 2): the helper has put the current directory at the console's root;
-    // chroot(".") here makes it the process's root with the kernel's own reference counting
-    if (wire::matches(reply, request, Kind::chroot))
-    {
-        wire::Message chrooted = request;
-        chrooted.kind = Kind::chrooted;
-        errno = 0;
-        const long rc = syscall(SYS_chroot, ".");
-        if (rc != 0)
-        {
-            chrooted.status = Status::apply_failed;
-            step("chroot(\".\") failed (errno %d): the helper falls back to writing the root itself", errno);
-        }
-        else
-        {
-            step("chroot(\".\") at the console's root: done by the kernel, references counted");
-        }
-        if (!send_all(socket, &chrooted, sizeof(chrooted)) || !receive(socket, reply))
-        {
-            step("the exchange after chroot broke off");
-            return Status::transport_error;
-        }
     }
     if (!wire::matches(reply, request, Kind::response))
     {

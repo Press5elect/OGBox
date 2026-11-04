@@ -33,8 +33,9 @@ enum class Status : std::uint32_t
     rollback_failed = 8,
     transport_error = 9,
     protocol_error = 10,
-    // OGBox 0.0.2: the title's own chroot failed, so the helper wrote the root into fd_rdir and
-    // fd_jdir as the boilerplate did: the process's exit releases references it never took
+    // OGBox 0.0.2: the helper's own root was not the console's, so it wrote the root into the
+    // title's fd_rdir and fd_jdir as the boilerplate did: the title's exit releases references
+    // it never took
     ok_unbalanced = 11,
 };
 
@@ -49,11 +50,6 @@ enum class Kind : std::uint32_t
     prepare = 2,
     prepared = 3,
     response = 4,
-    // OGBox 0.0.2 (version 2): the helper has put the title's current directory at the console's
-    // root for a moment; the title chroots to "." itself, so the kernel takes the root's reference
-    // for fd_rdir and releases the sandbox's, then the helper puts the current directory back
-    chroot = 5,
-    chrooted = 6,
 };
 
 // Fixed-width little-endian ABI. No pointers, offsets, or privilege masks cross the socket.
@@ -76,7 +72,7 @@ constexpr Status validate(const Message &message) noexcept
         return Status::invalid_request;
     if (message.version != Message{}.version)
         return Status::unsupported_version;
-    if (message.kind < Kind::request || message.kind > Kind::chrooted || message.pid == 0 ||
+    if (message.kind < Kind::request || message.kind > Kind::response || message.pid == 0 ||
         message.pid > INT32_MAX || message.status > Status::ok_unbalanced)
         return Status::invalid_request;
     if (message.capability != Capability::filesystem)

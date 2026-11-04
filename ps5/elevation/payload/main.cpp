@@ -57,12 +57,8 @@ struct State
     std::array<std::uint8_t, 32> attrs{};
     std::intptr_t root = 0;
     std::intptr_t jail = 0;
-    std::intptr_t cwd = 0;   // OGBox: fd_cdir (struct filedesc: fd_files, fd_cdir, fd_rdir, fd_jdir)
     bool operator==(const State &) const = default;
 };
-
-// OGBox: fd_cdir sits right before fd_rdir (FreeBSD 11's struct filedesc, as the SDK's 0x10/0x18).
-const off_t offset_fd_cdir = KERNEL_OFFSET_FILEDESC_FD_RDIR - 8;
 
 bool kernel_pointer(std::intptr_t pointer) noexcept
 {
@@ -114,11 +110,10 @@ bool read_state(const Target &target, State &state) noexcept
            kernel_copyout(target.filedesc + KERNEL_OFFSET_FILEDESC_FD_RDIR, &state.root,
                           sizeof(state.root)) == 0 &&
            kernel_copyout(target.filedesc + KERNEL_OFFSET_FILEDESC_FD_JDIR, &state.jail,
-                          sizeof(state.jail)) == 0 &&
-           kernel_copyout(target.filedesc + offset_fd_cdir, &state.cwd, sizeof(state.cwd)) == 0;
+                          sizeof(state.jail)) == 0;
 }
 
-// OGBox: one pointer of the filedesc, written as it is (no reference is taken or released).
+// OGBox: one pointer of a filedesc, written as it is (no reference is taken or released).
 bool write_pointer(const Target &target, off_t offset, std::intptr_t value) noexcept
 {
     std::intptr_t now = 0;
@@ -161,20 +156,46 @@ bool receive_message(Message &message) noexcept
                                      { return read(STDIN_FILENO, bytes, size); });
 }
 
-// OGBox 0.0.2: the console's root as the process's root without unbalancing the vnodes' reference
-// counts. The boilerplate wrote the root vnode into fd_rdir and fd_jdir as it is: the process's
-// exit (fdescfree) then releases two references on the root that it never took, and the sandbox's
-// two are never released. Each elevated process that ended drained the root by two (OGBox ends
-// one at every game start, every game's other XBE and every return to the list), and the console
-// went down once the root's count ran out: at a relaunch, a quit or a close from the PS menu. Here
-// fd_cdir holds the root only for a moment, the title calls chroot(".") itself (the kernel takes
-// the root's reference for fd_rdir and releases the sandbox's), and fd_cdir gets its own vnode
-// back, whose reference never moved. fd_jdir stays the sandbox's. Only when the title's chroot
-// fails is the old way taken, and said (Status::ok_unbalanced).
-Status grant_filesystem(const Target &target, const State &original, const Message &request) noexcept
+// OGBox 0.0.2: the console's root as the title's root without unbalancing the vnodes' reference
+// counts. The boilerplate wrote the root vnode into the title's fd_rdir and fd_jdir as it is: the
+// title's exit (fdescfree) then released two references on the root that it never took, and the
+// sandbox's two were never released. Each elevated process that ended drained the root by two
+// (OGBox ends one at every game start, every game's other XBE and every return to the list), and
+// the console went down once the root's count ran out: at a relaunch, a quit or a close from the
+// PS menu. chroot is not there on the PS5 (ENOSYS), so the kernel can't count them for us. This
+// helper's own fd_rdir and fd_jdir hold counted references on the console's root (the payload
+// loader's fork gave them): the helper and the title trade theirs. The title's slots then hold
+// the helper's references on the root, the helper's the title's on the sandbox, and each exit
+// releases what its slots hold: every count stays right whichever process ends first. Only when
+// the helper's own root is not the console's is the old way taken, and said (ok_unbalanced).
+bool find_process(pid_t pid, Target &target) noexcept
+{
+    std::intptr_t process = 0;
+    if (kernel_copyout(KERNEL_ADDRESS_ALLPROC, &process, sizeof(process)) != 0)
+        return false;
+    for (unsigned guard = 0; process != 0 && guard < 4096; ++guard)
+    {
+        std::uint32_t candidate = 0;
+        if (!kernel_pointer(process) ||
+            kernel_copyout(process + KERNEL_OFFSET_PROC_P_PID, &candidate, sizeof(candidate)) != 0)
+            return false;
+        if (candidate == static_cast<std::uint32_t>(pid))
+        {
+            target.process = process;
+            return kernel_copyout(process + KERNEL_OFFSET_PROC_P_FD, &target.filedesc,
+                                  sizeof(target.filedesc)) == 0 &&
+                   kernel_pointer(target.filedesc);
+        }
+        if (kernel_copyout(process, &process, sizeof(process)) != 0)
+            return false;
+    }
+    return false;
+}
+
+Status grant_filesystem(const Target &target, const State &original) noexcept
 {
     const std::intptr_t root = kernel_get_root_vnode();
-    if (!kernel_pointer(root) || !kernel_pointer(original.cwd) || !kernel_pointer(original.root))
+    if (!kernel_pointer(root) || !kernel_pointer(original.root))
         return Status::unavailable;
     State desired = original;
     desired.identity.fill(0);
@@ -192,30 +213,34 @@ Status grant_filesystem(const Target &target, const State &original, const Messa
         return Status::rollback_failed;
     }
 
-    bool chrooted = false;
-    if (write_pointer(target, offset_fd_cdir, root))
+    Target self{};
+    std::intptr_t own_root = 0, own_jail = 0;
+    const bool have_self =
+        find_process(getpid(), self) &&
+        kernel_copyout(self.filedesc + KERNEL_OFFSET_FILEDESC_FD_RDIR, &own_root, sizeof(own_root)) == 0 &&
+        kernel_copyout(self.filedesc + KERNEL_OFFSET_FILEDESC_FD_JDIR, &own_jail, sizeof(own_jail)) == 0;
+    if (have_self && own_root == root)
     {
-        Message ask = request;
-        ask.kind = Kind::chroot;
-        Message answer{};
-        const bool talked = send_message(ask) && receive_message(answer) &&
-                            elevation::wire::matches(answer, request, Kind::chrooted);
-        // the current directory back, whatever the title answered: its reference never moved
-        const bool back = write_pointer(target, offset_fd_cdir, original.cwd);
-        State now{};
-        chrooted = back && read_state(target, now) && now.root == root;
-        klog_printf("[sandbox-elevator] chroot: answer %s (status %u), cwd back %d, root now %s\n",
-                    talked ? "received" : "missing", static_cast<unsigned>(answer.status), back ? 1 : 0,
-                    chrooted ? "the console's" : "the sandbox's");
-        if (!back)
-            return Status::rollback_failed;
-        if (chrooted)
+        // the trade: the title's slots get the helper's counted root, the helper's the title's
+        // counted sandbox (fd_jdir alike: the helper's may be the root or empty)
+        const bool title_set = write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_RDIR, own_root) &&
+                               write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_JDIR, own_jail);
+        const bool self_set = title_set &&
+                              write_pointer(self, KERNEL_OFFSET_FILEDESC_FD_RDIR, original.root) &&
+                              write_pointer(self, KERNEL_OFFSET_FILEDESC_FD_JDIR, original.jail);
+        if (self_set)
             return Status::ok;
-        if (now.root != original.root || now.jail != original.jail)
-            return Status::apply_failed;   // neither the console's root nor the sandbox's: leave it
+        // undo what was traded, as it was
+        write_pointer(self, KERNEL_OFFSET_FILEDESC_FD_RDIR, own_root);
+        write_pointer(self, KERNEL_OFFSET_FILEDESC_FD_JDIR, own_jail);
+        if (write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_RDIR, original.root) &&
+            write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_JDIR, original.jail) &&
+            write_credentials(target, original))
+            return Status::apply_failed;
+        return Status::rollback_failed;
     }
 
-    // The title's chroot failed: the boilerplate's way (unbalanced, see above).
+    // The helper's root is not the console's: the boilerplate's way (unbalanced, see above).
     if (write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_RDIR, root) &&
         write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_JDIR, root))
         return Status::ok_unbalanced;
@@ -265,7 +290,7 @@ Status handle_request(const Message &request) noexcept
     switch (request.capability)
     {
     case Capability::filesystem:
-        return grant_filesystem(target, original, request);
+        return grant_filesystem(target, original);
     default:
         return Status::unsupported_capability;
     }

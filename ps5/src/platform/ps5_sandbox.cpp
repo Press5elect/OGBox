@@ -87,7 +87,7 @@ const char* StatusText(unsigned status)
     case 8: return "the helper could not undo a failed change";
     case 9: return "no payload loader answered on port 9021 (elfldr is not running)";
     case 10: return "the helper's answer was not understood";
-    case 11: return "ok, the old way (the title's chroot failed): the console's whole file system is visible, but "
+    case 11: return "ok, the old way (the helper's own root was not the console's): the console's whole file system is visible, but "
                     "each exit releases two references on the root it never took, and enough of them bring the "
                     "console down";
   }
