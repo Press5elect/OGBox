@@ -239,6 +239,9 @@ Added
   graphics problem's report.
 - Mods, patches, cheats and trainers are checked against the disc's release: one made for another
   release of the game is greyed out and can't be turned on.
+- A **60 fps test mod for BLACK** (Mods screen, off by default): its 60 fps limiter, frame time
+  and constants without the full mod's injected code, for testing. Turn the 60 fps mod off to use
+  it.
 
 Changed
 - When a game starts another of its XBEs, its last frame stays on screen instead of the "core is
