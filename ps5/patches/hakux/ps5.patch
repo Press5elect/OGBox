@@ -125,9 +125,10 @@ native core's work tree (oldest first; author: subject):
   30e65b1af3 Claude: io: file times set with futimes where futimens isn't there; the running guest thread's id for samplers
   55a22208db Claude: pbdraw: a linear texture's pitch is CONTROL1's, in bytes, not the size word's 64-byte units
   190b63f4ae Claude: probes on the native CPU: a jump to a stub that logs the registers through the gate; HAKUX_HLE_PROBE_TITLE keeps them to one title
+  88630655f5 Claude: io: each missing hard disk path is logged once; probes: HAKUX_HLE_PROBE_STR logs a string argument
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
-index 86d2228dea2d6dcf95657d46447ec66b2bad946e..d1d7f49b04edb37e538cdecf14e1658f381575fe 100644
+index 86d2228dea2d6dcf95657d46447ec66b2bad946e..576189c5492a7f32688bbe5607ce343bf338df39 100644
 --- a/hw/xbox/hle/core/probe.c
 +++ b/hw/xbox/hle/core/probe.c
 @@ -6,7 +6,7 @@
@@ -155,7 +156,51 @@ index 86d2228dea2d6dcf95657d46447ec66b2bad946e..d1d7f49b04edb37e538cdecf14e1658f
  bool hle_probe_at(uint32_t va)
  {
      for (unsigned i = 0; i < MAX_PROBES && g_probe[i].va; i++) {
-@@ -122,6 +131,15 @@ unsigned hle_probe_register(void)
+@@ -70,12 +79,17 @@ void hle_probe_hit(const HleCpu *c)
+     const uint32_t va = c->eip;
+     static int stack = -1;
+     static uint32_t word_va;
++    static int str_off = -1;
+     if (stack < 0) {
+         const char *e = getenv("HAKUX_HLE_PROBE_STACK");
+         stack = e && atoi(e) > 0;
+         /* debug: HAKUX_HLE_PROBE_WORD=<va> (hex), that guest word with each hit */
+         e = getenv("HAKUX_HLE_PROBE_WORD");
+         word_va = e ? (uint32_t)strtoul(e, NULL, 16) : 0;
++        /* debug: HAKUX_HLE_PROBE_STR=<offset> (hex): the string the stack word at esp+offset
++         * points to (a file name argument), 8-bit or 16-bit, with each hit */
++        e = getenv("HAKUX_HLE_PROBE_STR");
++        str_off = e && *e ? (int)strtoul(e, NULL, 16) : -2;
+     }
+ #ifdef __ANDROID__
+     /* debug.hakux.probe, a new value: each probe logs its first hits again
+@@ -107,6 +121,25 @@ void hle_probe_hit(const HleCpu *c)
+             if (stack) {
+                 backtrace(c->regs[R_ESP], va);
+             }
++            uint32_t sp = 0;
++            uint8_t raw[160];
++            if (str_off >= 0 && !hle_va_rw(c->regs[R_ESP] + (uint32_t)str_off, &sp, 4, false) && sp &&
++                !hle_va_rw(sp, raw, sizeof(raw), false)) {
++                char text[81];
++                const bool wide = raw[1] == 0 && raw[0];
++                unsigned len = 0;
++                for (unsigned i = 0; i < 80; i++) {
++                    const uint8_t ch = wide ? raw[i * 2] : raw[i];
++                    if (!ch || (wide && raw[i * 2 + 1])) {
++                        break;
++                    }
++                    text[len++] = ch >= 32 && ch < 127 ? (char)ch : '?';
++                }
++                text[len] = 0;
++                hle_log("hakuX-hle-probe", "%08x #%llu string at [esp+%x] %08x: \"%s\"%s", va,
++                        (unsigned long long)n, (unsigned)str_off, sp, text,
++                        wide ? " (16-bit)" : "");
++            }
+             uint32_t w = 0;
+             if (word_va && !hle_va_rw(word_va, &w, 4, false)) {
+                 hle_log("hakuX-hle-probe", "%08x #%llu word %08x = %08x", va, (unsigned long long)n,
+@@ -122,6 +155,15 @@ unsigned hle_probe_register(void)
      const char *e = getenv("HAKUX_HLE_PROBE");
      unsigned n = 0;
      memset(g_probe, 0, sizeof(g_probe));
@@ -20170,7 +20215,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0df84e08c 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..7b804a80e117fb5ad531edcba328d83ee083b2ba 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -20411,7 +20456,54 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
  /* An overwritten file growing into [from, to): FATX shows what its clusters
   * held, the old contents (NcFile.old_path). */
  static void regrow(NcFile *nf, uint64_t from, uint64_t to)
-@@ -1469,6 +1595,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1031,6 +1157,28 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
+     return st;
+ }
+ 
++/* A hard disk path that wasn't there: logged the first time for each path (a
++ * title that copies files to its utility drive and opens them later says
++ * here what it looked for), 512 paths at most. */
++static void hdd_missing(const char *path, const char *what)
++{
++    static uint64_t seen[512];
++    static unsigned nseen;
++    uint64_t h = 1469598103934665603ull;
++    for (const char *c = path; *c; c++) {
++        h = (h ^ (uint8_t)tolower((unsigned char)*c)) * 1099511628211ull;
++    }
++    for (unsigned i = 0; i < nseen; i++) {
++        if (seen[i] == h) {
++            return;
++        }
++    }
++    if (nseen < 512) {
++        seen[nseen++] = h;
++        nc_log("hakuX-native-io", "open %s: %s on the hard disk", path, what);
++    }
++}
++
+ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t disposition, uint32_t options,
+                         uint32_t *handle, uint32_t *info)
+ {
+@@ -1110,6 +1258,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+         if (exists < 0) {
+             if (g_trace_io) {
+                 nc_log("hakuX-native-io", "open %s: path not found", path);
++            } else {
++                hdd_missing(path, "a folder on the way is missing");
+             }
+             return STATUS_OBJECT_PATH_NOT_FOUND;
+         }
+@@ -1128,6 +1278,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+         if (!exists && (disposition == FILE_OPEN || disposition == FILE_OVERWRITE)) {
+             if (g_trace_io) {
+                 nc_log("hakuX-native-io", "open %s: not found", path);
++            } else {
++                hdd_missing(path, "not found");
+             }
+             return STATUS_OBJECT_NAME_NOT_FOUND;
+         }
+@@ -1469,6 +1621,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -20419,7 +20511,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1613,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +1639,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -20436,7 +20528,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1515,8 +1649,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1515,8 +1675,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -20447,7 +20539,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
          uint8_t b[8] = {0};
          if (n >= 8 && run[0].len >= 8) {
              memcpy(b, nc_vm_host(k->vm, va0), 8);
-@@ -1813,6 +1948,26 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1813,6 +1974,26 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
      return NC_STATUS_SUCCESS;
  }
  
@@ -20474,7 +20566,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
  /* NtSetInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
-@@ -1853,7 +2008,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2034,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -20484,7 +20576,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2017,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2043,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -20502,7 +20594,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2269,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2295,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -20545,7 +20637,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2321,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2347,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -20557,7 +20649,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
              }
              free(dir);
          }
-@@ -2386,6 +2549,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2575,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -20607,7 +20699,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2612,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2638,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */

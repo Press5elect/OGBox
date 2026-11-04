@@ -87,6 +87,9 @@ const char* StatusText(unsigned status)
     case 8: return "the helper could not undo a failed change";
     case 9: return "no payload loader answered on port 9021 (elfldr is not running)";
     case 10: return "the helper's answer was not understood";
+    case 11: return "ok, the old way (the title's chroot failed): the console's whole file system is visible, but "
+                    "each exit releases two references on the root it never took, and enough of them bring the "
+                    "console down";
   }
   return "unknown";
 }
@@ -106,7 +109,7 @@ extern "C" int pshakux_sandbox_leave(char* title_dir, unsigned size)
   const elevation::Status status =
     elevation::request(elevation::Capability::filesystem, "/app0/sandbox-elevator.elf", &KeepStep, nullptr);
   s_status = static_cast<unsigned>(status);
-  s_elevated = status == elevation::Status::ok;
+  s_elevated = status == elevation::Status::ok || status == elevation::Status::ok_unbalanced;
   char line[200];
   std::snprintf(line, sizeof(line), "sandbox: elevation %s (status %u)%s", StatusText(s_status), s_status,
                 s_elevated ? "" : "; going on inside the sandbox");

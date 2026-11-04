@@ -57,8 +57,12 @@ struct State
     std::array<std::uint8_t, 32> attrs{};
     std::intptr_t root = 0;
     std::intptr_t jail = 0;
+    std::intptr_t cwd = 0;   // OGBox: fd_cdir (struct filedesc: fd_files, fd_cdir, fd_rdir, fd_jdir)
     bool operator==(const State &) const = default;
 };
+
+// OGBox: fd_cdir sits right before fd_rdir (FreeBSD 11's struct filedesc, as the SDK's 0x10/0x18).
+const off_t offset_fd_cdir = KERNEL_OFFSET_FILEDESC_FD_RDIR - 8;
 
 bool kernel_pointer(std::intptr_t pointer) noexcept
 {
@@ -110,10 +114,20 @@ bool read_state(const Target &target, State &state) noexcept
            kernel_copyout(target.filedesc + KERNEL_OFFSET_FILEDESC_FD_RDIR, &state.root,
                           sizeof(state.root)) == 0 &&
            kernel_copyout(target.filedesc + KERNEL_OFFSET_FILEDESC_FD_JDIR, &state.jail,
-                          sizeof(state.jail)) == 0;
+                          sizeof(state.jail)) == 0 &&
+           kernel_copyout(target.filedesc + offset_fd_cdir, &state.cwd, sizeof(state.cwd)) == 0;
 }
 
-bool write_state(const Target &target, const State &state) noexcept
+// OGBox: one pointer of the filedesc, written as it is (no reference is taken or released).
+bool write_pointer(const Target &target, off_t offset, std::intptr_t value) noexcept
+{
+    std::intptr_t now = 0;
+    return kernel_copyin(&value, target.filedesc + offset, sizeof(value)) == 0 &&
+           kernel_copyout(target.filedesc + offset, &now, sizeof(now)) == 0 && now == value;
+}
+
+// The credentials (the cloned ucred is the process's own: no reference counts there).
+bool write_credentials(const Target &target, const State &state) noexcept
 {
     // Attempt every field, including during rollback after a partial write.
     int failures = 0;
@@ -125,31 +139,12 @@ bool write_state(const Target &target, const State &state) noexcept
                               state.caps.size()) != 0;
     failures += kernel_copyin(state.attrs.data(), target.ucred + KERNEL_OFFSET_UCRED_CR_SCEATTRS,
                               state.attrs.size()) != 0;
-    failures += kernel_copyin(&state.root, target.filedesc + KERNEL_OFFSET_FILEDESC_FD_RDIR,
-                              sizeof(state.root)) != 0;
-    failures += kernel_copyin(&state.jail, target.filedesc + KERNEL_OFFSET_FILEDESC_FD_JDIR,
-                              sizeof(state.jail)) != 0;
     return failures == 0;
 }
 
-Status grant_filesystem(const Target &target, const State &original) noexcept
+bool same_credentials(const State &a, const State &b) noexcept
 {
-    State desired = original;
-    desired.root = kernel_get_root_vnode();
-    if (!kernel_pointer(desired.root))
-        return Status::unavailable;
-    desired.jail = desired.root;
-    desired.identity.fill(0);
-    desired.authority = system_auth_id;
-    desired.caps.fill(0xff);
-    desired.attrs[3] |= 0x80;
-
-    State verified{};
-    if (write_state(target, desired) && read_state(target, verified) && verified == desired)
-        return Status::ok;
-    if (write_state(target, original) && read_state(target, verified) && verified == original)
-        return Status::apply_failed;
-    return Status::rollback_failed;
+    return a.identity == b.identity && a.authority == b.authority && a.caps == b.caps && a.attrs == b.attrs;
 }
 
 bool send_message(const Message &message) noexcept
@@ -164,6 +159,71 @@ bool receive_message(Message &message) noexcept
     return elevation::wire::transfer(reinterpret_cast<std::uint8_t *>(&message), sizeof(message),
                                      [](auto *bytes, std::size_t size)
                                      { return read(STDIN_FILENO, bytes, size); });
+}
+
+// OGBox 0.0.2: the console's root as the process's root without unbalancing the vnodes' reference
+// counts. The boilerplate wrote the root vnode into fd_rdir and fd_jdir as it is: the process's
+// exit (fdescfree) then releases two references on the root that it never took, and the sandbox's
+// two are never released. Each elevated process that ended drained the root by two (OGBox ends
+// one at every game start, every game's other XBE and every return to the list), and the console
+// went down once the root's count ran out: at a relaunch, a quit or a close from the PS menu. Here
+// fd_cdir holds the root only for a moment, the title calls chroot(".") itself (the kernel takes
+// the root's reference for fd_rdir and releases the sandbox's), and fd_cdir gets its own vnode
+// back, whose reference never moved. fd_jdir stays the sandbox's. Only when the title's chroot
+// fails is the old way taken, and said (Status::ok_unbalanced).
+Status grant_filesystem(const Target &target, const State &original, const Message &request) noexcept
+{
+    const std::intptr_t root = kernel_get_root_vnode();
+    if (!kernel_pointer(root) || !kernel_pointer(original.cwd) || !kernel_pointer(original.root))
+        return Status::unavailable;
+    State desired = original;
+    desired.identity.fill(0);
+    desired.authority = system_auth_id;
+    desired.caps.fill(0xff);
+    desired.attrs[3] |= 0x80;
+
+    State verified{};
+    if (!write_credentials(target, desired) || !read_state(target, verified) ||
+        !same_credentials(verified, desired))
+    {
+        if (write_credentials(target, original) && read_state(target, verified) &&
+            same_credentials(verified, original))
+            return Status::apply_failed;
+        return Status::rollback_failed;
+    }
+
+    bool chrooted = false;
+    if (write_pointer(target, offset_fd_cdir, root))
+    {
+        Message ask = request;
+        ask.kind = Kind::chroot;
+        Message answer{};
+        const bool talked = send_message(ask) && receive_message(answer) &&
+                            elevation::wire::matches(answer, request, Kind::chrooted);
+        // the current directory back, whatever the title answered: its reference never moved
+        const bool back = write_pointer(target, offset_fd_cdir, original.cwd);
+        State now{};
+        chrooted = back && read_state(target, now) && now.root == root;
+        klog_printf("[sandbox-elevator] chroot: answer %s (status %u), cwd back %d, root now %s\n",
+                    talked ? "received" : "missing", static_cast<unsigned>(answer.status), back ? 1 : 0,
+                    chrooted ? "the console's" : "the sandbox's");
+        if (!back)
+            return Status::rollback_failed;
+        if (chrooted)
+            return Status::ok;
+        if (now.root != original.root || now.jail != original.jail)
+            return Status::apply_failed;   // neither the console's root nor the sandbox's: leave it
+    }
+
+    // The title's chroot failed: the boilerplate's way (unbalanced, see above).
+    if (write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_RDIR, root) &&
+        write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_JDIR, root))
+        return Status::ok_unbalanced;
+    if (write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_RDIR, original.root) &&
+        write_pointer(target, KERNEL_OFFSET_FILEDESC_FD_JDIR, original.jail) &&
+        write_credentials(target, original))
+        return Status::apply_failed;
+    return Status::rollback_failed;
 }
 
 Status handle_request(const Message &request) noexcept
@@ -205,7 +265,7 @@ Status handle_request(const Message &request) noexcept
     switch (request.capability)
     {
     case Capability::filesystem:
-        return grant_filesystem(target, original);
+        return grant_filesystem(target, original, request);
     default:
         return Status::unsupported_capability;
     }

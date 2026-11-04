@@ -12,7 +12,9 @@
 #include <array>
 #include <cstdarg>
 #include <cstdio>
+#include <cerrno>
 #include <fcntl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace
@@ -113,6 +115,29 @@ elevation::Status exchange(int socket, const elevation::wire::Message &request) 
         step("the exchange after prepare broke off");
         return Status::transport_error;
     }
+    // OGBox 0.0.2 (protocol 2): the helper has put the current directory at the console's root;
+    // chroot(".") here makes it the process's root with the kernel's own reference counting
+    if (wire::matches(reply, request, Kind::chroot))
+    {
+        wire::Message chrooted = request;
+        chrooted.kind = Kind::chrooted;
+        errno = 0;
+        const long rc = syscall(SYS_chroot, ".");
+        if (rc != 0)
+        {
+            chrooted.status = Status::apply_failed;
+            step("chroot(\".\") failed (errno %d): the helper falls back to writing the root itself", errno);
+        }
+        else
+        {
+            step("chroot(\".\") at the console's root: done by the kernel, references counted");
+        }
+        if (!send_all(socket, &chrooted, sizeof(chrooted)) || !receive(socket, reply))
+        {
+            step("the exchange after chroot broke off");
+            return Status::transport_error;
+        }
+    }
     if (!wire::matches(reply, request, Kind::response))
     {
         step("the helper's last answer was not a response (kind %u)", static_cast<unsigned>(reply.kind));
@@ -121,7 +146,9 @@ elevation::Status exchange(int socket, const elevation::wire::Message &request) 
     if (prepared.status != Status::ok)
         return Status::prepare_failed;
     step("the helper's response: status %u%s", static_cast<unsigned>(reply.status),
-         reply.status == Status::ok ? " (applied: the process left its sandbox)" : "");
+         reply.status == Status::ok             ? " (applied: the process left its sandbox)"
+         : reply.status == Status::ok_unbalanced ? " (applied the old way: the root's references unbalanced)"
+                                                 : "");
     return reply.status;
 }
 
