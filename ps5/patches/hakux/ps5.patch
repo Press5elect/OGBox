@@ -117,6 +117,7 @@ native core's work tree (oldest first; author: subject):
   9c7982c119 Claude: vk: the gamma pass empties its view table when the display is made again
   0f0fb1a8f0 Claude: hle: exact depth for vertex programs under Z-buffering (a sky's flickering layers)
   4105d3b7a5 Claude: mm: a contiguous block's alignment pages are not the title's (the console leaves them free)
+  0e625194ad Claude: seh: an access violation's report has the registers, the frames and the stack's top
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -22093,7 +22094,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
      }
  }
 diff --git a/native/kernel/seh.c b/native/kernel/seh.c
-index 057ea96405acc914184b7b6ab20355ee579003cb..9974845972725b6e93aad9922e74faa3cd2dd839 100644
+index 057ea96405acc914184b7b6ab20355ee579003cb..070efd08fa432f31d61a9ad750259c0a35b10440 100644
 --- a/native/kernel/seh.c
 +++ b/native/kernel/seh.c
 @@ -19,6 +19,7 @@
@@ -22179,7 +22180,7 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..9974845972725b6e93aad9922e74faa3
          } else {
              unhandled(k, f, l, "no handler took it");
          }
-@@ -284,6 +333,102 @@ static uint64_t RtlRaiseException(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -284,6 +333,118 @@ static uint64_t RtlRaiseException(NcKernel *k, NcFrame *f, const uint32_t *a)
      return 0;
  }
  
@@ -22224,6 +22225,22 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..9974845972725b6e93aad9922e74faa3
 +    if (s_logged++ < 32) {
 +        nc_log("hakuX-native", "seh: t%u access violation at %08x, %s %08x: to the title's handlers", t->id, eip,
 +               write ? "writing" : "reading", va);
++        /* OGBox 0.0.2: the registers, the frames and the stack's top with it. An access a title
++         * doesn't handle ends the run, and its line alone named only the instruction: a null read
++         * at 003664a2 (a voice library's codec table that was never made) left which register held
++         * the null, and the calls that led there, to guesswork. The stack's words too, as code
++         * without frame pointers (most of the XDK's) leaves the EBP chain short. */
++        char calls[96], stack[16 * 9 + 1];
++        nc_kernel_frame_chain(k, f, calls, sizeof(calls));
++        size_t n = 0;
++        stack[0] = 0;
++        for (unsigned i = 0; i < 16 && nc_vm_phys(k->vm, esp + i * 4 + 3) != UINT32_MAX; i++) {
++            n += (size_t)snprintf(stack + n, sizeof(stack) - n, " %08x", nc_vm_rd32(k->vm, esp + i * 4));
++        }
++        nc_log("hakuX-native", "seh:   eax %08x ecx %08x edx %08x ebx %08x esp %08x ebp %08x esi %08x edi %08x | "
++               "frames%s | stack%s", nc_frame_gpr(f, NC_EAX), nc_frame_gpr(f, NC_ECX), nc_frame_gpr(f, NC_EDX),
++               nc_frame_gpr(f, NC_EBX), esp, nc_frame_gpr(f, NC_EBP), nc_frame_gpr(f, NC_ESI),
++               nc_frame_gpr(f, NC_EDI), calls, stack[0] ? stack : " (not mapped)");
 +    }
 +    /* a chain step() refuses at once (a registration outside the stack):
 +     * the fault's own report, with the registers */
