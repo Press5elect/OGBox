@@ -1411,6 +1411,23 @@ public:
 		if (!startPath.empty()) {
 			return;
 		}
+		/* 0.0.3: the data folder on a drive that isn't plugged in (a USB stick chosen at the first
+		 * start): the game started with no Xbox hard disk, left at once to the dashboard, and the
+		 * screen only said "The game left". Not started now: OGBox says what's missing. */
+		const std::string root = ogbox::storageRoot();
+		if (boot.hdd == ogbox::storagePath("hdd") && !isFolder(root)) {
+			pshakux_log("library: the data folder %s isn't there: %s not started", root.c_str(), path.c_str());
+			openPopup("Data folder not found",
+				"OGBox keeps the Xbox hard disk (your saves), the caches and the covers in " + root +
+				", which isn't there: the drive it's on may be unplugged. Plug it in and start the game again, "
+				"or choose another data folder (it starts with an empty hard disk; the one on the drive stays as it is).",
+				{ "Go back", "Choose another data folder" }, [this](int i) {
+					if (i == 1) {
+						openStorage(false);
+					}
+				});
+			return;
+		}
 		std::string gameKey = key;
 		if (gameKey.empty() && path != "none") {
 			OgboxGameInfo info{};   // (the list's details not read yet: its disc's title ID now)
@@ -4585,7 +4602,12 @@ public:
 			ImGui::TextColored(mx::label, "OGBox's settings stay on the console either way. You can change this later in Settings, "
 				"and OGBox moves the data for you.");
 		} else if (storageStep == StorageStep::Places) {
-			ImGui::TextColored(mx::text, "Now: %s  (%s)", now.c_str(), ogbox::freeSpaceText(now).c_str());
+			if (isFolder(now)) {
+				ImGui::TextColored(mx::text, "Now: %s  (%s)", now.c_str(), ogbox::freeSpaceText(now).c_str());
+			} else {   // 0.0.3: its drive unplugged
+				ImGui::TextColored(mx::fail, "Now: %s  (not there: is its drive plugged in? Your Xbox hard disk is on it)",
+					now.c_str());
+			}
 			ImGui::TextColored(mx::label, "Choose another place and OGBox moves your Xbox hard disk, caches, covers and screenshots there.");
 		}
 		ImGui::PopTextWrapPos();
