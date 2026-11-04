@@ -124,7 +124,82 @@ native core's work tree (oldest first; author: subject):
   593ece4aba Claude: pbdraw: one memory bound in two 32-bit colour formats is one image; the host can ask for a draw log
   30e65b1af3 Claude: io: file times set with futimes where futimens isn't there; the running guest thread's id for samplers
   55a22208db Claude: pbdraw: a linear texture's pitch is CONTROL1's, in bytes, not the size word's 64-byte units
+  190b63f4ae Claude: probes on the native CPU: a jump to a stub that logs the registers through the gate; HAKUX_HLE_PROBE_TITLE keeps them to one title
 
+diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
+index 86d2228dea2d6dcf95657d46447ec66b2bad946e..d1d7f49b04edb37e538cdecf14e1658f381575fe 100644
+--- a/hw/xbox/hle/core/probe.c
++++ b/hw/xbox/hle/core/probe.c
+@@ -6,7 +6,7 @@
+ #include "hw/xbox/hle/core/probe.h"
+ #include "hw/xbox/hle/prop.h"
+ 
+-#define MAX_PROBES 8
++#define MAX_PROBES 16
+ 
+ static struct {
+     uint32_t va, first;
+@@ -55,6 +55,15 @@ static void backtrace(uint32_t esp, uint32_t va)
+     hle_log("hakuX-hle-probe", "%08x stack:%s", va, line);
+ }
+ 
++unsigned hle_probe_list(uint32_t *va, unsigned max)
++{
++    unsigned n = 0;
++    for (unsigned i = 0; i < MAX_PROBES && g_probe[i].va && n < max; i++) {
++        va[n++] = g_probe[i].va;
++    }
++    return n;
++}
++
+ bool hle_probe_at(uint32_t va)
+ {
+     for (unsigned i = 0; i < MAX_PROBES && g_probe[i].va; i++) {
+@@ -122,6 +131,15 @@ unsigned hle_probe_register(void)
+     const char *e = getenv("HAKUX_HLE_PROBE");
+     unsigned n = 0;
+     memset(g_probe, 0, sizeof(g_probe));
++    /* HAKUX_HLE_PROBE_TITLE=<title ID> (hex): the probes are that title's
++     * only (a game that starts another XBE: its addresses are another
++     * program's code there) */
++    const char *t = getenv("HAKUX_HLE_PROBE_TITLE");
++    if (e && *e && t && *t && (uint32_t)strtoul(t, NULL, 16) != g_hle.title.xbe.title_id) {
++        hle_log("hakuX-hle-probe", "the probes are title %s's, not this one's (%08x): none placed", t,
++                g_hle.title.xbe.title_id);
++        return 0;
++    }
+     for (const char *p = e; p && *p && n < MAX_PROBES;) {
+         char *end;
+         uint32_t va = (uint32_t)strtoul(p, &end, 16);
+diff --git a/hw/xbox/hle/core/probe.h b/hw/xbox/hle/core/probe.h
+index ee34394dc9b69142d58d1b5ebd92f61aedb365f8..f288eaa3ad1606aa1d8df3c078457a2b5165c89c 100644
+--- a/hw/xbox/hle/core/probe.h
++++ b/hw/xbox/hle/core/probe.h
+@@ -1,11 +1,13 @@
+ /*
+  * hakuX HLE — debug probes on title code.
+  *
+- * HAKUX_HLE_PROBE="va[:n],va[:n]..." (hex VAs, at most 8; n default 16):
++ * HAKUX_HLE_PROBE="va[:n],va[:n]..." (hex VAs, at most 16; n default 16):
+  * each time execution reaches va, the registers and the top eight stack
+  * words are logged (hakuX-hle-probe) for the first n times and every
+  * 1000th after, and the title's code runs on (set it through
+- * debug.hakux.env).
++ * debug.hakux.env). FEX hooks the address when it translates the block;
++ * the native CPU puts a jump to a stub there (native/kernel/mmiosite.c).
++ * HAKUX_HLE_PROBE_TITLE=<title ID> (hex) places them in that title only.
+  */
+ #ifndef HW_XBOX_HLE_CORE_PROBE_H
+ #define HW_XBOX_HLE_CORE_PROBE_H
+@@ -17,6 +19,8 @@ struct HleCpu;
+ 
+ /* The probes the environment asks for (title start): how many. */
+ unsigned hle_probe_register(void);
++/* The probes' VAs (at most max): how many. */
++unsigned hle_probe_list(uint32_t *va, unsigned max);
+ /* Whether a probe is at va (the host hooks it). */
+ bool hle_probe_at(uint32_t va);
+ /* Execution reached a probe: the registers at it (eip the probe's VA). */
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
 --- a/hw/xbox/hle/front/cmd.h
@@ -19447,7 +19522,7 @@ index 7418aad1ff7021de9749a965a1d23313f46df161..218bcc1e228eca38a72b7a66eab2fd4c
      if (wp == NC_WP_WRITTEN) {
          open_view(pa, info->si_addr);   /* written through another view already */
 diff --git a/native/hle/glue.c b/native/hle/glue.c
-index f9211ddebec9e00ba19d869bbb4c2e0a7e207b82..d1217d76e8e3486d1046148f5a577bfa067683ae 100644
+index f9211ddebec9e00ba19d869bbb4c2e0a7e207b82..c9722b9149a19f6654b28b5f428cb77e5cc8552a 100644
 --- a/native/hle/glue.c
 +++ b/native/hle/glue.c
 @@ -17,6 +17,9 @@
@@ -19460,7 +19535,24 @@ index f9211ddebec9e00ba19d869bbb4c2e0a7e207b82..d1217d76e8e3486d1046148f5a577bfa
  #include "hw/xbox/hle/pb/pbmode.h"
  #include "hw/xbox/hle/pb/pbdraw.h"
  #include "hw/xbox/hle/host.h"
-@@ -149,7 +152,12 @@ bool nc_hle_pb_active(void)
+@@ -111,6 +114,16 @@ void nc_hle_boot(NcKernel *k, NcVm *vm, NcCpu *cpu, const NcCpuContext *boot)
+     env->eflags = 0x202;
+     env->fs_base = g_fs_base;
+     hle_title_start();
++#if defined(NC_CPU_NATIVE)
++    {   /* the native CPU runs the title's code as it is: the probes are
++         * jumps in it, placed before it runs */
++        uint32_t va[16];
++        const unsigned n = hle_probe_list(va, 16);
++        for (unsigned i = 0; i < n; i++) {
++            nc_probe_place(k, va[i]);
++        }
++    }
++#endif
+     nc_hle_host_flush_discard(); /* nothing translated yet */
+     if (hle_pb_active()) {
+         nc_log("hakuX-native-hle", "title %08x in push-buffer mode", g_hle.title.xbe.title_id);
+@@ -149,7 +162,12 @@ bool nc_hle_pb_active(void)
   * at, a guest EIP in JIT code (FEX's block RIP table) or the offset in this
   * library in host code (addr2line on the unstripped libhakuxcore.so). */
  #define SMP_SIGNAL SIGPROF
@@ -19474,7 +19566,7 @@ index f9211ddebec9e00ba19d869bbb4c2e0a7e207b82..d1217d76e8e3486d1046148f5a577bfa
  
  static pthread_t g_smp_thread;
  static bool g_smp_ready;
-@@ -160,7 +168,7 @@ static pthread_mutex_t g_smp_mu = PTHREAD_MUTEX_INITIALIZER;
+@@ -160,7 +178,7 @@ static pthread_mutex_t g_smp_mu = PTHREAD_MUTEX_INITIALIZER;
  
  static void smp_signal(int sig, siginfo_t *si, void *uc)
  {
@@ -19483,7 +19575,7 @@ index f9211ddebec9e00ba19d869bbb4c2e0a7e207b82..d1217d76e8e3486d1046148f5a577bfa
      uint32_t eip;
      uint32_t v;
      if (g_nc_idle_waiting) {
-@@ -200,9 +208,55 @@ static bool smp_sample(uint32_t *pc)
+@@ -200,9 +218,55 @@ static bool smp_sample(uint32_t *pc)
      return ok;
  }
  
@@ -20821,7 +20913,7 @@ index 04ea92559c748fb42e90fa9c8c70c71d11ce5185..84efd5f35a2393f281f010312aa8ff4e
                  break;
              }
 diff --git a/native/kernel/kernel.c b/native/kernel/kernel.c
-index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea0218990b9b8 100644
+index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd08328a38f 100644
 --- a/native/kernel/kernel.c
 +++ b/native/kernel/kernel.c
 @@ -1,13 +1,19 @@
@@ -21267,7 +21359,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
                  k->resched = true;
                  break;
              }
-@@ -1117,6 +1366,12 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
+@@ -1117,6 +1366,16 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
  
  static void kcall(NcKernel *k, NcFrame *f, unsigned ordinal)
  {
@@ -21276,11 +21368,15 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
 +        nc_mmio_site_run(k, f);     /* first: thousands a second, nothing else to do */
 +        return;
 +    }
++    if (ordinal == NC_KORDINAL_PROBE) {
++        nc_probe_run(k, f);
++        return;
++    }
 +#endif
      nc_ke_tick_time(k);
      clock_tick(k);
      const uint32_t esp = nc_frame_gpr(f, NC_ESP);
-@@ -1356,7 +1611,14 @@ bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
+@@ -1356,7 +1615,14 @@ bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
       * which runs again after IRET) and the error code (not present,
       * supervisor, W for a write); IF clears. */
      nc_vm_wr32(k->vm, esp + 12, nc_frame_eflags(f));
@@ -21295,7 +21391,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
      nc_vm_wr32(k->vm, esp + 4, nc_frame_eip(f));
      nc_vm_wr32(k->vm, esp, write ? 2u : 0u);
      nc_frame_set_gpr(f, NC_ESP, esp);
-@@ -1552,10 +1814,42 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
+@@ -1552,10 +1818,42 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
      nc_log("hakuX-native", "resumed after %.1f s: the guest's time leaves it out", ns / 1e9);
  }
  
@@ -21338,7 +21434,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
      nc_kernel_pause_point(opaque, f, false);
      nc_ke_time_enter();
      if (g_slow_sysops < 0) {
-@@ -1591,6 +1885,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1591,6 +1889,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
  {
      NcKernel *k = opaque;
      g_sysop_kind[(unsigned)op & 31]++;
@@ -21353,7 +21449,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
      if ((++g_sysops & 0xFFF) == 0) {
          stats_tick(k);
      }
-@@ -1631,6 +1933,28 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1631,6 +1937,28 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
      case NC_SYSOP_INVD:
          nc_frame_set_eip(f, eip + size);
          break;
@@ -21382,7 +21478,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
      case NC_SYSOP_INVLPG:
          nc_paging_flush(k); /* a title that edits its page tables (paging.c) */
          nc_frame_set_eip(f, eip + size);
-@@ -1677,6 +2001,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1677,6 +2005,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
              nc_frame_bypass_hook(f);
          }
          break;
@@ -21398,7 +21494,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
          nc_kernel_request_stop(k, f, "system op %d at %08x (%02x %02x %02x)", (int)op, eip,
                                 insn[0], insn[1], insn[2]);
 diff --git a/native/kernel/kernel.h b/native/kernel/kernel.h
-index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d4153a626218 100644
+index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79165c1fb6 100644
 --- a/native/kernel/kernel.h
 +++ b/native/kernel/kernel.h
 @@ -23,8 +23,21 @@
@@ -21424,15 +21520,16 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  #define NC_KERNEL_SIZE   0x00040000u
  #define NC_KCALL_VECTOR  0x3Fu
  /* In the KPCR's page, past its fields (guest code reads it at fs:): 1 while
-@@ -41,6 +54,7 @@ extern "C" {
+@@ -41,6 +54,8 @@ extern "C" {
  #define NC_KORDINAL_SEH_NESTED    0x3F8u  /* the kernel's handler around a handler call */
  #define NC_KORDINAL_SEH_COLLIDED  0x3F7u  /* the same, during an unwind */
  #define NC_KORDINAL_APU_SPIN      0x3F5u  /* DirectSound waits on the GP DSP's mailbox (fixups.c) */
 +#define NC_KORDINAL_MMIO_SITE     0x3F4u  /* a device access patched to the gate (mmiosite.c) */
++#define NC_KORDINAL_PROBE         0x3F3u  /* a probe on the title's code (mmiosite.c) */
  
  enum NcKAbi { NC_KABI_STDCALL, NC_KABI_FASTCALL, NC_KABI_CDECL, NC_KABI_DATA };
  
-@@ -161,9 +175,24 @@ typedef struct NcThread {
+@@ -161,9 +176,24 @@ typedef struct NcThread {
      uint64_t ready_seq, run_seq;
      uint64_t slice_used_ns, slice_start_ns;
      bool slice_expired;
@@ -21457,7 +21554,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  typedef struct NcHandle {
      uint32_t object;         /* guest VA of the object body, 0 if free */
      enum NcObType type;
-@@ -283,7 +312,7 @@ struct NcKernel {
+@@ -283,7 +313,7 @@ struct NcKernel {
  bool nc_kernel_init(NcKernel *k, NcVm *vm);
  /* Before nc_kernel_init: the boot is for a savestate whose process object is
   * at kprocess (0: none), and the kernel pool's first range goes where the
@@ -21466,7 +21563,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  void nc_kernel_pool_for(uint32_t kprocess);
  /* The process object's address in a savestate's kernel section (0: none, or
   * the state can't be read). */
-@@ -304,6 +333,9 @@ void nc_pool_free(NcKernel *k, uint32_t va, uint32_t size);
+@@ -304,6 +334,9 @@ void nc_pool_free(NcKernel *k, uint32_t va, uint32_t size);
  /* mm.c: physical memory held by contiguous allocations and by committed
   * virtual memory (bytes), and the number of contiguous blocks. */
  void nc_mm_usage(NcKernel *k, uint32_t *contig_bytes, uint32_t *virtual_bytes, unsigned *contig_blocks);
@@ -21476,7 +21573,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  /* mm.c: frees the contiguous blocks that code in [lo, hi) allocated (a mod's
   * buffers once its code is gone); returns their bytes. */
  uint32_t nc_mm_contig_free_callers(NcKernel *k, uint32_t lo, uint32_t hi);
-@@ -333,12 +365,16 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f);
+@@ -333,12 +366,16 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f);
  /* The running thread's slice is due (clock_tick): a ready thread of its
   * priority or above takes over, or it gets another. */
  void nc_ps_slice_end(NcKernel *k, uint64_t now);
@@ -21493,7 +21590,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  
  bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base);
  /* The stack at base (size bytes, its pages gone) gives its slot back. */
-@@ -360,6 +396,8 @@ static inline uint32_t nc_ps_frame_top(const NcThread *t)
+@@ -360,6 +397,8 @@ static inline uint32_t nc_ps_frame_top(const NcThread *t)
  /* mm.c, ex.c, rtl.c */
  void nc_mm_register(NcKernel *k);
  void nc_mm_note_image(uint32_t base, uint32_t size);
@@ -21502,7 +21599,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  void nc_ex_register(NcKernel *k);
  void nc_rtl_register(NcKernel *k);
  /* Room for len bytes of guest code in the kernel area (stubs), or 0. */
-@@ -369,11 +407,20 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len);
+@@ -369,11 +408,20 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len);
   * hardware is pointed at the kernel (DirectSound's GP mailbox wait). */
  struct HleXbeInfo;
  void nc_kernel_title_fixups(NcKernel *k, const struct HleXbeInfo *xbe);
@@ -21523,7 +21620,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  
  /* ex.c: the console's video settings, as the dashboard keeps them: the
   * EEPROM's video flags (XC_VIDEO_FLAGS: NC_VIDEO_*) and the AV pack the
-@@ -407,6 +454,16 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
+@@ -407,6 +455,16 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
  /* seh.c: RtlRaiseException and RtlUnwind, and their stubs. */
  void nc_seh_register(NcKernel *k);
  void nc_seh_stub(NcKernel *k, NcFrame *f, unsigned ordinal);
@@ -21540,7 +21637,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  /* After the XBE is loaded: what the kernel exposes about the title. xbe_fd:
   * the XBE's host file when it isn't on the disc (else -1). */
  void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct NcDiscFile *xbe, int xbe_fd,
-@@ -447,6 +504,11 @@ uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size);
+@@ -447,6 +505,11 @@ uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size);
  void nc_ke_register(NcKernel *k);
  /* KeSetEvent on a guest event object; returns the previous state. */
  uint32_t nc_ke_set_event(NcKernel *k, uint32_t event);
@@ -21552,7 +21649,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  /* KeClearEvent. */
  void nc_ke_clear_event(NcKernel *k, uint32_t event);
  /* KeInitializeEvent: type 0 notification, 1 synchronization. */
-@@ -583,6 +645,8 @@ void nc_io_close(NcKernel *k, uint32_t object);
+@@ -583,6 +646,8 @@ void nc_io_close(NcKernel *k, uint32_t object);
  /* Completes the overlapped disc reads the reader thread finished (cheap when
   * none did): on every kernel entry and in the scheduler's loop. */
  void nc_io_poll(NcKernel *k);
@@ -21561,7 +21658,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  
  /* What a kernel thunk-table entry for ordinal resolves to, or 0. */
  uint32_t nc_kernel_resolve(const NcKernel *k, unsigned ordinal);
-@@ -621,6 +685,8 @@ void nc_intr_return(NcKernel *k);
+@@ -621,6 +686,8 @@ void nc_intr_return(NcKernel *k);
  void nc_kernel_dump_recent(int fd);
  /* Every guest thread: state, wait objects, top of stack (ps.c). */
  void nc_kernel_dump_threads(NcKernel *k, int fd);
@@ -21570,7 +21667,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
  
  /* A guest access to va, a page the guest doesn't have (the host fault in
   * translated code, f its state there): with a page-fault handler of the
-@@ -649,6 +715,15 @@ void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
+@@ -649,6 +716,19 @@ void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
   * (note, async-signal safe); the next system op makes it a hooked address
   * (flush); is_site answers the JIT's hook query; hook emulates it. */
  void nc_x86mmio_note(uint32_t eip);
@@ -21581,6 +21678,10 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d415
 +void nc_mmio_site_init(NcKernel *k, uint32_t area_va, uint32_t area_len);
 +void nc_mmio_site_fault(NcKernel *k, uint32_t eip, void *ucontext);
 +void nc_mmio_site_run(NcKernel *k, NcFrame *f);
++/* The native CPU: a probe on the title's code (HAKUX_HLE_PROBE), placed when
++ * the title starts (false: refused, logged); the kernel call its stub makes. */
++bool nc_probe_place(NcKernel *k, uint32_t eip);
++void nc_probe_run(NcKernel *k, NcFrame *f);
 +/* `call far gate` at p (7 bytes); 0 without the gate */
 +size_t nc_kernel_gate_call(uint8_t *p);
  void nc_x86mmio_flush(NcKernel *k);
@@ -21930,10 +22031,10 @@ index 06879c350fa67b35854e780f0b59d9e4ae2550c5..af09177a879024d2ee91f41497544286
      return !r->fail;
 diff --git a/native/kernel/mmiosite.c b/native/kernel/mmiosite.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c63763a77734160f000c1174be98ca3d323fba5b
+index 0000000000000000000000000000000000000000..877b28bf6c4ddd5254f4ecef9606776da03d17d7
 --- /dev/null
 +++ b/native/kernel/mmiosite.c
-@@ -0,0 +1,655 @@
+@@ -0,0 +1,809 @@
 +/*
 + * hakuX native core — device register accesses through the gate (the
 + * native CPU).
@@ -22538,6 +22639,160 @@ index 0000000000000000000000000000000000000000..c63763a77734160f000c1174be98ca3d
 +    if (s->hits >= g_hits_needed) {
 +        try_patch(g_k, s, ucontext, KIND_RDTSC);
 +    }
++}
++
++/* ---- probes on the title's code (HAKUX_HLE_PROBE, hw/xbox/hle/core/probe.h) ----
++ *
++ * FEX hooks a probe's address when it translates the block; the native CPU
++ * runs the title's code as it is, so a probe is a jump in the code to a stub
++ * laid out as a device access's: the stub enters the kernel through the gate
++ * (NC_KORDINAL_PROBE), the kernel logs the registers (k->hle_hook, as FEX's
++ * hook does), and the instructions the jump covers run from the stub (a
++ * relative jump or branch with its target kept, a relative call as a push of
++ * its return address and a jump), then a jump back. Placed when the title
++ * starts, before its code runs; a probe whose instructions can't move (a
++ * branch or an address into them, a trap, a far or indirect jump) is refused
++ * and logged. */
++bool nc_probe_place(NcKernel *k, uint32_t eip)
++{
++    NcVm *vm = k->vm;
++    const char *why = NULL;
++    uint8_t first[15];
++    uint8_t body[STUB_SIZE - S_BODY];
++    uint32_t body_rel[STUB_SIZE - S_BODY];  /* at a branch's rel32: its target */
++    memset(body_rel, 0, sizeof(body_rel));
++    unsigned n = 0, bl = 0;
++    uint32_t p = eip;
++    bool ends = false;
++    if (g_on < 0 || !g_lo || !eip || eip >= 0x80000000u || !ram_read(vm, eip, first, 15)) {
++        why = "not in the title's memory";
++        goto refused;
++    }
++    while (p - eip < 5 && !ends) {
++        uint8_t b[15];
++        NcX86Insn m;
++        unsigned len;
++        if (!ram_read(vm, p, b, 15) || !(len = nc_x86_decode(b, 15, p, &m))) {
++            why = "an instruction that doesn't decode";
++            goto refused;
++        }
++        if ((p == eip ? len > 15 : p + len - (eip + n) > MOVED_MAX) || bl + 12 > sizeof(body) - 5) {
++            why = "too long to move";
++            goto refused;
++        }
++        if (m.flow == NC_FLOW_JMP && !m.seg && !m.opsize16) {
++            body[bl] = 0xE9;                /* jmp target (rel32 from the stub) */
++            body_rel[bl + 1] = m.target;
++            bl += 5;
++            ends = true;
++        } else if (m.flow == NC_FLOW_JCC && ((m.op >= 0x70 && m.op <= 0x7F) || (m.op >= 0x0F80 && m.op <= 0x0F8F)) &&
++                   !m.opsize16) {
++            body[bl] = 0x0F;                /* jcc target (rel32) */
++            body[bl + 1] = (uint8_t)(0x80 | (m.op & 0x0F));
++            body_rel[bl + 2] = m.target;
++            bl += 6;
++        } else if (m.flow == NC_FLOW_CALL && b[0] == 0xE8) {
++            body[bl] = 0x68;                /* push the return address as it was */
++            nc_wr32(body + bl + 1, p + len);
++            body[bl + 5] = 0xE9;            /* jmp target */
++            body_rel[bl + 6] = m.target;
++            bl += 10;
++            ends = true;
++        } else if (m.flow == NC_FLOW_RET && (b[0] == 0xC3 || b[0] == 0xC2)) {
++            memcpy(body + bl, b, len);
++            bl += len;
++            ends = true;
++        } else if (movable(&m)) {
++            memcpy(body + bl, b, len);
++            bl += len;
++        } else {
++            why = "an instruction that can't move (a trap, a far or indirect jump, a segment)";
++            goto refused;
++        }
++        if (p == eip) {
++            n = len;
++        }
++        p += len;
++    }
++    if (p - eip < 5) {
++        why = "too little before the ret or jump after it";
++        goto refused;
++    }
++    if (pointed_into(vm, eip, p)) {
++        why = "a branch or an address points into what would move";
++        goto refused;
++    }
++    if (thread_inside(k, eip, p)) {
++        why = "a guest thread is stopped there";
++        goto refused;
++    }
++    uint8_t code[15 + MOVED_MAX];
++    const unsigned moved = p - (eip + n);
++    uint8_t st[STUB_SIZE];
++    memset(st, 0xCC, sizeof(st));
++    if (!ram_read(vm, eip, code, n + moved) || !nc_kernel_gate_call(st)) {
++        why = "no gate (NC_NATIVE_GATE=0)";
++        goto refused;
++    }
++    const uint32_t stub = stub_alloc(vm);
++    if (!stub) {
++        why = "the stub area is full";
++        goto refused;
++    }
++    st[7] = 0xCD;
++    st[8] = NC_KCALL_VECTOR;
++    st[9] = (uint8_t)NC_KORDINAL_PROBE;
++    st[10] = (uint8_t)(NC_KORDINAL_PROBE >> 8);
++    st[S_LEN] = (uint8_t)n;
++    st[S_MOVED] = (uint8_t)moved;
++    st[13] = st[14] = st[15] = 0;
++    nc_wr32(st + S_EIP, eip);
++    memcpy(st + S_ORIG, code, n);
++    memcpy(st + S_MOVED_AT, code + n, moved);
++    for (unsigned i = 0; i < bl; i++) {
++        st[S_BODY + i] = body[i];
++        if (body_rel[i]) {                  /* a rel32 to its target, from where it now ends */
++            nc_wr32(st + S_BODY + i, body_rel[i] - (stub + S_BODY + i + 4));
++            i += 3;
++        }
++    }
++    if (!ends) {
++        const uint32_t from = stub + S_BODY + bl;
++        st[S_BODY + bl] = 0xE9;
++        nc_wr32(st + S_BODY + bl + 1, p - (from + 5));
++    }
++    uint8_t site[15 + MOVED_MAX];
++    memset(site, 0xCC, sizeof(site));
++    site[0] = 0xE9;
++    nc_wr32(site + 1, stub - (eip + 5));
++    if (!ram_write(vm, stub, st, STUB_SIZE) || !ram_write(vm, eip, site, n + moved)) {
++        why = "its memory can't be written";
++        goto refused;
++    }
++    char hex[3 * (15 + MOVED_MAX) + 1];
++    unsigned h = 0;
++    for (unsigned i = 0; i < n + moved; i++) {
++        h += (unsigned)snprintf(hex + h, sizeof(hex) - h, "%02x ", code[i]);
++    }
++    nc_log("hakuX-native", "probe at %08x: a jump to the stub at %08x (%u bytes moved: %s)", eip, stub, n + moved, hex);
++    return true;
++refused:
++    nc_log("hakuX-native", "probe at %08x refused: %s (%02x %02x %02x %02x %02x %02x)", eip, why, first[0], first[1],
++           first[2], first[3], first[4], first[5]);
++    return false;
++}
++
++/* A probe's stub entered the kernel: the registers as at the probe, then the
++ * moved instructions run from the stub. */
++void nc_probe_run(NcKernel *k, NcFrame *f)
++{
++    const uint32_t stub = nc_frame_eip(f) - 7;
++    const uint8_t *st = nc_vm_host(k->vm, stub);
++    nc_frame_set_eip(f, nc_rd32(st + S_EIP));
++    if (k->hle_hook) {
++        k->hle_hook(k, f);
++    }
++    nc_frame_set_eip(f, stub + S_BODY);
 +}
 +
 +void nc_mmio_site_run(NcKernel *k, NcFrame *f)
