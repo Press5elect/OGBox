@@ -118,6 +118,7 @@ native core's work tree (oldest first; author: subject):
   0f0fb1a8f0 Claude: hle: exact depth for vertex programs under Z-buffering (a sky's flickering layers)
   4105d3b7a5 Claude: mm: a contiguous block's alignment pages are not the title's (the console leaves them free)
   0e625194ad Claude: seh: an access violation's report has the registers, the frames and the stack's top
+  bcbe38c445 Claude: codepatch: on the PS5, a cpuid right after its leaf is loaded traps to the kernel's Pentium III
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -9520,10 +9521,10 @@ index 1471cbb03349cdeb9dd47c708643c07177eb8348..037b64e798fa4524deef050a94c37d24
  /* ... as the title's file I/O sees it: the overlay's files, but not the XBE
 diff --git a/native/cpu/codepatch.c b/native/cpu/codepatch.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..55dab50d5fb4549cdcf9a663716d7672f80d77ec
+index 0000000000000000000000000000000000000000..034b6d9cc448a6759a72b7286e3a3d203025520d
 --- /dev/null
 +++ b/native/cpu/codepatch.c
-@@ -0,0 +1,760 @@
+@@ -0,0 +1,820 @@
 +/*
 + * hakuX native core — native CPU backend: the code sweep.
 + *
@@ -9547,10 +9548,13 @@ index 0000000000000000000000000000000000000000..55dab50d5fb4549cdcf9a663716d7672
 + *    since 0.1.14 that test alone decides, as in Cxbx-Reloaded. The stubs of
 + *    0.1.4-0.1.12 (a jump that moves the neighbouring instructions to the
 + *    kernel area) are opt-in: env NC_SWEEP_RDTSC_STUBS=1.
-+ *  - cpuid, sidt/sgdt, pushfd/popfd: off by default (Cxbx-Reloaded patches
-+ *    none of them; cpuid answers with the host's CPU, the PS5's UMIP traps
-+ *    sidt/sgdt, and a popfd after a trapped cli is found at run time:
-+ *    ncn_patch_add). env NC_SWEEP_CPUID=1, NC_SWEEP_TABLES=1,
++ *  - cpuid: on the PS5 (OGBox 0.0.2), one right after the instruction that
++ *    loads its leaf, for the kernel's Pentium III (cpuid_mode); elsewhere
++ *    Linux makes every guest cpuid fault. env NC_SWEEP_CPUID=1 every one,
++ *    =0 none, =leaf the PS5's rule.
++ *  - sidt/sgdt, pushfd/popfd: off by default (Cxbx-Reloaded patches
++ *    neither; the PS5's UMIP traps sidt/sgdt, and a popfd after a trapped
++ *    cli is found at run time: ncn_patch_add). env NC_SWEEP_TABLES=1,
 + *    NC_SWEEP_FLAGS=1 turn them back on for A/B runs.
 + *
 + * Instruction boundaries come from a linear sweep with the length decoder
@@ -9943,6 +9947,53 @@ index 0000000000000000000000000000000000000000..55dab50d5fb4549cdcf9a663716d7672
 + * game froze; with no sweep at all (0.1.8) it played. A popfd that does run
 + * after a cli is still found and trapped at run time (ncn_patch_add). On
 + * for A/B runs: env NC_SWEEP_CPUID=1, NC_SWEEP_FLAGS=1, NC_SWEEP_TABLES=1. */
++/* OGBox 0.0.2: cpuid. Where the host can't make every guest cpuid fault (Linux's ARCH_SET_CPUID,
++ * cpu_native.c), a native one answers with the host: on the PS5 an AMD Zen 2, family 0xF, where
++ * the Xbox's Pentium III is family 6. The XDK's voice library (XVOICE, VOICMAIL, 5849) makes its
++ * Voxware codecs only on family 6 with SSE (`cmp eax, 6` after cpuid leaf 1), and on the PS5 every
++ * codec failed: the voice queue's table stayed null, and Splinter Cell Chaos Theory (003664a2)
++ * and Double Agent (00453860) read through it at their menus. The sweep then traps the cpuid it
++ * is surest of, for the kernel's Pentium III (kernel.c cpuid): a cpuid right after the
++ * instruction that loads its leaf (`mov eax, imm32`, `xor eax, eax`), inside a run of code the
++ * usual test is sure of. Data seldom decodes as that pair in a run of code: the 0.1.12 freeze
++ * (Burnout 3, every 0f a2 in .text trapped, none of them ever run) came from trapping any.
++ * env NC_SWEEP_CPUID=1: every one the sweep is sure of, in the XDK libraries' sections too
++ * (as before); =0: none (the host's answer, as 0.0.1 on the PS5). */
++enum { CPUID_NONE, CPUID_LEAF_SET, CPUID_ALL };
++
++static int cpuid_mode(void)
++{
++    const char *e = getenv("NC_SWEEP_CPUID");
++    if (e && e[0]) {
++        /* "leaf": the PS5's rule on any host (a PC run with NC_NATIVE_CPUID_FAULT=0 stands for it) */
++        return e[0] == '0' ? CPUID_NONE : e[0] == 'l' ? CPUID_LEAF_SET : CPUID_ALL;
++    }
++#if defined(__PROSPERO__) || defined(__FreeBSD__)
++    return CPUID_LEAF_SET;
++#else
++    return CPUID_NONE;      /* Linux: every guest cpuid faults (cpu_native.c NC_NATIVE_CPUID_FAULT) */
++#endif
++}
++
++/* The instruction before va loads EAX, the leaf: mov eax, imm32 (b8), xor eax, eax (33 c0, 31 c0),
++ * or mov eax, r/m32 (8b /0: an engine's cpuid(leaf, ...) helper takes it from its argument,
++ * Chaos Theory's 0004983f `mov eax, [esp+10h] ; cpuid`). prev[0] is the last instruction decoded
++ * before it, in the same block. */
++static bool leaf_set_before(NcVm *vm, uint32_t va, const Prev *prev, unsigned nprev)
++{
++    if (!nprev || prev[0].va + prev[0].len != va) {
++        return false;
++    }
++    const uint8_t *b = code_byte(vm, prev[0].va);
++    const uint8_t *b1 = prev[0].len >= 2 ? code_byte(vm, prev[0].va + 1) : NULL;
++    if (!b) {
++        return false;
++    }
++    return (prev[0].len == 5 && *b == 0xB8) ||
++           (prev[0].len == 2 && b1 && (*b == 0x33 || *b == 0x31) && *b1 == 0xC0) ||
++           (*b == 0x8B && b1 && ((*b1 >> 3) & 7) == 0);
++}
++
 +static bool kind_enabled(int kind)
 +{
 +#if defined(__PROSPERO__) || defined(__FreeBSD__)
@@ -9952,7 +10003,7 @@ index 0000000000000000000000000000000000000000..55dab50d5fb4549cdcf9a663716d7672
 +#endif
 +    switch (kind) {
 +    case NC_PATCH_RDTSC: return env_on("NC_SWEEP_RDTSC", true);
-+    case NC_PATCH_CPUID: return env_on("NC_SWEEP_CPUID", false);
++    case NC_PATCH_CPUID: return cpuid_mode() != CPUID_NONE;
 +    case NC_PATCH_PUSHFD: case NC_PATCH_POPFD: return env_on("NC_SWEEP_FLAGS", false);
 +    case NC_PATCH_SIDT: case NC_PATCH_SGDT: return env_on("NC_SWEEP_TABLES", tables_default);
 +    default: return true;
@@ -10089,6 +10140,15 @@ index 0000000000000000000000000000000000000000..55dab50d5fb4549cdcf9a663716d7672
 +            kind = NC_PATCH_NONE;
 +        }
 +        if (kind == NC_PATCH_RDTSC && !rdtsc_section_ok(name)) {
++            kind = NC_PATCH_NONE;
++        }
++        if (kind == NC_PATCH_CPUID && cpuid_mode() == CPUID_LEAF_SET && !leaf_set_before(vm, va, prev, nprev)) {
++            static unsigned said_leaf;
++            if (said_leaf++ < 32) {
++                nc_log("hakuX-native-cpu", "sweep %s: cpuid at %08x left (no leaf loaded right before it)", name,
++                       va);
++            }
++            rep->skipped++;
 +            kind = NC_PATCH_NONE;
 +        }
 +        /* OGBox 0.1.20: Cxbx-Reloaded's byte test vetoes an rdtsc only where the sweep is not
@@ -10257,7 +10317,8 @@ index 0000000000000000000000000000000000000000..55dab50d5fb4549cdcf9a663716d7672
 +            return;
 +        }
 +    }
-+    if (!rdtsc_section_ok(name) && !kind_enabled(NC_PATCH_CPUID) && !kind_enabled(NC_PATCH_PUSHFD) &&
++    /* (cpuid's leaf-set rule alone doesn't sweep the XDK libraries' sections: as before 0.0.2) */
++    if (!rdtsc_section_ok(name) && cpuid_mode() != CPUID_ALL && !kind_enabled(NC_PATCH_PUSHFD) &&
 +        !kind_enabled(NC_PATCH_SIDT)) {
 +        nc_log("hakuX-native-cpu", "sweep %s: left as it is (an XDK library that never reads the TSC)", name);
 +        return;

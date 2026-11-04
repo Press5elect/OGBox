@@ -323,8 +323,41 @@ static DWORD WINAPI worker_main(LPVOID param)
     return 0;
 }
 
+/* cpuid as the XDK's code has it: the leaf loaded right before it (OGBox 0.0.2: the voice library's
+ * Voxware codecs are made only on family 6 with SSE, and on the PS5 cpuid answered with its own
+ * AMD Zen 2, family 0xF) */
+static void cpuid_leaf0(uint32_t r[4])
+{
+    __asm__ volatile("movl $0, %%eax\n\tcpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]));
+}
+
+static void cpuid_leaf1(uint32_t r[4])
+{
+    __asm__ volatile("movl $1, %%eax\n\tcpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]));
+}
+
 void test_cpu(void)
 {
+    section("cpu: the processor (cpuid)");
+    {
+        uint32_t v[4], f[4];
+        cpuid_leaf0(v);
+        cpuid_leaf1(f);
+        char vendor[13];
+        memcpy(vendor, &v[1], 4);
+        memcpy(vendor + 4, &v[3], 4);
+        memcpy(vendor + 8, &v[2], 4);
+        vendor[12] = 0;
+        const unsigned family = f[0] >> 8 & 0xF, model = f[0] >> 4 & 0xF;
+        report("INFO cpuid: %s, leaf 1 %08lx (family %u model %u stepping %lu), features %08lx",
+               vendor, (unsigned long)f[0], family, model, (unsigned long)(f[0] & 0xF), (unsigned long)f[3]);
+        /* the Xbox's Pentium III (Coppermine): no SSE2, which every host since has */
+        check(!strcmp(vendor, "GenuineIntel") && family == 6 && model == 8 && (f[3] >> 25 & 1) && !(f[3] >> 26 & 1),
+              "cpuid: the Xbox's Pentium III (GenuineIntel, family 6 model 8, SSE, no SSE2): %s family %u model %u, "
+              "SSE %lu SSE2 %lu", vendor, family, model, (unsigned long)(f[3] >> 25 & 1),
+              (unsigned long)(f[3] >> 26 & 1));
+    }
+
     section("cpu: x87 and SSE state");
     if (g_tsc_per_us <= 0.0) {
         calibrate_tsc();
