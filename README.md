@@ -4,9 +4,9 @@
 emulator, to the PlayStation 5, as a homebrew title (`PPSA99251`) for a jailbroken console.**
 OGBox by Press5elect. It was called PSHakuX up to 0.1.5.
 
-**Latest release: [v0.0.1](https://github.com/Press5elect/OGBox/releases/tag/v0.0.1)**, the first
-(a pre-release: highly experimental). Download `OGBox-v0.0.1.zip` there; later versions install
-themselves (Settings > Updates).
+**Latest release: [v0.0.2](https://github.com/Press5elect/OGBox/releases/tag/v0.0.2)** (highly
+experimental). Download `OGBox-v0.0.2.zip` there; 0.0.1 offers it at its next start (Settings >
+Updates), and later versions install themselves the same way.
 
 OGBox is built on hakuX (rfandango and contributors, GPL-3.0-or-later) and on the parts of hakuX
 that come from xemu (the MCPX APU, LGPL-2.1-or-later and GPL-2.0-or-later). It is not hakuX's or
@@ -23,8 +23,8 @@ xemu's work and neither project supports it.
 
 ## Where it is
 
-**Highly experimental.** 0.0.1 is the first public release, after the bring-up builds 0.1.1 to
-0.1.59. Some games boot and play; many don't start, or stop, slow down, lose graphics or sound
+**Highly experimental.** 0.0.2 is the second public release (0.0.1 the first, after the bring-up
+builds 0.1.1 to 0.1.59). Some games boot and play; many don't start, or stop, slow down, lose graphics or sound
 partway. Expect crashes and freezes: OGBox says so every time it starts.
 
 The title builds and links hakuX's native core with its **native CPU backend**: the Xbox's x86
@@ -227,6 +227,48 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.2
+
+Added
+- Game list tabs, **Internal / USB / Network** (L1 / R1), as Crux2 has them; each remembers its
+  folder. CIRCLE at a tab's places asks before closing OGBox instead of closing it.
+- A game with a "Quit, and save where I am" state asks when it starts: go on from there, start from
+  the beginning, or go back.
+- Quick menu > **Log what the GPU draws**: the draws of a few seconds into the boot log, for a
+  graphics problem's report.
+- Mods, patches, cheats and trainers are checked against the disc's release: one made for another
+  release of the game is greyed out and can't be turned on.
+
+Changed
+- When a game starts another of its XBEs, its last frame stays on screen instead of the "core is
+  running" screen (which still shows when a game starts, and with an error).
+- The dashboard row shows only when the Xbox hard disk has a dashboard; Settings > Game list says
+  when it hasn't.
+- Compile shaders in the background is off by default: on, a picture drawn once (a loading screen's
+  background) could be skipped.
+- Covers: the file's own release first, then the other records of its title ID.
+- One boot log for the whole session (a game, back to the list, another game), written to the disk
+  every 2 s.
+
+Fixed
+- OGBox, and sometimes the whole console, crashing when a game was quit, OGBox was closed or
+  closed from the PS5's menu: each exit released two references to the console's root folder it
+  never took.
+- A game freezing while it loads a level: it ran out of open files (every handle had its own).
+- A game running at 2 to 6 fps: its hard disk cache writes held the Xbox CPU (now written on a
+  thread of their own), and its GPU interrupt handler waited for results a draw never writes.
+- Games dropping to 30 fps in busy scenes: the emulated GPU spent about 40% of each draw waking its
+  render thread (on the PS5's x86 processor that thread slept between draws); texture lookups are
+  quicker as well.
+- Loading screens showing only their bar: a copy from the frame on screen read empty memory instead
+  of the picture.
+- Games stopping at their menus: the processor now identifies itself as the Xbox's Pentium III.
+- A game running out of memory at a level's load: alignment pages of its memory blocks are free, as
+  on the console.
+- A logo leaning or white (a linear texture's own pitch), trails behind a blur over the back buffer,
+  file times on the Xbox hard disk, and xemu's fixes since hakuX's fork (fog, clear alpha, nearest
+  readback, the push buffer's DMA control).
 
 ### 0.0.1 (initial release)
 
