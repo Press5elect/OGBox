@@ -151,6 +151,45 @@ void test_mem(void)
         }
     }
 
+    /* 300 contiguous blocks of 8 KiB at 16 KiB alignment, a game's pattern (OGBox 0.0.2: 277 of its
+     * 44 MiB, most of them so, then a level's 8 KiB failed with 2.2 MiB missing): the kernel takes
+     * each from the top down, and the pages its alignment skips up to the next block stay free, so
+     * the free count goes down by the blocks alone (2 pages each). Up to 0.0.1 hakuX held those pages
+     * with each block and counted them as used: 3 or 4 pages each. */
+    {
+        enum { BLOCKS = 300 };
+        static PVOID blk[BLOCKS];
+        MM_STATISTICS m0, m1;
+        memset(&m0, 0, sizeof(m0));
+        m0.Length = sizeof(m0);
+        MmQueryStatistics(&m0);
+        unsigned made = 0, misaligned = 0;
+        for (unsigned i = 0; i < BLOCKS; i++) {
+            PVOID b = MmAllocateContiguousMemoryEx(8192, 0, 0xFFFFFFFF, 16384, PAGE_READWRITE);
+            if (!b) {
+                break;
+            }
+            misaligned += ((uintptr_t)b & 0x3FFF) != 0;
+            blk[made++] = b;
+        }
+        memset(&m1, 0, sizeof(m1));
+        m1.Length = sizeof(m1);
+        MmQueryStatistics(&m1);
+        const unsigned long used = (unsigned long)m0.AvailablePages - (unsigned long)m1.AvailablePages;
+        check(made == BLOCKS && misaligned == 0 && used <= BLOCKS * 2 + 16,
+              "%u blocks of 8 KB at 16 KB alignment (%u, %u misaligned): %lu pages fewer free (%u for the blocks)",
+              made, (unsigned)BLOCKS, misaligned, used, (unsigned)BLOCKS * 2);
+        for (unsigned i = 0; i < made; i++) {
+            MmFreeContiguousMemory(blk[i]);
+        }
+        MM_STATISTICS m2;
+        memset(&m2, 0, sizeof(m2));
+        m2.Length = sizeof(m2);
+        MmQueryStatistics(&m2);
+        check(m2.AvailablePages + 16 >= m0.AvailablePages, "all of them freed: %lu pages free (%lu before)",
+              (unsigned long)m2.AvailablePages, (unsigned long)m0.AvailablePages);
+    }
+
     /* the kernel's pool */
     {
         uint8_t *p = ExAllocatePool(64 * 1024);

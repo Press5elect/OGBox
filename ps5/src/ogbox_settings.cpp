@@ -83,10 +83,15 @@ std::vector<Option> makeOptions()
 		kOnOff, "0", true });
 	o.push_back({ "uncapped", Section::Performance, "Uncapped frame rate",
 		"Shows each frame as soon as it is ready instead of waiting for the display.", kOnOff, "0", true });
+	// 0.0.2: off by default (the console draws everything). On, a draw whose shader isn't built yet is
+	// skipped when its target was drawn in the last frames; a loading screen's background is drawn once
+	// under a spinner that redraws every frame, so it never came back (a game's first run, its cache
+	// empty). Once a game's shaders are cached, "Build cached shaders at start" readies them anyway.
 	o.push_back({ "async_shaders", Section::Performance, "Compile shaders in the background",
-		"New shaders are compiled without stopping the game; what needs them can be missing for a few frames. Off: "
-		"the game waits for them (a short stutter).",
-		kOnOff, "1", true });
+		"Off: the game waits for each new shader (a short stutter the first time), and everything is drawn. On: "
+		"new shaders are compiled without stopping the game, and what needs them is missing until they are ready: "
+		"something drawn once, such as a loading screen's background, can stay missing.",
+		kOnOff, "0", true });
 	o.push_back({ "prebuild_shaders", Section::Performance, "Build cached shaders at start",
 		"Builds the shaders a game used before while it starts, so they are ready when it needs them.", kOnOff, "1",
 		true });
