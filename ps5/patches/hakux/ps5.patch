@@ -134,6 +134,7 @@ native core's work tree (oldest first; author: subject):
   565faa818d Claude: report gate: misses start again only at a write in time
   55ce88997b Claude: hle: a frame's time by stage every 5 s, a loading screen's draws logged
   6372a2ef12 Claude: hle: the decoder's draws split further; a blit's source explained in the draw log
+  01c4128772 Claude: hle (x86): the render thread and the decoder spin briefly before they sleep
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..576189c5492a7f32688bbe5607ce343bf338df39 100644
@@ -907,7 +908,7 @@ index 0000000000000000000000000000000000000000..90e2a0c0c29c3d6a2c795ca9a25197a6
 +
 +#endif
 diff --git a/hw/xbox/hle/pb/pbdraw.c b/hw/xbox/hle/pb/pbdraw.c
-index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f992570b23e 100644
+index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..2deed76595ced7095777fcf0ebfd4624b1f48629 100644
 --- a/hw/xbox/hle/pb/pbdraw.c
 +++ b/hw/xbox/hle/pb/pbdraw.c
 @@ -8,8 +8,10 @@
@@ -1603,8 +1604,17 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
          if (g_pd.objs[i].id == id) {
              return &g_pd.objs[i].d;
          }
-@@ -2179,6 +2466,22 @@ bool hle_pbd_blit_images(uint32_t sbase, uint32_t sp, uint32_t dbase, uint32_t d
-     if (g_dlog_left > 0) {
+@@ -2176,9 +2463,30 @@ bool hle_pbd_blit_images(uint32_t sbase, uint32_t sp, uint32_t dbase, uint32_t d
+     }
+     uint32_t src = object_at(sbase), dst = object_at(dbase);
+     PbObj *so = obj_of(src), *dd = obj_of(dst);
+-    if (g_dlog_left > 0) {
++    /* OGBox 0.0.2: screen-sized blits are logged too (the first 80): a loading
++     * screen's picture copied from a buffer that never got it */
++    static unsigned s_big;
++    const bool big = w * h >= 640u * 400u && s_big < 80;
++    s_big += big;
++    if (g_dlog_left > 0 || big) {
          hle_log("hakuX-hle-pb", "blit %08x/%u -> %08x/%u bpp %u %ux%u from %u,%u to %u,%u objects %u -> %u",
                  sbase, sp, dbase, dp, bpp, w, h, ix, iy, ox, oy, src, dst);
 +        /* OGBox 0.0.2: where the source's picture comes from: draws into its image (and the
@@ -1626,7 +1636,17 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      }
      if (so && so->d.pitch && !dd && dp) {
          dst = object(dbase, so->d.xfmt, dp, MAX(dp / bpp, ox + w), oy + h);
-@@ -2497,14 +2800,18 @@ static uint64_t span_hash(uint32_t pa, uint32_t len)
+@@ -2186,6 +2494,9 @@ bool hle_pbd_blit_images(uint32_t sbase, uint32_t sp, uint32_t dbase, uint32_t d
+         dd = obj_of(dst);
+     }
+     if (!so || !so->d.pitch || !dd || !dd->d.pitch || dst == src) {
++        if (big) {
++            hle_log("hakuX-hle-pb", "blit: copied in memory (objects %u -> %u)", src, dst);
++        }
+         rt_cpu_sync(src);
+         rt_cpu_sync(dst);
+         return false;
+@@ -2497,14 +2808,18 @@ static uint64_t span_hash(uint32_t pa, uint32_t len)
  
  static void tex_edges_set(PbTex *t)
  {
@@ -1650,7 +1670,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
  }
  
  static bool tex_written(const PbTex *t)
-@@ -2512,9 +2819,9 @@ static bool tex_written(const PbTex *t)
+@@ -2512,9 +2827,9 @@ static bool tex_written(const PbTex *t)
      if (!t->bytes) {
          return false;
      }
@@ -1663,7 +1683,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      const bool last = pl != p0 && edge_dirty(pl) && span_hash(pl, hi - pl) != t->edge_hash[1];
      return mid || first || last;
  }
-@@ -2589,6 +2896,7 @@ static uint32_t target_part(uint32_t pa, uint32_t code, const HleFmtInfo *fi, ui
+@@ -2589,6 +2904,7 @@ static uint32_t target_part(uint32_t pa, uint32_t code, const HleFmtInfo *fi, ui
   * is linear (sampled by texel coordinates). */
  static uint32_t texture(unsigned s, bool *unset, bool *lin)
  {
@@ -1671,7 +1691,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      uint32_t b = 64 * s;
      *unset = false;
      *lin = false;
-@@ -2609,6 +2917,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2609,6 +2925,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          uint32_t zid = hle_res_zread_map(code, map) ? zread(pa, rect >> 16, rect & 0xFFFF, map, code) :
                         code == HLE_XFMT_LIN_L16 ? zread(pa, rect >> 16, rect & 0xFFFF, k_halves, code) : 0;
          if (zid) {
@@ -1679,7 +1699,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
              return zid;
          }
      }
-@@ -2629,6 +2938,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2629,6 +2946,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          stride = (stride + 127) & ~127u;    /* faces 128-byte aligned (XGSetCubeTextureHeader) */
          const uint32_t cube = cube_of_targets(pa, code, cw, stride);
          if (cube) {
@@ -1687,7 +1707,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
              return cube;
          }
      }
-@@ -2660,14 +2970,26 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2660,14 +2978,26 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          const uint32_t part = target_part(pa, code, fi, R(NV097_SET_TEXTURE_CONTROL1 + b) >> 16,
                                            rect >> 16, rect & 0xFFFF, best);
          if (part) {
@@ -1715,7 +1735,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      uint32_t h = hash32(key, sizeof(key)) % TEX_SLOTS;
      PbTex *t = &g_pd.tex[h];
      while (t->id && memcmp(t->key, key, sizeof(key))) {
-@@ -2732,10 +3054,11 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2732,10 +3062,11 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          memcpy(pal, pal_mem, 4 * npal);
      }
      if (redefine) {
@@ -1729,7 +1749,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
          t->pa = pa;
          t->bytes = bytes;
          t->pal_hash = pal_hash;
-@@ -2746,6 +3069,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2746,6 +3077,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
              g_pd.tex_defs++;
          }
      }
@@ -1737,7 +1757,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      return t->ok ? t->id : 0;
  }
  
-@@ -2810,8 +3134,28 @@ static void state(void)
+@@ -2810,8 +3142,28 @@ static void state(void)
  /* debug: a new value of debug.hakux.pbdraws=<n> logs the next n draws: the
   * target, each stage's texture registers and object, the vertex source, the
   * skinning mode and the first two attributes' formats (position, weights) */
@@ -1766,7 +1786,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
  #ifdef __ANDROID__
      static HleProp prop;
      static unsigned polls;
-@@ -2824,19 +3168,38 @@ static void drawlog(const HleCmdDraw *d, bool ff)
+@@ -2824,19 +3176,38 @@ static void drawlog(const HleCmdDraw *d, bool ff)
          return;
      }
      g_dlog_left--;
@@ -1809,7 +1829,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      }
      hle_log("hakuX-hle-pb", "draw %llu: %s prim %u count %u rt %u ds %u nbind %u stride %u surf "
              "[f%08x c%08x z%08x p%08x clip %08x %08x mask %08x] f0 %08x %08x %08x %08x n %08x at %x/%x/%x bl %x/%08x "
-@@ -2968,7 +3331,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, bool gpu_newer, const
+@@ -2968,7 +3339,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, bool gpu_newer, const
                  ol = !o->cube && fi && !(fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) ? o->d.pitch * o->d.h : 0;
              }
              if (ol && o->written > after && (!next || o->written < next->written) && o->d.pa < end &&
@@ -1818,7 +1838,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
                  next = o;
                  len = ol;
              }
-@@ -3139,26 +3502,227 @@ void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks)
+@@ -3139,26 +3510,227 @@ void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks)
      *kicks = g_pd.vis_kicks;
  }
  
@@ -2048,7 +2068,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
          if (c_off == HLE_ARENA_FULL) {
              skip(SK_EMIT_ARENA);
              return;
-@@ -3169,6 +3733,8 @@ static void emit(HleCmdDraw *d)
+@@ -3169,6 +3741,8 @@ static void emit(HleCmdDraw *d)
              memcpy(cb, g_pd.consts, sizeof(g_pd.consts));
          }
          memcpy(cb + sizeof(g_pd.consts), g_pd.cur, sizeof(g_pd.cur));
@@ -2057,7 +2077,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
          g_pd.blk_ok = true;
          g_pd.blk_ff = ff;
          g_pd.blk_ffgen = g_pd.ffgen;
-@@ -3176,14 +3742,18 @@ static void emit(HleCmdDraw *d)
+@@ -3176,14 +3750,18 @@ static void emit(HleCmdDraw *d)
          g_pd.blk_gen = g_pd.cgen;
          g_pd.blk_value = hle_fe_last_value();   /* after arena(): it may have kicked */
      }
@@ -2076,7 +2096,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      for (unsigned s = 0; s < 4; s++) {
          bool unset, lin;
          d->tex[s] = texture(s, &unset, &lin);
-@@ -3193,9 +3763,17 @@ static void emit(HleCmdDraw *d)
+@@ -3193,9 +3771,17 @@ static void emit(HleCmdDraw *d)
          d->tex_rect[s] = lin ? R(NV097_SET_TEXTURE_IMAGE_RECT + 64 * s) : 0;
          d->tex_ord |= tex_order(s, d->tex[s]) << 2 * s;
      }
@@ -2094,7 +2114,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      d->consts_off = c_off;
      /* the integer formats' 2^-n, the shaders adding the rest (HLE_ZNORM_GLSL);
       * a float format's own (zfloat_scale) */
-@@ -3206,6 +3784,7 @@ static void emit(HleCmdDraw *d)
+@@ -3206,6 +3792,7 @@ static void emit(HleCmdDraw *d)
      HleCmdDraw *c = begin(HLE_OP_DRAW, sizeof(*c));
      *c = *d;
      hle_fe_commit();
@@ -2102,7 +2122,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
      g_pd.draws++;
      g_pd.ff += ff;
      /* a submit boundary every 4 ms of draws (checked every 256): a title
-@@ -3966,7 +4545,9 @@ void hle_pbd_method(uint32_t m, uint32_t v)
+@@ -3966,7 +4553,9 @@ void hle_pbd_method(uint32_t m, uint32_t v)
              g_pd.ndm = 0;
          } else if (g_pd.in_draw) {
              g_pd.in_draw = false;
@@ -2112,7 +2132,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..9e74fed171c0ec6cbde93a0604455f99
          }
          break;
      case NV097_ARRAY_ELEMENT16:
-@@ -4983,6 +5564,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
+@@ -4983,6 +5572,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
      memcpy(g_pd.r, s->r, sizeof(g_pd.r));
      memcpy(g_pd.pmem, s->pmem, sizeof(g_pd.pmem));
      g_pd.pgen++;
@@ -2158,7 +2178,7 @@ index 195825563bf8d594be1f1eaab1d1d919caea7a35..81e5453dc10268f722f8e2dc7eedca6f
  void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks);
  /* debug (HAKUX_HLE_PB_NOVIS=1): no occlusion queries; visibility tests
 diff --git a/hw/xbox/hle/pb/pbmode.c b/hw/xbox/hle/pb/pbmode.c
-index 569f62694b0c5679db990b987ee01b72ecab4e40..4371f2d13e8c2bffcc6ef2b5d2208ef5054fbb60 100644
+index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89c7fc1ad4 100644
 --- a/hw/xbox/hle/pb/pbmode.c
 +++ b/hw/xbox/hle/pb/pbmode.c
 @@ -97,6 +97,8 @@ static struct {
@@ -2297,7 +2317,38 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..4371f2d13e8c2bffcc6ef2b5d2208ef5
  }
  
  void hle_pb_pushed(uint32_t put)
-@@ -1463,6 +1515,7 @@ void hle_pb_state_set(const HlePbState *s)
+@@ -1334,6 +1386,30 @@ static bool kick_wait_brief(uint32_t seen)
+             return false;
+         }
+     }
++#elif defined(__x86_64__)
++    /* OGBox 0.0.2: the same on x86 (the PS5): PAUSE on the kick count, up
++     * to 200 us, before the semaphore */
++    static uint64_t span;
++    if (!span) {
++        const uint64_t a = __builtin_ia32_rdtsc();
++        const int64_t n0 = hle_now_ns();
++        while (hle_now_ns() - n0 < 200000) {
++            __builtin_ia32_pause();
++        }
++        span = MAX(__builtin_ia32_rdtsc() - a, 1u);
++    }
++    const uint64_t t0 = __builtin_ia32_rdtsc();
++    for (;;) {
++        for (unsigned i = 0; i < 32; i++) {
++            if (__atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE) != seen || g_pb.stop) {
++                return true;
++            }
++            __builtin_ia32_pause();
++        }
++        if (__builtin_ia32_rdtsc() - t0 > span) {
++            return false;
++        }
++    }
+ #else
+     (void)seen;
+     return false;
+@@ -1463,6 +1539,7 @@ void hle_pb_state_set(const HlePbState *s)
      g_pb.flip_wait = s->flip_wait;
      g_pb.flip_wait_ns = hle_now_ns();
      g_pb.trap_wait = s->trap_wait;
@@ -2305,7 +2356,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..4371f2d13e8c2bffcc6ef2b5d2208ef5
      g_trel.pending = false;                 /* the scout syncs again at the next PUT */
      g_sc.synced = false;
      memcpy(g_pb.sub_r, s->sub_r, sizeof(s->sub_r));
-@@ -1483,10 +1536,11 @@ static void *decode_thread(void *opaque)
+@@ -1483,10 +1560,11 @@ static void *decode_thread(void *opaque)
      t_decoder = true;
      while (!g_pb.stop) {
          /* asleep until a kick: waiting for the guest, the flip it stalls on
@@ -2320,7 +2371,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..4371f2d13e8c2bffcc6ef2b5d2208ef5
          hle_sem_wait(&g_pb.kick);
          hle_hitch_leave(pa);
          while (!g_pb.stop) {
-@@ -1677,6 +1731,7 @@ void hle_pb_diag(void)
+@@ -1677,6 +1755,7 @@ void hle_pb_diag(void)
      /* where the decoder is: waiting for the ISR (trap), a flip, the FIFO
       * access, arena or ring space in a draw, or decoding */
      const char *ph = hle_pbd_phase(), *state = g_pb.trap_wait ? " (trap)" : g_pb.flip_wait ? " (flip stall)"
@@ -2328,7 +2379,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..4371f2d13e8c2bffcc6ef2b5d2208ef5
                                                : !fifo_open()      ? " (fifo closed)"
                                                : ph && *ph == 'a'  ? " (arena wait)"
                                                : ph                ? " (ring wait)"
-@@ -1720,10 +1775,12 @@ void hle_pb_diag(void)
+@@ -1720,10 +1799,12 @@ void hle_pb_diag(void)
          prev_cu = cu;
          hle_log("hakuX-hle-pb", "catch-up: %llu stores waited for the decoder (caught up %llu; it "
                  "waited on the guest at a trap %llu, a flip stall %llu, the FIFO off %llu; for arena "
@@ -4254,7 +4305,7 @@ index db1badb4a450c7fd707ad8156f981649a2673a83..c97ae0f61469f14af2c63d30dcc37ed6
      HLE_RK_VB = 1, HLE_RK_IB, HLE_RK_PUSHBUF, HLE_RK_FIXUP, HLE_RK_PALETTE,
      HLE_RK_TEXTURE, HLE_RK_CUBE, HLE_RK_VOLUME, HLE_RK_SURFACE,
 diff --git a/hw/xbox/hle/vk/back.c b/hw/xbox/hle/vk/back.c
-index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..f027c010b05e3b3c48cfd92412cb6c0cbe6eb58e 100644
+index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..2a5dede296e0b3d93f2da927b734735351d62355 100644
 --- a/hw/xbox/hle/vk/back.c
 +++ b/hw/xbox/hle/vk/back.c
 @@ -847,7 +847,12 @@ uint32_t g_hle_rscale = 1;
@@ -4290,6 +4341,55 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..f027c010b05e3b3c48cfd92412cb6c0c
      case HLE_OP_CLEAR:
          cmd_clear(p);
          if (g_pix.active) {
+@@ -2548,8 +2556,9 @@ static void dispatch(const HleCmdHdr *h)
+ /* After draining: up to ~200 us waiting for the producer's next publish, in
+  * WFE on the ring head (its store clears the exclusive monitor; interrupts
+  * and the timer event stream bound each WFE), before sleeping on the kick
+- * event. While the vCPU emits draws every few microseconds the render thread
+- * never sleeps, so its commits never pay a futex wake. */
++ * event (on x86, PAUSE on it). While the vCPU emits draws every few
++ * microseconds the render thread never sleeps, so its commits never pay a
++ * futex wake. */
+ static bool ring_wait_brief(HleRing *r, uint32_t seen)
+ {
+ #if defined(__aarch64__)
+@@ -2571,6 +2580,36 @@ static bool ring_wait_brief(HleRing *r, uint32_t seen)
+             return false;
+         }
+     }
++#elif defined(__x86_64__)
++    /* OGBox 0.0.2: the same on x86 (the PS5), with PAUSE and the time stamp
++     * counter: without it the render thread slept after every draw it
++     * drained, faster than the decoder made them, and each commit woke it
++     * (an event set, a system call): ~0.9 us of the decoder's 2.3 us a draw
++     * in The Punisher, held at 30 fps at 8000 draws a frame */
++    static uint64_t span;               /* 200 us in counter ticks */
++    if (!span) {
++        const uint64_t a = __builtin_ia32_rdtsc();
++        const int64_t n0 = hle_now_ns();
++        while (hle_now_ns() - n0 < 200000) {
++            __builtin_ia32_pause();
++        }
++        span = MAX(__builtin_ia32_rdtsc() - a, 1u);
++    }
++    const uint64_t t0 = __builtin_ia32_rdtsc();
++    for (;;) {
++        for (unsigned i = 0; i < 32; i++) {
++            if (__atomic_load_n(&r->head, __ATOMIC_ACQUIRE) != seen) {
++                return true;
++            }
++            __builtin_ia32_pause();
++        }
++        if (hle_atomic_read(&g_pend.urgent)) {
++            return false;                       /* a guest waits: submit now */
++        }
++        if (__builtin_ia32_rdtsc() - t0 > span) {
++            return false;
++        }
++    }
+ #else
+     return false;
+ #endif
 diff --git a/hw/xbox/hle/vk/back_int.h b/hw/xbox/hle/vk/back_int.h
 index e5c91ee6d8074d586d07ae857990c6964050d95a..2ceac0a71b29384331d495fcc8facd5cb4087b10 100644
 --- a/hw/xbox/hle/vk/back_int.h
