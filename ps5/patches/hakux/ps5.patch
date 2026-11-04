@@ -119,6 +119,7 @@ native core's work tree (oldest first; author: subject):
   4105d3b7a5 Claude: mm: a contiguous block's alignment pages are not the title's (the console leaves them free)
   0e625194ad Claude: seh: an access violation's report has the registers, the frames and the stack's top
   bcbe38c445 Claude: codepatch: on the PS5, a cpuid right after its leaf is loaded traps to the kernel's Pentium III
+  b903982398 Claude: xdk_res: a linear texture's pitch below its width's bytes is read as the NV2A reads it
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -2916,7 +2917,7 @@ index cca4a35a3e530b665943633ba90d5f5d3ea15cc8..92d34ea5f4e81b523e1212e47a709d0a
      uint8_t fog_table;          /* FOGTABLEMODE other than NONE (a program writing
                                     no oFog: distance 0, else factor 1) */
 diff --git a/hw/xbox/hle/tex/xdk_res.c b/hw/xbox/hle/tex/xdk_res.c
-index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..b29567ae551763c49c0d3b0eeba2704a3fc94eec 100644
+index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..56b08d8c102e061a1eee46ab448ed0dc482e6a1d 100644
 --- a/hw/xbox/hle/tex/xdk_res.c
 +++ b/hw/xbox/hle/tex/xdk_res.c
 @@ -36,6 +36,175 @@ const HleFmtInfo *hle_fmt_info(uint32_t code)
@@ -3095,6 +3096,36 @@ index b2c28a5f1ff07e3b30fb3d2d2db39636b99f5dac..b29567ae551763c49c0d3b0eeba2704a
  static int log2_exact(uint32_t v)
  {
      if (!v || (v & (v - 1))) {
+@@ -176,12 +345,17 @@ bool hle_res_info(const HleResDesc *d, HleResInfo *o)
+         }
+         uint32_t min = lin_min_pitch(fi, d->w);
+         uint32_t pitch = d->pitch ? d->pitch : min;
+-        if (pitch % LIN_PITCH_ALIGN || pitch < min || pitch > LIN_PITCH_MAX) {
++        /* OGBox 0.0.2: a texture's pitch below its width's bytes is the NV2A's to read as it is (a
++         * texel at y * pitch + x * bpp: a row runs on into the next); a surface's isn't (an image
++         * made at its width). Legacy of Kain: Defiance's logo is 518 x 493 at a 2048-byte pitch,
++         * another 652 x 170 at 2560: refused, they were never bound and drew white. The last row
++         * then ends past pitch * h. */
++        if (pitch % LIN_PITCH_ALIGN || (pitch < min && d->kind != HLE_RK_TEXTURE) || pitch > LIN_PITCH_MAX) {
+             return false;
+         }
+         o->levels = 1;
+         o->pitch = pitch;
+-        o->bytes = pitch * d->h;
++        o->bytes = pitch >= min ? pitch * d->h : pitch * (d->h - 1) + d->w * fi->bpp / 8;
+         o->format = base | (2u << HLE_FMT_DIM_SHIFT) |
+                     (d->fmt << HLE_FMT_FORMAT_SHIFT) | (1u << HLE_FMT_MIPMAP_SHIFT);
+         o->size = (d->w - 1) | ((d->h - 1) << HLE_SIZE_HEIGHT_SHIFT) |
+@@ -275,7 +449,8 @@ bool hle_res_from_header(uint32_t common, uint32_t format, uint32_t size,
+         out->d = 1;
+         out->levels = 1;
+         out->pitch = ((size >> HLE_SIZE_PITCH_SHIFT) + 1) * LIN_PITCH_ALIGN;
+-        return out->pitch >= lin_min_pitch(fi, out->w);
++        /* a texture's pitch may be below its width's bytes (hle_res_info) */
++        return !surf || out->pitch >= lin_min_pitch(fi, out->w);
+     }
+     out->w = 1u << HLE_FMT_GET(format, HLE_FMT_USIZE_SHIFT);
+     out->h = 1u << HLE_FMT_GET(format, HLE_FMT_VSIZE_SHIFT);
 diff --git a/hw/xbox/hle/tex/xdk_res.h b/hw/xbox/hle/tex/xdk_res.h
 index db1badb4a450c7fd707ad8156f981649a2673a83..c97ae0f61469f14af2c63d30dcc37ed6174144c7 100644
 --- a/hw/xbox/hle/tex/xdk_res.h
@@ -26114,10 +26145,42 @@ index 0000000000000000000000000000000000000000..adfe08ad047ae2f15bc8de37aa81b287
 +    HT_DONE();
 +}
 diff --git a/tests/hle/test_xdk_res.c b/tests/hle/test_xdk_res.c
-index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..8dea435e55cf73c941c93b60c29e965871be1040 100644
+index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..a81fccf4e7150a2562101a1490e31fed18313677 100644
 --- a/tests/hle/test_xdk_res.c
 +++ b/tests/hle/test_xdk_res.c
-@@ -187,6 +187,110 @@ static void test_format_helpers(void)
+@@ -84,13 +84,28 @@ static void test_linear_custom_pitch(void)
+     HT_EQ_U32(back.pitch, 4096);
+     hle_res_subresource(&back, 0, 0, &pitch);
+     HT_EQ_U32(pitch, 4096);
+-    /* A header pitch below the row (2496 < 640 * 4) is rejected. */
+-    HT_CHECK(!hle_res_from_header(0x01040001, 0x00011221,
++    /* OGBox 0.0.2: a texture's header pitch below the row (2496 < 640 * 4) is the NV2A's to read
++     * as it is, rows running on into the next (Legacy of Kain: Defiance's logo, 518 wide at
++     * 2048: refused, it drew white); a surface's is still refused. */
++    HT_CHECK(hle_res_from_header(0x01040001, 0x00011221,
++                                 639 | (479u << 12) | (38u << 24), &back));
++    HT_EQ_U32(back.pitch, 2496);
++    HT_CHECK(!hle_res_from_header((0x01040001 & ~HLE_COMMON_TYPE_MASK) | HLE_COMMON_TYPE_SURFACE, 0x00011221,
+                                   639 | (479u << 12) | (38u << 24), &back));
++    HT_CHECK(hle_res_from_header(0x00040001, 0x00011229, 0x1f1ec205, &back)); /* Defiance's */
++    HT_EQ_U32(back.w, 518);
++    HT_EQ_U32(back.h, 493);
++    HT_EQ_U32(back.pitch, 2048);
++    HT_CHECK(hle_res_info(&back, &ri2));
++    HT_EQ_U32(ri2.bytes, 2048 * 492 + 518 * 4);  /* the last row ends past pitch * h */
+     d.pitch = 3000;                             /* not a multiple of 64 */
+     HT_CHECK(!hle_res_info(&d, &ri));
+-    d.pitch = 2496;                             /* below the minimum */
++    d.pitch = 2496;                             /* below the minimum: a texture's is read as it is */
++    HT_CHECK(hle_res_info(&d, &ri));
++    HT_EQ_U32(ri.bytes, 2496 * 479 + 640 * 4);
++    d.kind = HLE_RK_SURFACE;                    /* a surface's isn't */
+     HT_CHECK(!hle_res_info(&d, &ri));
++    d.kind = HLE_RK_TEXTURE;
+     d.pitch = 16448;                            /* past Size[31:24] */
+     HT_CHECK(!hle_res_info(&d, &ri));
+     d.pitch = 16384;
+@@ -187,6 +202,110 @@ static void test_format_helpers(void)
      HT_EQ_U32(hle_res_data_pa(0x80123000), 0x00123000);
  }
  
@@ -26228,7 +26291,7 @@ index d1b343d0c4ee5ccb2ce97183ede8e61ff293af06..8dea435e55cf73c941c93b60c29e9658
  int main(void)
  {
      HT_RUN(test_texture_full_chain);
-@@ -197,5 +301,7 @@ int main(void)
+@@ -197,5 +316,7 @@ int main(void)
      HT_RUN(test_border_texture);
      HT_RUN(test_buffers_and_rejects);
      HT_RUN(test_format_helpers);
