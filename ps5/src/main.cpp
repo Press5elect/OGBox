@@ -446,7 +446,8 @@ int main(int argc, char **argv)
 			}
 			pshakux_log("files: open-file limit %lld (was %lld, the most %lld)", lim.cur, was, lim.max);
 		} else {
-			pshakux_log("files: the open-file limit can't be read: %s", std::strerror(errno));
+			pshakux_log("files: the open-file limit is the console's own (%s to ask it); hakuX shares a "
+				"file's descriptor between its handles", std::strerror(errno));
 		}
 	}
 	platform_init(PS5_TITLE_NAME);
