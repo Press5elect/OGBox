@@ -141,6 +141,7 @@ native core's work tree (oldest first; author: subject):
   7b5b9bdeb5 Claude: hle: textures skip the object search at addresses no object starts at
   227a622271 Claude: hle: a big palettized texture's first level described when defined
   1bf0beba56 Claude: hle: a screen-sized copy into a buffer not shown lands in its memory (logged ones)
+  68df49c987 Claude: hle: a copy in memory from a frame buffer lands its picture there first
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -933,7 +934,7 @@ index 0000000000000000000000000000000000000000..90e2a0c0c29c3d6a2c795ca9a25197a6
 +
 +#endif
 diff --git a/hw/xbox/hle/pb/pbdraw.c b/hw/xbox/hle/pb/pbdraw.c
-index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..a8b93a231b8c2eabe511e61623d03287adc467bd 100644
+index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..6162bbb18db6b4a29749332153bec9bbdcc5bcb2 100644
 --- a/hw/xbox/hle/pb/pbdraw.c
 +++ b/hw/xbox/hle/pb/pbdraw.c
 @@ -8,8 +8,10 @@
@@ -2263,7 +2264,29 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..a8b93a231b8c2eabe511e61623d03287
          }
          break;
      case NV097_ARRAY_ELEMENT16:
-@@ -4983,6 +5641,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
+@@ -4484,6 +5142,21 @@ uint64_t hle_pbd_copy_begin(uint32_t slo, uint32_t sp, uint32_t dlo, uint32_t dp
+             }
+         }
+     }
++    /* OGBox 0.0.2: a frame buffer's picture is its image (coh_to_display leaves
++     * its memory alone): a copy that reads its memory gets the picture landed
++     * there first, as the NV2A's frame buffers are memory. The Punisher copies
++     * its frame, its loading picture just drawn, into its loading screen's
++     * backdrop, a buffer whose memory a swizzled target of its levels shares
++     * (so a copy in memory): from the frame buffer's empty memory, the backdrop
++     * was black and only the bar showed. */
++    for (unsigned i = 0; i < g_pd.nobjs; i++) {
++        PbObj *o = &g_pd.objs[i];
++        if (o->id && o->display && o->d.pitch && o->written && coh_len(o, &len) && o->d.pa < s1 &&
++            o->d.pa + len > s0) {
++            writeback_ex(o->id, true);
++            v = MAX(v, hle_fe_last_value() + 1);
++        }
++    }
+     if (v && g_coh.npend == COH_PENDS) {
+         coh_pend_over(0, 0);                /* (the landed ones go) */
+         if (g_coh.npend == COH_PENDS) {
+@@ -4983,6 +5656,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
      memcpy(g_pd.r, s->r, sizeof(g_pd.r));
      memcpy(g_pd.pmem, s->pmem, sizeof(g_pd.pmem));
      g_pd.pgen++;
