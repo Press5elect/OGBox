@@ -57,7 +57,7 @@ before is kept as `ogbox-boot.previous.log`): include it when you report a probl
 4. In a game, **OPTIONS** opens the **quick menu**: the game pauses and a panel comes in from the
    right with Resume, Save state and Load state (10 slots, each with a picture of the moment),
    Where you left off, the game's settings and mods, Restart and Quit. Quit asks whether to save
-   where you are first; the game page then offers to go on from there. No button combination is
+   where you are first; starting the game again then asks whether to go on from there. No button combination is
    needed any more to leave a game.
 
 **Updates**: OGBox asks GitHub for a newer release each time it starts (Settings > Interface >
@@ -358,6 +358,8 @@ Added
   - **Save state** and **Load state** in 10 slots; a slot's card beside the panel shows the picture
     of the moment it was saved and when. Left / right changes the slot.
   - **Where you left off**: Quit offers "Quit, and save where I am", kept apart from the 10 slots.
+    Starting that game again, from the list or its page, asks: go on from there, or start from the
+    beginning.
   - The game's **settings** and **mods, patches, cheats** without leaving the game (they apply at
     its next start), **Restart** (press twice), **Quit** back to the list.
 - **Game page** (TRIANGLE on a disc in the list): the cover and details in a fixed panel, with Play,

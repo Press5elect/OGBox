@@ -1377,11 +1377,17 @@ public:
 		case LibraryEntry::Up:
 			goUp();
 			break;
-		case LibraryEntry::Image:
-			startPath = entry.path;
-			startDelay = 2;   // a frame or two to say so before the relaunch
-			pshakux_log("library: starting %s", entry.path.c_str());
+		case LibraryEntry::Image: {
+			std::string key;
+			if (details && detailsPath == entry.path) {
+				std::lock_guard<std::mutex> lock(details->mutex);
+				if (details->done && details->info.ok) {
+					key = details->info.key;
+				}
+			}
+			startGame(entry.path, key);
 			break;
+		}
 		case LibraryEntry::Quit:
 			pshakux_log("library: Quit OGBox");
 			quit = true;
@@ -1394,6 +1400,49 @@ public:
 			startDelay = 2;
 			break;
 		}
+	}
+
+	/* 0.0.2: a game started from the list or its page goes on where it was left when there is a
+	 * state of that (Quit, and save where I am promises it: "to go on from there next time"); the
+	 * player chooses. Started plainly before, it began again from the start, the state only
+	 * reachable through Load state. */
+	void startGame(const std::string &path, const std::string &key)
+	{
+		if (!startPath.empty()) {
+			return;
+		}
+		std::string gameKey = key;
+		if (gameKey.empty() && path != "none") {
+			OgboxGameInfo info{};   // (the list's details not read yet: its disc's title ID now)
+			if (ogbox_game_info(path.c_str(), &info) && info.ok) {
+				gameKey = info.key;
+			}
+		}
+		const ogbox::StateSlot left = gameKey.empty() ? ogbox::StateSlot() : ogbox::stateSlot(gameKey, ogbox::kQuitSlot);
+		const auto go = [this, path](const std::string &state) {
+			startState = state;
+			startPath = path;
+			startDelay = 2;   // a frame or two to say so before the relaunch
+			gp.open = false;
+			if (state.empty()) {
+				pshakux_log("library: starting %s", path.c_str());
+			} else {
+				pshakux_log("library: starting %s where it was left (%s)", path.c_str(), state.c_str());
+			}
+		};
+		if (!left.used) {
+			go(std::string());
+			return;
+		}
+		const std::string state = left.path;
+		openPopup("Where you left off", "Saved " + ogbox::dateText(left.mtime) + ". Go on from there?",
+			{ "Go on from there", "Start from the beginning", "Go back" }, [go, state](int i) {
+				if (i == 0) {
+					go(state);
+				} else if (i == 1) {
+					go(std::string());
+				}
+			});
 	}
 
 	/* Back to the game list from a game: the title starts again with no game named. */
@@ -2871,6 +2920,7 @@ public:
 			args.push_back(nullptr);
 			quiesceForExit();
 			const int r = pshakux_relaunch(args.data());
+			startState.clear();
 			listError = "The console refused to start the title again (" + std::to_string(r) + ").";
 			pshakux_log("library: the relaunch for %s was refused (%#x)", path.c_str(), static_cast<unsigned>(r));
 		}
@@ -5511,12 +5561,7 @@ public:
 		const std::string title = known && gp.info.title[0] ? std::string(gp.info.title) : gp.title;
 		switch (gp.pill) {
 		case GP_PLAY:
-			if (startPath.empty()) {
-				startPath = gp.path;
-				startDelay = 2;
-				gp.open = false;
-				pshakux_log("library: starting %s", gp.path.c_str());
-			}
+			startGame(gp.path, known ? std::string(gp.info.key) : std::string());
 			break;
 		case GP_STATES:
 			if (known && !usedStateSlots(gp.info.key).empty()) {
