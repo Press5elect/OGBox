@@ -305,6 +305,43 @@ const DiscRecord *GameDb::byTitle(uint32_t titleId, const std::string &fileName,
 	return region ? region : first;
 }
 
+std::vector<const DiscRecord *> GameDb::allByTitle(uint32_t titleId, const std::string &fileName, uint32_t regions) const
+{
+	std::vector<const DiscRecord *> out;
+	if (const DiscRecord *best = byTitle(titleId, fileName, regions)) {
+		out.push_back(best);
+	}
+	for (const DiscRecord &r : records) {
+		if (r.titleId == titleId && (out.empty() || &r != out.front())) {
+			out.push_back(&r);
+		}
+	}
+	return out;
+}
+
+std::vector<std::string> coverNames(const std::string &fileName, uint32_t titleId, uint32_t regions)
+{
+	std::vector<std::string> names;
+	const auto add = [&](const std::string &n) {
+		if (!n.empty() && std::find(names.begin(), names.end(), n) == names.end()) {
+			names.push_back(n);
+		}
+	};
+	const GameDb &db = GameDb::get();
+	if (!fileName.empty()) {
+		if (const DiscRecord *r = db.byFileName(fileName)) {
+			add(r->name);                   // the database's spelling (libretro's case)
+		}
+		add(stemOf(fileName));
+	}
+	if (titleId) {
+		for (const DiscRecord *r : db.allByTitle(titleId, fileName, regions)) {
+			add(r->name);
+		}
+	}
+	return names;
+}
+
 std::string stemOf(const std::string &fileName)
 {
 	const size_t slash = fileName.find_last_of('/');
@@ -453,6 +490,18 @@ Covers::State Covers::find(const std::string &name, std::string &path)
 		impl->cv.notify_all();
 	}
 	return State::Queued;
+}
+
+Covers::State Covers::findAny(const std::vector<std::string> &names, std::string &path)
+{
+	State last = State::None;
+	for (const std::string &n : names) {
+		last = find(n, path);
+		if (last != State::Missing) {
+			return last;                    // Ready, Queued (its answer first), or None (covers off)
+		}
+	}
+	return last;
 }
 
 std::string Covers::status() const

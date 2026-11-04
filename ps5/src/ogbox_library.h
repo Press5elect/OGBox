@@ -31,6 +31,8 @@ public:
 	/* A disc of this title ID: the one the file name is, else one of the regions (Xbox certificate
 	 * bits: 1 North America, 2 Japan, 4 the rest), else the first. */
 	const DiscRecord *byTitle(uint32_t titleId, const std::string &fileName, uint32_t regions) const;
+	/* 0.0.2: every disc of this title ID, byTitle's first (the file's, else the regions'). */
+	std::vector<const DiscRecord *> allByTitle(uint32_t titleId, const std::string &fileName, uint32_t regions) const;
 	size_t size() const { return records.size(); }
 
 private:
@@ -42,6 +44,13 @@ private:
 std::string stemOf(const std::string &fileName);
 std::string shortName(const std::string &fileName);
 
+/* 0.0.2: the names a disc's cover may go by on libretro, best first: the database's record for the
+ * file's name, the file's own name, then (title ID known: titleId nonzero) every record of its title
+ * ID, the regions' first. Up to 0.0.1 the title ID's record replaced the file's name once the
+ * details had read the disc, and where libretro names the cover after the file's release and not
+ * that record's (a title ID several releases share), the cover went. */
+std::vector<std::string> coverNames(const std::string &fileName, uint32_t titleId = 0, uint32_t regions = 0);
+
 /* The covers. */
 class Covers {
 public:
@@ -51,6 +60,10 @@ public:
 	void enable(bool on);
 	/* The cover of a Redump name: Ready with its PNG's path, else queued for download (when on). */
 	State find(const std::string &name, std::string &path);
+	/* 0.0.2: the first of names with a cover: Ready with its path, else the first one libretro may
+	 * still have (queued: the next is asked only once that one is known missing), Missing when none
+	 * has one. */
+	State findAny(const std::vector<std::string> &names, std::string &path);
 	/* What the downloads have done ("12 downloaded, 3 not on libretro"), for the details. */
 	std::string status() const;
 

@@ -1049,11 +1049,17 @@ public:
 	 * *w, *h. A frame decodes and uploads at most two. */
 	ImTextureID coverImage(const std::string &name, float *w, float *h)
 	{
-		if (name.empty() || prefs.global("list_covers") == "0") {
+		return coverImage(std::vector<std::string>{ name }, w, h);
+	}
+
+	/* 0.0.2: the first of names with a cover (ogbox::coverNames) */
+	ImTextureID coverImage(const std::vector<std::string> &names, float *w, float *h)
+	{
+		if (names.empty() || prefs.global("list_covers") == "0") {
 			return nullptr;
 		}
 		std::string path;
-		if (ogbox::Covers::get().find(name, path) != ogbox::Covers::State::Ready) {
+		if (ogbox::Covers::get().findAny(names, path) != ogbox::Covers::State::Ready) {
 			return nullptr;
 		}
 		return fileImage(path, path, w, h, true);
@@ -1139,20 +1145,26 @@ public:
 		}
 	}
 
-	/* 0.1.45: the Redump name a disc's cover goes by: its file's when that is one, else the database's
-	 * for the title ID the disc's certificate gave (when known). */
-	std::string coverName(const LibraryEntry &e, const OgboxGameInfo *info = nullptr)
+	/* 0.0.2: the names a disc's cover may go by, best first (ogbox::coverNames): the file's, then its
+	 * title ID's records once a disc's certificate was read (info, or one read before: coverTitles,
+	 * so the list's tiles fall back as the details do). 0.1.45 to 0.0.1 took the title ID's record
+	 * alone once it was known, and a cover libretro has under the file's release went. */
+	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> coverTitles;   // file name: title ID, regions
+
+	std::vector<std::string> coverNames(const std::string &fileName, const OgboxGameInfo *info = nullptr)
 	{
-		const ogbox::GameDb &db = ogbox::GameDb::get();
-		if (const ogbox::DiscRecord *r = db.byFileName(e.name)) {
-			return r->name;
+		if (info && info->ok && info->title_id) {
+			coverTitles[fileName] = { info->title_id, info->regions };
+			return ogbox::coverNames(fileName, info->title_id, info->regions);
 		}
-		if (info && info->ok) {
-			if (const ogbox::DiscRecord *r = db.byTitle(info->title_id, e.name, info->regions)) {
-				return r->name;
-			}
-		}
-		return info ? std::string() : ogbox::stemOf(e.name);
+		const auto it = coverTitles.find(fileName);
+		return it == coverTitles.end() ? ogbox::coverNames(fileName)
+			: ogbox::coverNames(fileName, it->second.first, it->second.second);
+	}
+
+	std::vector<std::string> coverNames(const LibraryEntry &e, const OgboxGameInfo *info = nullptr)
+	{
+		return coverNames(e.name, info);
 	}
 
 	/* The name the list shows for an entry (the settings' Names). */
@@ -3522,7 +3534,7 @@ public:
 					dl->AddRect(at, ImVec2(at.x + tileW, at.y + tileH), mx::u32(mx::bright, pulse), 0.0f, ImDrawCornerFlags_All, 3.0f);
 				}
 				float cw = 0.0f, ch = 0.0f;
-				const ImTextureID img = coverImage(coverName(e), &cw, &ch);
+				const ImTextureID img = coverImage(coverNames(e), &cw, &ch);
 				const ImVec2 box0(at.x + pad, at.y + pad), box1(at.x + pad + artW, at.y + pad + artH);
 				if (img && cw > 0.0f && ch > 0.0f) {
 					const float k = std::min(artW / cw, artH / ch);
@@ -3685,7 +3697,8 @@ public:
 		const float boxH = full ? (y1 - y0) * 0.44f : 0.0f;
 		if (full) {
 			float cw = 0.0f, ch = 0.0f;
-			const ImTextureID img = coverImage(rec ? rec->name : coverName(*e), &cw, &ch);
+			const std::vector<std::string> names = coverNames(*e, done && info.ok ? &info : nullptr);
+			const ImTextureID img = coverImage(names, &cw, &ch);
 			if (img && cw > 0.0f && ch > 0.0f) {
 				const float s2 = std::min((x1 - x0) / cw, boxH / ch);
 				const ImVec2 o(x0 + ((x1 - x0) - cw * s2) * 0.5f, y0 + (boxH - ch * s2) * 0.5f);
@@ -3698,7 +3711,7 @@ public:
 				drawIcon(dl, Icon::Disc, ImVec2(bx + bw * 0.5f, y0 + boxH * 0.5f), bw * 0.4f, mx::u32(mx::line));
 				std::string path;
 				if (prefs.global("list_covers") != "0") {
-					const ogbox::Covers::State st = ogbox::Covers::get().find(rec ? rec->name : coverName(*e), path);
+					const ogbox::Covers::State st = ogbox::Covers::get().findAny(names, path);
 					const char *note = st == ogbox::Covers::State::Missing ? "no cover on libretro" : st == ogbox::Covers::State::Queued ? "the cover is coming" : "";
 					const ImVec2 ns = ImGui::CalcTextSize(note);
 					dl->AddText(ImVec2(bx + (bw - ns.x) * 0.5f, y0 + boxH - lh * 1.5f), mx::u32(mx::label), note);
@@ -4900,7 +4913,7 @@ public:
 		const std::string name = boot.image == "none" ? std::string("Xbox dashboard") : ogbox::shortName(baseName(boot.image));
 		float cw = 0.0f, ch = 0.0f;
 		LibraryEntry fake{ LibraryEntry::Image, baseName(boot.image), boot.image, 0, std::string() };
-		const ImTextureID cover = coverImage(coverName(fake), &cw, &ch);
+		const ImTextureID cover = coverImage(coverNames(fake), &cw, &ch);
 		const float cs = 150.0f * k;
 		if (cover && cw > 0.0f && ch > 0.0f) {
 			const float s2 = std::min(cs / cw, cs / ch);
@@ -5276,7 +5289,7 @@ public:
 			: ogbox::GameDb::get().byFileName(baseName(gp.path));
 		LibraryEntry fake{ LibraryEntry::Image, baseName(gp.path), gp.path, 0, std::string() };
 		float cw = 0.0f, ch = 0.0f;
-		const ImTextureID img = coverImage(rec ? rec->name : coverName(fake), &cw, &ch);
+		const ImTextureID img = coverImage(coverNames(fake, gp.info.ok ? &gp.info : nullptr), &cw, &ch);
 		if (img && cw > 0.0f && ch > 0.0f) {
 			const float s2 = std::min(coverW / cw, coverH / ch);
 			const ImVec2 o(c0.x + (coverW - cw * s2) * 0.5f, c0.y);
@@ -5709,9 +5722,8 @@ public:
 			for (int i = first; i < static_cast<int>(hdd.titles.size()) && i < first + visible; i++) {
 				const ogbox::HddTitle &t = hdd.titles[static_cast<size_t>(i)];
 				const ImU32 tc = rowBox(px0, px1, y, rowH, i == sel, hdd.pane == 0);
-				const ogbox::DiscRecord *rec = ogbox::GameDb::get().byTitle(t.titleId, std::string(), 1);
 				float cw = 0.0f, ch = 0.0f;
-				const ImTextureID img = rec ? coverImage(rec->name, &cw, &ch) : nullptr;
+				const ImTextureID img = coverImage(ogbox::coverNames(std::string(), t.titleId, 1), &cw, &ch);
 				const float ih = rowH - 14.0f * k;
 				if (img && cw > 0.0f && ch > 0.0f) {
 					const float s2 = ih / ch;
