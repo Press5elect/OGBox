@@ -127,6 +127,7 @@ native core's work tree (oldest first; author: subject):
   190b63f4ae Claude: probes on the native CPU: a jump to a stub that logs the registers through the gate; HAKUX_HLE_PROBE_TITLE keeps them to one title
   88630655f5 Claude: io: each missing hard disk path is logged once; probes: HAKUX_HLE_PROBE_STR logs a string argument
   b05c9a5d5f Claude: io: each failed NtCreateFile / NtOpenFile logged once per name and status
+  c0097b6e5f Claude: io: handles on the same host file share one descriptor; a folder the host can't read is said
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..576189c5492a7f32688bbe5607ce343bf338df39 100644
@@ -20216,7 +20217,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b021cd4db 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..3b25130e6197164fa248d044d452c58fc9331d8b 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -20277,7 +20278,23 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  typedef struct NcLink {
      char name[64];
      char target[256];
-@@ -408,6 +445,7 @@ static NcFile *file_new(void)
+@@ -381,6 +418,15 @@ static int host_path(int part, const char *rel, char *out, size_t cap)
+     for (char *tok = strtok_r(tmp, "\\", &save); tok; tok = strtok_r(NULL, "\\", &save)) {
+         const bool last = !save || !*save;
+         DIR *d = opendir(out);
++        if (!d && errno != ENOENT && errno != ENOTDIR) {
++            /* not "missing": the host couldn't read it (too many open files...): said, once a second */
++            static time_t said;
++            const time_t now = time(NULL);
++            if (now != said) {
++                said = now;
++                nc_log("hakuX-native-io", "the host can't read %s: %s", out, strerror(errno));
++            }
++        }
+         const char *match = NULL;
+         struct dirent *de;
+         while (d && (de = readdir(d))) {
+@@ -408,6 +454,7 @@ static NcFile *file_new(void)
          if (!g_files[i].used) {
              memset(&g_files[i], 0, sizeof(g_files[i]));
              g_fs_cache[i] = (struct FsCache){0};
@@ -20285,7 +20302,58 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
              g_files[i].used = true;
              g_files[i].fd = -1;
              return &g_files[i];
-@@ -714,7 +752,9 @@ typedef struct DiscJob {
+@@ -486,6 +533,34 @@ static struct {
+     bool started;
+ } g_closer = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
+ 
++/* OGBox 0.0.2: one host descriptor for every handle on the same file. Chaos Theory opens each of its
++ * sound banks 23 times (a handle per stream voice): some 300 descriptors before the level's
++ * texture stream file, whose open then found the folders unreadable (opendir: too many open
++ * files) and the level waited for it for ever. Reads and writes give their own offsets
++ * (pread, pwrite), so handles can share one; the last to close it closes it. */
++static NcFile *fd_sharer(const NcFile *nf)
++{
++    for (int i = 0; i < MAX_FILES; i++) {
++        NcFile *o = &g_files[i];
++        if (o != nf && o->used && o->kind == F_HOST && o->fd >= 0 && o->fd == nf->fd) {
++            return o;
++        }
++    }
++    return NULL;
++}
++
++static int shared_fd_for(const char *host)
++{
++    for (int i = 0; i < MAX_FILES; i++) {
++        const NcFile *o = &g_files[i];
++        if (o->used && o->kind == F_HOST && !o->is_dir && o->fd >= 0 && !o->del && !o->old_path[0] &&
++            !strcmp(o->host, host)) {
++            return o->fd;
++        }
++    }
++    return -1;
++}
++
+ static void close_now(const CloseJob *j)
+ {
+     if (fsync(j->fd) != 0) {
+@@ -559,7 +634,14 @@ void nc_io_close(NcKernel *k, uint32_t object)
+     uint32_t i = nc_vm_rd32(k->vm, object + FO_INDEX);
+     if (i < MAX_FILES && g_files[i].used) {
+         NcFile *nf = &g_files[i];
+-        if (nf->fd >= 0 && nf->wrote) {
++        NcFile *sharer = nf->fd >= 0 ? fd_sharer(nf) : NULL;
++        if (sharer) {
++            /* another handle has the descriptor: it stays open, its writes synced at that close */
++            sharer->wrote = sharer->wrote || nf->wrote;
++            if (nf->old_path[0]) {
++                unlink(nf->old_path);
++            }
++        } else if (nf->fd >= 0 && nf->wrote) {
+             close_later(nf);
+         } else {
+             if (nf->fd >= 0) {
+@@ -714,7 +796,9 @@ typedef struct DiscJob {
      bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
      bool ok;
      int err;
@@ -20296,7 +20364,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  } DiscJob;
  
  static struct {
-@@ -727,6 +767,13 @@ static struct {
+@@ -727,6 +811,13 @@ static struct {
      unsigned busy;           /* queued, reading or done: at most DISC_JOBS */
      bool started;
      bool hurry;              /* a savestate's drain: no drive time left to wait (atomic) */
@@ -20310,7 +20378,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  } g_reader = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
  
  static uint64_t mono_ns(void)
-@@ -758,11 +805,17 @@ static void *reader_thread(void *arg)
+@@ -758,11 +849,17 @@ static void *reader_thread(void *arg)
          DiscJob j = g_reader.q[g_reader.head];
          g_reader.head = (g_reader.head + 1) % DISC_JOBS;
          g_reader.n--;
@@ -20328,7 +20396,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
          errno = 0;
          j.ok = true;
          uint64_t o = j.off;
-@@ -774,9 +827,13 @@ static void *reader_thread(void *arg)
+@@ -774,9 +871,13 @@ static void *reader_thread(void *arg)
          }
          j.err = j.ok ? 0 : errno;
          if (j.dev_us) {
@@ -20342,7 +20410,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
          g_reader.done[g_reader.ndone++] = j;
          pthread_mutex_unlock(&g_reader.mu);
          nc_irq_post_work();
-@@ -799,6 +856,8 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
+@@ -799,6 +900,8 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
      }
  }
  
@@ -20351,7 +20419,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  /* Queues a read of n bytes at off into the buffer's runs (resident and
   * writable); false when it must happen in place. sync: the calling thread
   * waits for it, every other one runs on. dev_us: the drive's time for it. */
-@@ -827,8 +886,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -827,8 +930,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = run[0].va, .n = n,
                   .dev_us = dev_us, .iosb = a[4], .event = event, .apc = a[2], .apc_ctx = a[3],
@@ -20364,7 +20432,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
      size_t segs = 0;
      for (unsigned r = 0; r < nrun; r++) {
          segs += run[r].len / NC_PAGE + 2;
-@@ -873,6 +934,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -873,6 +978,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      const bool queued = g_reader.started && g_reader.busy < DISC_JOBS;
      if (queued) {
@@ -20372,7 +20440,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
          pin_buffer(k, &j, 1);
          g_reader.q[(g_reader.head + g_reader.n++) % DISC_JOBS] = j;
          g_reader.busy++;
-@@ -913,6 +975,17 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
+@@ -913,6 +1019,17 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
          n = 0;
      }
      io_status(k, j->iosb, st, n);
@@ -20390,7 +20458,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
      if (j->event) {
          nc_ke_set_event(k, j->event);
      }
-@@ -943,6 +1016,34 @@ void nc_io_poll(NcKernel *k)
+@@ -943,6 +1060,34 @@ void nc_io_poll(NcKernel *k)
      }
  }
  
@@ -20425,7 +20493,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  /* ---------------------------------------------------------------- open */
  
  static void remove_tree(const char *path, bool self);
-@@ -972,6 +1073,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
+@@ -972,6 +1117,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
      return true;
  }
  
@@ -20457,7 +20525,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  /* An overwritten file growing into [from, to): FATX shows what its clusters
   * held, the old contents (NcFile.old_path). */
  static void regrow(NcFile *nf, uint64_t from, uint64_t to)
-@@ -1031,6 +1157,28 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
+@@ -1031,6 +1201,28 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
      return st;
  }
  
@@ -20486,7 +20554,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t disposition, uint32_t options,
                          uint32_t *handle, uint32_t *info)
  {
-@@ -1110,6 +1258,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1110,6 +1302,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          if (exists < 0) {
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "open %s: path not found", path);
@@ -20495,7 +20563,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
              }
              return STATUS_OBJECT_PATH_NOT_FOUND;
          }
-@@ -1128,6 +1278,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1128,6 +1322,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          if (!exists && (disposition == FILE_OPEN || disposition == FILE_OVERWRITE)) {
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "open %s: not found", path);
@@ -20504,7 +20572,20 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
              }
              return STATUS_OBJECT_NAME_NOT_FOUND;
          }
-@@ -1205,10 +1357,39 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1163,7 +1359,11 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+             } else {
+                 *info = 1;
+             }
+-            fd = open(host, flags, 0664);
++            /* 0.0.2: an open of a file already open shares its descriptor */
++            fd = flags == (O_RDWR | O_CLOEXEC) ? shared_fd_for(host) : -1;
++            if (fd < 0) {
++                fd = open(host, flags, 0664);
++            }
+             if (fd < 0) {
+                 nc_log("hakuX-native-io", "open %s (%s): %s", path, host, strerror(errno));
+                 if (old_path[0]) {
+@@ -1205,10 +1405,39 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
  
  /* NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
   *   FileAttributes, ShareAccess, CreateDisposition, CreateOptions) */
@@ -20544,7 +20625,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1221,6 +1402,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1221,6 +1450,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, a[1], a[2], FILE_OPEN, a[5], &h, &info);
@@ -20554,7 +20635,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1469,6 +1653,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1469,6 +1701,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -20562,7 +20643,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1671,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +1719,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -20579,7 +20660,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1515,8 +1707,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1515,8 +1755,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -20590,7 +20671,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
          uint8_t b[8] = {0};
          if (n >= 8 && run[0].len >= 8) {
              memcpy(b, nc_vm_host(k->vm, va0), 8);
-@@ -1813,6 +2006,26 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1813,6 +2054,26 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
      return NC_STATUS_SUCCESS;
  }
  
@@ -20617,7 +20698,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  /* NtSetInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
-@@ -1853,7 +2066,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2114,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -20627,7 +20708,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2075,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2123,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -20645,7 +20726,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2327,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2375,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -20688,7 +20769,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2379,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2427,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -20700,7 +20781,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
              }
              free(dir);
          }
-@@ -2386,6 +2607,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2655,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -20750,7 +20831,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2670,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2718,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -20760,6 +20841,15 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..c4d08e126cf53849b8e774e33cbfa42b
      } else {
          nc_log("hakuX-native-io", "scsi %02x (%u bytes): zeros", cdb[0], n);
      }
+@@ -2779,7 +3094,7 @@ bool nc_file_state_save(NcBuf *b)
+ static void file_drop(NcFile *nf)
+ {
+     if (nf->used) {
+-        if (nf->fd >= 0) {
++        if (nf->fd >= 0 && !fd_sharer(nf)) {
+             close(nf->fd);
+         }
+         free(nf->listing);
 diff --git a/native/kernel/ke.c b/native/kernel/ke.c
 index 04ea92559c748fb42e90fa9c8c70c71d11ce5185..84efd5f35a2393f281f010312aa8ff4e9952c118 100644
 --- a/native/kernel/ke.c

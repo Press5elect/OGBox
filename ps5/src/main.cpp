@@ -30,6 +30,8 @@
 #include "platform/ps5_takeover.h"
 
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -431,6 +433,22 @@ int main(int argc, char **argv)
 	// OGBox 0.1.4: 0x80000000-0x80200000 from the title's libc.prx (src/platform/ps5_takeover.h),
 	// before the title starts threads of its own; the core maps the guest's window there later.
 	pshakux_takeover_prepare();
+	// OGBox 0.0.2: the open-file limit as high as the console lets it be (a game's emulated hard
+	// disk keeps host files open: Chaos Theory has some 300 open in a level), said either way
+	{
+		struct { long long cur, max; } lim{};
+		if (syscall(SYS_getrlimit, 8 /* RLIMIT_NOFILE */, &lim) == 0) {
+			const long long was = lim.cur;
+			if (lim.cur < lim.max) {
+				lim.cur = lim.max;
+				syscall(SYS_setrlimit, 8, &lim);
+				syscall(SYS_getrlimit, 8, &lim);
+			}
+			pshakux_log("files: open-file limit %lld (was %lld, the most %lld)", lim.cur, was, lim.max);
+		} else {
+			pshakux_log("files: the open-file limit can't be read: %s", std::strerror(errno));
+		}
+	}
 	platform_init(PS5_TITLE_NAME);
 	// The samples report on std::cout and std::cerr: both reach klog
 	std::cout.rdbuf(std::cerr.rdbuf());
