@@ -17,6 +17,7 @@
 #include "native/core/mods.h"
 #include "native/core/xdvdfs.h"
 #include "native/core/chd.h"
+#include "hw/xbox/hle/core/xbe.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -60,6 +61,11 @@ static Mod g_mods[MAX_MODS];
 static unsigned g_nmods;
 static Cheat g_cheats[MAX_CHEATS];
 static unsigned g_ncheats;
+/* 0.0.2: cheats.txt's "crc:" line (before its first cheat): the CRC-32s of the default.xbe its
+ * addresses are for (the release check; hakuX skips the line there) */
+#define MAX_CHEAT_CRCS 8
+static uint32_t g_cheat_crc[MAX_CHEAT_CRCS];
+static unsigned g_ncheat_crc;
 
 /* ---- small helpers ---- */
 
@@ -333,6 +339,19 @@ static void load_cheats(const char *path)
             continue;
         }
         if (!cur) {
+            /* 0.0.2: "crc: 1A2B3C4D [...]" before the first cheat */
+            char head[512], *hk, *hv;
+            copy(head, sizeof(head), s);
+            if (header(head, &hk, &hv) && !strcmp(hk, "crc")) {
+                for (char *save2, *t = strtok_r(hv, " ,\t", &save2); t && g_ncheat_crc < MAX_CHEAT_CRCS;
+                     t = strtok_r(NULL, " ,\t", &save2)) {
+                    char *endp;
+                    const unsigned long v = strtoul(t, &endp, 16);
+                    if (endp != t && !*endp) {
+                        g_cheat_crc[g_ncheat_crc++] = (uint32_t)v;
+                    }
+                }
+            }
             continue;
         }
         char *key, *value;
@@ -413,6 +432,332 @@ static void read_choices(const char *key, const char *title_dir)
     }
     free(text);
     pshakux_log("mods: %s: %u chosen for %s", where, on, key);
+}
+
+/* ---- 0.0.2: the release check ---- */
+
+/* A title ID and version can stand for more than one release of a game (a USA and a European
+ * disc), and a mod's addresses or a cheat's hold for one. The core skips a mod's line whose bytes
+ * differ ("old -> new") and writes the rest: half a mod, made for another release's code, crashed or
+ * corrupted the game. So the disc is checked first: a mod's "old" bytes against its XBEs (a line
+ * after another of the same mod over the same bytes against that one's: the core's order), cheats.txt's
+ * crc: line against default.xbe's CRC-32, the patches by trying each (ogbox_patches_check). One that
+ * doesn't fit can't be turned on (the Mods screen) and is left out at the start, whole. */
+
+#define FIT_FILES 4
+
+typedef struct XbeFile {
+    char path[256];         /* as the mod's section names it */
+    OgboxBuf buf;           /* the disc's file, as on the disc */
+    HleXbeInfo *x;          /* its headers, NULL if it isn't an XBE */
+    bool there;
+} XbeFile;
+
+static struct {
+    char key[32];
+    bool valid;
+    uint32_t crc;           /* default.xbe's CRC-32, 0 unread */
+    unsigned nmods;
+    struct {
+        char id[128];
+        int fit;
+        char why[192];
+    } mods[MAX_MODS];
+    int cheats;             /* cheats.txt's (OGBOX_FIT_*) */
+    char cheats_why[192];
+} g_fit;
+
+/* A file of the disc, whole, as the disc has it (up to 64 MiB) */
+static bool disc_file(const NcDisc *disc, const char *path, OgboxBuf *b)
+{
+    NcDiscFile f;
+    if (!nc_disc_find_orig(disc, path, &f) || (f.attr & 0x10) || !f.size || f.size > (64u << 20)) {
+        return false;
+    }
+    uint8_t *p = malloc(f.size);
+    if (!p) {
+        return false;
+    }
+    for (uint32_t at = 0; at < f.size;) {
+        const uint32_t n = f.size - at < (1u << 20) ? f.size - at : (1u << 20);
+        if (!nc_disc_read_orig(disc, &f, at, p + at, n)) {
+            free(p);
+            return false;
+        }
+        at += n;
+    }
+    b->data = p;
+    b->size = b->cap = f.size;
+    return true;
+}
+
+/* The XBE a mod's section names ("default.xbe", "bin\game.xbe"), read once a check */
+static XbeFile *xbe_file(const NcDisc *disc, const char *path, XbeFile *files, unsigned *n)
+{
+    for (unsigned i = 0; i < *n; i++) {
+        if (!strcasecmp(files[i].path, path)) {
+            return &files[i];
+        }
+    }
+    if (*n >= FIT_FILES) {
+        return NULL;
+    }
+    XbeFile *f = &files[(*n)++];
+    memset(f, 0, sizeof(*f));
+    copy(f->path, sizeof(f->path), path);
+    f->there = disc && disc_file(disc, path, &f->buf);
+    if (f->there && f->buf.size >= 0x180) {
+        const uint32_t hs = le32(f->buf.data + 0x108);
+        f->x = malloc(sizeof(*f->x));
+        if (f->x && (hs < 0x180 || hs > f->buf.size ||
+                     hle_xbe_parse(f->buf.data, hs, f->x) != HLE_XBE_OK)) {
+            free(f->x);
+            f->x = NULL;
+        }
+    }
+    return f;
+}
+
+static void xbe_files_free(XbeFile *files, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++) {
+        free(files[i].buf.data);
+        free(files[i].x);
+    }
+}
+
+/* VA -> the XBE file's offset, as the core's mods.c (xbe_offset): its headers (to the first
+ * section's data, or past it as far as sizeof_headers reaches), or a section's raw data */
+static bool xbe_offset(const HleXbeInfo *x, uint32_t va, uint32_t len, uint32_t *off)
+{
+    uint32_t hdr_end = 0x1000;
+    for (unsigned i = 0; i < x->nsections; i++) {
+        if (x->sections[i].raw_off < hdr_end) {
+            hdr_end = x->sections[i].raw_off;
+        }
+    }
+    if (x->sizeof_headers > hdr_end) {
+        hdr_end = x->sizeof_headers;
+    }
+    if (va >= x->base && (uint64_t)(va - x->base) + len <= hdr_end) {
+        *off = va - x->base;
+        return true;
+    }
+    for (unsigned i = 0; i < x->nsections; i++) {
+        const HleXbeSection *sec = &x->sections[i];
+        if (va >= sec->va && (uint64_t)(va - sec->va) + len <= sec->raw_size) {
+            *off = sec->raw_off + (va - sec->va);
+            return true;
+        }
+    }
+    return false;
+}
+
+static unsigned hex_run(const char *p, uint8_t *out, unsigned cap, const char **end)
+{
+    unsigned n = 0;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (!isxdigit((unsigned char)p[0]) || !isxdigit((unsigned char)p[1]) || n == cap) {
+            break;
+        }
+        const char b[3] = {p[0], p[1], 0};
+        out[n++] = (uint8_t)strtoul(b, NULL, 16);
+        p += 2;
+    }
+    *end = p;
+    return n;
+}
+
+/* "0x0011A2B4: 90 90" or "0x0011A2B4: 74 05 -> EB 05" (the core's mods.c patch()): false if the
+ * line is not a patch (the core skips it too) */
+static bool parse_line(const char *line, uint32_t *va, uint8_t *old, unsigned *nold, uint8_t *neu, unsigned *nnew)
+{
+    char *colon;
+    *va = (uint32_t)strtoul(line, &colon, 0);
+    while (*colon == ' ') {
+        colon++;
+    }
+    *nold = *nnew = 0;
+    if (*colon != ':') {
+        return false;
+    }
+    const char *p;
+    *nnew = hex_run(colon + 1, neu, 256, &p);
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (p[0] == '-' && p[1] == '>') {
+        memcpy(old, neu, *nnew);
+        *nold = *nnew;
+        *nnew = hex_run(p + 2, neu, 256, &p);
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return *nnew && (!*nold || *nold == *nnew) && (!*p || *p == '#');
+}
+
+static bool is_update_section(const char *xbe)
+{
+    return (xbe[0] == '$' && (xbe[1] == 'u' || xbe[1] == 'U') && (xbe[2] == '\\' || xbe[2] == '/'));
+}
+
+static void hex_text(char *out, size_t n, const uint8_t *b, unsigned len)
+{
+    size_t o = 0;
+    out[0] = 0;
+    for (unsigned i = 0; i < len && i < 6 && o + 4 < n; i++) {
+        o += (size_t)snprintf(out + o, n - o, "%s%02X", i ? " " : "", b[i]);
+    }
+    if (len > 6 && o + 4 < n) {
+        snprintf(out + o, n - o, " ..");
+    }
+}
+
+/* A mod against the disc: OGBOX_FIT_YES (every line with "old" bytes found them, and at least one
+ * had them), _NO (one didn't, or its XBE or address isn't the disc's: why says the first), or
+ * _UNCHECKED (no line to check: no "old" bytes, only the title update's, or files only). Each
+ * line's bytes go into the buffer for the next (as the core's overlay), and back out after. */
+static int mod_fit(const Mod *m, const NcDisc *disc, XbeFile *files, unsigned *nfiles, char *why, size_t why_n)
+{
+    typedef struct Undo {
+        XbeFile *f;
+        uint32_t off;
+        unsigned n;
+        uint8_t old[256];
+    } Undo;
+    Undo *undo = m->npatches ? malloc(m->npatches * sizeof(Undo)) : NULL;
+    unsigned nundo = 0, checked = 0, bad = 0, lines = 0;
+    why[0] = 0;
+    for (size_t k = 0; k < m->npatches; k++) {
+        const Line *l = &m->patches[k];
+        uint32_t va, off;
+        uint8_t old[256], neu[256];
+        unsigned nold, nnew;
+        if (is_update_section(l->xbe) || !parse_line(l->text, &va, old, &nold, neu, &nnew)) {
+            continue;       /* the title update's (not on the disc), or no patch (the core skips it) */
+        }
+        lines++;
+        XbeFile *f = xbe_file(disc, l->xbe, files, nfiles);
+        if (!f || !f->there || !f->x) {
+            if (!bad++) {
+                snprintf(why, why_n, "[%s] is not an XBE on this disc", l->xbe);
+            }
+            continue;
+        }
+        if (!xbe_offset(f->x, va, nnew, &off) || (uint64_t)off + nnew > f->buf.size) {
+            if (!bad++) {
+                snprintf(why, why_n, "[%s] 0x%08X is not in this disc's XBE", l->xbe, va);
+            }
+            continue;
+        }
+        if (nold) {
+            if (memcmp(f->buf.data + off, old, nold) != 0) {
+                if (!bad++) {
+                    char have[32], want[32];
+                    hex_text(have, sizeof(have), f->buf.data + off, nold);
+                    hex_text(want, sizeof(want), old, nold);
+                    snprintf(why, why_n, "[%s] 0x%08X: this disc has %s there, the mod expects %s", l->xbe, va, have,
+                             want);
+                }
+                continue;
+            }
+            checked++;
+        }
+        if (undo) {
+            Undo *u = &undo[nundo++];
+            u->f = f;
+            u->off = off;
+            u->n = nnew;
+            memcpy(u->old, f->buf.data + off, nnew);
+            memcpy(f->buf.data + off, neu, nnew);
+        }
+    }
+    while (nundo) {
+        const Undo *u = &undo[--nundo];
+        memcpy(u->f->buf.data + u->off, u->old, u->n);
+    }
+    free(undo);
+    if (bad) {
+        if (lines > 1) {
+            const size_t len = strlen(why);
+            snprintf(why + len, why_n - len, " (%u of its %u lines)", bad, lines);
+        }
+        return OGBOX_FIT_NO;
+    }
+    return checked ? OGBOX_FIT_YES : OGBOX_FIT_UNCHECKED;
+}
+
+/* The check of the mods and cheats loaded (g_mods, g_cheats) and the patches for key, kept in g_fit
+ * (the catalog's) */
+static void fit_check(const NcDisc *disc, const char *key)
+{
+    memset(&g_fit, 0, sizeof(g_fit));
+    copy(g_fit.key, sizeof(g_fit.key), key);
+    XbeFile files[FIT_FILES];
+    unsigned nfiles = 0;
+    const XbeFile *def = xbe_file(disc, "default.xbe", files, &nfiles);
+    g_fit.crc = def && def->there ? ogbox_crc32(def->buf.data, def->buf.size) : 0;
+    unsigned bad = 0;
+    for (unsigned i = 0; i < g_nmods; i++) {
+        copy(g_fit.mods[i].id, sizeof(g_fit.mods[i].id), g_mods[i].id);
+        g_fit.mods[i].fit = mod_fit(&g_mods[i], disc, files, &nfiles, g_fit.mods[i].why, sizeof(g_fit.mods[i].why));
+        bad += g_fit.mods[i].fit == OGBOX_FIT_NO;
+    }
+    g_fit.nmods = g_nmods;
+    if (g_ncheats) {
+        bool match = false;
+        for (unsigned i = 0; i < g_ncheat_crc; i++) {
+            match |= g_cheat_crc[i] == g_fit.crc;
+        }
+        g_fit.cheats = !g_ncheat_crc ? OGBOX_FIT_UNCHECKED : !g_fit.crc ? OGBOX_FIT_UNKNOWN
+                       : match ? OGBOX_FIT_YES : OGBOX_FIT_NO;
+        if (g_fit.cheats == OGBOX_FIT_NO) {
+            snprintf(g_fit.cheats_why, sizeof(g_fit.cheats_why),
+                     "cheats.txt is for the default.xbe of CRC-32 %08X%s, this disc's is %08X", g_cheat_crc[0],
+                     g_ncheat_crc > 1 ? " (and others)" : "", g_fit.crc);
+        }
+    }
+    ogbox_patches_set_disc_crc(key, g_fit.crc);
+    ogbox_patches_check(disc, key, def && def->there ? &def->buf : NULL);
+    xbe_files_free(files, nfiles);
+    g_fit.valid = true;
+    pshakux_log("mods: %s: default.xbe's CRC-32 %08X; %u of %u mods for another release%s", key, g_fit.crc, bad,
+                g_nmods, g_fit.cheats == OGBOX_FIT_NO ? ", and the cheats" : "");
+    for (unsigned i = 0; i < g_nmods; i++) {
+        if (g_fit.mods[i].fit == OGBOX_FIT_NO) {
+            pshakux_log("mods:   mod %s: for another release: %s", g_mods[i].id, g_fit.mods[i].why);
+        }
+    }
+}
+
+/* key's check (fit_check), if there is one */
+static bool fit_valid(const char *key)
+{
+    return g_fit.valid && key && !strcasecmp(key, g_fit.key);
+}
+
+static int fit_of_mod(const char *key, const char *id, const char **why)
+{
+    *why = "";
+    if (!fit_valid(key)) {
+        return OGBOX_FIT_UNKNOWN;
+    }
+    for (unsigned i = 0; i < g_fit.nmods; i++) {
+        if (!strcasecmp(g_fit.mods[i].id, id)) {
+            *why = g_fit.mods[i].why;
+            return g_fit.mods[i].fit;
+        }
+    }
+    return OGBOX_FIT_UNKNOWN;
+}
+
+uint32_t ogbox_mods_disc_crc(const char *key)
+{
+    return fit_valid(key) ? g_fit.crc : 0;
 }
 
 /* ---- the manifest ---- */
@@ -532,6 +877,31 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
         pshakux_log("mods:   cheat %s (%zu lines)", g_cheats[i].name, g_cheats[i].ncode);
     }
     read_choices(key, pshakux_title_dir());
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    const bool have_disc = nc_disc_open(&disc, disc_fd); /* (not closed: the descriptor is the core's) */
+    /* 0.0.2: the release check (fit_check): what was made for another release of the game stays off,
+     * whole (the core would write the lines whose bytes it finds and skip the rest) */
+    if (have_disc && (g_nmods || g_ncheats || ogbox_patches_count(key) > 0)) {
+        fit_check(&disc, key);
+        for (unsigned i = 0; i < g_nmods; i++) {
+            const char *why;
+            if (g_mods[i].on && fit_of_mod(key, g_mods[i].id, &why) == OGBOX_FIT_NO) {
+                g_mods[i].on = false;
+                pshakux_log("mods:   mod %s is on but left out: made for another release (%s)", g_mods[i].id, why);
+            }
+        }
+        if (g_fit.cheats == OGBOX_FIT_NO) {
+            unsigned off = 0;
+            for (unsigned i = 0; i < g_ncheats; i++) {
+                off += g_cheats[i].on;
+                g_cheats[i].on = false;
+            }
+            if (off) {
+                pshakux_log("mods:   %u cheats on but left out: made for another release (%s)", off, g_fit.cheats_why);
+            }
+        }
+    }
     unsigned on = 0;
     for (unsigned i = 0; i < g_nmods; i++) {
         on += g_mods[i].on;
@@ -544,9 +914,6 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
                     g_nmods ? g_mods[0].id : "<mod>");
         /* (the manifest is still written: the mods that are off give a savestate its bytes back) */
     }
-    NcDisc disc;
-    memset(&disc, 0, sizeof(disc));
-    const bool have_disc = nc_disc_open(&disc, disc_fd); /* (not closed: the descriptor is the core's) */
     char manifest[1024];
     snprintf(manifest, sizeof(manifest), "%s/mods-run.txt", work_dir);
     if (write_manifest(manifest, game_dir[0] ? game_dir : NULL, have_disc ? &disc : NULL, key, work_dir)) {
@@ -581,6 +948,7 @@ static void catalog_reset(void)
     memset(g_cheats, 0, sizeof(g_cheats));
     g_nmods = 0;
     g_ncheats = 0;
+    g_ncheat_crc = 0;
 }
 
 /* The title folder's mods/<key> (any case), or false. */
@@ -682,6 +1050,51 @@ bool ogbox_game_xbe_crc(const char *image, uint32_t *crc)
     return ok;
 }
 
+bool ogbox_mods_check_disc(const char *image, const char *key, uint32_t *crc)
+{
+    if (crc) {
+        *crc = 0;
+    }
+    if (!image || !key || !key[0]) {
+        return false;
+    }
+    const bool virt = ps5vfs_is_virtual(image) != 0;
+    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    const bool ok = nc_disc_open(&disc, fd);
+    if (ok) {
+        catalog_reset();
+        char game_dir[1024];
+        if (find_game_dir(key, game_dir, sizeof(game_dir))) {
+            size_t nmods = 0;
+            char **ids = list_dir(game_dir, &nmods, true);
+            for (size_t i = 0; i < nmods; i++) {
+                load_mod(game_dir, ids[i]);
+            }
+            free_names(ids, nmods);
+            char cheats[1100];
+            snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
+            load_cheats(cheats);
+        }
+        fit_check(&disc, key);
+        catalog_reset();
+        if (crc) {
+            *crc = g_fit.crc;
+        }
+    }
+    disc_release(&disc);
+    if (virt) {
+        ps5vfs_disc_close(fd);
+    } else {
+        close(fd);
+    }
+    return ok;
+}
+
 int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
 {
     catalog_reset();
@@ -710,6 +1123,9 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
         copy(e->description, sizeof(e->description), g_mods[i].description);
         e->refresh = g_mods[i].refresh;
         e->on = g_mods[i].on;
+        const char *why;
+        e->fit = fit_of_mod(key, g_mods[i].id, &why);
+        copy(e->fit_why, sizeof(e->fit_why), why);
     }
     /* 0.1.45: the XBE patches */
     {
@@ -726,6 +1142,8 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
             copy(e->source, sizeof(e->source), patches[i].source);
             e->patch = true;
             e->on = patches[i].on;
+            e->fit = patches[i].fit;
+            copy(e->fit_why, sizeof(e->fit_why), patches[i].fit_why);
         }
     }
     for (unsigned i = 0; i < g_ncheats && n < max; i++, n++) {
@@ -736,6 +1154,8 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
         e->cheat = true;
         e->once = g_cheats[i].once;
         e->on = g_cheats[i].on;
+        e->fit = fit_valid(key) ? g_fit.cheats : g_ncheat_crc ? OGBOX_FIT_UNKNOWN : OGBOX_FIT_UNCHECKED;
+        copy(e->fit_why, sizeof(e->fit_why), fit_valid(key) ? g_fit.cheats_why : "");
     }
     catalog_reset();
     return n;

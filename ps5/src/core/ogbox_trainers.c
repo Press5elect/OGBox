@@ -442,6 +442,23 @@ bool ogbox_trainers_resolve(const char *rel, char *path, size_t n)
     return found;
 }
 
+bool ogbox_trainers_xbe_time(const char *rel, uint32_t *xbe_time)
+{
+    char path[1024];
+    *xbe_time = 0;
+    if (!ogbox_trainers_resolve(rel, path, sizeof(path))) {
+        return false;
+    }
+    Entry e;
+    memset(&e, 0, sizeof(e));
+    parse_file(path, &e);
+    if (e.flags & FLAG_BROKEN) {
+        return false;
+    }
+    *xbe_time = e.xbe_time;
+    return true;
+}
+
 int ogbox_trainers_options(const char *rel, char (*names)[OGBOX_TRAINER_TEXT], int max, char *scroller, size_t n)
 {
     char path[1024];

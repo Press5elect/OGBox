@@ -843,6 +843,7 @@ public:
 	bool swallowNav{ false };                 // this frame's CROSS and CIRCLE are not ImGui's
 	// the mods and cheats screen
 	std::vector<OgboxModEntry> modList;
+	uint32_t modsCrc{ 0 };                    // 0.0.2: the disc's default.xbe's CRC-32 (0: unread)
 	std::string modsKey, modsTitle;
 	// 0.1.54: the game's trainers on the Mods screen (core/ogbox_trainers.h)
 	struct TrainerView {
@@ -1523,7 +1524,14 @@ public:
 			char rel[384] = "", bits[128] = "", path[1024] = "";
 			if (ogbox_trainers_chosen(key.c_str(), rel, sizeof(rel), bits, sizeof(bits))) {
 				setTrainerRoots();
-				if (ogbox_trainers_resolve(rel, path, sizeof(path))) {
+				uint32_t made = 0;
+				if (ogbox_trainers_resolve(rel, path, sizeof(path)) && runXbeTime &&
+					ogbox_trainers_xbe_time(rel, &made) && made && made != runXbeTime) {
+					/* 0.0.2: the release check: made for another release, it doesn't run */
+					pshakux_log("ogbox: the trainer chosen for %s (%s) was made for another release (its XBE dated %08X, "
+						"this disc's %08X): the game starts without it", key.c_str(), rel, static_cast<unsigned>(made),
+						static_cast<unsigned>(runXbeTime));
+				} else if (path[0]) {
 					fromTrainer.push_back(std::string("trainer=") + path);
 					fromTrainer.push_back(std::string("trainer_options=") + bits);
 					pshakux_log("ogbox: trainer %s, options %s", path, bits[0] ? bits : "none on");
@@ -2547,22 +2555,27 @@ public:
 			const OgboxTrainer &t = tv.list[i];
 			const bool on = tv.chosen == t.rel;
 			const bool other = tv.xbeTime && t.xbe_time && t.xbe_time != tv.xbeTime;
-			const std::string note = other ? std::string("for another release")
+			/* 0.0.2: one for another release is greyed out and can't be chosen (one chosen from before
+			 * can be put back to none: it doesn't run at the start anyway) */
+			const std::string note = other ? std::string(on ? "another release: doesn't run" : "another release")
 				: std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options");
 			if (row("t" + std::to_string(i), t.name[0] ? t.name : baseName(t.rel), note, false,
-					on ? mx::bright : other ? mx::line : mx::text, Icon::None, on ? 2 : 1)) {
+					other ? (on ? mx::fail : mx::line) : on ? mx::bright : mx::text, Icon::None,
+					other && !on ? 0 : on ? 2 : 1) && !(other && !on)) {
 				chooseTrainer(on ? std::string() : std::string(t.rel));
 			}
 			if (ImGui::IsItemFocused()) {
 				help = std::string(t.author[0] ? t.author : "A trainer") + ". " + (t.xbtf ? "XBTF" : "ETM") + ", " +
 					std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options") + ": " + t.rel + ". ";
 				if (other) {
-					char d[192];   // 0.0.1: 96 cut the sentence short
+					char d[256];   // 0.0.1: 96 cut the sentence short
 					std::snprintf(d, sizeof(d), "It was made for another release of the game (its XBE dated %08X, this disc's "
-						"%08X): it would find nothing to change. ", static_cast<unsigned>(t.xbe_time), static_cast<unsigned>(tv.xbeTime));
+						"%08X): it would find nothing to change, so it can't be chosen%s. ", static_cast<unsigned>(t.xbe_time),
+						static_cast<unsigned>(tv.xbeTime), on ? ", and it doesn't run at the start" : "");
 					help += d;
 				}
-				help += on ? "Chosen: CROSS again for none. Its options are below it." : "CROSS chooses it (one trainer at a time).";
+				help += on ? "Chosen: CROSS again for none. Its options are below it."
+					: other ? std::string() : "CROSS chooses it (one trainer at a time).";
 			}
 			if (on) {
 				drawTrainerOptions();
@@ -2614,13 +2627,15 @@ public:
 		modsKey = key;
 		modsTitle = title;
 		std::lock_guard<std::mutex> disc(g_discInfoMutex);
-		/* 0.1.52: the disc's default.xbe's CRC-32, so the patches made for another release of the game
-		 * are left out of the list (they would be left out at the start anyway) */
+		/* 0.1.52: the disc's default.xbe's CRC-32, for the patches made for another release of the game.
+		 * 0.0.2: the release check of its mods, patches and cheats against the disc (core/ogbox_mods.h:
+		 * one made for another release is greyed out and can't be turned on); in a game, the start's
+		 * (ogbox_mods_prepare) */
 		uint32_t crc = 0;
-		if (!image.empty() && ogbox_game_xbe_crc(image.c_str(), &crc)) {
-			ogbox_patches_set_disc_crc(key.c_str(), crc);
+		if (!image.empty() && ogbox_mods_check_disc(image.c_str(), key.c_str(), &crc)) {
 			pshakux_log("ogbox: %s: default.xbe's CRC-32 %08X", key.c_str(), static_cast<unsigned>(crc));
 		}
+		modsCrc = ogbox_mods_disc_crc(key.c_str());
 		modList.assign(480, OgboxModEntry{});
 		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 480))));
 		/* 0.1.54: the trainers for its title ID, those for this release (its default.xbe's date) first */
@@ -3975,21 +3990,35 @@ public:
 				ImGui::TextColored(mx::text, "%s", heading);
 			}
 			const std::string text = m.name;
-			std::string note = m.cheat ? (m.once ? "once" : std::string())
+			/* 0.0.2: the release check (core/ogbox_mods.h): one made for another release of the game is
+			 * greyed out, without its switch, and can't be turned on (one on from before can be turned
+			 * off: it's left out at the start anyway) */
+			const bool other = m.fit == OGBOX_FIT_NO, unchecked = m.fit == OGBOX_FIT_UNCHECKED;
+			std::string note = other ? std::string(m.on ? "another release: left out" : "another release")
+				: m.cheat ? (m.once ? "once" : std::string())
 				: m.patch ? std::string(m.author)
 				: (m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
-			const bool toggled = row("m" + std::to_string(i), text, note, false, m.on ? mx::bright : mx::text, Icon::None, m.on ? 2 : 1);
+			if (unchecked && !m.patch) {
+				note = note.empty() ? std::string("release not checked") : note + "   release not checked";
+			}
+			const ImVec4 &colour = other ? (m.on ? mx::fail : mx::line) : m.on ? mx::bright : mx::text;
+			const bool toggled = row("m" + std::to_string(i), text, note, false, colour, Icon::None,
+				other && !m.on ? 0 : m.on ? 2 : 1);
 			if (!modsFocus) {
 				focusLastItem();
 				modsFocus = true;
 			}
-			if (toggled) {
+			if (toggled && !(other && !m.on)) {
 				m.on = !m.on;
 				std::lock_guard<std::mutex> disc(g_discInfoMutex);
 				ogbox_mods_choose_kind(modsKey.c_str(), m.cheat ? "cheat" : m.patch ? "patch" : "mod", m.id, m.on);
 				detailsPath.clear();   // the details again, with the change
 			}
-			if (ImGui::IsItemFocused()) {
+			if (ImGui::IsItemFocused() && other) {
+				help = std::string("Made for another release of the game, not this disc: ") + m.fit_why + ". " +
+					(m.on ? "It's left out when the game starts. CROSS turns it off."
+						  : "It can't be turned on: it would change bytes this disc doesn't have where it expects them.");
+			} else if (ImGui::IsItemFocused()) {
 				help = m.description[0] ? std::string(m.description) + " " : std::string(m.cheat ? "A cheat. " : m.patch ? "" : "A mod. ");
 				if (m.patch) {
 					help += std::string("By ") + m.author + ", from " + m.source + ". Applied at the game's next start; a patch "
@@ -4001,6 +4030,12 @@ public:
 				} else {
 					help += m.cheat ? "Cheats apply while the game runs, from its next start." : "Mods change the game's code and files, from its next start.";
 				}
+				if (unchecked && !m.patch) {
+					help += m.cheat ? " Their release isn't checked: cheats.txt has no crc: line (the CRC-32 of the default.xbe "
+						"they're for). On another release with the same title ID and version they may write the wrong places."
+						: " Its release isn't checked: none of its lines says which bytes it replaces (\"old -> new\"). On "
+						"another release with the same title ID and version it may break the game.";
+				}
 			}
 		}
 		drawTrainerRows();   // 0.1.54
@@ -4009,7 +4044,12 @@ public:
 		ImGui::BeginChild("help", ImVec2(0.0f, helpH), true, ImGuiWindowFlags_NoNav);
 		ImGui::PushTextWrapPos(0.0f);
 		ImGui::TextColored(mx::text, "%s", help.c_str());
-		ImGui::TextColored(mx::line, "/data/ogbox/mods.txt     the trainers: %s", ogbox::storagePath("trainers").c_str());
+		if (modsCrc) {
+			ImGui::TextColored(mx::line, "/data/ogbox/mods.txt     default.xbe CRC-32 %08X     the trainers: %s",
+				static_cast<unsigned>(modsCrc), ogbox::storagePath("trainers").c_str());
+		} else {
+			ImGui::TextColored(mx::line, "/data/ogbox/mods.txt     the trainers: %s", ogbox::storagePath("trainers").c_str());
+		}
 		ImGui::PopTextWrapPos();
 		ImGui::EndChild();
 		footer("{X} on / off     {O} back");

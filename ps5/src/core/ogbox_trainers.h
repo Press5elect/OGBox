@@ -56,6 +56,9 @@ int ogbox_trainers_count(uint32_t title_id);
 int ogbox_trainers_options(const char *rel, char (*names)[OGBOX_TRAINER_TEXT], int max, char *scroller, size_t n);
 /* A file under the folders: its path; false if no folder has it. */
 bool ogbox_trainers_resolve(const char *rel, char *path, size_t n);
+/* 0.0.2: the XBE date a trainer under the folders checks for (*xbe_time 0: it doesn't say); false
+ * if it can't be read. */
+bool ogbox_trainers_xbe_time(const char *rel, uint32_t *xbe_time);
 
 /* The game's trainer: its file under its folder and its options ('1' on), false if none chosen. */
 bool ogbox_trainers_chosen(const char *key, char *rel, size_t reln, char *bits, size_t bitsn);

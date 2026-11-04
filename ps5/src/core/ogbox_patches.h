@@ -34,18 +34,25 @@ typedef struct OgboxPatch {
     char source[64];
     char region[16];
     bool on;
+    /* 0.0.2: the release check (ogbox_mods.h OGBOX_FIT_*: the last ogbox_patches_check for the game)
+     * and why it doesn't fit */
+    int fit;
+    char fit_why[192];
 } OgboxPatch;
 
 /* The patches the database has for the game of key ("%08X.%u"): those for its title ID and its
  * version or any. With which are on (mods.txt). How many (at most max). */
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max);
+/* 0.0.2: how many the database has for key (its title ID and version, or any version). */
+int ogbox_patches_count(const char *key);
 
 /* 0.1.47: whether a patch on for key needs the 128 MB RAM upgrade: its notes say so (0.1.52: PatchHub's
  * own flag, "(needs 128 MB)" in the notes, or "128 MB required / only / mandatory"; the boot log names it). */
 bool ogbox_patches_need_128(const char *key);
 
-/* 0.1.52: the disc's default.xbe's CRC-32 for key (0: unknown): the catalog leaves out the patches made
- * for another release (their CRC-32 another), as they would be left out at the start anyway. */
+/* 0.1.52: the disc's default.xbe's CRC-32 for key (0: unknown): the catalog marks the patches made for
+ * another release (their CRC-32 another) OGBOX_FIT_NO (0.0.2; 0.1.52 left them out), as they would be
+ * left out at the start anyway. */
 void ogbox_patches_set_disc_crc(const char *key, uint32_t crc);
 
 struct NcDisc;
@@ -64,6 +71,12 @@ typedef struct OgboxBuf {
 bool ogbox_apply_ips(OgboxBuf *buf, const uint8_t *ips, size_t n, char *why, size_t why_len);
 bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *bps, size_t n, char *why, size_t why_len);
 uint32_t ogbox_crc32(const uint8_t *p, size_t n);
+
+struct NcDisc;
+/* 0.0.2: the release check of key's patches (all of them, on or off): each tried alone on the
+ * disc's files as they are, default.xbe (xbe, as read) and those up to 16 MiB, and on the disc's
+ * region; kept for ogbox_patches_catalog (fit). How many there are. */
+int ogbox_patches_check(const struct NcDisc *disc, const char *key, const OgboxBuf *xbe);
 
 /* The database's patch records of one patch for one target, applied in order ("F find repl",
  * "O offset hex", "A hex", "C crc", "I file", "B file": files_dir holds the IPS and BPS files);

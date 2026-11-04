@@ -9,6 +9,7 @@
  * README), IPS and BPS (byuu's format description); the code is OGBox's own.
  */
 #include "core/ogbox_patches.h"
+#include "core/ogbox_mods.h"
 
 #include "platform/ps5_bootlog.h"
 
@@ -362,8 +363,7 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
                            have = g_original_crc ? g_original_crc : ogbox_crc32(work.data, work.size);
             if (want != have) {
                 if (why && why_len) {
-                    snprintf(why, why_len, "the file is another release: its CRC-32 is %08x, the patch's %08x",
-                             have, want);
+                    snprintf(why, why_len, "it was made for the file of CRC-32 %08x, this disc's is %08x", want, have);
                 }
                 ok = false;
             }
@@ -629,6 +629,33 @@ static uint32_t entry_crc(const Entry *e)
     return 0;
 }
 
+/* ---- 0.0.2: the release check (ogbox_patches_check) ---- */
+
+static struct {
+    char key[32];
+    unsigned n;
+    struct {
+        char id[16];
+        int fit;
+        char why[192];
+    } e[MAX_PATCHES];
+} g_fit;
+
+static const char *fit_of(const char *key, const char *id, int *fit)
+{
+    *fit = OGBOX_FIT_UNKNOWN;
+    if (!key || strcasecmp(key, g_fit.key) != 0) {
+        return "";
+    }
+    for (unsigned i = 0; i < g_fit.n; i++) {
+        if (!strcasecmp(g_fit.e[i].id, id)) {
+            *fit = g_fit.e[i].fit;
+            return g_fit.e[i].why;
+        }
+    }
+    return "";
+}
+
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
 {
     db_load(key);
@@ -636,12 +663,27 @@ int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
     const uint32_t disc = key && g_crc && !strcasecmp(key, g_crc_key) ? g_crc : 0;
     int n = 0;
     for (unsigned i = 0; i < g_ndb && n < max; i++) {
+        /* 0.0.2: one made for another release of the game (its CRC-32 another: 0.1.52 left it out of
+         * the list) is listed, greyed out, with the others the release check found (the screen
+         * doesn't let it be turned on) */
         const uint32_t crc = disc ? entry_crc(&g_db[i]) : 0;
-        if (crc && crc != disc && !g_db[i].p.on) {
-            continue;   /* made for another release of the game (0.1.52); one turned on stays, to be turned off */
+        out[n] = g_db[i].p;
+        copyf(out[n].fit_why, sizeof(out[n].fit_why), fit_of(key, g_db[i].p.id, &out[n].fit));
+        if (crc && crc != disc && out[n].fit != OGBOX_FIT_NO) {
+            out[n].fit = OGBOX_FIT_NO;
+            snprintf(out[n].fit_why, sizeof(out[n].fit_why), "it was made for the default.xbe of CRC-32 %08x, this "
+                     "disc's is %08x", crc, disc);
         }
-        out[n++] = g_db[i].p;
+        n++;
     }
+    db_reset();
+    return n;
+}
+
+int ogbox_patches_count(const char *key)
+{
+    db_load(key);
+    const int n = (int)g_ndb;
     db_reset();
     return n;
 }
@@ -733,6 +775,147 @@ static bool target_load(const NcDisc *disc, Target *t)
     }
     snprintf(t->path, sizeof(t->path), "%s", path);
     return true;
+}
+
+/* default.xbe's certificate's game regions (bit 0 North America), 0 if unread */
+static uint32_t xbe_regions(const OgboxBuf *x)
+{
+    if (!x || !x->data || x->size < 0x1000) {
+        return 0;
+    }
+    const uint8_t *h = x->data;
+    const uint32_t base = (uint32_t)h[0x104] | (uint32_t)h[0x105] << 8 | (uint32_t)h[0x106] << 16 |
+                          (uint32_t)h[0x107] << 24;
+    const uint32_t cert = ((uint32_t)h[0x118] | (uint32_t)h[0x119] << 8 | (uint32_t)h[0x11A] << 16 |
+                           (uint32_t)h[0x11B] << 24) - base;
+    return cert + 0xA4 <= x->size ? ((uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8) : 0;
+}
+
+static bool is_default_xbe(const char *name)
+{
+    while (*name == '\\' || *name == '/') {
+        name++;
+    }
+    return !strcasecmp(name, "default.xbe");
+}
+
+/* A file the patches change other than default.xbe, as the disc has it (t->name): 1 read (its
+ * CRC-32 in t->crc), 0 left unchecked (over 16 MiB: reading a level file of a hundred would hold the
+ * screen up; or unread), -1 not on the disc */
+static int other_load(const NcDisc *disc, Target *t)
+{
+    char path[512];
+    NcDiscFile f;
+    snprintf(path, sizeof(path), "%s", t->name);
+    if (!nc_disc_find_orig(disc, path, &f)) {
+        const NcDiscFile root = {.sector = disc->root_sector, .size = disc->root_size, .attr = 0x10};
+        if (!find_named(disc, &root, "", t->name, 0, path, sizeof(path)) || !nc_disc_find_orig(disc, path, &f)) {
+            return -1;
+        }
+    }
+    if ((f.attr & 0x10) || f.size > (16u << 20) || !target_load(disc, t)) {
+        free(t->buf.data);
+        memset(&t->buf, 0, sizeof(t->buf));
+        return 0;
+    }
+    t->crc = ogbox_crc32(t->buf.data, t->buf.size);
+    return 1;
+}
+
+int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe)
+{
+    db_load(key);
+    memset(&g_fit, 0, sizeof(g_fit));
+    copyf(g_fit.key, sizeof(g_fit.key), key);
+    char files_dir[1024];
+    db_dir(files_dir, sizeof(files_dir));
+    strncat(files_dir, "/files", sizeof(files_dir) - strlen(files_dir) - 1);
+    const uint32_t regions = xbe_regions(xbe);
+    const uint32_t xbe_crc = xbe && xbe->data ? ogbox_crc32(xbe->data, xbe->size) : 0;
+    /* the other files the patches change, as the disc has them (other_load) */
+    Target others[4];
+    int other_state[4] = {0};
+    unsigned nothers = 0;
+    memset(others, 0, sizeof(others));
+    unsigned bad = 0;
+    for (unsigned i = 0; i < g_ndb && g_fit.n < MAX_PATCHES; i++) {
+        const Entry *e = &g_db[i];
+        int fit = OGBOX_FIT_YES;
+        char why[192] = "";
+        if (!strcasecmp(e->p.region, "USA") && regions && !(regions & 1)) {
+            fit = OGBOX_FIT_NO;
+            snprintf(why, sizeof(why), "made for the USA release, and this disc is another (its regions %x)", regions);
+        }
+        const char *tname = "default.xbe";
+        size_t start = 0;
+        for (size_t k = 0; k <= e->nlines && fit == OGBOX_FIT_YES; k++) {
+            const bool end = k == e->nlines || (e->lines[k][0] == 'T' && e->lines[k][1] == '\t');
+            if (!end) {
+                continue;
+            }
+            if (k > start) {
+                const OgboxBuf *src = NULL;
+                uint32_t crc = 0;
+                if (is_default_xbe(tname)) {
+                    src = xbe && xbe->data ? xbe : NULL;
+                    crc = xbe_crc;
+                    if (!src) {
+                        fit = OGBOX_FIT_UNKNOWN;
+                    }
+                } else {
+                    int j = 0;
+                    while (j < (int)nothers && strcasecmp(others[j].name, tname) != 0) {
+                        j++;
+                    }
+                    if (j == (int)nothers && nothers < 4 && disc) {
+                        snprintf(others[j].name, sizeof(others[j].name), "%s", tname);
+                        other_state[j] = other_load(disc, &others[j]);
+                        nothers++;
+                    }
+                    if (j < (int)nothers && other_state[j] > 0) {
+                        src = &others[j].buf;
+                        crc = others[j].crc;
+                    } else if (j < (int)nothers && other_state[j] < 0) {
+                        fit = OGBOX_FIT_NO;
+                        snprintf(why, sizeof(why), "%s is not on this disc", tname);
+                    } else {
+                        fit = OGBOX_FIT_UNKNOWN;
+                    }
+                }
+                if (src) {
+                    OgboxBuf work = {0};
+                    if (!buf_copy(&work, src)) {
+                        fit = OGBOX_FIT_UNKNOWN;
+                    } else {
+                        g_original_crc = crc;
+                        if (!ogbox_apply_records(&work, e->lines + start, k - start, files_dir, why, sizeof(why))) {
+                            fit = OGBOX_FIT_NO;
+                        }
+                        g_original_crc = 0;
+                        free(work.data);
+                    }
+                }
+            }
+            if (k < e->nlines) {
+                tname = e->lines[k] + 2;
+                start = k + 1;
+            }
+        }
+        copyf(g_fit.e[g_fit.n].id, sizeof(g_fit.e[g_fit.n].id), e->p.id);
+        g_fit.e[g_fit.n].fit = fit;
+        copyf(g_fit.e[g_fit.n].why, sizeof(g_fit.e[g_fit.n].why), fit == OGBOX_FIT_NO ? why : "");
+        g_fit.n++;
+        bad += fit == OGBOX_FIT_NO;
+    }
+    for (unsigned j = 0; j < nothers; j++) {
+        free(others[j].buf.data);
+    }
+    const int n = (int)g_ndb;
+    if (n) {
+        pshakux_log("patches: %s: %d in gamedata/patches.db, %u of them for another release of the game", key, n, bad);
+    }
+    db_reset();
+    return n;
 }
 
 int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_dir, FILE *manifest)

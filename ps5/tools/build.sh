@@ -93,10 +93,16 @@ app="$root/dist/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])
 python3 "$ps5/tools/build-assets.py" --install "$app"
 # hakuX's mods and cheats (its mods/ folder, one folder a game: 0.1.19) beside eboot.bin, as the work
 # tree has them (ps5/src/core/ogbox_mods.c reads them).
+rm -rf "$app/mods"
 if [[ -d $hakux_tree/mods ]]; then
-    rm -rf "$app/mods"
     mkdir -p "$app/mods"
     rsync -a --exclude .git "$hakux_tree/mods/" "$app/mods/"
+fi
+# 0.0.2: OGBox's own mods (ps5/mods, Press5elect's, the same layout: mods/<title ID>.<version>/<mod>/)
+# over hakuX's: a game's folder gets them beside hakuX's, and one of the same name replaces hakuX's.
+if [[ -d $ps5/mods ]]; then
+    mkdir -p "$app/mods"
+    rsync -a --exclude README.md "$ps5/mods/" "$app/mods/"
 fi
 # 0.1.45: the game data (ps5/gamedata: the Redump database, the XBE patches and their IPS/BPS files,
 # ps5/tools/import-gamedata.py) beside eboot.bin (src/ogbox_library.cpp, src/core/ogbox_patches.c).

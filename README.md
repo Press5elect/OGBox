@@ -96,19 +96,23 @@ kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.t
 network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
 
 **Mods, patches, cheats** (on the right) lists hakuX's mods for the disc (60 and 120 fps mods,
-game fixes; the `mods` folder is hakuX's own), the XBE patches OGBox ships for it (widescreen,
+game fixes; the `mods` folder is hakuX's own, with OGBox's own from `ps5/mods` beside them), the XBE patches OGBox ships for it (widescreen,
 60 fps, 480i/480p and other fixes from Jay's PatchHub and GitHub collection, icup321's
 XboxGraphicalPatches and OgXHD, merged where they are the same patch, in `gamedata/patches.db`;
 all off by default; no resolution patches: Resolution scale does that) and its cheats: CROSS turns one on or off, from the
-game's next start (`/data/ogbox/mods.txt`). A patch whose bytes aren't in the disc's XBE (another
-release) is left out at the start and the boot log says why.
+game's next start (`/data/ogbox/mods.txt`). Each is checked against the disc first: a mod's
+`old -> new` bytes, a patch tried on the disc's XBE (its CRC-32, the bytes it looks for, its
+region), cheats against a `crc:` line in `cheats.txt` (`ps5/mods/README.md`). One made for another
+release of the game is greyed out and can't be turned on; one turned on before is left out whole at
+the start, and the boot log says why. One with nothing to check is marked "release not checked".
 
 **Trainers** (on the Mods screen, under TRAINERS): the Xbox's `.etm` and `.xbtf` trainers, as
 Evolution-X and XBMC4Xbox ran them. OGBox ships none: copy them into the data folder's `trainers`
 (made at the first start; subfolders are fine), `/data/ogbox/trainers` or a USB drive's
 `OGBox/trainers`. They are read once into an index (the cache's `trainers.idx`), and each game
 lists those made for its title ID, the same trainer in several files once, those made for another
-release of the game marked. Choose one (one a game), then its options: they are set as the game
+release of the game (another XBE date) greyed out: they can't be chosen, and one chosen before
+doesn't run. Choose one (one a game), then its options: they are set as the game
 starts. Options marked IGK are turned on and off in the game with the pad as well, as on the Xbox;
 trainers show that with the console's LED, which OGBox draws top right when it changes, and a
 trainer's LCD text comes up at the top of the screen.

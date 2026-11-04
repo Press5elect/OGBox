@@ -46,6 +46,16 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info);
 /* 0.1.52: the CRC-32 of a disc image's default.xbe (the patches' release check); false if unread. */
 bool ogbox_game_xbe_crc(const char *image, uint32_t *crc);
 
+/* 0.0.2: whether a mod, patch or cheat was made for the disc's release (a title ID and version can
+ * stand for more than one: a USA and a European disc) */
+enum {
+    OGBOX_FIT_UNKNOWN = 0,     /* not checked (the disc not read) */
+    OGBOX_FIT_YES = 1,         /* its bytes are the disc's */
+    OGBOX_FIT_NO = 2,          /* made for another release: can't be turned on, left out at the start */
+    OGBOX_FIT_UNCHECKED = 3,   /* nothing in it to check against the disc (a mod without "old ->" lines,
+                                  cheats.txt without a crc: line) */
+};
+
 typedef struct OgboxModEntry {
     char id[128];          /* a mod's folder name; a cheat's name; a patch's id */
     char name[160];
@@ -57,11 +67,22 @@ typedef struct OgboxModEntry {
     char category[16];
     char author[64];
     char source[64];
+    /* 0.0.2: the release check (OGBOX_FIT_*), and why it doesn't fit */
+    int fit;
+    char fit_why[192];
 } OgboxModEntry;
 
 /* The game's mods, its patches (0.1.45), then its cheats, with which are on (/data/ogbox/mods.txt):
- * how many. */
+ * how many. 0.0.2: with the release check of the last ogbox_mods_check_disc or ogbox_mods_prepare
+ * for key (OGBOX_FIT_UNKNOWN without one). */
 int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max);
+/* 0.0.2: the release check of key's mods, patches and cheats against a disc image's files (the
+ * game list's Mods screen, before ogbox_mods_catalog; ogbox_mods_prepare does it at the start):
+ * default.xbe's CRC-32 into *crc (0: unread; the patches' release check too,
+ * ogbox_patches_set_disc_crc). False if the disc can't be read. */
+bool ogbox_mods_check_disc(const char *image, const char *key, uint32_t *crc);
+/* 0.0.2: default.xbe's CRC-32 of the last check for key, 0 if none. */
+uint32_t ogbox_mods_disc_crc(const char *key);
 /* One mod or cheat on or off in /data/ogbox/mods.txt. */
 bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on);
 /* 0.1.45: the same of any kind ("mod", "cheat", "patch"). */
