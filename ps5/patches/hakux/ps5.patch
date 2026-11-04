@@ -122,6 +122,7 @@ native core's work tree (oldest first; author: subject):
   b903982398 Claude: xdk_res: a linear texture's pitch below its width's bytes is read as the NV2A reads it
   012e63636c Claude: xemu's fixes since the fork (26fcbe54f1, Jan 2026) that hakuX's own code lacked
   593ece4aba Claude: pbdraw: one memory bound in two 32-bit colour formats is one image; the host can ask for a draw log
+  30e65b1af3 Claude: io: file times set with futimes where futimens isn't there; the running guest thread's id for samplers
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -20042,7 +20043,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a3130771ab53 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..c918e87c6d42702d752d5d0f1f1c1ac0df84e08c 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -20053,7 +20054,15 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  #include "native/core/irq.h"
  #include "native/core/xdvdfs.h"
  
-@@ -157,6 +158,41 @@ static NcFile g_files[MAX_FILES];
+@@ -25,6 +26,7 @@
+ #include <stdlib.h>
+ #include <sys/stat.h>
+ #include <sys/statvfs.h>
++#include <sys/time.h>
+ #include <time.h>
+ #include <unistd.h>
+ #ifdef __ANDROID__
+@@ -157,6 +159,41 @@ static NcFile g_files[MAX_FILES];
  static struct FsCache {
      uint64_t lo, hi;
  } g_fs_cache[MAX_FILES];
@@ -20095,7 +20104,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  typedef struct NcLink {
      char name[64];
      char target[256];
-@@ -408,6 +444,7 @@ static NcFile *file_new(void)
+@@ -408,6 +445,7 @@ static NcFile *file_new(void)
          if (!g_files[i].used) {
              memset(&g_files[i], 0, sizeof(g_files[i]));
              g_fs_cache[i] = (struct FsCache){0};
@@ -20103,7 +20112,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
              g_files[i].used = true;
              g_files[i].fd = -1;
              return &g_files[i];
-@@ -714,7 +751,9 @@ typedef struct DiscJob {
+@@ -714,7 +752,9 @@ typedef struct DiscJob {
      bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
      bool ok;
      int err;
@@ -20114,7 +20123,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  } DiscJob;
  
  static struct {
-@@ -727,6 +766,13 @@ static struct {
+@@ -727,6 +767,13 @@ static struct {
      unsigned busy;           /* queued, reading or done: at most DISC_JOBS */
      bool started;
      bool hurry;              /* a savestate's drain: no drive time left to wait (atomic) */
@@ -20128,7 +20137,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  } g_reader = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
  
  static uint64_t mono_ns(void)
-@@ -758,11 +804,17 @@ static void *reader_thread(void *arg)
+@@ -758,11 +805,17 @@ static void *reader_thread(void *arg)
          DiscJob j = g_reader.q[g_reader.head];
          g_reader.head = (g_reader.head + 1) % DISC_JOBS;
          g_reader.n--;
@@ -20146,7 +20155,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
          errno = 0;
          j.ok = true;
          uint64_t o = j.off;
-@@ -774,9 +826,13 @@ static void *reader_thread(void *arg)
+@@ -774,9 +827,13 @@ static void *reader_thread(void *arg)
          }
          j.err = j.ok ? 0 : errno;
          if (j.dev_us) {
@@ -20160,7 +20169,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
          g_reader.done[g_reader.ndone++] = j;
          pthread_mutex_unlock(&g_reader.mu);
          nc_irq_post_work();
-@@ -799,6 +855,8 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
+@@ -799,6 +856,8 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
      }
  }
  
@@ -20169,7 +20178,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  /* Queues a read of n bytes at off into the buffer's runs (resident and
   * writable); false when it must happen in place. sync: the calling thread
   * waits for it, every other one runs on. dev_us: the drive's time for it. */
-@@ -827,8 +885,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -827,8 +886,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = run[0].va, .n = n,
                   .dev_us = dev_us, .iosb = a[4], .event = event, .apc = a[2], .apc_ctx = a[3],
@@ -20182,7 +20191,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
      size_t segs = 0;
      for (unsigned r = 0; r < nrun; r++) {
          segs += run[r].len / NC_PAGE + 2;
-@@ -873,6 +933,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -873,6 +934,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      const bool queued = g_reader.started && g_reader.busy < DISC_JOBS;
      if (queued) {
@@ -20190,7 +20199,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
          pin_buffer(k, &j, 1);
          g_reader.q[(g_reader.head + g_reader.n++) % DISC_JOBS] = j;
          g_reader.busy++;
-@@ -913,6 +974,17 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
+@@ -913,6 +975,17 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
          n = 0;
      }
      io_status(k, j->iosb, st, n);
@@ -20208,7 +20217,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
      if (j->event) {
          nc_ke_set_event(k, j->event);
      }
-@@ -943,6 +1015,34 @@ void nc_io_poll(NcKernel *k)
+@@ -943,6 +1016,34 @@ void nc_io_poll(NcKernel *k)
      }
  }
  
@@ -20243,7 +20252,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  /* ---------------------------------------------------------------- open */
  
  static void remove_tree(const char *path, bool self);
-@@ -972,6 +1072,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
+@@ -972,6 +1073,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
      return true;
  }
  
@@ -20275,7 +20284,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  /* An overwritten file growing into [from, to): FATX shows what its clusters
   * held, the old contents (NcFile.old_path). */
  static void regrow(NcFile *nf, uint64_t from, uint64_t to)
-@@ -1469,6 +1594,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1469,6 +1595,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -20283,7 +20292,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1612,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +1613,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -20300,7 +20309,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1515,8 +1648,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1515,8 +1649,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -20311,7 +20320,44 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
          uint8_t b[8] = {0};
          if (n >= 8 && run[0].len >= 8) {
              memcpy(b, nc_vm_host(k->vm, va0), 8);
-@@ -1861,6 +1995,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1813,6 +1948,26 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+     return NC_STATUS_SUCCESS;
+ }
+ 
++/* OGBox 0.0.2: a file's access and write times to the microsecond (futimes, utimes) where the host
++ * has no futimens / utimensat (the PS5's libkernel: ENOSYS); UTIME_OMIT keeps the file's own. Every
++ * FileBasicInformation went unset there, and a title that checks a Z: copy's LastWriteTime against
++ * its source's (Forza's installer) copied it again at every start. */
++static bool set_times_us(const NcFile *nf, const struct timespec ts[2])
++{
++    struct stat st;
++    if ((nf->fd >= 0 ? fstat(nf->fd, &st) : stat(nf->host, &st)) != 0) {
++        return false;
++    }
++    struct timeval tv[2];
++    for (int i = 0; i < 2; i++) {
++        const struct timespec now = i ? st.st_mtim : st.st_atim;
++        const struct timespec *t = ts[i].tv_nsec == UTIME_OMIT ? &now : &ts[i];
++        tv[i].tv_sec = t->tv_sec;
++        tv[i].tv_usec = (suseconds_t)(t->tv_nsec / 1000);
++    }
++    return (nf->fd >= 0 ? futimes(nf->fd, tv) : utimes(nf->host, tv)) == 0;
++}
++
+ /* NtSetInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
+ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+ {
+@@ -1853,7 +2008,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+                     ts[i].tv_nsec = UTIME_OMIT;
+                 }
+             }
+-            if ((nf->fd >= 0 ? futimens(nf->fd, ts) : utimensat(AT_FDCWD, nf->host, ts, 0)) != 0) {
++            if ((nf->fd >= 0 ? futimens(nf->fd, ts) : utimensat(AT_FDCWD, nf->host, ts, 0)) != 0 &&
++                (errno != ENOSYS || !set_times_us(nf, ts))) {
+                 nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
+             }
+         }
+@@ -1861,6 +2017,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -20329,7 +20375,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2247,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2269,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -20372,7 +20418,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2299,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2321,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -20384,7 +20430,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
              }
              free(dir);
          }
-@@ -2386,6 +2527,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2549,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -20434,7 +20480,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..2a84d81e81f1cbe5e505bb335c85a313
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2590,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2612,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -21317,7 +21363,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..a39ba385df1a2c88339f10dd034ea021
          nc_kernel_request_stop(k, f, "system op %d at %08x (%02x %02x %02x)", (int)op, eip,
                                 insn[0], insn[1], insn[2]);
 diff --git a/native/kernel/kernel.h b/native/kernel/kernel.h
-index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb94d9dde2 100644
+index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..780cb6708596682f0164e694f102d4153a626218 100644
 --- a/native/kernel/kernel.h
 +++ b/native/kernel/kernel.h
 @@ -23,8 +23,21 @@
@@ -21395,7 +21441,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  /* mm.c: frees the contiguous blocks that code in [lo, hi) allocated (a mod's
   * buffers once its code is gone); returns their bytes. */
  uint32_t nc_mm_contig_free_callers(NcKernel *k, uint32_t lo, uint32_t hi);
-@@ -333,6 +365,8 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f);
+@@ -333,12 +365,16 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f);
  /* The running thread's slice is due (clock_tick): a ready thread of its
   * priority or above takes over, or it gets another. */
  void nc_ps_slice_end(NcKernel *k, uint64_t now);
@@ -21404,7 +21450,15 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  /* The running thread gives way (Sleep(0), polling) to a ready thread of its
   * priority or above: rescheduled at the back of its priority's queue. */
  void nc_ps_yield(NcKernel *k);
-@@ -360,6 +394,8 @@ static inline uint32_t nc_ps_frame_top(const NcThread *t)
+ /* debug (debug.hakux.ncresume=<id>): NtResumeThread on thread t<id> */
+ void nc_ps_debug_resume(NcKernel *k, unsigned id);
+ void nc_ps_terminate_current(NcKernel *k, uint32_t status);
++/* OGBox 0.0.2: the id of the guest thread running (t<id> in the logs), any thread may read it */
++extern volatile uint32_t g_nc_current_tid;
+ 
+ bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base);
+ /* The stack at base (size bytes, its pages gone) gives its slot back. */
+@@ -360,6 +396,8 @@ static inline uint32_t nc_ps_frame_top(const NcThread *t)
  /* mm.c, ex.c, rtl.c */
  void nc_mm_register(NcKernel *k);
  void nc_mm_note_image(uint32_t base, uint32_t size);
@@ -21413,7 +21467,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  void nc_ex_register(NcKernel *k);
  void nc_rtl_register(NcKernel *k);
  /* Room for len bytes of guest code in the kernel area (stubs), or 0. */
-@@ -369,11 +405,20 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len);
+@@ -369,11 +407,20 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len);
   * hardware is pointed at the kernel (DirectSound's GP mailbox wait). */
  struct HleXbeInfo;
  void nc_kernel_title_fixups(NcKernel *k, const struct HleXbeInfo *xbe);
@@ -21434,7 +21488,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  
  /* ex.c: the console's video settings, as the dashboard keeps them: the
   * EEPROM's video flags (XC_VIDEO_FLAGS: NC_VIDEO_*) and the AV pack the
-@@ -407,6 +452,16 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
+@@ -407,6 +454,16 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
  /* seh.c: RtlRaiseException and RtlUnwind, and their stubs. */
  void nc_seh_register(NcKernel *k);
  void nc_seh_stub(NcKernel *k, NcFrame *f, unsigned ordinal);
@@ -21451,7 +21505,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  /* After the XBE is loaded: what the kernel exposes about the title. xbe_fd:
   * the XBE's host file when it isn't on the disc (else -1). */
  void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct NcDiscFile *xbe, int xbe_fd,
-@@ -447,6 +502,11 @@ uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size);
+@@ -447,6 +504,11 @@ uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size);
  void nc_ke_register(NcKernel *k);
  /* KeSetEvent on a guest event object; returns the previous state. */
  uint32_t nc_ke_set_event(NcKernel *k, uint32_t event);
@@ -21463,7 +21517,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  /* KeClearEvent. */
  void nc_ke_clear_event(NcKernel *k, uint32_t event);
  /* KeInitializeEvent: type 0 notification, 1 synchronization. */
-@@ -583,6 +643,8 @@ void nc_io_close(NcKernel *k, uint32_t object);
+@@ -583,6 +645,8 @@ void nc_io_close(NcKernel *k, uint32_t object);
  /* Completes the overlapped disc reads the reader thread finished (cheap when
   * none did): on every kernel entry and in the scheduler's loop. */
  void nc_io_poll(NcKernel *k);
@@ -21472,7 +21526,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  
  /* What a kernel thunk-table entry for ordinal resolves to, or 0. */
  uint32_t nc_kernel_resolve(const NcKernel *k, unsigned ordinal);
-@@ -621,6 +683,8 @@ void nc_intr_return(NcKernel *k);
+@@ -621,6 +685,8 @@ void nc_intr_return(NcKernel *k);
  void nc_kernel_dump_recent(int fd);
  /* Every guest thread: state, wait objects, top of stack (ps.c). */
  void nc_kernel_dump_threads(NcKernel *k, int fd);
@@ -21481,7 +21535,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  
  /* A guest access to va, a page the guest doesn't have (the host fault in
   * translated code, f its state there): with a page-fault handler of the
-@@ -649,6 +713,15 @@ void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
+@@ -649,6 +715,15 @@ void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
   * (note, async-signal safe); the next system op makes it a hooked address
   * (flush); is_site answers the JIT's hook query; hook emulates it. */
  void nc_x86mmio_note(uint32_t eip);
@@ -21498,7 +21552,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..fa3c7612a73a88a732d88ed46227cdcb
  bool nc_x86mmio_is_site(uint32_t eip);
  bool nc_x86mmio_hook(NcKernel *k, NcFrame *f, uint32_t eip);
 diff --git a/native/kernel/kstate.c b/native/kernel/kstate.c
-index 0d893f53d93f8dd6b8600af46a07e83582d1967a..7c5ac13fbad66a5a96241a29b41a9e30beb04fe9 100644
+index 0d893f53d93f8dd6b8600af46a07e83582d1967a..a4f580bbb127bbdc9c9e80203ff9d8d4e72569f8 100644
 --- a/native/kernel/kstate.c
 +++ b/native/kernel/kstate.c
 @@ -86,6 +86,15 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
@@ -21517,6 +21571,14 @@ index 0d893f53d93f8dd6b8600af46a07e83582d1967a..7c5ac13fbad66a5a96241a29b41a9e30
      NcKState s = {0};
      s.isr_line = 0xFF;
      nc_rec_get(r, &nc_rec_NcKState, &s, v);
+@@ -203,6 +212,7 @@ bool nc_thrd_state_load(NcRd *r, unsigned v)
+         }
+     }
+     k->current = thread_at(k, refs.current);
++    __atomic_store_n(&g_nc_current_tid, k->current ? k->current->id : 0, __ATOMIC_RELAXED);
+     k->slice_thread = thread_at(k, refs.slice_thread);
+     k->dpc_thread = thread_at(k, refs.dpc_thread);
+     k->isr_thread = thread_at(k, refs.isr_thread);
 diff --git a/native/kernel/mm.c b/native/kernel/mm.c
 index 06879c350fa67b35854e780f0b59d9e4ae2550c5..af09177a879024d2ee91f41497544286d334de1f 100644
 --- a/native/kernel/mm.c
@@ -22506,7 +22568,7 @@ index 1e0fc61311ac602212b4bcac9c730ed4d3bb2cc8..054601d191cdcbcbb6cf8ebb4642d884
          nc_log("hakuX-native", "paging: the title reads CR3; page directory at pa %08x", pa);
      }
 diff --git a/native/kernel/ps.c b/native/kernel/ps.c
-index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68e520dd3a 100644
+index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..d00fa1bdb70ac18f66c766b87409d653dbf37a94 100644
 --- a/native/kernel/ps.c
 +++ b/native/kernel/ps.c
 @@ -18,6 +18,7 @@
@@ -22527,7 +22589,21 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
  static void list_init(NcVm *vm, uint32_t head)
  {
      nc_vm_wr32(vm, head, head);
-@@ -320,9 +324,10 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
+@@ -255,8 +259,13 @@ void nc_ps_old_stacks(NcKernel *k)
+ }
+ 
+ /* KPCR fields that follow the running thread. */
++/* OGBox 0.0.2: the guest thread running (its id: t8...), for the host's samplers (which thread a
++ * busy guest is busy in); written at each switch */
++volatile uint32_t g_nc_current_tid;
++
+ static void pcr_enter(NcKernel *k, NcThread *t)
+ {
++    __atomic_store_n(&g_nc_current_tid, t->id, __ATOMIC_RELAXED);
+     nc_vm_wr32(k->vm, k->kpcr_va + PCR_EXCEPTION_LIST, t->exception_list);
+     nc_vm_wr32(k->vm, k->kpcr_va + PCR_STACK_BASE, t->tib_base ? t->tib_base : t->stack_base);
+     nc_vm_wr32(k->vm, k->kpcr_va + PCR_STACK_LIMIT, t->stack_limit);
+@@ -320,9 +329,10 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
      if (!cur || cur != k->slice_thread || cur->state != NC_T_RUNNING) {
          return; /* an ISR or a DPC runs: the slice ends once its thread is back */
      }
@@ -22539,7 +22615,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
              /* the back of its priority's queue (nc_ps_schedule), a new quantum */
              cur->slice_expired = true;
              k->resched = true;
-@@ -336,6 +341,34 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
+@@ -336,6 +346,34 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
      k->slice_due_ns = now + quantum_ns(k);
  }
  
@@ -22574,7 +22650,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
  void nc_ps_yield(NcKernel *k)
  {
      if (k->current) {
-@@ -420,8 +453,8 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
+@@ -420,8 +458,8 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
                  if (!t->ready_seq) {
                      t->ready_seq = ++k->ready_clock;    /* ready since the last pass */
                  }
@@ -22585,7 +22661,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
                      next = t;
                  }
              }
-@@ -442,9 +475,15 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
+@@ -442,9 +480,15 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
              return;
          }
          g_nc_sched.idles++;
@@ -22602,7 +22678,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
      if (next == k->resume_first) {
          k->resume_first = NULL;
      }
-@@ -531,6 +570,7 @@ static uint64_t PsCreateSystemThreadEx(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -531,6 +575,7 @@ static uint64_t PsCreateSystemThreadEx(NcKernel *k, NcFrame *f, const uint32_t *
      }
      t->state = NC_T_READY;
      t->suspend = (a[7] & 0xff) ? 1 : 0;
@@ -22610,7 +22686,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
      nc_log("hakuX-native", "ps: thread %u created: start %08x (%s), stack %08x-%08x, tls %u%s", t->id,
             a[5], a[9] ? "via system routine" : "direct", t->stack_limit, t->stack_base, a[3],
             t->suspend ? ", suspended" : "");
-@@ -645,10 +685,68 @@ void nc_ps_register(NcKernel *k)
+@@ -645,10 +690,68 @@ void nc_ps_register(NcKernel *k)
  
  /* Every thread for a fault or timeout report: what it is doing or waiting
   * for (dispatcher type, signal state), and the top of its stack. */
@@ -22680,7 +22756,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
      const uint64_t now = nc_ke_now_ns();
      for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
          const NcThread *t = &k->threads[i];
-@@ -660,6 +758,12 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
+@@ -660,6 +763,12 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
          const uint32_t esp = cur && k->frame ? nc_frame_gpr(k->frame, NC_ESP) : nc_context_gpr(&t->ctx, NC_ESP);
          int n = snprintf(line, sizeof(line), "hakuX-native-frontier:   thread t%u %s prio %d%s eip %08x esp %08x",
                           t->id, k_state[t->state], t->priority, t->suspend ? " suspended" : "", eip, esp);
@@ -22693,7 +22769,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
          if (t->state == NC_T_WAITING) {
              n += snprintf(line + n, sizeof(line) - (size_t)n, " | wait%s%s", t->wait.wait_all ? " all" : "",
                            t->wait.alertable ? " alertable" : "");
-@@ -667,11 +771,25 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
+@@ -667,11 +776,25 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
                  n += snprintf(line + n, sizeof(line) - (size_t)n, " in %lld ms",
                                (long long)((int64_t)(t->wait.deadline_ns - now) / 1000000));
              }
@@ -22722,7 +22798,7 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..5b4b29382b7b5c2623ef648d9ff99f68
              }
              if (t->wait.cs) {
                  n += snprintf(line + n, sizeof(line) - (size_t)n, " cs %08x", t->wait.cs);
-@@ -693,7 +811,32 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
+@@ -693,7 +816,32 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
                  }
              }
          }

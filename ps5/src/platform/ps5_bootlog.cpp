@@ -403,6 +403,10 @@ void Heartbeat()
   if (const pshakux_status_fn status = s_status.load(std::memory_order_acquire))
     status(line, sizeof(line));
   pshakux_log("alive: t=%llu ms%s%s", ms, line[0] ? " " : "", line);
+  // 0.0.2: on the disk at each heartbeat: a crash of the whole console (a kernel panic loses what
+  // the cache held) leaves the log as of the last one, not of the last relaunch
+  if (s_log_fd >= 0)
+    fsync(s_log_fd);
 }
 
 void* WatcherMain(void*)
@@ -660,6 +664,10 @@ extern "C" void pshakux_diag_start(const char* title_name)
     pshakux_log("boot log: %s cannot be written (%s): klog only", log_path, std::strerror(errno));
 
   pshakux_sandbox_log(&LogSandboxLine);
+  // 0.0.2: the start's first lines on the disk (Heartbeat): a console that crashes right after a
+  // relaunch shows whether the new instance got this far
+  if (s_log_fd >= 0)
+    fsync(s_log_fd);
   pshakux_crash_install();
   LogMachine();
   pshakux_log("standard error: %s", pshakux_diag_owns_stderr() ? "into this log, a line at a time; the watcher copies it on to klog"

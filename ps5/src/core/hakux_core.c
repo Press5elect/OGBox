@@ -475,6 +475,13 @@ static void *sampler_thread(void *arg)
         uint32_t regs[SLOTS][9];
         bool have_regs[SLOTS] = {false};
         unsigned taken = 0, idle = 0, kcall = 0, host = 0;
+        /* 0.0.2: the guest code's samples by the guest thread running (hakuX's g_nc_current_tid), each
+         * with its busiest EIP: a busy thread that waits for another shows what the other does */
+        enum { TIDS = 16, TEIPS = 8 };
+        struct {
+            uint32_t tid, n, eip[TEIPS], cnt[TEIPS];
+        } th[TIDS];
+        unsigned nth = 0;
         for (unsigned i = 0; i < SAMPLES; i++) {
             uint32_t pc = 0;
             const struct timespec ts = {0, 2500000};
@@ -494,6 +501,27 @@ static void *sampler_thread(void *arg)
                     host++;
                 }
                 continue;
+            }
+            {
+                const uint32_t tid = __atomic_load_n(&g_nc_current_tid, __ATOMIC_RELAXED);
+                unsigned t = 0;
+                while (t < nth && th[t].tid != tid) {
+                    t++;
+                }
+                if (t == nth && nth < TIDS) {
+                    memset(&th[nth], 0, sizeof(th[nth]));
+                    th[nth++].tid = tid;
+                }
+                if (t < nth) {
+                    th[t].n++;
+                    for (unsigned e = 0; e < TEIPS; e++) {
+                        if (!th[t].cnt[e] || th[t].eip[e] == pc) {
+                            th[t].eip[e] = pc;
+                            th[t].cnt[e]++;
+                            break;
+                        }
+                    }
+                }
             }
             unsigned k = (pc * 2654435761u) >> 26 & (SLOTS - 1);
             for (unsigned j = 0; j < SLOTS; j++, k = (k + 1) & (SLOTS - 1)) {
@@ -542,6 +570,30 @@ static void *sampler_thread(void *arg)
         pshakux_log("guest: %u samples in 1 s: halted %u%%, kernel calls %u%%, host %u%%; busiest guest EIPs:%s%s%s",
                     taken, idle * 100u / taken, kcall * 100u / taken, host * 100u / taken, top[0] ? top : " none",
                     code[0] ? " | code at the first -8: " : "", code);
+        if (nth > 1) {
+            char by[400];
+            int b = 0;
+            by[0] = 0;
+            for (unsigned r = 0; r < 6 && b < (int)sizeof(by) - 48; r++) {
+                unsigned best = nth;
+                for (unsigned t = 0; t < nth; t++) {
+                    if (th[t].n && (best == nth || th[t].n > th[best].n)) {
+                        best = t;
+                    }
+                }
+                if (best == nth) {
+                    break;
+                }
+                unsigned e1 = 0;
+                for (unsigned e = 1; e < TEIPS; e++) {
+                    e1 = th[best].cnt[e] > th[best].cnt[e1] ? e : e1;
+                }
+                b += snprintf(by + b, sizeof(by) - (size_t)b, "%s t%u %u%% (most at %08x)", r ? "," : "", th[best].tid,
+                              th[best].n * 100u / taken, th[best].eip[e1]);
+                th[best].n = 0;
+            }
+            pshakux_log("guest: the guest code's samples by thread:%s", by);
+        }
         if (first_slot >= 0 && cnt[first_slot] == 0) {
             /* the busiest EIP's registers (its last sample) and what they point at: a loop that
              * waits for a value shows the value, where it lives, and (10 s later) whether it moved */
