@@ -130,6 +130,7 @@ native core's work tree (oldest first; author: subject):
   c0097b6e5f Claude: io: handles on the same host file share one descriptor; a folder the host can't read is said
   0518226e5e Claude: io: host writes on the reader thread, as reads are; what reads a host file waits for them
   80f6dfcf3f Claude: report gate: a page whose reports are never written isn't waited for until one is
+  72ebe37d33 Claude: report gate: never-written reports tracked by their address, not their page
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..576189c5492a7f32688bbe5607ce343bf338df39 100644
@@ -493,7 +494,7 @@ index cb83ba68311d1c7af4c102380d86e44b37ff0eb1..61a7f2096863ee8cb61a5dce9c5920b1
   * (diagnostics: the hitch monitor); false if the host doesn't count them. */
  bool hle_host_disc_stats(uint64_t *ops, uint64_t *bytes, uint64_t *ns);
 diff --git a/hw/xbox/hle/mem/barrier.c b/hw/xbox/hle/mem/barrier.c
-index 36b8509d5e968c05ddd70e125354eeb6500e5419..57110d3b8b92072cbbed3945718efc7dd4a64d74 100644
+index 36b8509d5e968c05ddd70e125354eeb6500e5419..a08efb7bcdc9351bbb6539515e23f5304cfff341 100644
 --- a/hw/xbox/hle/mem/barrier.c
 +++ b/hw/xbox/hle/mem/barrier.c
 @@ -1,6 +1,7 @@
@@ -535,49 +536,92 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..57110d3b8b92072cbbed3945718efc7d
  static struct {
      uint32_t page[RPT_PAGES];           /* pa >> 12 */
      bool shut[RPT_PAGES];               /* without guest access */
-@@ -638,7 +661,14 @@ static struct {
+@@ -638,7 +661,37 @@ static struct {
      } e[RPT_PENDING];
      uint32_t seq;
      uint64_t waits, ns, timeouts, held, lost;
-+    /* OGBox 0.0.2: a page whose reads were given up on RPT_MISSES times in a row, no report of
-+     * it written meanwhile, isn't gated any more (its reports are read as they are) until the back
-+     * end writes one of its reports again. The Punisher reads a page of tests the back end never
-+     * writes ~4 times a second: each read waited out the 250 ms, the game at 4-6 fps for a minute. */
-+    uint8_t misses[RPT_PAGES];
-+    bool off[RPT_PAGES];
++    /* OGBox 0.0.2: a report (its address) given up on RPT_MISSES times in a row, none of it
++     * written meanwhile, isn't gated any more (read as it is) until the back end writes it again.
++     * The Punisher reads tests the back end never writes ~4 times a second (others on the same
++     * page are written): each read waited out the 250 ms, the game at 4-6 fps for a minute. */
++    struct {
++        uint32_t pa;
++        uint8_t misses;
++        bool off;
++        uint64_t at;                    /* the timeout that counted it last (once a timeout) */
++    } miss[64];
++    unsigned nmiss;
  } g_rpt;
 +#define RPT_MISSES 3
++
++/* The miss record of a report's address (made when add), or NULL. Under the report lock. */
++static void *rpt_miss(uint32_t pa, bool add)
++{
++    for (unsigned i = 0; i < g_rpt.nmiss; i++) {
++        if (g_rpt.miss[i].pa == pa) {
++            return &g_rpt.miss[i];
++        }
++    }
++    if (!add || g_rpt.nmiss >= sizeof(g_rpt.miss) / sizeof(g_rpt.miss[0])) {
++        return NULL;
++    }
++    g_rpt.miss[g_rpt.nmiss].pa = pa;
++    g_rpt.miss[g_rpt.nmiss].misses = 0;
++    g_rpt.miss[g_rpt.nmiss].off = false;
++    return &g_rpt.miss[g_rpt.nmiss++];
++}
++typedef __typeof__(g_rpt.miss[0]) RptMiss;
  static int g_rpt_lock;
  static uint32_t (*g_rpt_scout)(void);
  static bool (*g_rpt_held)(void);
-@@ -701,7 +731,7 @@ void hle_barrier_report_pushed(uint32_t pa, uint32_t frame)
+@@ -701,7 +754,8 @@ void hle_barrier_report_pushed(uint32_t pa, uint32_t frame)
      while (k < RPT_PENDING && g_rpt.e[k].seq) {
          k++;
      }
 -    if (pg < 0 || k == RPT_PENDING) {
-+    if (pg < 0 || k == RPT_PENDING || g_rpt.off[pg]) {
++    const RptMiss *m = rpt_miss(pa, false);
++    if (pg < 0 || k == RPT_PENDING || (m && m->off)) {
          g_rpt.lost++;                   /* not gated: read as before */
          rpt_unlock();
          return;
-@@ -746,7 +776,17 @@ void hle_barrier_report_written(uint32_t pa)
+@@ -746,7 +800,17 @@ void hle_barrier_report_written(uint32_t pa)
      if (best >= 0) {
          g_rpt.e[best].seq = 0;
      }
-+    const int pg = rpt_page(pa);
++    RptMiss *m = rpt_miss(pa, false);
 +    bool back = false;
-+    if (pg >= 0) {
-+        g_rpt.misses[pg] = 0;
-+        back = g_rpt.off[pg];
-+        g_rpt.off[pg] = false;
++    if (m) {
++        m->misses = 0;
++        back = m->off;
++        m->off = false;
 +    }
      rpt_unlock();
 +    if (back) {
-+        hle_log("hakuX-hle-pb", "report gate: page %08x's reports written again: gated again", pa & ~4095u);
++        hle_log("hakuX-hle-pb", "report gate: the report at %08x written again: gated again", pa);
 +    }
      if (best >= 0 && __atomic_load_n(&g_rpt_waiting, __ATOMIC_ACQUIRE)) {
          hle_sem_post(&g_rpt_sem);
      }
-@@ -815,9 +855,17 @@ static bool rpt_access(uint32_t pa)
+@@ -807,17 +871,32 @@ static bool rpt_access(uint32_t pa)
+             if (late && (stuck || hle_now_ns() - t0 > RPT_WAIT_NS)) {
+                 /* the back end won't write them now (stuck), or at all (a
+                  * test the decoder dropped): not waited for again */
++                uint32_t first_pa = 0, cleared = 0, undecoded = 0;
+                 for (unsigned k = 0; k < RPT_PENDING; k++) {
+                     if (g_rpt.e[k].seq && g_rpt.e[k].pa >> 12 == g_rpt.page[pg] &&
+                         (int32_t)(g_rpt.e[k].frame - frame) < 0) {
++                        first_pa = cleared++ ? first_pa : g_rpt.e[k].pa;
++                        undecoded += !g_rpt.e[k].decoded;
+                         g_rpt.e[k].seq = 0;
++                        RptMiss *m = stuck ? NULL : rpt_miss(g_rpt.e[k].pa, true);
++                        if (m && !m->off && (m->misses == 0 || m->at != g_rpt.timeouts) &&
++                            (m->at = g_rpt.timeouts, ++m->misses >= RPT_MISSES)) {
++                            m->off = true;  /* 0.0.2: never written: not waited for any more */
++                            hle_log("hakuX-hle-pb", "report gate: the report at %08x was given up on %u times in a "
++                                    "row: read as it is from now on (until it is written)", m->pa,
++                                    (unsigned)RPT_MISSES);
++                        }
+                     }
                  }
                  if (stuck) {
                      g_rpt.held++;
@@ -586,14 +630,10 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..57110d3b8b92072cbbed3945718efc7d
 -                            g_rpt.page[pg] << 12);
 +                } else {
 +                    if (g_rpt.timeouts++ < 8) {
-+                        hle_log("hakuX-hle-pb", "report gate: page %08x's reports not written in %lld ms (given up)",
-+                                g_rpt.page[pg] << 12, (long long)(RPT_WAIT_NS / 1000000));
-+                    }
-+                    if (++g_rpt.misses[pg] >= RPT_MISSES && !g_rpt.off[pg]) {
-+                        g_rpt.off[pg] = true;   /* 0.0.2: never written: not waited for any more */
-+                        hle_log("hakuX-hle-pb", "report gate: page %08x's reports were given up on %u times in a "
-+                                "row: read as they are from now on (until one is written)",
-+                                g_rpt.page[pg] << 12, (unsigned)RPT_MISSES);
++                        hle_log("hakuX-hle-pb", "report gate: page %08x's reports not written in %lld ms (given "
++                                "up): %u of them (the first at %08x), %u the decoder hadn't reached",
++                                g_rpt.page[pg] << 12, (long long)(RPT_WAIT_NS / 1000000), (unsigned)cleared,
++                                (unsigned)first_pa, (unsigned)undecoded);
 +                    }
                  }
                  late = false;
