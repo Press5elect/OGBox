@@ -456,6 +456,64 @@ static void describe_reg(const char *name, uint32_t v, char *out, size_t len)
 #define SAMPLER_EIP_SYSOP 0x08000000u
 #define SAMPLER_EIP_IDLE 0xFFFFFFFFu
 
+/* 0.0.2: PSHAKUX_PEEK (an env line in boot.txt): guest memory the sampler logs with its line, for a
+ * loop whose state lives a few pointers away. Chains separated by ';', each an address and offsets,
+ * ':' between: "0x01dbf89c:0:0:4:0:0x1c" reads [0x01dbf89c+0], then [that+0], [that+4], [that+0],
+ * [that+0x1c], each step logged, and 8 dwords at the last address reached. */
+static bool vm_read32(uint32_t va, uint32_t *v)
+{
+    if (!g_core.vm.pte || nc_vm_phys(&g_core.vm, va & ~3u) == UINT32_MAX ||
+        nc_vm_phys(&g_core.vm, (va & ~3u) + 3) == UINT32_MAX) {
+        return false;
+    }
+    *v = nc_vm_rd32(&g_core.vm, va);
+    return true;
+}
+
+static void log_peeks(void)
+{
+    static char spec[512];
+    static int have = -1;
+    if (have < 0) {
+        const char *e = getenv("PSHAKUX_PEEK");
+        have = e && e[0];
+        if (have) {
+            snprintf(spec, sizeof(spec), "%s", e);
+        }
+    }
+    if (!have) {
+        return;
+    }
+    char work[512];
+    snprintf(work, sizeof(work), "%s", spec);
+    for (char *save1, *chain = strtok_r(work, ";", &save1); chain; chain = strtok_r(NULL, ";", &save1)) {
+        char line[700];
+        int n = snprintf(line, sizeof(line), "guest: peek %s:", chain);
+        char *save2;
+        char *tok = strtok_r(chain, ":", &save2);
+        uint32_t at = tok ? (uint32_t)strtoul(tok, NULL, 0) : 0;
+        bool ok = tok != NULL;
+        for (tok = strtok_r(NULL, ":", &save2); ok && tok && n < (int)sizeof(line) - 40;
+             tok = strtok_r(NULL, ":", &save2)) {
+            const uint32_t off = (uint32_t)strtoul(tok, NULL, 0);
+            uint32_t v;
+            ok = vm_read32(at + off, &v);
+            n += ok ? snprintf(line + n, sizeof(line) - (size_t)n, " [%08x]=%08x", at + off, v)
+                    : snprintf(line + n, sizeof(line) - (size_t)n, " [%08x] unmapped", at + off);
+            at = v;
+        }
+        if (ok) {
+            n += snprintf(line + n, sizeof(line) - (size_t)n, " | at %08x:", at);
+            for (unsigned i = 0; i < 8 && n < (int)sizeof(line) - 12; i++) {
+                uint32_t v;
+                n += vm_read32(at + 4 * i, &v) ? snprintf(line + n, sizeof(line) - (size_t)n, " %08x", v)
+                                               : snprintf(line + n, sizeof(line) - (size_t)n, " --------");
+            }
+        }
+        pshakux_log("%s", line);
+    }
+}
+
 static void *sampler_thread(void *arg)
 {
     (void)arg;
@@ -594,6 +652,7 @@ static void *sampler_thread(void *arg)
             }
             pshakux_log("guest: the guest code's samples by thread:%s", by);
         }
+        log_peeks();
         if (first_slot >= 0 && cnt[first_slot] == 0) {
             /* the busiest EIP's registers (its last sample) and what they point at: a loop that
              * waits for a value shows the value, where it lives, and (10 s later) whether it moved */
