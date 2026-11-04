@@ -34,6 +34,12 @@ extern "C" {
 /// (ps5_crash.cpp) and starts the watcher thread (klog copy and heartbeat).
 void pshakux_diag_start(const char* title_name);
 
+/// OGBox 0.0.2: before pshakux_diag_start, nonzero for a relaunch of the title (back to the game
+/// list, or into a game: ps5_relaunch.h): the log goes on, one file for the session from the PS5's
+/// menu to the title's close. A start from the menu begins a new one (the session before kept as
+/// ogbox-boot.previous.log), and so does a session's log past 48 MiB.
+void pshakux_diag_continue(int relaunched);
+
 /// One line to the boot log ("[   1.234] text") and to klog. From any thread; not from a
 /// signal handler (the crash report has its own writer).
 void pshakux_log(const char* format, ...) __attribute__((format(printf, 1, 2)));

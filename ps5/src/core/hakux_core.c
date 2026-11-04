@@ -34,6 +34,7 @@
 #include "native/core/trainer.h"
 #include "native/dev/usb.h"
 #include "native/hle/hle_native.h"
+#include "hw/xbox/hle/pb/pbdraw.h"
 #include "native/kernel/kernel.h"
 #if defined(NC_CPU_NATIVE)
 #include "native/cpu/vmhost.h"
@@ -653,6 +654,11 @@ bool pshx_core_widescreen(void)
 void pshx_core_pause(bool on)
 {
     nc_pause_set(on);
+}
+
+void pshx_core_drawlog(int n, unsigned delay_ms)
+{
+    hle_pbd_drawlog(n, delay_ms);
 }
 
 bool pshx_core_save_state(const char *path, char *why, unsigned why_size)

@@ -68,6 +68,9 @@ char s_title_dir[160] = PS5_APP_ROOT;
 char s_prefix[40] = "[OGBox] ";
 int s_log_fd = -1;
 int s_read_fd = -1; // the watcher's own descriptor of the log, to copy standard error on to klog
+bool s_continue = false;   // pshakux_diag_continue: a relaunch's
+bool s_continued = false;  // the log went on from the session's earlier runs
+constexpr off_t LOG_CONTINUE_MAX = off_t(48) << 20;
 #if !defined(__PROSPERO__)
 int s_term_fd = 2; // the host reference build's terminal: the standard error the process started with
 #endif
@@ -245,10 +248,13 @@ void LogHeader()
   char when[64] = "";
   if (const std::tm* const tm = std::gmtime(&now))
     std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S UTC", tm);
+  if (s_continued)
+    pshakux_log("---------------------------------------------------------------------------------------------");
 #if defined(__PROSPERO__)
-  pshakux_log("OGBox (%s) starts, %s", TITLE_ID, when);
+  pshakux_log("OGBox (%s) starts%s, %s", TITLE_ID, s_continued ? " again (a relaunch: the session's log goes on)" : "", when);
 #else
-  pshakux_log("OGBox (%s) starts, %s (host reference build)", TITLE_ID, when);
+  pshakux_log("OGBox (%s) starts%s, %s (host reference build)", TITLE_ID,
+              s_continued ? " again (a relaunch: the session's log goes on)" : "", when);
 #endif
   pshakux_log("build identity: %s", pshakux_build_identity());
   pshakux_log("build: OGBox %s, revision %.12s%s, built %s; RADV %s; payload SDK %.12s", pshakux_build_version(),
@@ -277,7 +283,8 @@ void LogHeader()
       pshakux_log("system: %s %s %s (host reference build)", name.sysname, name.release, name.machine);
   }
 #endif
-  pshakux_log("title folder: %s (this log: ogbox-boot.log, the run before: ogbox-boot.previous.log)", s_title_dir);
+  pshakux_log("title folder: %s (this log: ogbox-boot.log, the session since OGBox was started from the PS5's menu; "
+              "the session before: ogbox-boot.previous.log)", s_title_dir);
 }
 
 void LogMachine()
@@ -571,6 +578,11 @@ void LogSandboxLine(const char* line)
 }
 } // namespace
 
+extern "C" void pshakux_diag_continue(int relaunched)
+{
+  s_continue = relaunched != 0;
+}
+
 extern "C" void pshakux_diag_start(const char* title_name)
 {
   clock_gettime(CLOCK_MONOTONIC, &s_start);
@@ -581,14 +593,25 @@ extern "C" void pshakux_diag_start(const char* title_name)
     std::snprintf(s_prefix, sizeof(s_prefix), "[%s] ", title_name);
   pshakux_thread_named("main");
 
-  // The boot log; the previous run's is kept, since a crash report is the last thing in it.
+  // The boot log; the previous session's is kept, since a crash report is the last thing in it.
   // (The previous log goes first: a rename onto a file is not trusted on an exFAT drive.)
+  // 0.0.2: a relaunch (back to the game list, into a game) goes on in the session's log.
   char log_path[224], previous_path[224];
   std::snprintf(log_path, sizeof(log_path), "%s/ogbox-boot.log", s_title_dir);
   std::snprintf(previous_path, sizeof(previous_path), "%s/ogbox-boot.previous.log", s_title_dir);
-  (void)unlink(previous_path);
-  (void)rename(log_path, previous_path);
-  s_log_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0666);
+  struct stat log_st;
+  s_continued = s_continue && stat(log_path, &log_st) == 0 && log_st.st_size < LOG_CONTINUE_MAX;
+  if (s_continued)
+  {
+    s_log_fd = open(log_path, O_WRONLY | O_APPEND, 0666);
+    s_continued = s_log_fd >= 0;
+  }
+  if (!s_continued)
+  {
+    (void)unlink(previous_path);
+    (void)rename(log_path, previous_path);
+    s_log_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0666);
+  }
   (void)chmod(log_path, 0666);
   (void)chmod(previous_path, 0666);
 
@@ -620,6 +643,12 @@ extern "C" void pshakux_diag_start(const char* title_name)
       close(second);
     }
     s_read_fd = open(log_path, O_RDONLY);
+    // klog has the earlier runs' lines already: from the end on
+    if (s_continued && s_read_fd >= 0)
+    {
+      const off_t end = lseek(s_read_fd, 0, SEEK_END);
+      s_forward_offset = end > 0 ? end : 0;
+    }
   }
 
 #if defined(__PROSPERO__)

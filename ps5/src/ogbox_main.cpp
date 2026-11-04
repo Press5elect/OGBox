@@ -4480,7 +4480,12 @@ public:
 	 * the game's own settings and its mods, patches and cheats (the screens of the game list), restart
 	 * and quit. PSFlyCast's and Crux2's: a panel from the right, the game dimmed behind. */
 
-	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SLOT, QR_LEFT, QR_SETTINGS, QR_MODS, QR_RESTART, QR_QUIT, QR_COUNT };
+	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SLOT, QR_LEFT, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT,
+		QR_COUNT };
+	/* 0.0.2: the quick menu's "Log what the GPU draws": this many draws (a few frames of a game),
+	 * from this long after it closes (time to bring the problem on screen) */
+	static constexpr int kDrawLogDraws = 5000;
+	static constexpr unsigned kDrawLogDelayMs = 5000;
 
 	void quickOpen()
 	{
@@ -4865,6 +4870,14 @@ public:
 				swallowNav = true;
 			}
 			break;
+		case QR_DRAWLOG:
+			/* 0.0.2: for a problem report: what the GPU draws a few seconds after the game goes on
+			 * (time to bring the problem on screen) goes into the boot log */
+			pshx_core_drawlog(kDrawLogDraws, kDrawLogDelayMs);
+			pshakux_log("quick menu: %d of the GPU's draws go into this log, from %u s after the game goes on "
+			            "(a problem report)", kDrawLogDraws, kDrawLogDelayMs / 1000);
+			quickClose();
+			break;
 		case QR_RESTART:
 			if (now < qm.restartArmed) {
 				qm.pendingRestart = true;
@@ -4946,6 +4959,7 @@ public:
 			{ "Where you left off", left.used ? ogbox::dateText(left.mtime) : std::string("none yet"), !left.used },
 			{ "Game settings", "next start", runKey.empty() },
 			{ "Mods, patches, cheats", "next start", runKey.empty() },
+			{ "Log what the GPU draws", "starts 5 s after you resume", false },
 			{ restartArmed ? "Restart: press again" : "Restart the game", "", false },
 			{ "Quit the game", "", false },
 		};

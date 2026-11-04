@@ -96,6 +96,10 @@ bool pshx_core_widescreen(void);
 
 /* Paused: the guest's clock and sound stop, the frame stays (the quick menu, the home screen). */
 void pshx_core_pause(bool on);
+/* OGBox 0.0.2: n of the GPU's draws into the boot log (hakuX's draw log: each draw's target and
+ * textures, the targets' events among them), from delay_ms from now on, for a problem report: the
+ * quick menu's (the delay: time to bring the problem on screen after it closes). */
+void pshx_core_drawlog(int n, unsigned delay_ms);
 /* OGBox 0.1.53: the running game saved to path (hakuX's savestate: the whole console, its hard disk's
  * open files included). Not on the emulated CPU's thread: it waits for the guest to reach its pause
  * point (paused or not) and for the write, a second or so; a game writing a file of its own at

@@ -26,6 +26,7 @@
 #include "vulkanexamplebase.h"
 #include "ps5_samples.h"
 #include "platform/ps5_bootlog.h"
+#include "platform/ps5_relaunch.h"
 #include "platform/ps5_takeover.h"
 
 #include <sys/stat.h>
@@ -386,6 +387,15 @@ int main(int argc, char **argv)
 {
 	// OGBox (from Kelvin): the boot log first (ogbox-boot.log in the title folder: its header, standard error
 	// a line at a time, the crash report, the heartbeat), so everything after is in it.
+	// OGBox 0.0.2: a relaunch of the title (its first argument the marker, ps5_relaunch.h) goes on in
+	// the session's log, one file from the PS5's menu to the title's close
+	{
+		bool relaunched = false;
+		for (int i = 0; i < argc && argv; i++) {
+			relaunched |= argv[i] && !std::strcmp(argv[i], PSHAKUX_RELAUNCHED);
+		}
+		pshakux_diag_continue(relaunched);
+	}
 	pshakux_diag_start(PS5_TITLE_NAME);
 	{
 		// OGBox 0.1.3: the title folder may be named otherwise than /app0 now (out of the

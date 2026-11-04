@@ -121,6 +121,7 @@ native core's work tree (oldest first; author: subject):
   bcbe38c445 Claude: codepatch: on the PS5, a cpuid right after its leaf is loaded traps to the kernel's Pentium III
   b903982398 Claude: xdk_res: a linear texture's pitch below its width's bytes is read as the NV2A reads it
   012e63636c Claude: xemu's fixes since the fork (26fcbe54f1, Jan 2026) that hakuX's own code lacked
+  593ece4aba Claude: pbdraw: one memory bound in two 32-bit colour formats is one image; the host can ask for a draw log
 
 diff --git a/hw/xbox/hle/front/cmd.h b/hw/xbox/hle/front/cmd.h
 index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cfb44269e4 100644
@@ -608,7 +609,7 @@ index 0000000000000000000000000000000000000000..90e2a0c0c29c3d6a2c795ca9a25197a6
 +
 +#endif
 diff --git a/hw/xbox/hle/pb/pbdraw.c b/hw/xbox/hle/pb/pbdraw.c
-index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e815af8328 100644
+index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..c1ca5b875c19c832abe766011e2ed13779dadd98 100644
 --- a/hw/xbox/hle/pb/pbdraw.c
 +++ b/hw/xbox/hle/pb/pbdraw.c
 @@ -8,8 +8,10 @@
@@ -649,7 +650,15 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      uint32_t blk_off;
      bool blk_ok, blk_ff;
      uint64_t blk_reused;
-@@ -299,6 +303,12 @@ static int g_dlog_left;
+@@ -281,6 +285,7 @@ static void coh_serve(void);
+ static void coh_shown(PbObj *o);
+ static bool coh_display_over(uint32_t pa, uint32_t len);
+ static bool coh_len(const PbObj *o, uint32_t *len);
++static void coh_snap_take(uint32_t pa, uint32_t len, CohSnap *s);
+ /* Presents (coh_shown: a swap, a display start), and how many ago a frame
+  * buffer still counts as one (a flip chain's take turns) */
+ static uint64_t g_coh_shows;
+@@ -299,6 +304,12 @@ static int g_dlog_left;
  /* The decode thread's waits, for the log line (hle_pbd_phase) */
  static volatile int g_phase;            /* 0 none, 1 arena space, 2 ring space */
  
@@ -662,7 +671,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  static uint32_t arena(uint32_t len, uint8_t **ptr)
  {
      g_phase = 1;
-@@ -348,7 +358,9 @@ static void ff_regs_init(void)
+@@ -348,7 +359,9 @@ static void ff_regs_init(void)
          { 0x0480, 0x07C0 },     /* modelview, inverse, composite, texture matrices */
          { 0x0840, 0x0940 },     /* texgen planes */
          { 0x09D0, 0x0A60 },     /* fog plane, specular, ambient, viewport offset, point, eye */
@@ -672,7 +681,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          { 0x1E28, 0x1E40 },     /* back specular */
      };
      memset(g_ff_regs, 0, sizeof(g_ff_regs));
-@@ -555,6 +567,29 @@ static uint32_t tile_pitch(uint32_t bytes)
+@@ -555,6 +568,29 @@ static uint32_t tile_pitch(uint32_t bytes)
      return 0;
  }
  
@@ -702,7 +711,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  static void linear_size(uint32_t pitch, uint32_t xfmt, uint32_t sx, uint32_t sy, uint32_t *w,
                          uint32_t *h)
  {
-@@ -628,26 +663,55 @@ static void restored_pixels(PbObj *o)
+@@ -628,26 +664,55 @@ static void restored_pixels(PbObj *o)
      }
  }
  
@@ -774,7 +783,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  }
  
  /* The object for a surface (memory, format, pitch, size), made the first
-@@ -665,12 +729,27 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
+@@ -665,12 +730,27 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
      uint32_t best = 0;
      uint64_t best_area = 0;
      for (unsigned i = 0; i < g_pd.nobjs; i++) {
@@ -806,7 +815,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          }
          const uint64_t area = (uint64_t)d->w * d->h;
          if (pitch && d->w == w && d->h >= h && area > best_area) {
-@@ -694,10 +773,12 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
+@@ -694,10 +774,12 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
              return 0;
          }
          coh_forget(o);
@@ -823,7 +832,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      }
      memset(o, 0, sizeof(*o));
      o->id = g_pd.next_id++;
-@@ -794,26 +875,44 @@ static bool edge_dirty(uint32_t page);
+@@ -794,26 +876,44 @@ static bool edge_dirty(uint32_t page);
   * (tex_written): the pages wholly inside the target count by their dirty
   * bits, the first and last by the target's own bytes on them against their
   * hashes at the last sync. */
@@ -875,7 +884,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      const bool last = pl != p0 && edge_dirty(pl) && span_hash(pl, hi - pl) != h[1];
      return mid || first || last;
  }
-@@ -965,7 +1064,7 @@ static void writeback(uint32_t id)
+@@ -965,7 +1065,7 @@ static void writeback(uint32_t id)
      const HleSurfDesc *d = id ? object_desc(id) : NULL;
      const HleFmtInfo *fi = d ? hle_fmt_info(d->xfmt) : NULL;
      const PbObj *o = d ? obj_of(id) : NULL;
@@ -884,7 +893,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          ((uint64_t)d->pitch * d->h > WRITEBACK_MAX && !(cpu_wb && o && o->cpu_used))) {
          return;
      }
-@@ -1016,35 +1115,6 @@ static void zwrite_from_colour(uint32_t ds)
+@@ -1016,35 +1116,6 @@ static void zwrite_from_colour(uint32_t ds)
      }
  }
  
@@ -920,7 +929,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  /* A video mode set since the display last followed one: the display is its
   * size. CreateDevice binds its back buffer before it sets the mode, and the
   * back buffer needn't be the frame shown: Hunter: The Reckoning - Redeemer
-@@ -1143,10 +1213,10 @@ static void sync_rt(void)
+@@ -1143,10 +1214,10 @@ static void sync_rt(void)
          }
      }
      uint32_t rt = cx_fmt ? object_view(cpa, cx_fmt, swz ? 0 : hle_kelvin_color_xfmt(cf, true),
@@ -933,7 +942,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      g_pd.binds++;
      for (unsigned i = 0; i < g_pd.nobjs; i++) {
          if (g_pd.objs[i].id == rt || g_pd.objs[i].id == ds) {
-@@ -1181,8 +1251,8 @@ static void sync_rt(void)
+@@ -1181,8 +1252,8 @@ static void sync_rt(void)
          g_pd.frame_aa_x = g_pd.aa_x;
          g_pd.frame_aa_y = g_pd.aa_y;
      }
@@ -944,7 +953,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      uint32_t wc[17];
      wc[0] = R(NV097_SET_WINDOW_CLIP_TYPE);
      for (unsigned i = 0; i < 16; i++) {
-@@ -1193,21 +1263,27 @@ static void sync_rt(void)
+@@ -1193,21 +1264,27 @@ static void sync_rt(void)
          g_pd.vp_key[0] = R(NV097_SET_SURFACE_CLIP_HORIZONTAL);
          g_pd.vp_key[1] = R(NV097_SET_SURFACE_CLIP_VERTICAL);
          memcpy(g_pd.wc_key, wc, sizeof(wc));
@@ -985,7 +994,99 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          hle_fe_commit();
      }
  }
-@@ -1315,6 +1391,23 @@ static void clear(uint32_t flags)
+@@ -1244,6 +1321,8 @@ static void rt_first_write(bool full)
+  * clear's, not in rt_first_write: a draw's comes after its arena blocks,
+  * and a landing kicks and waits; with the GPU idle the arena starts again
+  * at 0, over them. Once an object: never drawn into, its memory newer. */
++static void twin_take(PbObj *o);
++
+ static void rt_first_land(bool full)
+ {
+     PbObj *o = g_pd.rt_fresh && !full ? obj_of(g_pd.rt) : NULL;
+@@ -1251,6 +1330,82 @@ static void rt_first_land(bool full)
+     if (o && !o->written && coh_managed(o, &len)) {
+         coh_land_over(o, len);
+     }
++    if (o) {
++        twin_take(o);
++    }
++}
++
++/* OGBox 0.0.2: the bound target's memory is another colour target's too, of
++ * the same pitch and size in another 32-bit format (an A8R8G8B8 back buffer
++ * bound again as X8R8G8B8: each format is an object of its own, object()),
++ * and that one was written since: its image into the target's before the
++ * target's first write since its bind (rt_first_land: not a clear of all of
++ * it, which needs none of it), the NV2A having the one memory for both. The
++ * NV2A's 32-bit colour formats are all R8G8B8 in the same bytes (A8, X8,
++ * X1A7), so the copy is the memory's; 16-bit ones (R5G6B5, X1R5G5B5) aren't
++ * taken. The CPU's writes there go into the other's image first
++ * (coh_first_write), as target_part's do. Legacy of Kain: Defiance blends a
++ * blur into its back buffer bound as X8R8G8B8 after drawing the scene into
++ * it as A8R8G8B8 (surfaces 1 and 160 over 005bc000): the X8R8G8B8 image
++ * never had the scene, the blur went over its own earlier frames, and the
++ * picture piled up in trails (telekinesis). HAKUX_HLE_PB_TWINS=0: not
++ * taken (A/B). */
++static void twin_take(PbObj *o)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("HAKUX_HLE_PB_TWINS");
++        on = !(e && !strcmp(e, "0"));
++        hle_log("hakuX-hle-pb", "twin targets (one memory bound in two 32-bit colour formats): %s",
++                on ? "kept as one (HAKUX_HLE_PB_TWINS=0: apart)" : "apart (HAKUX_HLE_PB_TWINS=0)");
++    }
++    const HleFmtInfo *fi = on && !o->cube && !o->d.parent ? hle_fmt_info(o->d.xfmt) : NULL;
++    if (!fi || (fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) || fi->bpp != 32) {
++        return;
++    }
++    PbObj *src = NULL;
++    for (unsigned i = 0; i < g_pd.nobjs; i++) {
++        PbObj *x = &g_pd.objs[i];
++        const HleFmtInfo *xi = x != o && x->id && !x->cube && !x->d.parent && x->d.pa == o->d.pa &&
++                               x->d.pitch == o->d.pitch && x->d.xfmt != o->d.xfmt && x->d.w == o->d.w &&
++                               (x->d.pitch || x->d.h == o->d.h) && x->written > o->written ?
++                               hle_fmt_info(x->d.xfmt) : NULL;
++        if (xi && !(xi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) && xi->bpp == 32 && !obj_superseded(x) &&
++            !(x->d.pitch && past_block(&x->d)) && (!src || x->written > src->written)) {
++            src = x;
++        }
++    }
++    if (!src) {
++        return;
++    }
++    coh_first_write(src, false);
++    const uint32_t h = MIN(src->d.h, o->d.h);
++    HleCmdCopy *c = begin(HLE_OP_COPY, sizeof(*c));
++    memset(c, 0, sizeof(*c));
++    c->src = src->id;
++    c->dst = o->id;
++    c->nrects = 1;
++    c->rect[0] = (HleRect){ 0, 0, (int32_t)o->d.w, (int32_t)h };
++    hle_fe_commit();
++    /* the image holds the copy, not the memory: the CPU's writes from now
++     * on (rt_cpu_sync), its memory's counts as they are (coh_mem_newer) */
++    uint32_t len;
++    if (o->d.pitch) {
++        hle_mem_written(o->d.pa, o->d.pitch * o->d.h);
++        obj_edges_set(o);
++    }
++    if (coh_managed(o, &len)) {
++        coh_snap_take(o->d.pa, len, &o->snap);
++        o->mn_epoch = 0;
++        hle_host_mem_rearm(o->d.pa, len);
++    }
++    o->written = ++g_pd.wseq;
++    coh_drawn(o);
++    static unsigned s_logged;
++    if (s_logged++ < 8 || g_dlog_left > 0) {
++        hle_log("hakuX-hle-pb", "target %u (%08x format %02x): its twin %u's image (format %02x, written "
++                "since) taken in (first 8 logged)", o->id, o->d.pa, o->d.xfmt, src->id, src->d.xfmt);
++    }
+ }
+ 
+ /* A float depth buffer (CONTROL0 bit 12) holds the depth itself: D3D's range
+@@ -1315,6 +1470,23 @@ static void clear(uint32_t flags)
          c->color = 0xFF000000u | ((v >> 11) & 0x1F) * 255 / 31 << 16 |
                     ((v >> 5) & 0x3F) * 255 / 63 << 8 | (v & 0x1F) * 255 / 31;
      }
@@ -1009,7 +1110,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      if (zf == 2) {
          c->z = zfloat ? zfloat_clear(zs >> 8, true) : (zs >> 8) / 16777215.0f;
          c->stencil = zs & 0xFF;
-@@ -1388,12 +1481,63 @@ static void restored_display(void)
+@@ -1388,12 +1560,63 @@ static void restored_display(void)
  static void front_stale(const PbObj *o)
  {
      const HleFmtInfo *fi = o && o->d.pitch && !o->cube ? hle_fmt_info(o->d.xfmt) : NULL;
@@ -1074,7 +1175,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  /* FLIP_INCREMENT_WRITE: the frame in the colour target is done; it goes to
   * the display (D3D's vblank handler shows it there too). The display scans
   * out D3D's back buffer, whatever is bound: a target smaller than the
-@@ -1437,10 +1581,11 @@ static void swap(void)
+@@ -1437,10 +1660,11 @@ static void swap(void)
      __atomic_store_n(&g_pd.shown_ns, hle_now_ns(), __ATOMIC_RELAXED);
      g_pd.shown_written = fo ? fo->written : 0;
      HleCmdSwap *c = begin(HLE_OP_SWAP, sizeof(*c));
@@ -1087,7 +1188,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      g_pd.epoch++;
      g_pd.kick_ns = hle_now_ns();
      g_pd.vis_unsent = false;                /* a swap submits */
-@@ -1975,6 +2120,7 @@ static uint64_t ff_program(void)
+@@ -1975,6 +2199,7 @@ static uint64_t ff_program(void)
      uint32_t cm = R(0x0298);
      for (unsigned i = 0; i < 4; i++) {
          k.src[i] = (cm >> (2 * i)) & 3;
@@ -1095,7 +1196,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      }
      uint32_t le = R(0x03BC);
      for (unsigned i = 0; i < 8; i++) {
-@@ -1987,9 +2133,22 @@ static uint64_t ff_program(void)
+@@ -1987,9 +2212,22 @@ static uint64_t ff_program(void)
          k.texmat |= (uint8_t)((R(0x0420 + 4 * s) & 1) << s);
      }
      k.points = R(0x0318) & 1;
@@ -1118,7 +1219,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  /* Its constants (ffhw.h's layout) from the transform and lighting methods. */
  static void ff_consts(float (*c)[4])
  {
-@@ -2012,6 +2171,12 @@ static void ff_consts(float (*c)[4])
+@@ -2012,6 +2250,12 @@ static void ff_consts(float (*c)[4])
      c[HLE_FFHW_C_PARAMS][1] = hle_ffhw_specular_power(spb);
      c[HLE_FFHW_C_PARAMS][2] = (R(0x043C) & 0x1FF) / 8.0f;
      regs_f(c[HLE_FFHW_C_POINT], 0x0A30, 8);
@@ -1131,7 +1232,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      for (unsigned i = 0; i < 8; i++) {
          float (*l)[4] = &c[HLE_FFHW_C_LIGHTS + HLE_FFHW_LIGHT_VEC4 * i];
          uint32_t b = 0x1000 + 128 * i;
-@@ -2022,10 +2187,19 @@ static void ff_consts(float (*c)[4])
+@@ -2022,10 +2266,19 @@ static void ff_consts(float (*c)[4])
          regs_f(l[HLE_FFHW_L_HALF], b + 0x28, 3);
          regs_f(l[HLE_FFHW_L_DIRECTION], b + 0x34, 3);
          regs_f(l[HLE_FFHW_L_FALLOFF], b + 0x40, 3);
@@ -1151,7 +1252,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  }
  
  /* Bytes of one element of an NV2A vertex array format (type 3:0, size 7:4) */
-@@ -2141,7 +2315,7 @@ static uint32_t cube_of_targets(uint32_t pa, uint32_t code, uint32_t w, uint32_t
+@@ -2141,7 +2394,7 @@ static uint32_t cube_of_targets(uint32_t pa, uint32_t code, uint32_t w, uint32_t
  
  static const HleSurfDesc *object_desc(uint32_t id)
  {
@@ -1160,7 +1261,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          if (g_pd.objs[i].id == id) {
              return &g_pd.objs[i].d;
          }
-@@ -2497,14 +2671,18 @@ static uint64_t span_hash(uint32_t pa, uint32_t len)
+@@ -2497,14 +2750,18 @@ static uint64_t span_hash(uint32_t pa, uint32_t len)
  
  static void tex_edges_set(PbTex *t)
  {
@@ -1184,7 +1285,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  }
  
  static bool tex_written(const PbTex *t)
-@@ -2512,9 +2690,9 @@ static bool tex_written(const PbTex *t)
+@@ -2512,9 +2769,9 @@ static bool tex_written(const PbTex *t)
      if (!t->bytes) {
          return false;
      }
@@ -1197,7 +1298,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      const bool last = pl != p0 && edge_dirty(pl) && span_hash(pl, hi - pl) != t->edge_hash[1];
      return mid || first || last;
  }
-@@ -2667,7 +2845,11 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2667,7 +2924,11 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          return best->id;
      }
      uint32_t pal_reg = code == HLE_XFMT_P8 ? R(NV097_SET_TEXTURE_PALETTE + b) : 0;
@@ -1210,7 +1311,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      uint32_t h = hash32(key, sizeof(key)) % TEX_SLOTS;
      PbTex *t = &g_pd.tex[h];
      while (t->id && memcmp(t->key, key, sizeof(key))) {
-@@ -2735,7 +2917,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
+@@ -2735,7 +2996,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
          const uint32_t h5[5] = { HLE_COMMON_TYPE_TEXTURE | 1, off, 0, fmt, size };
          uint32_t bytes = 0;
          coh_pend_wait(pa, hle_draw_tex_bytes(h5));  /* a copy queued into its texels lands first */
@@ -1219,7 +1320,36 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          t->pa = pa;
          t->bytes = bytes;
          t->pal_hash = pal_hash;
-@@ -2968,7 +3150,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, bool gpu_newer, const
+@@ -2810,8 +3071,28 @@ static void state(void)
+ /* debug: a new value of debug.hakux.pbdraws=<n> logs the next n draws: the
+  * target, each stage's texture registers and object, the vertex source, the
+  * skinning mode and the first two attributes' formats (position, weights) */
++/* OGBox 0.0.2: a request from the host (hle_pbd_drawlog), taken at the first
++ * draw from its time on */
++static int g_dlog_req;
++static int64_t g_dlog_at;
++
++void hle_pbd_drawlog(int n, unsigned delay_ms)
++{
++    __atomic_store_n(&g_dlog_at, hle_now_ns() + (int64_t)delay_ms * 1000000, __ATOMIC_RELAXED);
++    __atomic_store_n(&g_dlog_req, n > 0 ? n : 0, __ATOMIC_RELEASE);
++}
++
+ static void drawlog(const HleCmdDraw *d, bool ff)
+ {
++    if (__atomic_load_n(&g_dlog_req, __ATOMIC_ACQUIRE) > 0 &&
++        hle_now_ns() >= __atomic_load_n(&g_dlog_at, __ATOMIC_RELAXED)) {
++        const int req = __atomic_exchange_n(&g_dlog_req, 0, __ATOMIC_ACQ_REL);
++        if (req > 0) {
++            g_dlog_left = req;
++            hle_log("hakuX-hle-pb", "draw log: the next %d draws (the host's request), with the targets' "
++                    "events among them", req);
++        }
++    }
+ #ifdef __ANDROID__
+     static HleProp prop;
+     static unsigned polls;
+@@ -2968,7 +3249,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, bool gpu_newer, const
                  ol = !o->cube && fi && !(fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) ? o->d.pitch * o->d.h : 0;
              }
              if (ol && o->written > after && (!next || o->written < next->written) && o->d.pa < end &&
@@ -1228,7 +1358,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
                  next = o;
                  len = ol;
              }
-@@ -3139,6 +3321,181 @@ void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks)
+@@ -3139,6 +3420,181 @@ void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks)
      *kicks = g_pd.vis_kicks;
  }
  
@@ -1410,7 +1540,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
  /* The rest of a draw whose vertices and indices d holds: the stages'
   * textures, the constants (a program's, or the fixed-function stage's from
   * its methods) and the attributes' current values after them, the state
-@@ -3148,17 +3505,20 @@ static void emit(HleCmdDraw *d)
+@@ -3148,17 +3604,20 @@ static void emit(HleCmdDraw *d)
      const bool ff = (R(NV097_SET_TRANSFORM_EXECUTION_MODE) & 3) != 2;
      uint8_t *cb;
      uint32_t c_off;
@@ -1433,7 +1563,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          if (c_off == HLE_ARENA_FULL) {
              skip(SK_EMIT_ARENA);
              return;
-@@ -3169,6 +3529,8 @@ static void emit(HleCmdDraw *d)
+@@ -3169,6 +3628,8 @@ static void emit(HleCmdDraw *d)
              memcpy(cb, g_pd.consts, sizeof(g_pd.consts));
          }
          memcpy(cb + sizeof(g_pd.consts), g_pd.cur, sizeof(g_pd.cur));
@@ -1442,7 +1572,7 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
          g_pd.blk_ok = true;
          g_pd.blk_ff = ff;
          g_pd.blk_ffgen = g_pd.ffgen;
-@@ -4983,6 +5345,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
+@@ -4983,6 +5444,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
      memcpy(g_pd.r, s->r, sizeof(g_pd.r));
      memcpy(g_pd.pmem, s->pmem, sizeof(g_pd.pmem));
      g_pd.pgen++;
@@ -1451,10 +1581,21 @@ index 4cbc8136eb2e3d65ebf073f16437b82c8a44787b..803262bf5173da319d48be39d059d4e8
      g_pd.cload = s->cload;
      memcpy(g_pd.consts, s->consts, sizeof(g_pd.consts));
 diff --git a/hw/xbox/hle/pb/pbdraw.h b/hw/xbox/hle/pb/pbdraw.h
-index 195825563bf8d594be1f1eaab1d1d919caea7a35..3191163ccee4b80560f64f013e39fa814f203cc8 100644
+index 195825563bf8d594be1f1eaab1d1d919caea7a35..548b51bc23ffe444147da2957b464ba795cdd7cd 100644
 --- a/hw/xbox/hle/pb/pbdraw.h
 +++ b/hw/xbox/hle/pb/pbdraw.h
-@@ -106,6 +106,11 @@ void hle_pbd_idle(void);
+@@ -16,6 +16,10 @@
+ 
+ /* The back end, at push-buffer mode's start; false if it can't run. */
+ bool hle_pbd_start(void);
++/* OGBox 0.0.2: log n draws (drawlog: the target, each stage's texture and the object it reads,
++ * the vertex source; the targets' events among them), as debug.hakux.pbdraws does on Android,
++ * from the first draw delay_ms from now on; from any thread. */
++void hle_pbd_drawlog(int n, unsigned delay_ms);
+ void hle_pbd_stop(void);
+ /* A Kelvin method (after the decoder's own handling). */
+ void hle_pbd_method(uint32_t m, uint32_t v);
+@@ -106,6 +110,11 @@ void hle_pbd_idle(void);
  /* Decode thread, each pass: the frame on screen into its memory when the
   * guest's first write there asked (front_stale). */
  void hle_pbd_front_serve(void);
