@@ -108,6 +108,15 @@ The owner shouldn't have to send logs for each guess.
 - **A compatibility mark per game** on the home's chips (plays well, playable, starts, broken),
   from a list in the repository that the owner updates.
 
+## 6. Later (on hold)
+
+- **Compressed and split game images.** Read `.cci` (Cerbios Compressed Image: an ISO in
+  fixed-size LZ4-compressed blocks with a block index; format as Team Resurgent's Repackinator
+  writes it) and `.cso`, and images split in parts (`game.1.iso` + `game.2.iso`, the same for
+  `.cci`). In hakuX's image reader next to ISO and CHD, and in the game library's scan. Less
+  space on the drive and less to read over a network share; images people already made for
+  their consoles play as they are. Idea from Cerbios (closed source: nothing of its code used).
+
 ## Order
 
 1. Issue #2, as soon as its two logs are attached.
