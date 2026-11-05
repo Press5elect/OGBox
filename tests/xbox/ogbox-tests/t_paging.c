@@ -105,6 +105,32 @@ void test_paging(void)
     __asm__ volatile("invlpg (%0)" : : "r"(v1) : "memory");
     check(v1[5] == 0xCAFEF00Du, "the entry pointed at another page, INVLPG: %08lx", (unsigned long)v1[5]);
 
+    /* x87 and SSE with their operand in such a page: the same results as in ordinary memory */
+    {
+        static volatile double plain[4] __attribute__((aligned(16)));
+        volatile double *mapped = (volatile double *)(v2 + 64);   /* in the mapped page, 16-byte aligned */
+        plain[0] = mapped[0] = 1.25;
+        plain[1] = mapped[1] = -3.5;
+        double r1, r2;
+        __asm__ volatile("fldl %1\n\tfaddl %2\n\tfmull %2\n\tfstpl %0" : "=m"(r1) : "m"(plain[0]), "m"(plain[1]));
+        __asm__ volatile("fldl %1\n\tfaddl %2\n\tfmull %2\n\tfstpl %0" : "=m"(r2) : "m"(mapped[0]), "m"(mapped[1]));
+        check(r1 == r2 && r1 == 7.875, "x87 with its operands there: %d/1000 (%d/1000)", (int)(r2 * 1000), (int)(r1 * 1000));
+        __asm__ volatile("fldl %1\n\tfstpl %0" : "=m"(mapped[2]) : "m"(plain[1]));
+        check(mapped[2] == -3.5, "an x87 store there: %d/10", (int)(mapped[2] * 10));
+        unsigned short cw = 0, cw2 = 0;
+        __asm__ volatile("fnstcw %0" : "=m"(cw));
+        *(volatile unsigned short *)(v2 + 80) = cw;
+        __asm__ volatile("fldcw %1\n\tfnstcw %0" : "=m"(cw2) : "m"(*(volatile unsigned short *)(v2 + 80)));
+        check(cw == cw2, "the control word there and back: %04x %04x", cw, cw2);
+        volatile float *fm = (volatile float *)(v2 + 96);
+        fm[0] = 1.0f; fm[1] = 2.0f; fm[2] = 3.0f; fm[3] = 4.0f;
+        float out[4] __attribute__((aligned(16))) = { 10.0f, 20.0f, 30.0f, 40.0f };
+        __asm__ volatile("movaps %0, %%xmm1\n\taddps %1, %%xmm1\n\tmulss %1, %%xmm1\n\tmovaps %%xmm1, %0"
+                         : "+m"(out) : "m"(*(volatile float(*)[4])fm) : "xmm1");
+        check(out[0] == 11.0f && out[1] == 22.0f && out[2] == 33.0f && out[3] == 44.0f,
+              "SSE arithmetic with its operand there: %d %d %d %d", (int)out[0], (int)out[1], (int)out[2], (int)out[3]);
+    }
+
     /* speed: a page reached by emulation costs a fault an access at first, then a gate call */
     {
         const uint64_t t0 = qpc();

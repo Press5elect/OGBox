@@ -144,6 +144,7 @@ native core's work tree (oldest first; author: subject):
   68df49c987 Claude: hle: a copy in memory from a frame buffer lands its picture there first
   327bc62ddb Claude: vm: 4 KiB pages a title's own tables map where 16 KiB host pages can't, emulated (Fable)
   926172f403 Claude: vm: the title's own page tables' mappings emulated from the start
+  3745e58a8d Claude: x86emu: x87 and SSE / MMX arithmetic with a memory operand, run on the host's FPU
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -15653,10 +15654,10 @@ index 0000000000000000000000000000000000000000..70987a6c1a5b19bac00abef971646f01
 +#endif
 diff --git a/native/cpu/x86emu.c b/native/cpu/x86emu.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f65b99ab3
+index 0000000000000000000000000000000000000000..23d75d35b88af70fc572621187a4c2288d026ad8
 --- /dev/null
 +++ b/native/cpu/x86emu.c
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,887 @@
 +/*
 + * hakuX native core — native CPU backend: one guest instruction's memory
 + * access, emulated (x86emu.h).
@@ -15756,7 +15757,10 @@ index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f
 +    case 0x0F6E: case 0x0F6F: case 0x0F7E: case 0x0F7F: case 0x0FD6: case 0x0FE7:
 +        return true;
 +    default:
-+        return false;
++        /* OGBox 0.0.3: x87, and SSE / MMX arithmetic (host_op) */
++        return (op >= 0xD8 && op <= 0xDF) || op == 0x0F14 || op == 0x0F15 || (op >= 0x0F51 && op <= 0x0F5F) ||
++               (op >= 0x0F60 && op <= 0x0F6D) || (op >= 0x0F70 && op <= 0x0F76) || op == 0x0FC2 || op == 0x0FC6 ||
++               (op >= 0x0FD1 && op <= 0x0FFE);
 +    }
 +}
 +
@@ -16055,6 +16059,172 @@ index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f
 +    return true;
 +}
 +
++/* ---- OGBox 0.0.3: x87, and SSE / MMX arithmetic, on the host's own FPU ----
++ *
++ * An instruction whose memory operand is only read or only written, and whose other effects are
++ * the FPU's and the vector registers' (no general register, no EFLAGS): FLD / FSTP and the x87
++ * arithmetic on memory, FLDCW / FNSTCW, ADDPS, MULSS, PAND... (a game's data in a page the host
++ * reaches by emulation: Fable's demand-paged heap). The operand goes through a buffer, and the
++ * instruction runs on the host with ModRM pointing at it, between an FXRSTOR of the guest's
++ * state and an FXSAVE back: the result is the processor's own (rounding, precision, tags), with
++ * no conversion written here. The code is made in an area the host executes (the kernel's,
++ * nc_x86_set_exec_area): FXSAVE the host's state, FXRSTOR the guest's, the instruction with
++ * [rsi], FXSAVE the guest's, FXRSTOR the host's, RET; rdi the guest's image, rsi the buffer, rdx
++ * the host's save area. */
++static uint8_t *g_exec;
++static size_t g_exec_len;
++
++void nc_x86_set_exec_area(void *code, size_t len)
++{
++    g_exec = code;
++    g_exec_len = len;
++}
++
++typedef struct HostOp {
++    unsigned bytes;   /* the memory operand's size */
++    bool load, store;
++    unsigned imm;     /* immediate bytes after the ModRM operand (CMPPS, SHUFPS, PSHUFD) */
++} HostOp;
++
++static bool host_op_form(const Dec *d, HostOp *o)
++{
++    memset(o, 0, sizeof(*o));
++    if (!d->mem) {
++        return false;
++    }
++    const unsigned op = d->op, r = d->reg;
++    if (op >= 0xD8 && op <= 0xDF) {
++        if (d->p66) {
++            return false;   /* (16-bit environment forms) */
++        }
++        static const struct { uint8_t bytes, store; } t[8][8] = {
++            /* D8 m32fp */ { {4,0},{4,0},{4,0},{4,0},{4,0},{4,0},{4,0},{4,0} },
++            /* D9 */       { {4,0},{0,0},{4,1},{4,1},{28,0},{2,0},{28,1},{2,1} },
++            /* DA m32int */{ {4,0},{4,0},{4,0},{4,0},{4,0},{4,0},{4,0},{4,0} },
++            /* DB */       { {4,0},{4,1},{4,1},{4,1},{0,0},{10,0},{0,0},{10,1} },
++            /* DC m64fp */ { {8,0},{8,0},{8,0},{8,0},{8,0},{8,0},{8,0},{8,0} },
++            /* DD */       { {8,0},{8,1},{8,1},{8,1},{108,0},{0,0},{108,1},{2,1} },
++            /* DE m16int */{ {2,0},{2,0},{2,0},{2,0},{2,0},{2,0},{2,0},{2,0} },
++            /* DF */       { {2,0},{2,1},{2,1},{2,1},{10,0},{8,0},{10,1},{8,1} },
++        };
++        o->bytes = t[op - 0xD8][r].bytes;
++        o->store = t[op - 0xD8][r].store != 0;
++        o->load = !o->store;
++        return o->bytes != 0;
++    }
++    if (op < 0x0F00) {
++        return false;
++    }
++    const bool f3 = d->rep, f2 = d->repne, p66 = d->p66;
++    o->load = true;
++    if (op == 0x0FC2 || op == 0x0FC6 || op == 0x0F70) {
++        o->imm = 1;
++    }
++    if ((op >= 0x0F51 && op <= 0x0F5F) || op == 0x0FC2) {   /* float arithmetic, compares, conversions */
++        o->bytes = f3 ? 4 : f2 ? 8 : 16;
++        if (op == 0x0F5B && f3) {
++            o->bytes = 16;      /* cvttps2dq */
++        }
++        if (op == 0x0F5A && !f3 && !f2 && !p66) {
++            o->bytes = 8;       /* cvtps2pd */
++        }
++        return true;
++    }
++    if (op == 0x0F14 || op == 0x0F15 || op == 0x0FC6) {
++        o->bytes = 16;
++        return !f3 && !f2;
++    }
++    if ((op >= 0x0F60 && op <= 0x0F6D) || (op >= 0x0F74 && op <= 0x0F76) || op == 0x0F70 ||
++        (op >= 0x0FD1 && op <= 0x0FFE)) {
++        if (op == 0x0FD6 || op == 0x0FD7 || op == 0x0FE7 || op == 0x0FF7 || op == 0x0FFF) {
++            return false;       /* moves, a mask to a register, masked stores */
++        }
++        if (op == 0x0FE6) {
++            o->bytes = f3 ? 8 : 16;   /* cvtdq2pd / cvtpd2dq, cvttpd2dq */
++            return f3 || f2 || p66;
++        }
++        if (op == 0x0F6C || op == 0x0F6D) {
++            o->bytes = 16;
++            return p66;
++        }
++        if ((f3 || f2) && op != 0x0F70) {
++            return false;
++        }
++        o->bytes = p66 || f3 || f2 ? 16 : 8;
++        return true;
++    }
++    return false;
++}
++
++static bool host_op(NcFrame *f, const NcX86Mem *m, const Dec *d, const HostOp *o)
++{
++    if (!g_exec || g_exec_len < 64) {
++        return false;
++    }
++    static __thread uint8_t host_fx[512] __attribute__((aligned(16)));
++    uint8_t buf[112] __attribute__((aligned(16)));
++    memset(buf, 0, sizeof(buf));
++    if (o->load) {
++        for (unsigned i = 0; i < o->bytes;) {
++            const unsigned n = o->bytes - i >= 8 ? 8 : o->bytes - i >= 4 ? 4 : o->bytes - i >= 2 ? 2 : 1;
++            uint32_t lo = 0, hi = 0;
++            if (n == 8) {
++                if (!rd(m, d->ea + i, 4, &lo) || !rd(m, d->ea + i + 4, 4, &hi)) {
++                    return false;
++                }
++                memcpy(buf + i, &lo, 4);
++                memcpy(buf + i + 4, &hi, 4);
++            } else {
++                if (!rd(m, d->ea + i, n, &lo)) {
++                    return false;
++                }
++                memcpy(buf + i, &lo, n);
++            }
++            i += n;
++        }
++    }
++    /* the code: prefixes and opcode as the guest's, ModRM's register field kept, [rsi] */
++    uint8_t *c = g_exec;
++    unsigned n = 0;
++    static const uint8_t pre[] = { 0x0F, 0xAE, 0x02, 0x0F, 0xAE, 0x0F };   /* fxsave [rdx]; fxrstor [rdi] */
++    memcpy(c + n, pre, sizeof(pre));
++    n += sizeof(pre);
++    if (d->p66) {
++        c[n++] = 0x66;
++    }
++    if (d->rep) {
++        c[n++] = 0xF3;
++    }
++    if (d->repne) {
++        c[n++] = 0xF2;
++    }
++    if (d->op >= 0x0F00) {
++        c[n++] = 0x0F;
++    }
++    c[n++] = (uint8_t)(d->op & 0xFF);
++    c[n++] = (uint8_t)((d->reg << 3) | 6);
++    for (unsigned i = 0; i < o->imm; i++) {
++        c[n++] = d->ip[d->len + i];
++    }
++    static const uint8_t post[] = { 0x0F, 0xAE, 0x07, 0x0F, 0xAE, 0x0A, 0xC3 };   /* fxsave [rdi]; fxrstor [rdx]; ret */
++    memcpy(c + n, post, sizeof(post));
++    __asm__ volatile("" ::: "memory");
++    ((void (*)(void *, void *, void *))(void *)c)(f->fx, buf, host_fx);
++    if (o->store) {
++        for (unsigned i = 0; i < o->bytes;) {
++            const unsigned k = o->bytes - i >= 4 ? 4 : o->bytes - i >= 2 ? 2 : 1;
++            uint32_t v = 0;
++            memcpy(&v, buf + i, k);
++            if (!wr(m, d->ea + i, k, v)) {
++                return false;
++            }
++            i += k;
++        }
++    }
++    f->rip += d->len + o->imm;
++    return true;
++}
++
 +bool nc_x86_emulate(NcFrame *f, const uint8_t *ip, uint32_t seg_base, const NcX86Mem *m)
 +{
 +    Dec d;
@@ -16085,6 +16255,12 @@ index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f
 +    }
 +    if (op == 0xA4 || op == 0xA5 || op == 0xAA || op == 0xAB || op == 0xAC || op == 0xAD) {
 +        return strings(f, m, &d);
++    }
++    {
++        HostOp ho;
++        if (host_op_form(&d, &ho)) {
++            return host_op(f, m, &d, &ho);
++        }
 +    }
 +    if (op >= 0x0F00 && op != 0x0FB6 && op != 0x0FB7 && op != 0x0FBE && op != 0x0FBF) {
 +        return sse(f, m, &d);
@@ -16348,7 +16524,16 @@ index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f
 +    case 0x0F6F: case 0x0F7F: a->bytes = d.p66 || d.rep ? 16 : 8; a->store = op == 0x0F7F; break;
 +    case 0x0FD6: a->bytes = 8; a->store = true; break;
 +    case 0x0FE7: a->bytes = d.p66 ? 16 : 8; a->store = true; break;
-+    default:
++    default: {
++        HostOp ho;
++        if (host_op_form(&d, &ho)) {
++            a->bytes = ho.bytes;
++            a->load = ho.load;
++            a->store = ho.store;
++            a->len += ho.imm;
++            return true;
++        }
++    }
 +        if (op < 0x40 && (op & 7) < 4) {
 +            a->bytes = (op & 1) ? osz : 1;
 +            a->load = true;
@@ -16362,10 +16547,10 @@ index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f
 +}
 diff --git a/native/cpu/x86emu.h b/native/cpu/x86emu.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a267905810565f71626651a524d421700f318ce
+index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af2f76047b
 --- /dev/null
 +++ b/native/cpu/x86emu.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,69 @@
 +/*
 + * hakuX native core — native CPU backend: emulation of one guest
 + * instruction's memory access (device registers, RAM through the host's
@@ -16392,6 +16577,8 @@ index 0000000000000000000000000000000000000000..6a267905810565f71626651a524d4217
 +
 +#include "native/cpu/cpu_native.h"
 +
++#include <stddef.h>
++
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
@@ -16415,6 +16602,10 @@ index 0000000000000000000000000000000000000000..6a267905810565f71626651a524d4217
 +/* The access the instruction at ip (f's EIP) makes; seg_base is the base
 + * of fs:/gs: (the KPCR). False for a form this doesn't know. */
 +bool nc_x86_access(const NcFrame *f, const uint8_t *ip, uint32_t seg_base, NcX86Access *a);
++
++/* OGBox 0.0.3: an area of host memory the host executes (64 bytes or more) where x87 and SSE
++ * arithmetic with a memory operand run on the host's FPU (x86emu.c host_op); none: not emulated. */
++void nc_x86_set_exec_area(void *code, size_t len);
 +
 +/* Emulates it: true when done (registers, flags and EIP updated). */
 +bool nc_x86_emulate(NcFrame *f, const uint8_t *ip, uint32_t seg_base, const NcX86Mem *m);
@@ -22531,15 +22722,18 @@ index 04ea92559c748fb42e90fa9c8c70c71d11ce5185..84efd5f35a2393f281f010312aa8ff4e
                  break;
              }
 diff --git a/native/kernel/kernel.c b/native/kernel/kernel.c
-index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df805f2291 100644
+index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..90d5111bd230845060c51f7203d13552ab518a06 100644
 --- a/native/kernel/kernel.c
 +++ b/native/kernel/kernel.c
-@@ -1,13 +1,19 @@
+@@ -1,13 +1,22 @@
  /*
   * hakuX native core — kernel area, kernel calls and system ops.
   */
 +#include <sched.h>
  #include "native/kernel/kernel.h"
++#if defined(NC_CPU_NATIVE)
++#include "native/cpu/x86emu.h"
++#endif
 +#include "native/kernel/xc_crypto.h"
  #include "native/state/save.h"
  #include "native/dev/dev.h"
@@ -22554,7 +22748,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
  
  #include <ctype.h>
  #include <pthread.h>
-@@ -39,6 +45,19 @@ static const NcKExport *k_by_ordinal[NC_KORDINAL_MAX];
+@@ -39,6 +48,19 @@ static const NcKExport *k_by_ordinal[NC_KORDINAL_MAX];
  #define K_IDT      0x11000u /* 256 gates of 8 bytes */
  #define K_FAST     0x12000u /* exports run as guest code (install_fast_paths) */
  #define K_FAST_END 0x13000u
@@ -22574,7 +22768,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
  
  /* Kernel pool: starts with one 64 KiB chunk of physical RAM, reached through
   * the contiguous window, and grows a chunk at a time as needed (pool.c), as
-@@ -47,24 +66,29 @@ static const NcKExport *k_by_ordinal[NC_KORDINAL_MAX];
+@@ -47,24 +69,29 @@ static const NcKExport *k_by_ordinal[NC_KORDINAL_MAX];
   * their caches by free memory (Forza) 3 MiB short; 512 KiB, ~35 KiB of it
   * used, left Amped 2 188 KiB short of the 1.4 MiB block its first level's
   * load asks for (its heap took the rest at boot): the call failed and it
@@ -22616,7 +22810,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
  static uint32_t g_pool_at;
  
  void nc_kernel_pool_for(uint32_t kprocess)
-@@ -126,6 +150,35 @@ void nc_kernel_impl(NcKernel *k, const char *name, NcKFn fn)
+@@ -126,6 +153,35 @@ void nc_kernel_impl(NcKernel *k, const char *name, NcKFn fn)
   * step and makes the kernel call (int 0x3F with the ordinal), which does
   * the whole operation. RTL_CRITICAL_SECTION: event 0, LockCount 0x10,
   * RecursionCount 0x14, OwningThread 0x18; fs:[0x28] is the current thread. */
@@ -22652,7 +22846,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
  static void install_fast_paths(NcKernel *k, uint8_t *km)
  {
      static const uint8_t enter[] = {
-@@ -364,14 +417,26 @@ static void install_fast_paths(NcKernel *k, uint8_t *km)
+@@ -364,14 +420,26 @@ static void install_fast_paths(NcKernel *k, uint8_t *km)
          }
          uint8_t *p = km + off;
          memcpy(p, fast[i].code, fast[i].len);
@@ -22684,7 +22878,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
  }
  
  uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len)
-@@ -384,8 +449,26 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len)
+@@ -384,8 +452,26 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len)
      return va;
  }
  
@@ -22711,7 +22905,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      memset(k, 0, sizeof(*k));
      k->vm = vm;
      if (!nc_vm_claim_phys(vm, NC_KERNEL_PA, NC_KERNEL_SIZE)) {
-@@ -410,6 +493,10 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
+@@ -410,6 +496,10 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
              if (strcmp(e->name, "XboxAlternateSignatureKeys") == 0) {
                  k->data_va[e->ordinal] = NC_KERNEL_VA + K_DATA_BIG;
              }
@@ -22722,14 +22916,19 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
          } else {
              uint32_t va = NC_KERNEL_VA + K_TRAMPS + e->ordinal * 8u;
              uint8_t *t = nc_vm_host(vm, va);
-@@ -422,6 +509,35 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
+@@ -422,6 +512,40 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
          }
      }
  
 +#if defined(NC_CPU_NATIVE)
 +    /* the code sweep's rdtsc stubs and the words they scale by */
 +    ncn_tsc_stubs_setup(NC_KERNEL_VA + K_TSC_STUBS, K_MMIO_STUBS - K_TSC_STUBS, NC_KERNEL_VA + K_TSC_DATA);
-+    nc_mmio_site_init(k, NC_KERNEL_VA + K_MMIO_STUBS, NC_KERNEL_SIZE - K_MMIO_STUBS);
++    /* OGBox 0.0.3: the area's last 256 bytes: x87 / SSE arithmetic run on the host (x86emu.c host_op) */
++    nc_mmio_site_init(k, NC_KERNEL_VA + K_MMIO_STUBS, NC_KERNEL_SIZE - K_MMIO_STUBS - 256u);
++    if (!NC_HOLE_END || NC_KERNEL_VA + NC_KERNEL_SIZE <= NC_CONTIG_WINDOW || NC_KERNEL_VA >= NC_HOLE_END) {
++        /* (the area at its guest address, which the host runs; not in a window's start the host keeps) */
++        nc_x86_set_exec_area((void *)(uintptr_t)(NC_KERNEL_VA + NC_KERNEL_SIZE - 256u), 256u);
++    }
 +    g_gate = nc_cpu_native_gate_wanted();
 +    if (g_gate) {
 +        /* the gate: each function export's trampoline moves to its slot */
@@ -22758,7 +22957,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      install_fast_paths(k, km);
  
      /* A PE header with an export directory below the stubs, as the real
-@@ -463,6 +579,26 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
+@@ -463,6 +587,26 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
          s[1] = NC_KCALL_VECTOR;
          s[2] = stub_ordinals[i] & 0xff;
          s[3] = stub_ordinals[i] >> 8;
@@ -22785,7 +22984,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      }
  
      /* Processor control region (fs:). KPCR: NT_TIB at 0 (ExceptionList,
-@@ -484,13 +620,13 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
+@@ -484,13 +628,13 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
          nc_wr32(km + K_IDT + 8 * v + 4, (k->trap_va & 0xFFFF0000u) | 0x8E00u);
      }
  
@@ -22804,7 +23003,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      }
      if (pool_pa == UINT32_MAX) {
          return false;
-@@ -528,6 +664,10 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
+@@ -528,6 +672,10 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
          const uint16_t v[4] = {1, 0, 5838, 1};
          memcpy(ver, v, sizeof(v));
      }
@@ -22815,7 +23014,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      uint8_t *inc = data_ptr(k, "KeTimeIncrement");
      if (inc) {
          nc_wr32(inc, 10000); /* 1 ms in 100 ns units */
-@@ -718,14 +858,16 @@ static void stats_tick(NcKernel *k)
+@@ -718,14 +866,16 @@ static void stats_tick(NcKernel *k)
             (unsigned long long)g_nc_sched.dpc_slow, holds, held_max_ns / 1e6, held_out_ns / 1e6, top);
      {
          static uint64_t cr, di, mm, ua;
@@ -22836,7 +23035,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
          }
          char ds[240];
          uint32_t dp[6], dn[6];
-@@ -738,10 +880,14 @@ static void stats_tick(NcKernel *k)
+@@ -738,10 +888,14 @@ static void stats_tick(NcKernel *k)
          const uint64_t ncr = __atomic_load_n(&g_nc_faults_callret, __ATOMIC_RELAXED),
                         ndi = __atomic_load_n(&g_nc_faults_dirty, __ATOMIC_RELAXED),
                         nmm = __atomic_load_n(&g_nc_faults_mmio, __ATOMIC_RELAXED),
@@ -22854,7 +23053,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
          cr = ncr;
          di = ndi;
          mm = nmm;
-@@ -764,6 +910,37 @@ static void stats_tick(NcKernel *k)
+@@ -764,6 +918,37 @@ static void stats_tick(NcKernel *k)
             "(Ex %u, objects %u, lost %u KiB, %u free ranges)",
             nc_vm_free_bytes(k->vm) >> 10, contig >> 10, blocks, virt >> 10, (k->pool_len - pool_free) >> 10,
             k->pool_len >> 10, k->pool_ex >> 10, k->pool_ob >> 10, k->pool_lost >> 10, k->pool_nfree);
@@ -22892,7 +23091,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      memset(g_kcount, 0, sizeof(g_kcount));
      g_kcalls = g_sysops = 0;
      memset(g_sysop_kind, 0, sizeof(g_sysop_kind));
-@@ -890,6 +1067,78 @@ static NcCpu *g_clock_cpu;
+@@ -890,6 +1075,78 @@ static NcCpu *g_clock_cpu;
   * clock (clock_tick). */
  #define CLOCK_SLACK_NS (2 * CLOCK_PERIOD_NS)
  
@@ -22971,7 +23170,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
  static void *clock_thread(void *arg)
  {
      const char *e = getenv("NC_CLOCK_TICK");
-@@ -919,8 +1168,12 @@ static void *clock_thread(void *arg)
+@@ -919,8 +1176,12 @@ static void *clock_thread(void *arg)
              host = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec + 100000000ull;
          }
          const struct timespec ts = {(time_t)(host / 1000000000ull), (long)(host % 1000000000ull)};
@@ -22986,7 +23185,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
          }
          bool irq = false;
          const uint64_t woke = nc_ke_now_ns();
-@@ -1030,7 +1283,7 @@ static void clock_tick(NcKernel *k)
+@@ -1030,7 +1291,7 @@ static void clock_tick(NcKernel *k)
          const NcThread *cur = k->current;
          for (unsigned i = 0; cur && i < k->threads_hi; i++) {
              const NcThread *t = &k->threads[i];
@@ -22995,7 +23194,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
                  k->resched = true;
                  break;
              }
-@@ -1117,6 +1370,16 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
+@@ -1117,6 +1378,16 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
  
  static void kcall(NcKernel *k, NcFrame *f, unsigned ordinal)
  {
@@ -23012,7 +23211,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      nc_ke_tick_time(k);
      clock_tick(k);
      const uint32_t esp = nc_frame_gpr(f, NC_ESP);
-@@ -1356,7 +1619,14 @@ bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
+@@ -1356,7 +1627,14 @@ bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
       * which runs again after IRET) and the error code (not present,
       * supervisor, W for a write); IF clears. */
      nc_vm_wr32(k->vm, esp + 12, nc_frame_eflags(f));
@@ -23027,7 +23226,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      nc_vm_wr32(k->vm, esp + 4, nc_frame_eip(f));
      nc_vm_wr32(k->vm, esp, write ? 2u : 0u);
      nc_frame_set_gpr(f, NC_ESP, esp);
-@@ -1552,10 +1822,42 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
+@@ -1552,10 +1830,42 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
      nc_log("hakuX-native", "resumed after %.1f s: the guest's time leaves it out", ns / 1e9);
  }
  
@@ -23070,7 +23269,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      nc_kernel_pause_point(opaque, f, false);
      nc_ke_time_enter();
      if (g_slow_sysops < 0) {
-@@ -1591,6 +1893,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1591,6 +1901,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
  {
      NcKernel *k = opaque;
      g_sysop_kind[(unsigned)op & 31]++;
@@ -23085,7 +23284,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      if ((++g_sysops & 0xFFF) == 0) {
          stats_tick(k);
      }
-@@ -1631,6 +1941,28 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1631,6 +1949,28 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
      case NC_SYSOP_INVD:
          nc_frame_set_eip(f, eip + size);
          break;
@@ -23114,7 +23313,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df
      case NC_SYSOP_INVLPG:
          nc_paging_flush(k); /* a title that edits its page tables (paging.c) */
          nc_frame_set_eip(f, eip + size);
-@@ -1677,6 +2009,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1677,6 +2017,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
              nc_frame_bypass_hook(f);
          }
          break;
