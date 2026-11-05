@@ -118,7 +118,7 @@ std::vector<Option> makeOptions()
 		"auto", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 64 MB as the console has, 128 MB (the RAM upgrade) when a patch that needs it is on. "
-		"128 MB: always (a few games hang with it).",
+		"128 MB: as a console with the upgrade, so a game that asks for 64 MB only (most do) gets 64 MB.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
 	o.push_back({ "console_timing", Section::Console, "Drive timing",
 		"Disc and hard disk reads take time as on the console (a quarter of it at its fastest), so a game's other "
@@ -559,8 +559,14 @@ std::vector<std::string> Settings::coreArgs() const
 	a.push_back(std::string("devtime=") + (on("console_timing") ? "1" : "0"));
 	// 0.1.47: the RAM; Auto: 128 MB when a patch on for the game needs it (ogbox_patches.c)
 	const std::string ram = value("console_ram");
-	if (ram == "128" || (ram == "auto" && !gameKey.empty() && ogbox_patches_need_128(gameKey.c_str()))) {
+	const bool patch128 = !gameKey.empty() && ogbox_patches_need_128(gameKey.c_str());
+	if (ram == "128" || (ram == "auto" && patch128)) {
 		a.push_back("NC_RAM_MB=128");
+		/* 0.0.3: a game whose XBE limits it to 64 MB gets 64 MB, as on a 128 MB console; a patch that
+		 * needs 128 MB has it anyway (Cerbios's DisableLimitMem) */
+		if (patch128) {
+			a.push_back("NC_RAM_NOLIMIT=1");
+		}
 	}
 	// 0.1.59: the APU (native/dev/apu/apu.c config_init)
 	if (value("audio_dsp") == "full") {

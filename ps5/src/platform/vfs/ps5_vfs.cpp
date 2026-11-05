@@ -1452,9 +1452,23 @@ extern "C" void ps5vfs_stats(unsigned* open_files, uint64_t* bytes_read, uint64_
  * --wrap=pread --wrap=fstat) and answered from the virtual stream for that one descriptor, through
  * the stream's block cache. Every other descriptor goes straight to libc. OGBox by Press5elect. */
 
+/* OGBox 0.0.3: several at once (an image split in parts: game.1.iso, game.2.iso; native/core/pack.c) */
 namespace {
-std::atomic<int> s_disc_fd{-1};
-FILE* s_disc_fp = nullptr;
+constexpr int kDiscSlots = 16;
+std::atomic<int> s_disc_fd[kDiscSlots] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+FILE* s_disc_fp[kDiscSlots] = {};
+std::mutex s_disc_mutex;
+
+/* the virtual stream fd stands for, or null */
+FILE* DiscStream(int fd)
+{
+  if (fd < 0)
+    return nullptr;
+  for (int i = 0; i < kDiscSlots; i++)
+    if (s_disc_fd[i].load(std::memory_order_acquire) == fd)
+      return s_disc_fp[i];
+  return nullptr;
+}
 }
 
 extern "C" int ps5vfs_disc_open(const char* path)
@@ -1469,11 +1483,21 @@ extern "C" int ps5vfs_disc_open(const char* path)
     fclose(fp);
     return fd;
   }
-  s_disc_fp = fp;
   const int fd = fileno(fp);
-  s_disc_fd.store(fd, std::memory_order_release);
-  ps5vfs::Log("disc image %s: read from the share (descriptor %d stands for it)", path, fd);
-  return fd;
+  std::lock_guard lock(s_disc_mutex);
+  for (int i = 0; i < kDiscSlots; i++)
+  {
+    if (s_disc_fd[i].load(std::memory_order_acquire) < 0)
+    {
+      s_disc_fp[i] = fp;
+      s_disc_fd[i].store(fd, std::memory_order_release);
+      ps5vfs::Log("disc image %s: read from the share (descriptor %d stands for it)", path, fd);
+      return fd;
+    }
+  }
+  ps5vfs_fclose(fp);
+  errno = EMFILE;
+  return -1;
 }
 
 /* OGBox 0.1.26: the game list reads a disc's title ID and name (core/ogbox_mods.c,
@@ -1482,14 +1506,20 @@ extern "C" void ps5vfs_disc_close(int fd)
 {
   if (fd < 0)
     return;
-  if (fd == s_disc_fd.load(std::memory_order_acquire))
   {
-    s_disc_fd.store(-1, std::memory_order_release);
-    FILE* const fp = s_disc_fp;
-    s_disc_fp = nullptr;
-    if (fp)
-      ps5vfs_fclose(fp);
-    return;
+    std::lock_guard lock(s_disc_mutex);
+    for (int i = 0; i < kDiscSlots; i++)
+    {
+      if (s_disc_fd[i].load(std::memory_order_acquire) == fd)
+      {
+        s_disc_fd[i].store(-1, std::memory_order_release);
+        FILE* const fp = s_disc_fp[i];
+        s_disc_fp[i] = nullptr;
+        if (fp)
+          ps5vfs_fclose(fp);
+        return;
+      }
+    }
   }
   close(fd);
 }
@@ -1499,9 +1529,10 @@ extern "C" int __real_fstat(int fd, struct stat* st);
 
 extern "C" ssize_t __wrap_pread(int fd, void* buffer, size_t length, off_t offset)
 {
-  if (fd < 0 || fd != s_disc_fd.load(std::memory_order_acquire))
+  FILE* const fp = DiscStream(fd);
+  if (!fp)
     return __real_pread(fd, buffer, length, offset);
-  VFile* const file = Find(s_disc_fp);
+  VFile* const file = Find(fp);
   if (!file || offset < 0)
   {
     errno = EINVAL;
@@ -1522,9 +1553,10 @@ extern "C" ssize_t __wrap_pread(int fd, void* buffer, size_t length, off_t offse
 
 extern "C" int __wrap_fstat(int fd, struct stat* st)
 {
-  if (fd < 0 || fd != s_disc_fd.load(std::memory_order_acquire))
+  FILE* const fp = DiscStream(fd);
+  if (!fp)
     return __real_fstat(fd, st);
-  VFile* const file = Find(s_disc_fp);
+  VFile* const file = Find(fp);
   if (!file)
   {
     errno = EBADF;

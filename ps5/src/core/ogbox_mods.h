@@ -41,6 +41,10 @@ typedef struct OgboxGameInfo {
     uint32_t xbe_time; /* 0.1.54: default.xbe's date (its header's 0x114: the trainers' release check) */
 } OgboxGameInfo;
 
+/* 0.0.3: a disc image opened (a share's through ps5vfs; one split in parts with its parts), and closed */
+int ogbox_image_open(const char *image);
+void ogbox_image_close(int fd);
+
 /* A disc image's default.xbe certificate (on a share, through ps5vfs_disc_open). */
 bool ogbox_game_info(const char *image, OgboxGameInfo *info);
 /* 0.1.52: the CRC-32 of a disc image's default.xbe (the patches' release check); false if unread. */

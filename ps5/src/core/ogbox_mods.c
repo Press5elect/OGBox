@@ -17,6 +17,7 @@
 
 #include "native/core/mods.h"
 #include "native/core/xdvdfs.h"
+#include "native/core/pack.h"
 #include "native/core/chd.h"
 #include "hw/xbox/hle/core/xbe.h"
 
@@ -216,6 +217,8 @@ static void disc_release(NcDisc *d)
         nc_chd_close(d->chd);
         d->chd = NULL;
     }
+    nc_pack_close(d->pack);     /* (0.0.3: a split image's other parts closed with it) */
+    d->pack = NULL;
 }
 
 static uint32_t le32(const uint8_t *p)
@@ -1010,6 +1013,54 @@ int ps5vfs_is_virtual(const char *path);
 int ps5vfs_disc_open(const char *path);
 void ps5vfs_disc_close(int fd);
 
+/* 0.0.3: a disc image opened, on a share or not; one split in parts (game.1.iso, game.2.iso, ...:
+ * a FAT drive's 4 GiB limit, Repackinator's .1.cci) with its other parts, for hakuX's reader
+ * (native/core/pack.h). */
+static int part_open(const char *path)
+{
+    return ps5vfs_is_virtual(path) ? ps5vfs_disc_open(path) : open(path, O_RDONLY | O_CLOEXEC);
+}
+
+int ogbox_image_open(const char *image)
+{
+    static bool closer;
+    if (!closer) {
+        closer = true;
+        nc_pack_set_closer(ps5vfs_disc_close);
+    }
+    const int fd = part_open(image);
+    if (fd < 0) {
+        return fd;
+    }
+    /* "<stem>.1.<ext>": its parts .2, .3, ... while they are there */
+    const char *ext = strrchr(image, '.');
+    const size_t n = strlen(image);
+    if (ext && ext - image >= 3 && ext[-2] == '.' && ext[-1] == '1' && n < 1000) {
+        int more[15];
+        int k = 0;
+        char part[1024];
+        for (; k < 15; k++) {
+            snprintf(part, sizeof(part), "%.*s%d%s", (int)(ext - 1 - image), image, k + 2, ext);
+            if ((more[k] = part_open(part)) < 0) {
+                break;
+            }
+        }
+        if (k > 0) {
+            nc_pack_register_slices(fd, more, k);
+            pshakux_log("disc: %s: %d more part%s", image, k, k == 1 ? "" : "s");
+        }
+    }
+    return fd;
+}
+
+void ogbox_image_close(int fd)
+{
+    if (fd >= 0) {
+        nc_pack_unregister(fd);
+        ps5vfs_disc_close(fd);  /* (a plain descriptor: close) */
+    }
+}
+
 /* The catalog of the last ogbox_mods_catalog (or ogbox_mods_prepare), freed. */
 static void catalog_reset(void)
 {
@@ -1103,8 +1154,7 @@ static bool find_game_dir(const char *key, char *out, size_t n)
 bool ogbox_game_info(const char *image, OgboxGameInfo *info)
 {
     memset(info, 0, sizeof(*info));
-    const bool virt = ps5vfs_is_virtual(image) != 0;
-    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    const int fd = ogbox_image_open(image);
     if (fd < 0) {
         return false;
     }
@@ -1140,11 +1190,7 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
         }
     }
     disc_release(&disc);
-    if (virt) {
-        ps5vfs_disc_close(fd);
-    } else {
-        close(fd);
-    }
+    ogbox_image_close(fd);
     info->ok = ok;
     return ok;
 }
@@ -1152,8 +1198,7 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
 bool ogbox_game_xbe_crc(const char *image, uint32_t *crc)
 {
     *crc = 0;
-    const bool virt = ps5vfs_is_virtual(image) != 0;
-    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    const int fd = ogbox_image_open(image);
     if (fd < 0) {
         return false;
     }
@@ -1173,11 +1218,7 @@ bool ogbox_game_xbe_crc(const char *image, uint32_t *crc)
     }
     free(buf);
     disc_release(&disc);
-    if (virt) {
-        ps5vfs_disc_close(fd);
-    } else {
-        close(fd);
-    }
+    ogbox_image_close(fd);
     return ok;
 }
 
@@ -1189,8 +1230,7 @@ bool ogbox_mods_check_disc(const char *image, const char *key, uint32_t *crc)
     if (!image || !key || !key[0]) {
         return false;
     }
-    const bool virt = ps5vfs_is_virtual(image) != 0;
-    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    const int fd = ogbox_image_open(image);
     if (fd < 0) {
         return false;
     }
@@ -1208,11 +1248,7 @@ bool ogbox_mods_check_disc(const char *image, const char *key, uint32_t *crc)
         }
     }
     disc_release(&disc);
-    if (virt) {
-        ps5vfs_disc_close(fd);
-    } else {
-        close(fd);
-    }
+    ogbox_image_close(fd);
     return ok;
 }
 
@@ -1431,8 +1467,7 @@ bool ogbox_mods_set(const char *key, const char *kind, const char *value)
 bool ogbox_game_title_image(const char *image, uint8_t **rgba, int *w, int *h)
 {
     *rgba = NULL;
-    const bool virt = ps5vfs_is_virtual(image) != 0;
-    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    const int fd = ogbox_image_open(image);
     if (fd < 0) {
         return false;
     }
@@ -1467,10 +1502,6 @@ bool ogbox_game_title_image(const char *image, uint8_t **rgba, int *w, int *h)
     free(hdr);
     free(sec);
     disc_release(&disc);
-    if (virt) {
-        ps5vfs_disc_close(fd);
-    } else {
-        close(fd);
-    }
+    ogbox_image_close(fd);
     return ok;
 }

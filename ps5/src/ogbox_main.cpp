@@ -11,7 +11,7 @@
  *    arguments. It browses the console's internal storage (/data), USB drives (/mnt/usb0-7),
  *    extended storage (/mnt/ext0-1) and network shares (SMB or NFS, from
  *    /data/ogbox/network.cfg, Crux2's format: src/platform/vfs/ps5_vfs.h), showing folders and
- *    Xbox disc images (.iso, .xiso, .chd). D-pad to move, CROSS to open a folder or start a game,
+ *    Xbox disc images (.iso, .xiso, .chd, .cci). D-pad to move, CROSS to open a folder or start a game,
  *    CIRCLE for the folder above. The folder last opened is remembered (/data/ogbox/library.txt).
  *    Starting a game relaunches the title with --boot <image> (src/platform/ps5_relaunch.h): the
  *    game boots in a fresh instance, the one way hakuX's core is known to start.
@@ -347,7 +347,12 @@ bool isDiscImage(const std::string &name)
 		return false;
 	}
 	const char *ext = name.c_str() + dot + 1;
-	return !strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso") || !strcasecmp(ext, "chd");   // 0.1.59: CHD (chdman createdvd)
+	if (!strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso") || !strcasecmp(ext, "chd") || !strcasecmp(ext, "cci")) {
+		/* 0.0.3: CCI (Cerbios's compressed images); an image split in parts shows as its first,
+		 * game.1.iso (its .2, .3 ... are read with it) */
+		return !(dot >= 2 && name[dot - 2] == '.' && name[dot - 1] >= '2' && name[dot - 1] <= '9');
+	}
+	return false;   // 0.1.59: CHD (chdman createdvd)
 }
 
 std::string sizeText(int64_t bytes)
@@ -6044,7 +6049,7 @@ public:
 			v.empty = folder.empty() ? (tab == TabInternal ? "No game played yet. Choose a place below: your games' folders are there."
 				: tab == TabUsb ? "No game from a USB drive played yet. Choose a drive below."
 				: "No game from a share played yet. Choose a share below, or add one.")
-				: "No Xbox disc images (.iso, .xiso, .chd) in this folder.";
+				: "No Xbox disc images (.iso, .xiso, .chd, .cci) in this folder.";
 			if (folder.empty() && cards.empty()) {
 				v.empty = tab == TabUsb ? "No USB drive is plugged in (or Settings > Game list hides them)."
 					: tab == TabNetwork ? "No network share yet: add one in Settings > Network."

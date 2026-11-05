@@ -372,7 +372,7 @@ bool pshx_core_configure(const PshxCoreConfig *config)
         }
         /* 0.1.14: an image on a network share (/smb/<share>/...) through the virtual file
          * layer: a descriptor whose pread and fstat it answers (ps5vfs_disc_open) */
-        g_disc_fd = ps5vfs_is_virtual(g_image) ? ps5vfs_disc_open(g_image) : open(g_image, O_RDONLY | O_CLOEXEC);
+        g_disc_fd = ogbox_image_open(g_image);   /* 0.0.3: with a split image's other parts */
         if (g_disc_fd < 0) {
             snprintf(g_message, sizeof(g_message), "The disc image %s cannot be opened (%s).", g_image,
                      strerror(errno));

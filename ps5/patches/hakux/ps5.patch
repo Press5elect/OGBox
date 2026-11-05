@@ -150,6 +150,9 @@ native core's work tree (oldest first; author: subject):
   7fe4362e60 Claude: mmio sites: no short site where a stub's moved jump lands inside it
   13f138054c Claude: hle: 16-bit dithering by guest pixel, by screen pixel or off
   5e4f282c66 Claude: dirty: an access beside a closed neighbour in a 16 KiB host page done against RAM
+  05ad66d757 Claude: core: a title whose XBE limits it to 64 MB gets 64 MB at 128 MB (NC_RAM_NOLIMIT=1: 128 MB anyway)
+  479a0939b7 Claude: disc: CCI (Cerbios's compressed images) and images split in parts (pack.c)
+  e2135b5d45 Claude: disc: a split image's parts stay open with their registration (each open of the disc reads them)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -6869,7 +6872,7 @@ index 0000000000000000000000000000000000000000..e5d466cce97405df7bef1d7d1e273aab
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
 diff --git a/native/CMakeLists.txt b/native/CMakeLists.txt
-index 99fbd3e94af86343dc77732de34a68caf3cac117..6f5debdb134f2bbf63f018955b661aaddf8216a2 100644
+index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2e351d1ef 100644
 --- a/native/CMakeLists.txt
 +++ b/native/CMakeLists.txt
 @@ -24,8 +24,44 @@ if(HAKUX_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -6918,7 +6921,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..6f5debdb134f2bbf63f018955b661aad
  
  # libslirp (NC_DEPS/libslirp, 4.7.0, unmodified): the NAT backend's TCP/IP
  # stack (net/nat.c), on the GLib subset plus net/slirp/glib.h. Its public
-@@ -52,16 +88,21 @@ target_include_directories(nc_slirp BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
+@@ -52,16 +88,22 @@ target_include_directories(nc_slirp BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
  target_include_directories(nc_slirp PUBLIC "${CMAKE_BINARY_DIR}/slirp")
  target_link_libraries(nc_slirp PRIVATE nc_glib)
  target_compile_options(nc_slirp PRIVATE -w)
@@ -6931,6 +6934,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..6f5debdb134f2bbf63f018955b661aad
    core/jmp.c
    core/vm.c
    core/xdvdfs.c
++  core/pack.c
 +  core/chd.c
    core/xbe_load.c
    core/mods.c
@@ -6940,7 +6944,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..6f5debdb134f2bbf63f018955b661aad
    core/memscan.c
    core/core.c
    core/mmio.c
-@@ -90,6 +131,7 @@ add_library(hakux_native STATIC
+@@ -90,6 +132,7 @@ add_library(hakux_native STATIC
    kernel/seh.c
    kernel/fixups.c
    kernel/x86mmio.c
@@ -6948,7 +6952,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..6f5debdb134f2bbf63f018955b661aad
    kernel/timer.c
    kernel/intr.c
    kernel/apc.c
-@@ -101,24 +143,42 @@ add_library(hakux_native STATIC
+@@ -101,24 +144,42 @@ add_library(hakux_native STATIC
    state/vm_state.c
    state/save.c
    state/cache.c
@@ -7540,10 +7544,10 @@ index fc4055973a837bf64aa851ac98f2502eb23b8c7e..aa80495b26cad98f84891ac701212caa
  bool nc_cheat_on(int index);
  unsigned nc_cheat_count(void);
 diff --git a/native/core/core.c b/native/core/core.c
-index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce46611f02 100644
+index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f895b4f5118 100644
 --- a/native/core/core.c
 +++ b/native/core/core.c
-@@ -2,13 +2,20 @@
+@@ -2,13 +2,22 @@
   * hakuX native core — boot and run a title.
   */
  #include "native/core/core.h"
@@ -7555,6 +7559,8 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
  #include "native/hle/hle_native.h"
  #include "native/core/mmio.h"
  #include "native/core/mods.h"
++#include "native/core/chd.h"
++#include "native/core/xdvdfs.h"
 +#include "native/core/trainer.h"
  #include "native/net/net.h"
  #include "native/state/save.h"
@@ -7564,7 +7570,35 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
  
  #include <stdio.h>
  #include <stdlib.h>
-@@ -103,7 +110,8 @@ bool nc_core_boot(NcCore *c, int disc_fd)
+@@ -99,13 +108,48 @@ static bool boot_failed(const char *why)
+     return false;
+ }
+ 
++/* OGBox 0.0.3: the disc's default.xbe's initialization flags (its header's 0x124), or 0. The
++ * retail kernel on a console with 128 MB keeps a title whose flags have XINIT_LIMIT_DEVKIT_MEMORY
++ * (0x4) to 64 MB; most titles have it (the XDK's default), so 128 MB for all of them was more
++ * than any of them saw on a console (a few hung). */
++static uint32_t disc_xbe_init_flags(int disc_fd)
++{
++    if (disc_fd < 0) {
++        return 0;
++    }
++    NcDisc d;
++    memset(&d, 0, sizeof(d));
++    NcDiscFile f;
++    uint8_t h[0x128];
++    uint32_t flags = 0;
++    if (nc_disc_open(&d, disc_fd) && nc_disc_find(&d, "\\default.xbe", &f) && f.size >= sizeof(h) &&
++        nc_disc_read(&d, &f, 0, h, sizeof(h)) && !memcmp(h, "XBEH", 4)) {
++        flags = (uint32_t)h[0x124] | (uint32_t)h[0x125] << 8 | (uint32_t)h[0x126] << 16 | (uint32_t)h[0x127] << 24;
++    }
++    if (d.chd) {
++        nc_chd_close(d.chd);    /* (the descriptor stays: the boot opens the disc again) */
++    }
++    return flags;
++}
++
+ bool nc_core_boot(NcCore *c, int disc_fd)
  {
      memset(c, 0, sizeof(*c));
      c->disc.fd = -1;
@@ -7572,9 +7606,22 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
 +    /* NC_RAM_MB=128: the RAM upgrade (a debug kit's size), which 720p and other 128 MB patches
 +     * need (OGBox's Memory setting); the NV2A reports it too (nv2a.c) */
      const char *mb = getenv("NC_RAM_MB");
-     const uint32_t ram = mb && atoi(mb) == 128 ? 128u << 20 : NC_RAM_RETAIL;
+-    const uint32_t ram = mb && atoi(mb) == 128 ? 128u << 20 : NC_RAM_RETAIL;
++    uint32_t ram = mb && atoi(mb) == 128 ? 128u << 20 : NC_RAM_RETAIL;
++    /* OGBox 0.0.3: a title that limits itself to 64 MB gets 64 MB, as on a 128 MB console with a stock
++     * kernel; NC_RAM_NOLIMIT=1 (a 128 MB patch on: Cerbios's DisableLimitMem) gives it 128 MB anyway */
++    if (ram > NC_RAM_RETAIL && !getenv("NC_RAM_NOLIMIT")) {
++        const uint32_t flags = disc_xbe_init_flags(disc_fd);
++        if (flags & 0x4u) {
++            ram = NC_RAM_RETAIL;
++            nc_log("hakuX-native", "memory: the title limits itself to 64 MB (its XBE's flags %08x): 64 MB, as on a "
++                   "128 MB console", flags);
++        }
++    }
      /* a savestate's kernel objects are where its boot made them (KERN v3
-@@ -216,13 +224,25 @@ bool nc_core_boot(NcCore *c, int disc_fd)
+      * moved the pool's first range) */
+     nc_kernel_pool_for(g_loadstate[0] ? nc_kern_state_kprocess(g_loadstate) : 0);
+@@ -216,13 +260,25 @@ bool nc_core_boot(NcCore *c, int disc_fd)
      if (!c->cpu) {
          return boot_failed("The emulated CPU couldn't start.");
      }
@@ -7601,7 +7648,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
      if (!g_boot) {
          return boot_failed("The emulated CPU couldn't start.");
      }
-@@ -243,6 +263,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
+@@ -243,6 +299,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
              return false;
          }
          nc_kernel_loaded_fixups(&c->kernel);
@@ -7609,7 +7656,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
          nc_mods_after_load(&c->kernel, c->kernel.image_path);
          g_loaded = true;
      }
-@@ -296,15 +317,27 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
+@@ -296,15 +353,27 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
      nc_log("hakuX-native-frontier", "host fault: %s at guest %08llx, eip %08x (host pc %p)", what,
             (unsigned long long)va, eip, (void *)pc);
      nc_kernel_dump_recent(-1);
@@ -7638,7 +7685,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
  } g_mfs[16];
  
  static void mmio_fault_sample(uint32_t eip)
-@@ -319,6 +352,36 @@ static void mmio_fault_sample(uint32_t eip)
+@@ -319,6 +388,36 @@ static void mmio_fault_sample(uint32_t eip)
      if (k < 16) {
          g_mfs[k].eip = eip;
          g_mfs[k].n++;
@@ -7675,7 +7722,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
      }
  }
  
-@@ -368,7 +431,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -368,7 +467,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (sig == SIGILL) {
          return false;
      }
@@ -7684,7 +7731,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
      if (sig == SIGBUS && nc_cpu_unaligned_fault(c->cpu, info->si_code, ucontext)) {
          /* Doom 3 keeps a critical section at 0x00BFD88E: RtlEnterCriticalSection's
           * lock inc of its LockCount (0x00BFD89E) took the core down */
-@@ -409,6 +472,49 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -409,6 +508,49 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
              }
          }
      }
@@ -7734,7 +7781,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
      if (nc_hle_dirty_fault(info, ucontext)) {
          __atomic_fetch_add(&g_nc_faults_dirty, 1, __ATOMIC_RELAXED);
          return true;
-@@ -416,8 +522,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -416,8 +558,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (nc_mmio_fault(&c->vm, info, ucontext)) {
          __atomic_fetch_add(&g_nc_faults_mmio, 1, __ATOMIC_RELAXED);
          mmio_fault_sample(nc_cpu_guest_eip_at(c->cpu, pc));
@@ -7751,7 +7798,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
          return true;
      }
      /* A guest page the guest doesn't have: the title's page tables may map
-@@ -431,7 +544,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -431,7 +580,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (wrapped != UINT64_MAX) {
          va = wrapped;
      }
@@ -7764,7 +7811,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce
          return fault_report(c, pc, (uint64_t)(uintptr_t)info->si_addr, "outside the guest");
      }
      if (nc_vm_phys(&c->vm, (uint32_t)va) != UINT32_MAX) {
-@@ -450,7 +568,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -450,7 +604,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
          nc_log("hakuX-native-frontier", "guest fault at %08x (wrapped address), eip %08x", (uint32_t)va,
                 nc_frame_eip(f));
      }
@@ -8862,6 +8909,467 @@ index 1b8956f16c2e490b25f9fad8365480f9fbc1169c..9bdce05333541b0d75a0ba39e3650552
      } else if ((v = value(arg, "scale="))) {
          nc_hle_set_render_scale(atoi(v));
          nc_log("hakuX-app", "render scale %sx", v);
+diff --git a/native/core/pack.c b/native/core/pack.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f155ff5a74b
+--- /dev/null
++++ b/native/core/pack.c
+@@ -0,0 +1,407 @@
++/*
++ * hakuX native core — packed and split disc images (pack.h).
++ *
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
++ *
++ * The CCI layout, as Team Resurgent's XboxToolkit (CCIContainerReader.cs, CCISectorDecoder.cs)
++ * reads it: "MCCI", the header's size (32), the image's size (u64), the index's offset (u64), the
++ * block size (2048), the version (1), the index's alignment (2). The index: a u32 a sector and one
++ * more, each its place >> alignment, bit 31 when LZ4-compressed; a sector's size is the next one's
++ * place less its own. A compressed sector (or one not 2048 bytes long) starts with a byte, the
++ * padding at its end; the rest is an LZ4 block.
++ */
++#include "native/core/pack.h"
++#include "native/core/nc.h"
++
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#define SECTOR 2048u
++#define MAX_SLICES 16
++
++typedef struct Slice {
++    int fd;
++    uint64_t start, size;   /* its place in the image, its size uncompressed */
++    uint32_t *index;        /* a CCI's (sectors + 1 entries), NULL a plain part */
++    uint32_t sectors;
++    unsigned align;
++} Slice;
++
++struct NcPack {
++    Slice s[MAX_SLICES];
++    int n;
++    pthread_mutex_t lock;
++    /* the last sectors decoded */
++    uint64_t cached[8];
++    uint8_t cache[8][SECTOR];
++    unsigned next;
++    uint8_t *raw;           /* a run's compressed bytes */
++    size_t raw_cap;
++};
++
++static struct {
++    int first, n;
++    int fds[MAX_SLICES - 1];
++} g_reg[8];
++static pthread_mutex_t g_reg_lock = PTHREAD_MUTEX_INITIALIZER;
++static void (*g_close)(int);
++
++void nc_pack_set_closer(void (*close_fd)(int fd))
++{
++    g_close = close_fd;
++}
++
++static void part_close(int fd)
++{
++    if (g_close) {
++        g_close(fd);
++    } else {
++        close(fd);
++    }
++}
++
++void nc_pack_register_slices(int first_fd, const int *more, int n)
++{
++    if (n <= 0 || n > MAX_SLICES - 1) {
++        return;
++    }
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_reg) / sizeof(g_reg[0]); i++) {
++        if (g_reg[i].n == 0 || g_reg[i].first == first_fd) {
++            g_reg[i].first = first_fd;
++            g_reg[i].n = n;
++            memcpy(g_reg[i].fds, more, (size_t)n * sizeof(int));
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++}
++
++static void part_close(int fd);
++
++void nc_pack_unregister(int first_fd)
++{
++    int fds[MAX_SLICES - 1], n = 0;
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_reg) / sizeof(g_reg[0]); i++) {
++        if (g_reg[i].n && g_reg[i].first == first_fd) {
++            n = g_reg[i].n;
++            memcpy(fds, g_reg[i].fds, (size_t)n * sizeof(int));
++            g_reg[i].n = 0;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++    for (int k = 0; k < n; k++) {
++        part_close(fds[k]);         /* the parts are the registration's: closed with it */
++    }
++}
++
++static int take_slices(int first_fd, int *fds)
++{
++    int n = 0;
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_reg) / sizeof(g_reg[0]); i++) {
++        if (g_reg[i].n && g_reg[i].first == first_fd) {
++            n = g_reg[i].n;
++            memcpy(fds, g_reg[i].fds, (size_t)n * sizeof(int));
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++    return n;
++}
++
++static bool pread_all(int fd, void *buf, size_t len, uint64_t off)
++{
++    uint8_t *p = buf;
++    while (len) {
++        const ssize_t n = pread(fd, p, len, (off_t)off);
++        if (n <= 0) {
++            return false;
++        }
++        p += n;
++        len -= (size_t)n;
++        off += (uint64_t)n;
++    }
++    return true;
++}
++
++static uint32_t rd32(const uint8_t *p)
++{
++    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
++}
++
++static uint64_t rd64(const uint8_t *p)
++{
++    return (uint64_t)rd32(p) | (uint64_t)rd32(p + 4) << 32;
++}
++
++int nc_lz4_decode(const uint8_t *src, int src_len, uint8_t *dst, int dst_cap)
++{
++    const uint8_t *ip = src, *const iend = src + src_len;
++    uint8_t *op = dst, *const oend = dst + dst_cap;
++    while (ip < iend) {
++        const unsigned token = *ip++;
++        size_t lit = token >> 4;
++        if (lit == 15) {
++            unsigned b;
++            do {
++                if (ip >= iend) {
++                    return -1;
++                }
++                b = *ip++;
++                lit += b;
++            } while (b == 255);
++        }
++        if (lit > (size_t)(iend - ip) || lit > (size_t)(oend - op)) {
++            return -1;
++        }
++        memcpy(op, ip, lit);
++        op += lit;
++        ip += lit;
++        if (ip >= iend) {
++            break;                  /* the last sequence has no match */
++        }
++        if (iend - ip < 2) {
++            return -1;
++        }
++        const size_t dist = (size_t)ip[0] | (size_t)ip[1] << 8;
++        ip += 2;
++        if (!dist || dist > (size_t)(op - dst)) {
++            return -1;
++        }
++        size_t mlen = (token & 15) + 4;
++        if ((token & 15) == 15) {
++            unsigned b;
++            do {
++                if (ip >= iend) {
++                    return -1;
++                }
++                b = *ip++;
++                mlen += b;
++            } while (b == 255);
++        }
++        if (mlen > (size_t)(oend - op)) {
++            return -1;
++        }
++        const uint8_t *m = op - dist;
++        for (size_t i = 0; i < mlen; i++) {
++            op[i] = m[i];           /* (byte by byte: the match may overlap what it writes) */
++        }
++        op += mlen;
++    }
++    return (int)(op - dst);
++}
++
++/* a part: a CCI's header and index, or a plain part's size */
++static bool slice_open(Slice *s, int fd, bool *cci)
++{
++    memset(s, 0, sizeof(*s));
++    s->fd = fd;
++    uint8_t h[32];
++    *cci = pread_all(fd, h, sizeof(h), 0) && !memcmp(h, "MCCI", 4);
++    if (!*cci) {
++        struct stat st;
++        if (fstat(fd, &st) != 0 || st.st_size <= 0) {
++            return false;
++        }
++        s->size = (uint64_t)st.st_size;
++        return true;
++    }
++    const uint64_t size = rd64(h + 8), index_off = rd64(h + 16);
++    const uint32_t block = rd32(h + 24);
++    if (rd32(h + 4) != 32 || block != SECTOR || h[28] != 1 || h[29] > 8 || size % SECTOR || size / SECTOR > (1u << 24)) {
++        nc_log("hakuX-native", "disc: a CCI whose header this doesn't take (header %u, block %u, version %u, alignment %u)",
++               rd32(h + 4), block, h[28], h[29]);
++        return false;
++    }
++    s->sectors = (uint32_t)(size / SECTOR);
++    s->align = h[29];
++    s->size = size;
++    const size_t n = (size_t)s->sectors + 1;
++    uint8_t *raw = malloc(n * 4);
++    s->index = malloc(n * sizeof(uint32_t));
++    if (!raw || !s->index || !pread_all(fd, raw, n * 4, index_off)) {
++        free(raw);
++        free(s->index);
++        s->index = NULL;
++        return false;
++    }
++    for (size_t i = 0; i < n; i++) {
++        s->index[i] = rd32(raw + 4 * i);
++    }
++    free(raw);
++    return true;
++}
++
++NcPack *nc_pack_open(int fd, bool *is_pack)
++{
++    *is_pack = false;
++    int more[MAX_SLICES - 1];
++    const int nmore = take_slices(fd, more);
++    uint8_t magic[4];
++    const bool cci = pread_all(fd, magic, 4, 0) && !memcmp(magic, "MCCI", 4);
++    if (!nmore && !cci) {
++        return NULL;
++    }
++    *is_pack = true;
++    NcPack *p = calloc(1, sizeof(*p));
++    if (!p) {
++        return NULL;
++    }
++    pthread_mutex_init(&p->lock, NULL);
++    memset(p->cached, 0xFF, sizeof(p->cached));
++    uint64_t at = 0;
++    unsigned ccis = 0;
++    for (int i = 0; i <= nmore; i++) {
++        Slice *s = &p->s[p->n];
++        bool c;
++        if (!slice_open(s, i ? more[i - 1] : fd, &c)) {
++            nc_log("hakuX-native", "disc: part %d of the image can't be read", i + 1);
++            p->n++;
++            nc_pack_close(p);
++            return NULL;
++        }
++        ccis += c;
++        s->start = at;
++        at += s->size;
++        p->n++;
++    }
++    nc_log("hakuX-native", "disc: %s in %d part%s, %llu MiB", ccis ? "a CCI (compressed)" : "an image", p->n,
++           p->n == 1 ? "" : "s", (unsigned long long)(at >> 20));
++    return p;
++}
++
++void nc_pack_close(NcPack *p)
++{
++    if (!p) {
++        return;
++    }
++    for (int i = 0; i < p->n; i++) {
++        free(p->s[i].index);
++
++    }
++    free(p->raw);
++    pthread_mutex_destroy(&p->lock);
++    free(p);
++}
++
++/* a CCI part's sectors [first, first + count) into dst (count * 2048 bytes), under the lock */
++static bool cci_read(NcPack *p, Slice *s, uint32_t first, uint32_t count, uint8_t *dst)
++{
++    while (count) {
++        /* a run of sectors not in the cache: their bytes, one read */
++        uint32_t run = 0;
++        while (run < count && run < 64) {
++            run++;
++        }
++        const uint64_t lo = (uint64_t)(s->index[first] & 0x7FFFFFFFu) << s->align;
++        const uint64_t hi = (uint64_t)(s->index[first + run] & 0x7FFFFFFFu) << s->align;
++        if (hi < lo || hi - lo > (64u << 20)) {
++            return false;
++        }
++        const size_t len = (size_t)(hi - lo);
++        if (len > p->raw_cap) {
++            uint8_t *r = realloc(p->raw, len);
++            if (!r) {
++                return false;
++            }
++            p->raw = r;
++            p->raw_cap = len;
++        }
++        if (!pread_all(s->fd, p->raw, len, lo)) {
++            return false;
++        }
++        for (uint32_t k = 0; k < run; k++) {
++            const uint32_t e = s->index[first + k], e1 = s->index[first + k + 1];
++            const uint64_t a = (uint64_t)(e & 0x7FFFFFFFu) << s->align, b = (uint64_t)(e1 & 0x7FFFFFFFu) << s->align;
++            const uint8_t *src = p->raw + (a - lo);
++            const size_t size = (size_t)(b - a);
++            uint8_t *out = dst + (size_t)k * SECTOR;
++            if (size == SECTOR && !(e & 0x80000000u)) {
++                memcpy(out, src, SECTOR);
++            } else {
++                if (size < 1 || (size_t)src[0] + 1 > size) {
++                    return false;
++                }
++                const int got = nc_lz4_decode(src + 1, (int)(size - 1 - src[0]), out, SECTOR);
++                if (got < 0) {
++                    return false;
++                }
++                if (got < (int)SECTOR) {
++                    memset(out + got, 0, SECTOR - (size_t)got);
++                }
++            }
++        }
++        first += run;
++        count -= run;
++        dst += (size_t)run * SECTOR;
++    }
++    return true;
++}
++
++bool nc_pack_read(NcPack *p, void *buf, size_t len, uint64_t off)
++{
++    uint8_t *out = buf;
++    while (len) {
++        int i = 0;
++        while (i < p->n && off >= p->s[i].start + p->s[i].size) {
++            i++;
++        }
++        if (i >= p->n) {
++            return false;
++        }
++        Slice *s = &p->s[i];
++        const uint64_t in = off - s->start;
++        size_t n = (size_t)(s->size - in < len ? s->size - in : len);
++        if (!s->index) {
++            if (!pread_all(s->fd, out, n, in)) {
++                return false;
++            }
++        } else {
++            pthread_mutex_lock(&p->lock);
++            const uint32_t first = (uint32_t)(in / SECTOR), skip = (uint32_t)(in % SECTOR);
++            bool ok = true;
++            if (skip || n < SECTOR) {
++                /* a part of one sector: through the cache */
++                const uint64_t key = (uint64_t)i << 32 | first;
++                int c = -1;
++                for (int k = 0; k < 8; k++) {
++                    if (p->cached[k] == key) {
++                        c = k;
++                    }
++                }
++                if (c < 0) {
++                    c = (int)(p->next++ & 7);
++                    ok = cci_read(p, s, first, 1, p->cache[c]);
++                    p->cached[c] = ok ? key : UINT64_MAX;
++                }
++                if (n > SECTOR - skip) {
++                    n = SECTOR - skip;
++                }
++                if (ok) {
++                    memcpy(out, p->cache[c] + skip, n);
++                }
++            } else {
++                /* whole sectors straight into the buffer */
++                const uint32_t count = (uint32_t)(n / SECTOR);
++                n = (size_t)count * SECTOR;
++                ok = first + count <= s->sectors && cci_read(p, s, first, count, out);
++            }
++            pthread_mutex_unlock(&p->lock);
++            if (!ok) {
++                return false;
++            }
++        }
++        out += n;
++        off += n;
++        len -= n;
++    }
++    return true;
++}
+diff --git a/native/core/pack.h b/native/core/pack.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a863572648626996
+--- /dev/null
++++ b/native/core/pack.h
+@@ -0,0 +1,42 @@
++/*
++ * hakuX native core — packed and split disc images (OGBox 0.0.3).
++ *
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
++ *
++ * An image in more than one file (a FAT drive's 4 GiB limit: game.1.iso, game.2.iso; the opener
++ * registers the parts after the first, nc_pack_register_slices) and a CCI (Cerbios's compressed
++ * image, Team Resurgent's format: "MCCI", a 32-byte header, then 2048-byte sectors each stored or
++ * LZ4-compressed, an index of their places at the end), one file or split the same way. The
++ * xdvdfs reader reads through it as through a CHD.
++ */
++#ifndef NC_PACK_H
++#define NC_PACK_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++typedef struct NcPack NcPack;
++
++/* fd an image whose slices were registered, or a CCI: its reader (*is_pack true). NULL with
++ * *is_pack false: an image of one plain file; NULL with *is_pack true: one this can't read. */
++NcPack *nc_pack_open(int fd, bool *is_pack);
++bool nc_pack_read(NcPack *p, void *buf, size_t len, uint64_t off);
++/* The reader freed (the descriptors stay: the first its opener's, the others the registration's). */
++void nc_pack_close(NcPack *p);
++
++/* The parts after the first fd of a split image (their fds, in order), for every nc_pack_open of
++ * it until nc_pack_unregister, which closes them. Up to 15. */
++void nc_pack_register_slices(int first_fd, const int *more, int n);
++void nc_pack_unregister(int first_fd);
++
++/* How a part's descriptor is closed (an opener's own descriptors: a share's virtual ones); close()
++ * when not set. */
++void nc_pack_set_closer(void (*close_fd)(int fd));
++
++/* The LZ4 block format decoded: the bytes written, or -1. */
++int nc_lz4_decode(const uint8_t *src, int src_len, uint8_t *dst, int dst_cap);
++
++#endif
 diff --git a/native/core/trainer.c b/native/core/trainer.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..f7674b2f9bd25c8dfc6d38decd05eaa0f96a3330
@@ -11255,25 +11763,28 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..f53b7599da3b4a6067704ecb75f9cc0d
 +
  #endif
 diff --git a/native/core/xdvdfs.c b/native/core/xdvdfs.c
-index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6dc5541c6 100644
+index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b911670947bc0 100644
 --- a/native/core/xdvdfs.c
 +++ b/native/core/xdvdfs.c
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,8 @@
   *   u8 attributes, u8 name length, name
   */
  #include "native/core/xdvdfs.h"
 +#include "native/core/chd.h"
++#include "native/core/pack.h"
  
  #include <ctype.h>
  #include <fcntl.h>
-@@ -37,17 +38,32 @@ static bool pread_all(int fd, void *buf, size_t len, uint64_t off)
+@@ -37,17 +39,40 @@ static bool pread_all(int fd, void *buf, size_t len, uint64_t off)
      return true;
  }
  
-+/* The image's bytes, an ISO's or a CHD's. */
++/* The image's bytes, an ISO's, a CHD's, or a CCI's or split image's (pack.h). */
 +static bool image_read(const NcDisc *d, void *buf, size_t len, uint64_t off)
 +{
-+    return d->chd ? nc_chd_read(d->chd, buf, len, off) : pread_all(d->fd, buf, len, off);
++    return d->chd ? nc_chd_read(d->chd, buf, len, off)
++         : d->pack ? nc_pack_read(d->pack, buf, len, off)
++                   : pread_all(d->fd, buf, len, off);
 +}
 +
 +/* On failure the disc holds nothing, and fd is the caller's to close. */
@@ -11287,7 +11798,12 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
 +    if (is_chd && !chd) {
 +        return false;
 +    }
-+    const NcDisc probe = {.fd = fd, .chd = chd};
++    bool is_pack = false;
++    NcPack *pack = chd ? NULL : nc_pack_open(fd, &is_pack);
++    if (is_pack && !pack) {
++        return false;
++    }
++    const NcDisc probe = {.fd = fd, .chd = chd, .pack = pack};
      for (size_t i = 0; i < sizeof(k_part_offsets) / sizeof(k_part_offsets[0]); i++) {
          uint8_t vd[NC_XDVDFS_SECTOR];
          uint64_t off = k_part_offsets[i];
@@ -11298,14 +11814,16 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
          if (memcmp(vd, k_magic, 20) == 0 && memcmp(vd + 0x7EC, k_magic, 20) == 0) {
 +            d->fd = fd;
 +            d->chd = chd;
++            d->pack = pack;
              d->part_off = off;
              d->root_sector = nc_rd32(vd + 20);
              d->root_size = nc_rd32(vd + 24);
-@@ -57,11 +73,14 @@ bool nc_disc_open(NcDisc *d, int fd)
+@@ -57,11 +82,17 @@ bool nc_disc_open(NcDisc *d, int fd)
          }
      }
      nc_log("hakuX-native", "disc: no XDVDFS volume found");
 +    nc_chd_close(chd);
++    nc_pack_close(pack);
      return false;
  }
  
@@ -11313,10 +11831,12 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
  {
 +    nc_chd_close(d->chd);
 +    d->chd = NULL;
++    nc_pack_close(d->pack);
++    d->pack = NULL;
      if (d->fd >= 0) {
          close(d->fd);
      }
-@@ -81,27 +100,82 @@ static bool name_eq(const uint8_t *a, size_t alen, const char *b, size_t blen)
+@@ -81,27 +112,82 @@ static bool name_eq(const uint8_t *a, size_t alen, const char *b, size_t blen)
      return true;
  }
  
@@ -11416,7 +11936,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
  }
  
  /* the disc's own files */
-@@ -127,9 +201,8 @@ static bool disc_find(const NcDisc *d, const char *path, NcDiscFile *out)
+@@ -127,9 +213,8 @@ static bool disc_find(const NcDisc *d, const char *path, NcDiscFile *out)
          if (!dir) {
              return false;
          }
@@ -11428,7 +11948,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
          free(dir);
          if (!ok) {
              return false;
-@@ -402,7 +475,7 @@ bool nc_disc_find_orig(const NcDisc *d, const char *path, NcDiscFile *out)
+@@ -402,7 +487,7 @@ bool nc_disc_find_orig(const NcDisc *d, const char *path, NcDiscFile *out)
  bool nc_disc_read_orig(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
  {
      return f->sector < NC_DISC_OVERLAY && off + len <= f->size &&
@@ -11437,7 +11957,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
  }
  
  bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
-@@ -412,7 +485,7 @@ bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void
+@@ -412,7 +497,7 @@ bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void
      }
      return f->sector >= NC_DISC_OVERLAY
                 ? ov_read(d, f, off, buf, len)
@@ -11447,7 +11967,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6
  
  bool nc_disc_read(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
 diff --git a/native/core/xdvdfs.h b/native/core/xdvdfs.h
-index 1471cbb03349cdeb9dd47c708643c07177eb8348..037b64e798fa4524deef050a94c37d245eb30d88 100644
+index 1471cbb03349cdeb9dd47c708643c07177eb8348..99e819524b06c7e3a83b012c29035e0d957c711d 100644
 --- a/native/core/xdvdfs.h
 +++ b/native/core/xdvdfs.h
 @@ -2,7 +2,8 @@
@@ -11460,19 +11980,21 @@ index 1471cbb03349cdeb9dd47c708643c07177eb8348..037b64e798fa4524deef050a94c37d24
   */
  #ifndef NATIVE_CORE_XDVDFS_H
  #define NATIVE_CORE_XDVDFS_H
-@@ -21,9 +22,11 @@ extern "C" {
+@@ -21,9 +22,13 @@ extern "C" {
  #define NC_DISC_OVERLAY 0xF0000000u
  
  typedef struct NcDiscOverlay NcDiscOverlay;
 +struct NcChd;
++struct NcPack;
  
  typedef struct NcDisc {
      int fd;
 +    struct NcChd *chd;     /* a CHD image's reader, NULL for an ISO */
++    struct NcPack *pack;   /* OGBox 0.0.3: a CCI's or a split image's reader (pack.h), NULL else */
      uint64_t part_off;     /* byte offset of the game partition in the image */
      uint32_t root_sector;
      uint32_t root_size;
-@@ -36,6 +39,8 @@ typedef struct NcDiscFile {
+@@ -36,6 +41,8 @@ typedef struct NcDiscFile {
      uint8_t attr;          /* 0x10: directory */
  } NcDiscFile;
  
@@ -11481,7 +12003,7 @@ index 1471cbb03349cdeb9dd47c708643c07177eb8348..037b64e798fa4524deef050a94c37d24
  bool nc_disc_open(NcDisc *d, int fd);
  void nc_disc_close(NcDisc *d);
  
-@@ -43,6 +48,13 @@ void nc_disc_close(NcDisc *d);
+@@ -43,6 +50,13 @@ void nc_disc_close(NcDisc *d);
   * case-insensitive). */
  bool nc_disc_find(const NcDisc *d, const char *path, NcDiscFile *out);
  

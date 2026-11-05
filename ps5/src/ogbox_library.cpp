@@ -490,8 +490,12 @@ std::string stemOf(const std::string &fileName)
 	const size_t dot = s.rfind('.');
 	if (dot != std::string::npos) {
 		const std::string ext = lower(s.substr(dot + 1));
-		if (ext == "iso" || ext == "xiso" || ext == "chd" || ext == "png") {
+		if (ext == "iso" || ext == "xiso" || ext == "chd" || ext == "cci" || ext == "png") {
 			s.erase(dot);
+			/* 0.0.3: a split image's first part: "Halo 2 (USA).1" is "Halo 2 (USA)" */
+			if (s.size() > 2 && s[s.size() - 2] == '.' && s.back() == '1') {
+				s.erase(s.size() - 2);
+			}
 		}
 	}
 	return s;

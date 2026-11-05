@@ -1,5 +1,5 @@
 name: Without demand paging (PS5)
-description: The game keeps its memory in its own 4 KB pages, loaded on demand. The PS5's pages are 16 KB, so OGBox would emulate every access and the game would take minutes to load. This turns the game's demand paging off (xboot.ini), so its memory runs at full speed. If it runs out of memory in big areas, set Settings > Console > Memory to 128 MB.
+description: The game keeps its memory in its own 4 KB pages, loaded on demand. The PS5's pages are 16 KB, so OGBox would emulate every access and the game would take minutes to load. This turns the game's demand paging off (xboot.ini), so its memory runs at full speed.
 author: Press5elect
 gamefix: true
 edit: xboot.ini | UseDemandPaging | UseDemandPaging        = false
