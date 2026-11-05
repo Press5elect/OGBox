@@ -195,6 +195,9 @@ std::vector<Option> makeOptions()
 			"is shown and kept in /data/ogbox/covers. Found by the disc's Redump name: the file's, else the one the "
 			"database has for its title ID.",
 			kOnOff, "1");
+		place("home_layout", "Layout", "The games as a row of covers with the chosen one's details beside them, or as a "
+			"list with the chosen one's cover and details at the right (for big folders).",
+			{ { "covers", "Covers" }, { "list", "List" } }, "covers");
 		place("list_layout", "Layout", "The folder's discs as a list, or as a grid of their covers.",
 			{ { "list", "List" }, { "grid", "Grid of covers" } }, "list");
 		place("list_names", "Names", "The discs' names as their files have them, or without the extension and the "

@@ -62,5 +62,6 @@ void test_mem(void);
 void test_time(void);
 void test_disc(void);
 void test_hdd(void);
+void test_paging(void);
 
 #endif

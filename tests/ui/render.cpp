@@ -395,6 +395,16 @@ int main(int argc, char **argv)
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
 			ui::drawHome(dl, S, v);
 		} },
+		{ "home-list", [&](ImDrawList *dl, ImVec2 S) {
+			ui::HomeView v = home;
+			v.list = true;
+			for (auto &g : v.games) {
+				g.sub = "USA";
+				g.size = "4.2 GB";
+			}
+			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
+			ui::drawHome(dl, S, v);
+		} },
 		{ "game", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
 			ui::drawGamePage(dl, S, gp, 1.0f);

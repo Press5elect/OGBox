@@ -253,6 +253,7 @@ int main(void)
     test_time();
     test_cpu();
     test_mem();
+    test_paging();
     test_disc();
     test_hdd();
 

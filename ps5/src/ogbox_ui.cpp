@@ -851,7 +851,9 @@ void drawCover(ImDrawList *dl, const HomeGame &g, const Tex &cover, ImVec2 p0, I
 
 } // namespace
 
-void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
+namespace {
+
+void drawHomeHead(ImDrawList *dl, ImVec2 S, const HomeView &v)
 {
 	const Palette &p = P();
 	const float L = px(96.0f);
@@ -907,6 +909,21 @@ void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
 			rx -= px(30.0f);
 		}
 	}
+}
+
+void drawHomeList(ImDrawList *dl, ImVec2 S, const HomeView &v);
+
+} // namespace
+
+void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
+{
+	if (v.list) {
+		drawHomeList(dl, S, v);
+		return;
+	}
+	const Palette &p = P();
+	const float L = px(96.0f);
+	drawHomeHead(dl, S, v);
 
 	// ---- the chosen game: its details on the left
 	const std::string selId = v.gameSel >= 0 && v.gameSel < static_cast<int>(v.games.size()) ? v.games[static_cast<size_t>(v.gameSel)].id
@@ -1133,6 +1150,207 @@ void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
 		text(dl, F::Title, px(30.0f), ImVec2((S.x - ts.x) * 0.5f, S.y * 0.5f), p.text, v.busy.c_str());
 	}
 }
+
+namespace {
+
+/* 0.0.3: the list layout: the cards (places, folders, the dashboard) then the games in one column
+ * on the left, the chosen one's cover and details on the right. */
+void drawHomeList(ImDrawList *dl, ImVec2 S, const HomeView &v)
+{
+	const Palette &p = P();
+	const float L = px(96.0f);
+	drawHomeHead(dl, S, v);
+	const int nc = static_cast<int>(v.cards.size()), ng = static_cast<int>(v.games.size());
+	const int n = nc + ng;
+	int sel = v.focusRow == 1 ? v.cardSel : (v.gameSel >= 0 ? nc + v.gameSel : -1);
+	if (sel < 0 && n) {
+		sel = 0;
+	}
+	// ---- the list
+	const float x0 = L, w = px(820.0f), top = px(150.0f), bottom = S.y - px(112.0f);
+	const float rh = px(78.0f), gap = px(4.0f);
+	const float viewH = bottom - top;
+	float &scroll = value("homelist.scroll", 0.0f);
+	{
+		float target = scroll;
+		if (sel >= 0) {
+			const float y = static_cast<float>(sel) * (rh + gap);
+			if (y - rh < target) {
+				target = y - rh;
+			} else if (y + 2.0f * rh > target + viewH) {
+				target = y + 2.0f * rh - viewH;
+			}
+		}
+		target = std::max(0.0f, std::min(std::max(0.0f, static_cast<float>(n) * (rh + gap) - viewH), target));
+		if (std::fabs(target - scroll) > viewH * 3.0f) {
+			scroll = target;   // (a long jump: no slide through hundreds of rows)
+		}
+		scroll = approach(scroll, target, 16.0f);
+	}
+	if (n == 0) {
+		const std::string &msg = !v.error.empty() ? v.error : v.empty;
+		if (v.loading) {
+			spinner(dl, ImVec2(x0 + px(30.0f), top + px(40.0f)), px(20.0f), p.accent);
+			text(dl, F::Body, px(20.0f), ImVec2(x0 + px(70.0f), top + px(28.0f)), p.textDim, "Reading the folder\xE2\x80\xA6");
+		} else if (!msg.empty()) {
+			paragraph(dl, F::Body, px(20.0f), ImVec2(x0, top + px(20.0f)), v.error.empty() ? p.textDim : p.fail, msg, w, 4);
+		}
+	}
+	float &hy = value("homelist.hy", 0.0f);
+	if (sel >= 0) {
+		const float want = static_cast<float>(sel) * (rh + gap);
+		hy = std::fabs(hy - want) > rh * 6.0f ? want : approach(hy, want, 22.0f);
+	}
+	dl->PushClipRect(ImVec2(x0 - px(8.0f), top - px(4.0f)), ImVec2(x0 + w + px(8.0f), bottom), true);
+	if (sel >= 0) {
+		const float y = top + hy - scroll;
+		dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + w, y + rh), IM_COL32(255, 255, 255, 30), px(12.0f));
+		dl->AddRect(ImVec2(x0, y), ImVec2(x0 + w, y + rh), alpha(p.accent, 0.8f), px(12.0f), ImDrawCornerFlags_All, px(2.0f));
+	}
+	const int first = std::max(0, static_cast<int>(scroll / (rh + gap)) - 1);
+	const int last = std::min(n - 1, static_cast<int>((scroll + viewH) / (rh + gap)) + 1);
+	for (int i = first; i <= last; i++) {
+		const float y = top + static_cast<float>(i) * (rh + gap) - scroll;
+		const bool on = i == sel;
+		const float tx = x0 + px(84.0f), tw = w - px(84.0f) - px(24.0f);
+		if (i < nc) {
+			const HomeCard &c = v.cards[static_cast<size_t>(i)];
+			icon(dl, c.icon, ImVec2(x0 + px(44.0f), y + rh * 0.5f), px(32.0f), c.accent ? p.accent : p.textDim);
+			if (c.sub.empty()) {
+				textFit(dl, F::Heading, px(20.0f), ImVec2(tx, y + rh * 0.5f - px(12.0f)), on ? p.text : p.textDim, c.title, tw);
+			} else {
+				textFit(dl, F::Heading, px(20.0f), ImVec2(tx, y + px(14.0f)), on ? p.text : p.textDim, c.title, tw);
+				textFit(dl, F::Small, px(15.0f), ImVec2(tx, y + px(44.0f)), p.textFaint, c.sub, tw);
+			}
+			continue;
+		}
+		const int k = i - nc;
+		const HomeGame &g = v.games[static_cast<size_t>(k)];
+		const float cw = px(46.0f), ch = px(64.0f);
+		const ImVec2 c0(x0 + px(16.0f), y + (rh - ch) * 0.5f), c1(c0.x + cw, c0.y + ch);
+		const Tex cov = v.cover ? v.cover(static_cast<size_t>(k)) : Tex{};
+		if (cov) {
+			imageFill(dl, cov, c0, c1, px(5.0f));
+		} else {
+			dl->AddRectFilled(c0, c1, g.tint ? g.tint : tintFor(g.title), px(5.0f));
+			icon(dl, Icon::Disc, ImVec2((c0.x + c1.x) * 0.5f, (c0.y + c1.y) * 0.5f), px(22.0f), IM_COL32(255, 255, 255, 60));
+		}
+		std::string sub = g.sub;
+		if (!g.size.empty()) {
+			sub += sub.empty() ? g.size : " \xC2\xB7 " + g.size;
+		}
+		if (sub.empty()) {
+			textFit(dl, F::Heading, px(20.0f), ImVec2(tx, y + rh * 0.5f - px(12.0f)), on ? p.text : p.textDim, g.title, tw);
+		} else {
+			textFit(dl, F::Heading, px(20.0f), ImVec2(tx, y + px(14.0f)), on ? p.text : p.textDim, g.title, tw);
+			textFit(dl, F::Small, px(15.0f), ImVec2(tx, y + px(44.0f)), p.textFaint, sub, tw);
+		}
+	}
+	dl->PopClipRect();
+	if (scroll + viewH < static_cast<float>(n) * (rh + gap) - px(4.0f)) {
+		dl->AddRectFilledMultiColor(ImVec2(x0 - px(8.0f), bottom - px(50.0f)), ImVec2(x0 + w + px(8.0f), bottom), alpha(p.bg, 0.0f),
+			alpha(p.bg, 0.0f), alpha(p.bg, 0.9f), alpha(p.bg, 0.9f));
+	}
+	if (n > 12) {
+		// where in the list: a thin bar at its right
+		const float bh = std::max(px(40.0f), viewH * viewH / (static_cast<float>(n) * (rh + gap)));
+		const float by = top + (viewH - bh) * (scroll / std::max(1.0f, static_cast<float>(n) * (rh + gap) - viewH));
+		dl->AddRectFilled(ImVec2(x0 + w + px(14.0f), by), ImVec2(x0 + w + px(18.0f), by + bh), IM_COL32(255, 255, 255, 50), px(2.0f));
+	}
+
+	// ---- the chosen one, at the right
+	const float dx0 = x0 + w + px(64.0f), dx1 = S.x - L;
+	static int shownSel = -2;
+	float &appear = value("homelist.detail", 0.0f);
+	if (sel != shownSel) {
+		shownSel = sel;
+		appear = 0.0f;
+	}
+	appear = approach(appear, 1.0f, 10.0f);
+	const float a = smooth(appear);
+	if (sel >= 0 && sel < nc) {
+		const HomeCard &c = v.cards[static_cast<size_t>(sel)];
+		const float y = top + px(40.0f);
+		icon(dl, c.icon, ImVec2(dx0 + px(60.0f), y + px(60.0f)), px(96.0f), alpha(c.accent ? p.accent : p.textDim, a));
+		paragraph(dl, F::Display, px(44.0f), ImVec2(dx0, y + px(150.0f)), alpha(p.text, a), c.title, dx1 - dx0, 2, 1.05f);
+		if (!c.sub.empty()) {
+			paragraph(dl, F::Body, px(19.0f), ImVec2(dx0, y + px(260.0f)), alpha(p.textDim, a), c.sub, dx1 - dx0, 3);
+		}
+	} else if (sel >= nc && v.gameSel >= 0) {
+		const HomeGame &g = v.games[static_cast<size_t>(v.gameSel)];
+		const float cw = px(380.0f), ch = cw * 1.4f;
+		const ImVec2 c0(dx0, top + px(10.0f) + px(10.0f) * (1.0f - a)), c1(c0.x + cw, c0.y + ch);
+		drawCover(dl, g, v.cover ? v.cover(static_cast<size_t>(v.gameSel)) : Tex{}, c0, c1, 1.0f, a, true);
+		const float x = c1.x + px(44.0f), tw = dx1 - x;
+		float y = top + px(14.0f);
+		if (!v.kicker.empty()) {
+			label(dl, px(14.0f), ImVec2(x, y), alpha(p.accent, a), v.kicker);
+			y += px(30.0f);
+		}
+		float fs = px(46.0f);
+		for (; fs > px(28.0f); fs -= px(3.0f)) {
+			if (paragraph(nullptr, F::Display, fs, ImVec2(0, 0), 0, v.title, tw, 9, 1.05f) <= fs * 3.3f) {
+				break;
+			}
+		}
+		y += paragraph(dl, F::Display, fs, ImVec2(x, y), alpha(p.text, a), v.title, tw, 4, 1.05f) + px(20.0f);
+		float cx = x;
+		for (const auto &c : v.chips) {
+			const ImU32 fill = c.second == 1 ? p.accentSoft : c.second == 2 ? p.warnSoft : IM_COL32(255, 255, 255, 26);
+			const ImU32 col = c.second == 1 ? p.accentText : c.second == 2 ? p.warnText : p.textDim;
+			const float cwid = chip(nullptr, ImVec2(0, 0), c.first, 0, 0, true);
+			if (cx + cwid > x + tw && cx > x) {
+				cx = x;
+				y += px(42.0f);
+			}
+			chip(dl, ImVec2(cx, y), c.first, alpha(fill, a), alpha(col, a));
+			cx += cwid + px(10.0f);
+		}
+		if (!v.chips.empty()) {
+			y += px(34.0f) + px(22.0f);
+		}
+		if (!v.meta.empty()) {
+			y += paragraph(dl, F::Body, px(18.5f), ImVec2(x, y), alpha(p.textDim, a), v.meta, tw, 6) + px(28.0f);
+		}
+		const float bh = px(56.0f), kw = px(30.0f), fs2 = px(19.0f);
+		for (int b = 0; b < 2; b++) {
+			const std::string &label2 = b == 0 ? v.primary : v.secondary;
+			if (label2.empty()) {
+				continue;
+			}
+			const std::string &key = b == 0 ? v.primaryKey : v.secondaryKey;
+			const float bw = std::min(tw, px(26.0f) + kw + px(14.0f) + measure(F::Heading, fs2, label2.c_str()).x + px(28.0f));
+			if (b == 0) {
+				dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + bh), alpha(p.accent, a), px(12.0f));
+			} else {
+				dl->AddRect(ImVec2(x, y), ImVec2(x + bw, y + bh), alpha(IM_COL32(255, 255, 255, 56), a), px(12.0f), ImDrawCornerFlags_All, px(1.5f));
+			}
+			keycap(dl, ImVec2(x + px(26.0f), y + (bh - kw) * 0.5f), kw, key, alpha(b == 0 ? p.accentInk : p.textDim, a),
+				b == 0 ? alpha(IM_COL32(255, 255, 255, 90), a) : 0);
+			textFit(dl, F::Heading, fs2, ImVec2(x + px(26.0f) + kw + px(14.0f), y + (bh - measure(F::Heading, fs2, "Ag").y) * 0.5f),
+				alpha(b == 0 ? p.accentInk : p.text, a), label2, bw - px(26.0f) - kw - px(14.0f) - px(12.0f));
+			y += bh + px(12.0f);
+		}
+	}
+	if (v.jumpLetter && v.jumpAlpha > 0.0f) {
+		const char t[2] = { v.jumpLetter, 0 };
+		const float box = px(150.0f);
+		const ImVec2 c(x0 + w * 0.5f, top + viewH * 0.5f);
+		dl->AddRectFilled(ImVec2(c.x - box * 0.5f, c.y - box * 0.5f), ImVec2(c.x + box * 0.5f, c.y + box * 0.5f),
+			alpha(IM_COL32(18, 22, 27, 235), v.jumpAlpha), px(22.0f));
+		const ImVec2 ts = measure(F::Display, px(90.0f), t);
+		text(dl, F::Display, px(90.0f), ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), alpha(p.accent, v.jumpAlpha), t);
+	}
+	footer(dl, S, v.footer, v.version);
+	if (!v.busy.empty()) {
+		dl->AddRectFilled(ImVec2(0, 0), S, IM_COL32(0, 0, 0, 150));
+		const ImVec2 ts = measure(F::Title, px(30.0f), v.busy.c_str());
+		spinner(dl, ImVec2(S.x * 0.5f, S.y * 0.5f - px(50.0f)), px(26.0f), p.accent);
+		text(dl, F::Title, px(30.0f), ImVec2((S.x - ts.x) * 0.5f, S.y * 0.5f), p.text, v.busy.c_str());
+	}
+}
+
+} // namespace
 
 // ---- settings -----------------------------------------------------------------------------------
 

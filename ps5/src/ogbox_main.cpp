@@ -5601,12 +5601,60 @@ public:
 
 	// ---- the library's home ---------------------------------------------------------------------
 
-	/* The entries in the covers' row (the games) and in the cards' row (the rest), as indices. */
-	void homeRows(std::vector<int> &games, std::vector<int> &cards) const
+	/* The entries in the covers' row (the games) and in the cards' row (the rest), as indices, and
+	 * the games as the home shows them: made again only when the listing changes (a share's folder
+	 * of 980 games looked each one up every frame: 5 fps). */
+	struct HomeCache {
+		const LibraryEntry *data{ nullptr };
+		size_t n{ SIZE_MAX };
+		int tab{ -1 };
+		std::string folder, first, last;
+		std::vector<int> games, cards;
+		std::vector<ui::HomeGame> list;
+	} hc;
+
+	void homeCacheCheck()
 	{
-		for (size_t i = 0; i < entries.size(); i++) {
-			(entries[i].kind == LibraryEntry::Image ? games : cards).push_back(static_cast<int>(i));
+		const std::string first = entries.empty() ? std::string() : entries.front().path;
+		const std::string last = entries.empty() ? std::string() : entries.back().path;
+		if (hc.n == entries.size() && hc.data == entries.data() && hc.tab == tab && hc.folder == folder && hc.first == first &&
+			hc.last == last) {
+			return;
 		}
+		hc.n = entries.size();
+		hc.data = entries.data();
+		hc.tab = tab;
+		hc.folder = folder;
+		hc.first = first;
+		hc.last = last;
+		hc.games.clear();
+		hc.cards.clear();
+		hc.list.clear();
+		for (size_t i = 0; i < entries.size(); i++) {
+			const LibraryEntry &e = entries[i];
+			if (e.kind != LibraryEntry::Image) {
+				hc.cards.push_back(static_cast<int>(i));
+				continue;
+			}
+			hc.games.push_back(static_cast<int>(i));
+			ui::HomeGame g;
+			g.id = e.path;
+			g.title = ogbox::shortName(e.name);
+			if (const ogbox::DiscRecord *rec = ogbox::GameDb::get().byFileName(e.name)) {
+				g.genre = rec->region;
+				g.sub = rec->region;
+			}
+			g.size = e.note;
+			g.tint = ui::tintFor(g.title);
+			hc.list.push_back(std::move(g));
+		}
+	}
+
+	/* An entry's place in the covers' row (-1 not a game). */
+	int homeGameAt(int entry) const
+	{
+		const auto it = std::lower_bound(hc.games.begin(), hc.games.end(), entry);
+		return it != hc.games.end() && *it == entry ? static_cast<int>(it - hc.games.begin()) : -1;
 	}
 
 	/* The selection after a listing: the game last played here, else the first game, else the
@@ -5616,8 +5664,8 @@ public:
 		if (listing || entries.empty()) {
 			return;   // (the listing to come chooses)
 		}
-		std::vector<int> games, cards;
-		homeRows(games, cards);
+		homeCacheCheck();
+		const std::vector<int> &games = hc.games, &cards = hc.cards;
 		if (selected >= 0 && selected < static_cast<int>(entries.size()) && !preferGame) {
 			return;
 		}
@@ -5633,40 +5681,56 @@ public:
 		preferGame = false;
 	}
 
-	void homeInput(uint32_t p)
+	/* The list layout: one column, the cards then the games; UP / DOWN one, LEFT / RIGHT ten. */
+	void homeListInput(uint32_t p)
 	{
-		if (!startPath.empty()) {
+		homeCacheCheck();
+		std::vector<int> all(hc.cards);
+		all.insert(all.end(), hc.games.begin(), hc.games.end());
+		if (all.empty()) {
+			if (p & PAD_CIRCLE) {
+				goUp();
+			} else if (p & PAD_OPTIONS) {
+				openSettings(std::string(), std::string());
+			} else if (p & (PAD_L1 | PAD_R1)) {
+				switchTab((p & PAD_R1) ? 1 : -1);
+			}
 			return;
 		}
-		std::vector<int> games, cards;
-		homeRows(games, cards);
+		int at = static_cast<int>(std::find(all.begin(), all.end(), selected) - all.begin());
+		if (at >= static_cast<int>(all.size())) {
+			at = 0;
+			selected = all[0];
+		}
+		const int n = static_cast<int>(all.size());
+		int to = at;
+		if (p & PAD_UP) {
+			to = std::max(0, at - 1);
+		}
+		if (p & PAD_DOWN) {
+			to = std::min(n - 1, at + 1);
+		}
+		if (p & PAD_LEFT) {
+			to = std::max(0, at - 10);
+		}
+		if (p & PAD_RIGHT) {
+			to = std::min(n - 1, at + 10);
+		}
+		if (to != at) {
+			selected = all[static_cast<size_t>(to)];
+			(entries[static_cast<size_t>(selected)].kind == LibraryEntry::Image ? lastGame : lastCard) = selected;
+		}
+		homeActions(p);
+	}
+
+	/* What the buttons do on the home, in either layout (not the directions). */
+	void homeActions(uint32_t p)
+	{
 		const LibraryEntry *e = selectedEntry();
 		const bool onGame = e && e->kind == LibraryEntry::Image;
-		std::vector<int> &row = onGame ? games : cards;
-		const int at = static_cast<int>(std::find(row.begin(), row.end(), selected) - row.begin());
-		const auto choose = [&](int entry) {
-			if (entry != selected) {
-				selected = entry;
-				(entries[static_cast<size_t>(entry)].kind == LibraryEntry::Image ? lastGame : lastCard) = entry;
-			}
-		};
-		if ((p & PAD_LEFT) && at > 0 && at < static_cast<int>(row.size())) {
-			choose(row[static_cast<size_t>(at - 1)]);
-		}
-		if ((p & PAD_RIGHT) && at + 1 < static_cast<int>(row.size())) {
-			choose(row[static_cast<size_t>(at + 1)]);
-		}
-		if ((p & PAD_DOWN) && onGame && !cards.empty()) {
-			lastGame = selected;
-			choose(std::find(cards.begin(), cards.end(), lastCard) != cards.end() ? lastCard : cards.front());
-		}
-		if ((p & PAD_UP) && !onGame && !games.empty()) {
-			lastCard = selected;
-			choose(std::find(games.begin(), games.end(), lastGame) != games.end() ? lastGame : games.front());
-		}
 		if (p & PAD_CROSS) {
-			if (const LibraryEntry *c = selectedEntry()) {
-				const LibraryEntry entry = *c;
+			if (e) {
+				const LibraryEntry entry = *e;
 				if (entry.kind == LibraryEntry::Image) {
 					startGame(entry.path, homeKey(entry), 1);
 				} else {
@@ -5703,6 +5767,44 @@ public:
 		}
 	}
 
+	void homeInput(uint32_t p)
+	{
+		if (!startPath.empty()) {
+			return;
+		}
+		if (prefs.global("home_layout") == "list") {
+			homeListInput(p);
+			return;
+		}
+		homeCacheCheck();
+		const std::vector<int> &games = hc.games, &cards = hc.cards;
+		const LibraryEntry *e = selectedEntry();
+		const bool onGame = e && e->kind == LibraryEntry::Image;
+		const std::vector<int> &row = onGame ? games : cards;
+		const int at = static_cast<int>(std::find(row.begin(), row.end(), selected) - row.begin());
+		const auto choose = [&](int entry) {
+			if (entry != selected) {
+				selected = entry;
+				(entries[static_cast<size_t>(entry)].kind == LibraryEntry::Image ? lastGame : lastCard) = entry;
+			}
+		};
+		if ((p & PAD_LEFT) && at > 0 && at < static_cast<int>(row.size())) {
+			choose(row[static_cast<size_t>(at - 1)]);
+		}
+		if ((p & PAD_RIGHT) && at + 1 < static_cast<int>(row.size())) {
+			choose(row[static_cast<size_t>(at + 1)]);
+		}
+		if ((p & PAD_DOWN) && onGame && !cards.empty()) {
+			lastGame = selected;
+			choose(std::find(cards.begin(), cards.end(), lastCard) != cards.end() ? lastCard : cards.front());
+		}
+		if ((p & PAD_UP) && !onGame && !games.empty()) {
+			lastCard = selected;
+			choose(std::find(games.begin(), games.end(), lastGame) != games.end() ? lastGame : games.front());
+		}
+		homeActions(p);
+	}
+
 	/* A disc's title ID and version once its details are read ("" before). */
 	std::string homeKey(const LibraryEntry &e)
 	{
@@ -5737,6 +5839,7 @@ public:
 		homeSettle();
 		const ImVec2 S(static_cast<float>(width), static_cast<float>(height));
 		ui::HomeView v;
+		v.list = prefs.global("home_layout") == "list";
 		v.logo = uiLogo();
 		for (const int t : tabsShown()) {
 			v.tabs.push_back(t == TabInternal ? "Games" : tabName(t));
@@ -5759,28 +5862,15 @@ public:
 			std::strftime(clock, sizeof(clock), "%H:%M", &lt);
 			v.status.push_back({ clock, 0 });
 		}
-		std::vector<int> games, cards;
-		homeRows(games, cards);
-		for (const int i : games) {
-			const LibraryEntry &e = entries[static_cast<size_t>(i)];
-			ui::HomeGame g;
-			g.id = e.path;
-			g.title = ogbox::shortName(e.name);
-			if (const ogbox::DiscRecord *rec = ogbox::GameDb::get().byFileName(e.name)) {
-				g.genre = rec->region;
-			}
-			g.tint = ui::tintFor(g.title);
-			v.games.push_back(g);
-			if (i == selected) {
-				v.gameSel = static_cast<int>(v.games.size()) - 1;
-			}
-		}
+		homeCacheCheck();
+		const std::vector<int> &games = hc.games, &cards = hc.cards;
+		v.gameSel = homeGameAt(selected);
 		if (v.gameSel < 0 && !games.empty()) {
 			const auto it = std::find(games.begin(), games.end(), lastGame);
 			v.gameSel = it == games.end() ? 0 : static_cast<int>(it - games.begin());
 		}
-		v.cover = [this, games](size_t k) -> ui::Tex {
-			const LibraryEntry &e = entries[static_cast<size_t>(games[k])];
+		v.cover = [this](size_t k) -> ui::Tex {
+			const LibraryEntry &e = entries[static_cast<size_t>(hc.games[k])];
 			OgboxGameInfo info{};
 			const OgboxGameInfo *known = nullptr;
 			if (details && detailsPath == e.path) {
@@ -5933,7 +6023,9 @@ public:
 			v.busy = "Starting " + (startPath == "none" ? std::string("the Xbox dashboard") : ogbox::shortName(baseName(startPath))) + "\xE2\x80\xA6";
 		}
 		ImDrawList *dl = beginUiScreen("##home");
+		v.games.swap(hc.list);   // (the cache's, not copied each frame)
 		ui::drawHome(dl, S, v);
+		v.games.swap(hc.list);
 		endUiScreen();
 	}
 
@@ -6007,7 +6099,7 @@ public:
 			return { { "Online play", { "network", "insignia_dns", "kai_engine", "lan_peers" } } };
 		case SP_LIST:
 			return { { "Places", { "list_games", "list_internal", "list_usb", "list_ext", "list_network" } },
-				{ "How it looks", { "list_covers", "list_names", "list_sort", "list_sizes" } } };
+				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
 			return { { "", { "theme", "rain", "quick_menu" } } };
 		case SP_UPDATES:

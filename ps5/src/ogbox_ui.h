@@ -138,6 +138,7 @@ struct HomeGame {
 	std::string id;               // its path (the motion's key)
 	std::string title;            // shown under/over the cover
 	std::string genre;            // a word over the placeholder ("" none)
+	std::string sub, size;        // the list's second line: its region, its size
 	ImU32 tint{ 0 };              // its colour (the placeholder's; the light's)
 };
 struct HomeCard {
@@ -147,6 +148,7 @@ struct HomeCard {
 	bool accent{ false };         // its icon in the accent (the dashboard)
 };
 struct HomeView {
+	bool list{ false };           // 0.0.3: the list layout (the cards first, then the games, one column)
 	// the head
 	Tex logo;
 	std::vector<std::string> tabs;

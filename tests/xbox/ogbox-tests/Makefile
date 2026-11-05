@@ -2,7 +2,7 @@
 #   export NXDK_DIR=/path/to/nxdk; PATH=$NXDK_DIR/bin:$PATH; make
 XBE_TITLE = OGBox\ tests
 GEN_XISO = ogbox-tests.iso
-SRCS = $(CURDIR)/main.c $(CURDIR)/t_cpu.c $(CURDIR)/t_time.c $(CURDIR)/t_mem.c $(CURDIR)/t_disc.c $(CURDIR)/t_hdd.c
+SRCS = $(CURDIR)/main.c $(CURDIR)/t_cpu.c $(CURDIR)/t_time.c $(CURDIR)/t_mem.c $(CURDIR)/t_disc.c $(CURDIR)/t_hdd.c $(CURDIR)/t_paging.c
 CFLAGS += -O2 -Wall
 NXDK_DIR ?= $(CURDIR)/../../../../nxdk
 

@@ -264,18 +264,17 @@ GameDb::GameDb()
 		records.push_back(std::move(r));
 	}
 	std::fclose(f);
+	byName.reserve(records.size());
+	for (size_t i = 0; i < records.size(); i++) {
+		byName.emplace(lower(records[i].name), i);   // (the first of a name, as the walk found)
+	}
 	pshakux_log("library: %zu discs in the Redump database (%s)", records.size(), path.c_str());
 }
 
 const DiscRecord *GameDb::byFileName(const std::string &fileName) const
 {
-	const std::string stem = lower(stemOf(fileName));
-	for (const DiscRecord &r : records) {
-		if (lower(r.name) == stem) {
-			return &r;
-		}
-	}
-	return nullptr;
+	const auto it = byName.find(lower(stemOf(fileName)));
+	return it == byName.end() ? nullptr : &records[it->second];
 }
 
 const DiscRecord *GameDb::byTitle(uint32_t titleId, const std::string &fileName, uint32_t regions) const

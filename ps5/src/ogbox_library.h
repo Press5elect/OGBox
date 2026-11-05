@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ogbox {
@@ -38,6 +39,9 @@ public:
 private:
 	GameDb();
 	std::vector<DiscRecord> records;
+	/* 0.0.3: the records by their lower-case name. byFileName was a walk of all 2553 a call, and
+	 * the home looked up every game of a folder each frame (980 on a share: 5 fps). */
+	std::unordered_map<std::string, size_t> byName;
 };
 
 /* A file name without its extension, and without its bracketed parts ("Halo 2 (USA) (En,Fr)": "Halo 2"). */
