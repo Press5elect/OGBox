@@ -210,15 +210,15 @@ std::vector<Option> makeOptions()
 	{
 		/* 0.1.52 */
 		Option theme{ "theme", Section::Interface, "Theme",
-			"How the menus look. Code: black, with the falling code. Emerald: green, with glowing light streaks and "
-			"glossy bars.",
-			{ { "code", "Code" }, { "emerald", "Emerald" } }, "code", false };
+			"How the menus look. Dark: a dark ground lit by the chosen game's colours. Code: black and green, with the "
+			"falling code (0.0.3: the Emerald theme is gone; it shows as Dark).",
+			{ { "dark", "Dark" }, { "code", "Code" } }, "dark", false };
 		theme.now = true;
 		o.push_back(theme);
 	}
 	{
 		Option rain{ "rain", Section::Interface, "Code rain",
-			"The falling code behind the game list and the menus (the Code theme).", kOnOff, "1", false };
+			"The falling code behind the menus (the Code theme).", kOnOff, "1", false };
 		rain.now = true;
 		o.push_back(rain);
 	}

@@ -126,6 +126,11 @@ namespace vks
 				io.Fonts->AddFontFromFileTTF(extra.c_str(), extraSize * scale);
 			}
 		}
+		{
+			// OGBox 0.0.3: the menus' typefaces (ogbox_ui), after the others
+			const size_t slash = filename.find_last_of('/');
+			ps5OverlayMoreFonts(io.Fonts, slash == std::string::npos ? std::string(".") : filename.substr(0, slash));
+		}
 #endif
 #endif
 		io.Fonts->GetTexDataAsRGBA32(&fontData, &texWidth, &texHeight);

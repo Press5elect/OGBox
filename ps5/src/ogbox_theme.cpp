@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 
 #include "VulkanUIOverlay.h"
+#include "ogbox_ui.h"
 
 namespace mx {
 const ImVec4 bright(0.0f, 1.0f, 0.255f, 1.0f);
@@ -69,33 +70,34 @@ void ps5StyleOverlay(ImGuiStyle &style)
 	c[ImGuiCol_TextSelectedBg] = ImVec4(0.0f, 0.45f, 0.13f, 0.6f);
 }
 
-/* 0.1.52: the Emerald theme's typeface, Roboto Medium (the base class's, in assets/ already). */
-bool ps5OverlayExtraFont(std::string &path, float &size)
+/* 0.1.52 to 0.0.2 gave the Emerald theme Roboto here; 0.0.3 has one look (ogbox_ui), no second face. */
+bool ps5OverlayExtraFont(std::string &, float &)
 {
-	const size_t slash = path.find_last_of('/');
-	const std::string roboto = (slash == std::string::npos ? std::string() : path.substr(0, slash + 1)) +
-		"Roboto-Medium.ttf";
-	struct stat st;
-	if (stat(roboto.c_str(), &st) != 0) {
-		return false;
-	}
-	path = roboto;
-	size = 20.0f;
-	return true;
+	return false;
 }
 
-/* The menus' typeface: Share Tech Mono (assets.json), when it is in the title's assets. */
+/* The menus' typeface: 0.0.3 Inter Medium (assets.json), Share Tech Mono before it. */
 bool ps5OverlayFont(std::string &path, float &size)
 {
 	const size_t slash = path.find_last_of('/');
-	const std::string mono = (slash == std::string::npos ? std::string() : path.substr(0, slash + 1)) +
-		"ShareTechMono-Regular.ttf";
+	const std::string dir = slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
 	struct stat st;
-	if (stat(mono.c_str(), &st) != 0) {
-		return false;
+	if (stat((dir + "Inter-Medium.ttf").c_str(), &st) == 0) {
+		path = dir + "Inter-Medium.ttf";
+		size = 17.0f;
+		return true;
 	}
-	path = mono;
-	size = 18.0f;
-	return true;
+	if (stat((dir + "ShareTechMono-Regular.ttf").c_str(), &st) == 0) {
+		path = dir + "ShareTechMono-Regular.ttf";
+		size = 18.0f;
+		return true;
+	}
+	return false;
 }
 
+/* 0.0.3: the new screens' typefaces (ogbox_ui), baked for the screen: 2160 lines on the PS5. */
+void ps5OverlayMoreFonts(ImFontAtlas *atlas, const std::string &dir)
+{
+	ui::setScale(2160.0f / 1080.0f);
+	ui::loadFonts(atlas, dir);
+}

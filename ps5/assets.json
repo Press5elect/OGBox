@@ -44,6 +44,62 @@
       }
     },
     {
+      "path": "Inter-Medium.ttf",
+      "from": "file",
+      "source": "ps5/assets/fonts/Inter-Medium.ttf",
+      "used_by": [
+        "*"
+      ],
+      "title": "Inter Medium",
+      "author": "The Inter Project Authors (Rasmus Andersson; Google Fonts)",
+      "licence": "OFL-1.1",
+      "url": "https://fonts.google.com/specimen/Inter",
+      "changes": "a static instance of google/fonts bbda7253fc36's ofl/inter/Inter[opsz,wght].ttf at wght 500, opsz 14 (fontTools varLib.instancer, the names kept: the licence reserves none); the menus' typeface (OGBox 0.0.3)",
+      "licence_file": "licenses/OFL-1.1-Inter.txt"
+    },
+    {
+      "path": "Inter-SemiBold.ttf",
+      "from": "file",
+      "source": "ps5/assets/fonts/Inter-SemiBold.ttf",
+      "used_by": [
+        "*"
+      ],
+      "title": "Inter SemiBold",
+      "author": "The Inter Project Authors (Rasmus Andersson; Google Fonts)",
+      "licence": "OFL-1.1",
+      "url": "https://fonts.google.com/specimen/Inter",
+      "changes": "a static instance of google/fonts bbda7253fc36's ofl/inter/Inter[opsz,wght].ttf at wght 600, opsz 14 (fontTools varLib.instancer, the names kept: the licence reserves none); the menus' typeface (OGBox 0.0.3)",
+      "licence_file": "licenses/OFL-1.1-Inter.txt"
+    },
+    {
+      "path": "Manrope-Bold.ttf",
+      "from": "file",
+      "source": "ps5/assets/fonts/Manrope-Bold.ttf",
+      "used_by": [
+        "*"
+      ],
+      "title": "Manrope Bold",
+      "author": "The Manrope Project Authors (Mikhail Sharanda; Google Fonts)",
+      "licence": "OFL-1.1",
+      "url": "https://fonts.google.com/specimen/Manrope",
+      "changes": "a static instance of google/fonts bbda7253fc36's ofl/manrope/Manrope[wght].ttf at wght 700 (fontTools varLib.instancer, the names kept: the licence reserves none); the menus' typeface (OGBox 0.0.3)",
+      "licence_file": "licenses/OFL-1.1-Manrope.txt"
+    },
+    {
+      "path": "Manrope-ExtraBold.ttf",
+      "from": "file",
+      "source": "ps5/assets/fonts/Manrope-ExtraBold.ttf",
+      "used_by": [
+        "*"
+      ],
+      "title": "Manrope ExtraBold",
+      "author": "The Manrope Project Authors (Mikhail Sharanda; Google Fonts)",
+      "licence": "OFL-1.1",
+      "url": "https://fonts.google.com/specimen/Manrope",
+      "changes": "a static instance of google/fonts bbda7253fc36's ofl/manrope/Manrope[wght].ttf at wght 800 (fontTools varLib.instancer, the names kept: the licence reserves none); the menus' typeface (OGBox 0.0.3)",
+      "licence_file": "licenses/OFL-1.1-Manrope.txt"
+    },
+    {
       "path": "ogbox-logo.png",
       "from": "file",
       "source": "ps5/art/ogbox-logo.png",

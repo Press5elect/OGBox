@@ -73,6 +73,9 @@
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
+#include "ogbox_ui.h"         // OGBox 0.0.3: the menus' look
+#include "ogbox_shares.h"     // ... the network shares the settings edit
+#include "platform/ps5_keyboard.h"
 // OGBox 0.0.1: the updater (Crux2's), at file scope too
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"

@@ -100,6 +100,7 @@ add_library(pshakux_platform OBJECT
 	src/platform/ps5_gpuwait.c
 	src/platform/ps5_log.c
 	src/platform/ps5_modules.cpp
+	src/platform/ps5_keyboard.cpp
 	src/platform/ps5_priority.cpp
 	src/platform/ps5_relaunch.c
 	src/platform/ps5_sandbox.cpp
@@ -137,6 +138,8 @@ add_library(samples OBJECT
 	src/ogbox_storage.cpp
 	src/ogbox_saves.cpp
 	src/ogbox_theme.cpp
+	src/ogbox_ui.cpp
+	src/ogbox_shares.cpp
 	src/platform.c)
 target_compile_definitions(samples PRIVATE
 	VK_EXAMPLE_PS5

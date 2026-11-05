@@ -67,6 +67,10 @@ __attribute__((weak)) bool ps5OverlayExtraFont(std::string &, float &)
 	return false;
 }
 
+__attribute__((weak)) void ps5OverlayMoreFonts(ImFontAtlas *, const std::string &)
+{
+}
+
 /* One pad state for the whole title, so a button held while one sample ends
  * and the next starts is not seen as a new press by the next. */
 struct pad &ps5_pad()

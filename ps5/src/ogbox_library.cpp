@@ -577,4 +577,19 @@ double playedAt(const std::string &path)
 	return it == g_played.end() ? 0.0 : it->second;
 }
 
+std::vector<std::pair<double, std::string>> recentlyPlayed(size_t n)
+{
+	std::lock_guard<std::mutex> lock(g_playedMutex);
+	readPlayed();
+	std::vector<std::pair<double, std::string>> all;
+	for (const auto &kv : g_played) {
+		all.emplace_back(kv.second, kv.first);
+	}
+	std::sort(all.rbegin(), all.rend());
+	if (all.size() > n) {
+		all.resize(n);
+	}
+	return all;
+}
+
 } // namespace ogbox

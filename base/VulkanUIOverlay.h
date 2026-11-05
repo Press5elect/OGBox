@@ -32,6 +32,8 @@ void ps5StyleOverlay(ImGuiStyle &style);
 bool ps5OverlayFont(std::string &path, float &size);
 // OGBox 0.1.52: a second typeface for a second theme (io.Fonts->Fonts[1]); path holds the first's
 bool ps5OverlayExtraFont(std::string &path, float &size);
+// OGBox 0.0.3: the menus' typefaces at their sizes (after the others); dir: the assets' folder
+void ps5OverlayMoreFonts(ImFontAtlas *atlas, const std::string &dir);
 #endif
 
 #if defined(__ANDROID__)

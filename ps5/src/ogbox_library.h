@@ -76,6 +76,8 @@ private:
 /* The games played, newest first (/data/ogbox/played.txt): a disc's path and when (seconds). */
 void notePlayed(const std::string &path);
 double playedAt(const std::string &path);   // 0: never
+/* 0.0.3: the games played last, newest first (their paths and when), at most n */
+std::vector<std::pair<double, std::string>> recentlyPlayed(size_t n);
 
 } // namespace ogbox
 
