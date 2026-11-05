@@ -154,6 +154,7 @@ native core's work tree (oldest first; author: subject):
   479a0939b7 Claude: disc: CCI (Cerbios's compressed images) and images split in parts (pack.c)
   e2135b5d45 Claude: disc: a split image's parts stay open with their registration (each open of the disc reads them)
   b6ffdc521d Claude: io: dashupdate.xbe for a missing xboxdash.xbe; ke: a polling thread's boost goes
+  4ff8a30603 Claude: hle: a device Reset keeps the device's render scale
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -4705,10 +4706,10 @@ index db1badb4a450c7fd707ad8156f981649a2673a83..c97ae0f61469f14af2c63d30dcc37ed6
      HLE_RK_VB = 1, HLE_RK_IB, HLE_RK_PUSHBUF, HLE_RK_FIXUP, HLE_RK_PALETTE,
      HLE_RK_TEXTURE, HLE_RK_CUBE, HLE_RK_VOLUME, HLE_RK_SURFACE,
 diff --git a/hw/xbox/hle/vk/back.c b/hw/xbox/hle/vk/back.c
-index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..2a5dede296e0b3d93f2da927b734735351d62355 100644
+index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1d4bb9892 100644
 --- a/hw/xbox/hle/vk/back.c
 +++ b/hw/xbox/hle/vk/back.c
-@@ -847,7 +847,12 @@ uint32_t g_hle_rscale = 1;
+@@ -847,7 +847,20 @@ uint32_t g_hle_rscale = 1;
  
  static void cmd_device(const HleCmdDevice *c, bool reset)
  {
@@ -4719,10 +4720,18 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..2a5dede296e0b3d93f2da927b7347353
 +    if (scale > 4 && c->disp_w && c->disp_w * scale > 3840) {
 +        scale = MAX(4u, 3840u / c->disp_w);
 +    }
++    /* A Reset keeps the device's scale: the title's own render targets and textures keep their
++     * images, and a new scale destroyed them all (the dashboard, created at 1280x960 at 4x and
++     * reset to 640x480, then 6x, drew to surfaces that no longer existed: a black screen). */
++    static bool s_created;
++    if (reset && s_created) {
++        scale = g_hle_rscale;
++    }
++    s_created = true;
      /* A Reset replaces only the device's surfaces (the front end destroys the
       * old ones by OBJ_DESTROY): the title's own render targets and textures
       * keep their images. A new scale resizes every image. */
-@@ -1099,6 +1104,7 @@ static void rtd_write(uint64_t value)
+@@ -1099,6 +1112,7 @@ static void rtd_write(uint64_t value)
          T.vkDestroyBuffer(g_hvk.dev, g_rtd.buf, NULL);
          T.vkFreeMemory(g_hvk.dev, g_rtd.mem, NULL);
          g_rtd.buf = VK_NULL_HANDLE;
@@ -4730,7 +4739,7 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..2a5dede296e0b3d93f2da927b7347353
      }
  }
  
-@@ -2447,7 +2453,9 @@ static void dispatch(const HleCmdHdr *h)
+@@ -2447,7 +2461,9 @@ static void dispatch(const HleCmdHdr *h)
          break;
      }
      case HLE_OP_SET_RT:   cmd_set_rt(p); break;
@@ -4741,7 +4750,7 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..2a5dede296e0b3d93f2da927b7347353
      case HLE_OP_CLEAR:
          cmd_clear(p);
          if (g_pix.active) {
-@@ -2548,8 +2556,9 @@ static void dispatch(const HleCmdHdr *h)
+@@ -2548,8 +2564,9 @@ static void dispatch(const HleCmdHdr *h)
  /* After draining: up to ~200 us waiting for the producer's next publish, in
   * WFE on the ring head (its store clears the exclusive monitor; interrupts
   * and the timer event stream bound each WFE), before sleeping on the kick
@@ -4753,7 +4762,7 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..2a5dede296e0b3d93f2da927b7347353
  static bool ring_wait_brief(HleRing *r, uint32_t seen)
  {
  #if defined(__aarch64__)
-@@ -2571,6 +2580,36 @@ static bool ring_wait_brief(HleRing *r, uint32_t seen)
+@@ -2571,6 +2588,36 @@ static bool ring_wait_brief(HleRing *r, uint32_t seen)
              return false;
          }
      }
@@ -26360,7 +26369,7 @@ index 8e8ddc37038f5de7b8b4bcddeed5d18d6a129f04..6365432b4a15bfd1f94e5260b2c926d2
  }
  
 diff --git a/native/run/xboxrun.c b/native/run/xboxrun.c
-index 141704b818dbc5c3e6a311d31b58877df2843d97..6ced3e81a53413dd78dec0698cc802915c1e009b 100644
+index 141704b818dbc5c3e6a311d31b58877df2843d97..bb64b7e0480691078e08241d9e6b1af33ca0fa4f 100644
 --- a/native/run/xboxrun.c
 +++ b/native/run/xboxrun.c
 @@ -18,6 +18,9 @@
@@ -26512,7 +26521,22 @@ index 141704b818dbc5c3e6a311d31b58877df2843d97..6ced3e81a53413dd78dec0698cc80291
  static uint64_t mono_ms(void)
  {
      struct timespec ts;
-@@ -325,6 +372,9 @@ int main(int argc, char **argv)
+@@ -275,8 +322,12 @@ int main(int argc, char **argv)
+         fprintf(stderr, "usage: xboxrun <disc image> [option...]\n");
+         return 2;
+     }
+-    int fd = open(argv[1], O_RDONLY | O_CLOEXEC);
+-    if (fd < 0) {
++    /* "dashboard": the hard disk's C:\xboxdash.xbe, no disc (OGBox 0.0.3) */
++    const bool dash = !strcmp(argv[1], "dashboard");
++    int fd = dash ? -1 : open(argv[1], O_RDONLY | O_CLOEXEC);
++    if (dash) {
++        nc_core_set_dashboard(true);
++    } else if (fd < 0) {
+         perror(argv[1]);
+         return 2;
+     }
+@@ -325,6 +376,9 @@ int main(int argc, char **argv)
              stop = strtoull(argv[i] + 7, NULL, 10);
          } else if (!strncmp(argv[i], "hang=", 5)) {
              g_hang_s = (unsigned)atoi(argv[i] + 5);
@@ -26522,7 +26546,7 @@ index 141704b818dbc5c3e6a311d31b58877df2843d97..6ced3e81a53413dd78dec0698cc80291
          } else {
              fprintf(stderr, "xboxrun: unknown option %s\n", argv[i]);
              return 2;
-@@ -333,11 +383,51 @@ int main(int argc, char **argv)
+@@ -333,11 +387,51 @@ int main(int argc, char **argv)
      nc_options_apply(&opt);
      nc_log("hakuX-native", "xboxrun: disc %s, hdd %s", argv[1], nc_io_hdd_root());
  
@@ -26574,7 +26598,7 @@ index 141704b818dbc5c3e6a311d31b58877df2843d97..6ced3e81a53413dd78dec0698cc80291
      dump_ranges(getenv("NC_DUMP"));
      if (getenv("NC_DUMP_ONLY")) {
          return 0;
-@@ -347,6 +437,11 @@ int main(int argc, char **argv)
+@@ -347,6 +441,11 @@ int main(int argc, char **argv)
      pthread_t wd;
      pthread_create(&wd, NULL, watchdog, NULL);
      pthread_detach(wd);
