@@ -5429,6 +5429,13 @@ public:
 		bool bad{ false };
 		std::shared_ptr<ShareTest> test;
 		double since{ 0.0 };
+		/* 0.0.3: the SMB servers on the network, looked for as the form opens (ogbox::findServers) */
+		struct Found {
+			std::mutex mutex;
+			bool done{ false };
+			std::vector<ogbox::FoundServer> servers;
+		};
+		std::shared_ptr<Found> found;
 	} form;
 
 	/* Once: ogbox_ui's scale, theme and how it makes images. */
@@ -6776,6 +6783,21 @@ public:
 		form.open = true;
 		form.index = index;
 		form.since = now_seconds();
+		{
+			auto found = std::make_shared<ShareForm::Found>();
+			form.found = found;
+			std::thread([found]() {
+				pshakux_thread_named("ogbox-servers");
+				std::vector<ogbox::FoundServer> list = ogbox::findServers();
+				pshakux_log("settings: %zu SMB servers on the network", list.size());
+				for (const auto &f : list) {
+					pshakux_log("settings:   %s %s", f.ip.c_str(), f.name.c_str());
+				}
+				std::lock_guard<std::mutex> lock(found->mutex);
+				found->servers = std::move(list);
+				found->done = true;
+			}).detach();
+		}
 		if (index >= 0 && index < static_cast<int>(shares.shares.size())) {
 			form.s = shares.shares[static_cast<size_t>(index)];
 		}
@@ -6832,10 +6854,41 @@ public:
 			kb.open("Name", form.s.name, ogbox::shareDefaultName(form.s), ui::Keyboard::Kind::Text, false,
 				[this](bool ok, const std::string &v) { if (ok) { form.s.name = v; } });
 			break;
-		case FR_HOST:
-			kb.open("Server", form.s.host, "192.168.1.10 or a name", ui::Keyboard::Kind::Address, false,
-				[this](bool ok, const std::string &v) { if (ok) { form.s.host = v; } });
+		case FR_HOST: {
+			/* 0.0.3: the servers found on the network to choose from, else typed */
+			const auto typed = [this]() {
+				kb.open("Server", form.s.host, "192.168.1.10 or a name", ui::Keyboard::Kind::Address, false,
+					[this](bool ok, const std::string &v) { if (ok) { form.s.host = v; } });
+			};
+			std::vector<ogbox::FoundServer> list;
+			bool done = false;
+			if (form.found) {
+				std::lock_guard<std::mutex> lock(form.found->mutex);
+				done = form.found->done;
+				list = form.found->servers;
+			}
+			if (form.s.nfs || list.empty()) {
+				if (!form.s.nfs && !done) {
+					form.status = "Still looking for servers on the network\xE2\x80\xA6 type one, or try again in a moment.";
+				}
+				typed();
+				break;
+			}
+			std::vector<std::string> items;
+			for (const auto &f : list) {
+				items.push_back(f.name.empty() ? f.ip : f.name + "   " + f.ip);
+			}
+			items.push_back("Type an address");
+			openPopup("Servers on the network", "These answer on the SMB port. Choose one, or type an address.", items,
+				[this, list, typed](int i) {
+					if (i >= 0 && i < static_cast<int>(list.size())) {
+						form.s.host = list[static_cast<size_t>(i)].ip;
+					} else if (i == static_cast<int>(list.size())) {
+						typed();
+					}
+				});
 			break;
+		}
 		case FR_PATH:
 			kb.open(form.s.nfs ? "Export and folder" : "Share and folder", form.s.path, form.s.nfs ? "/volume1/games/xbox" : "games/xbox",
 				ui::Keyboard::Kind::Address, false, [this](bool ok, const std::string &v) { if (ok) { form.s.path = v; } });

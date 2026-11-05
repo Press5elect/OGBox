@@ -8,7 +8,14 @@
  */
 #include "ogbox_shares.h"
 
+#include <algorithm>
 #include <cctype>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -305,6 +312,173 @@ void unmountShare(Share &s)
 #endif
 		s.mount.clear();
 	}
+}
+
+
+// ---- 0.0.3: the servers on the network --------------------------------------------------------
+
+namespace {
+
+/* this console's IPv4 address (the route out: a UDP socket "connected", nothing sent), 0 none */
+uint32_t localAddress()
+{
+	const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) {
+		return 0;
+	}
+	sockaddr_in to{};
+	to.sin_family = AF_INET;
+	to.sin_port = htons(9);
+	to.sin_addr.s_addr = htonl(0xC0000201);   // 192.0.2.1 (TEST-NET-1: never reached)
+	uint32_t ip = 0;
+	sockaddr_in me{};
+	socklen_t len = sizeof(me);
+	if (connect(fd, reinterpret_cast<sockaddr *>(&to), sizeof(to)) == 0 &&
+		getsockname(fd, reinterpret_cast<sockaddr *>(&me), &len) == 0) {
+		ip = ntohl(me.sin_addr.s_addr);
+	}
+	close(fd);
+	return ip;
+}
+
+/* a NetBIOS node status answer's file server name (suffix 0x20, unique), else its first unique */
+std::string nbstatName(const uint8_t *b, size_t n)
+{
+	if (n < 57) {
+		return std::string();
+	}
+	const unsigned count = b[56];
+	std::string first;
+	for (unsigned i = 0; i < count && 57 + (i + 1) * 18 <= n; i++) {
+		const uint8_t *e = b + 57 + i * 18;
+		const bool group = (e[16] & 0x80) != 0;
+		std::string name(reinterpret_cast<const char *>(e), 15);
+		while (!name.empty() && (name.back() == ' ' || name.back() == 0)) {
+			name.pop_back();
+		}
+		if (group || name.empty()) {
+			continue;
+		}
+		if (e[15] == 0x20) {
+			return name;
+		}
+		if (first.empty() && e[15] == 0x00) {
+			first = name;
+		}
+	}
+	return first;
+}
+
+} // namespace
+
+std::vector<FoundServer> findServers()
+{
+	std::vector<FoundServer> out;
+	const uint32_t me = localAddress();
+	if (!me) {
+		return out;
+	}
+	const uint32_t net = me & 0xFFFFFF00u;
+	/* port 445 of the /24's hosts, 64 at a time, each batch given 400 ms */
+	std::vector<uint32_t> open;
+	for (uint32_t base = 1; base < 255; base += 64) {
+		std::vector<std::pair<int, uint32_t>> socks;
+		for (uint32_t h = base; h < base + 64 && h < 255; h++) {
+			const uint32_t ip = net | h;
+			if (ip == me) {
+				continue;
+			}
+			const int fd = socket(AF_INET, SOCK_STREAM, 0);
+			if (fd < 0) {
+				continue;
+			}
+			fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+			sockaddr_in a{};
+			a.sin_family = AF_INET;
+			a.sin_port = htons(445);
+			a.sin_addr.s_addr = htonl(ip);
+			const int rc = connect(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+			if (rc == 0) {
+				open.push_back(ip);
+				close(fd);
+			} else if (errno == EINPROGRESS) {
+				socks.push_back({ fd, ip });
+			} else {
+				close(fd);
+			}
+		}
+		std::vector<pollfd> pfd;
+		for (const auto &s : socks) {
+			pfd.push_back({ s.first, POLLOUT, 0 });
+		}
+		for (int waited = 0; waited < 400 && !pfd.empty(); waited += 50) {
+			if (poll(pfd.data(), pfd.size(), 50) <= 0) {
+				continue;
+			}
+			for (size_t i = 0; i < pfd.size(); i++) {
+				if (pfd[i].fd >= 0 && (pfd[i].revents & (POLLOUT | POLLERR | POLLHUP))) {
+					int err = 1;
+					socklen_t len = sizeof(err);
+					if ((pfd[i].revents & POLLOUT) && getsockopt(pfd[i].fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0) {
+						open.push_back(socks[i].second);
+					}
+					pfd[i].fd = -1;     // (answered: not polled again)
+				}
+			}
+		}
+		for (const auto &s : socks) {
+			close(s.first);
+		}
+	}
+	std::sort(open.begin(), open.end());
+	open.erase(std::unique(open.begin(), open.end()), open.end());
+	/* their names: a NetBIOS node status request ("*") to each, the answers for 500 ms */
+	const int udp = socket(AF_INET, SOCK_DGRAM, 0);
+	std::vector<std::string> names(open.size());
+	if (udp >= 0 && !open.empty()) {
+		uint8_t q[50] = { 0x4F, 0x47, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 'C', 'K' };
+		for (int i = 15; i < 45; i++) {
+			q[i] = 'A';
+		}
+		q[45] = 0x00;
+		q[46] = 0x00;
+		q[47] = 0x21;   // NBSTAT
+		q[48] = 0x00;
+		q[49] = 0x01;   // IN
+		for (const uint32_t ip : open) {
+			sockaddr_in a{};
+			a.sin_family = AF_INET;
+			a.sin_port = htons(137);
+			a.sin_addr.s_addr = htonl(ip);
+			sendto(udp, q, sizeof(q), 0, reinterpret_cast<sockaddr *>(&a), sizeof(a));
+		}
+		for (int waited = 0; waited < 500; waited += 50) {
+			pollfd p{ udp, POLLIN, 0 };
+			if (poll(&p, 1, 50) <= 0) {
+				continue;
+			}
+			uint8_t b[1500];
+			sockaddr_in from{};
+			socklen_t fl = sizeof(from);
+			const ssize_t n = recvfrom(udp, b, sizeof(b), 0, reinterpret_cast<sockaddr *>(&from), &fl);
+			if (n <= 0) {
+				continue;
+			}
+			const auto it = std::find(open.begin(), open.end(), ntohl(from.sin_addr.s_addr));
+			if (it != open.end()) {
+				names[static_cast<size_t>(it - open.begin())] = nbstatName(b, static_cast<size_t>(n));
+			}
+		}
+	}
+	if (udp >= 0) {
+		close(udp);
+	}
+	for (size_t i = 0; i < open.size(); i++) {
+		char ip[16];
+		std::snprintf(ip, sizeof(ip), "%u.%u.%u.%u", open[i] >> 24, (open[i] >> 16) & 255, (open[i] >> 8) & 255, open[i] & 255);
+		out.push_back({ ip, names[i] });
+	}
+	return out;
 }
 
 } // namespace ogbox

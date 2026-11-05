@@ -50,6 +50,13 @@ void unmountShare(Share &s);
 std::string shareDefaultName(const Share &s);
 
 std::string percentEncode(const std::string &s);
+/* 0.0.3: the SMB servers on the local network (its /24 around this console's address): those that
+ * take a connection on port 445, each with its NetBIOS name when it answers a node status query.
+ * Blocks up to about two seconds (the share form asks on a thread). */
+struct FoundServer {
+	std::string ip, name;
+};
+std::vector<FoundServer> findServers();
 std::string percentDecode(const std::string &s);
 
 } // namespace ogbox
