@@ -55,6 +55,13 @@ it is built, the rules the owner has set, and where the work stands.
   Fable fixes (demand paging as an always-on game fix, soft pages, the report gate), covers from
   libretro, MobCat and the XBE, CCI and split images, the 64 MB limit, the async boot log.
   Notes: `docs/releases/v0.0.3.md`.
+- **After 0.0.3 (test builds toward 0.0.4):** the dashboard's black screen at render scale 5 and 6
+  (a device Reset keeps its scale); settings for anisotropic filtering (`NC_HLE_ANISO`), forced
+  32-bit colour (`NC_HLE_FORCE32`: the host image of an R5G6B5 or X1R5G5B5 target is 8888, and
+  every copy to or from guest memory goes through a scratch image of the guest's format) and
+  sharpening (`NC_HLE_SHARPEN`: CAS in the gamma display pass). All off by default. Forced 32-bit
+  colour is unverified on the host (no title there draws 16-bit targets: the pbkit test disc
+  doesn't reach the GPU path); it needs a game test.
 - The front end: `ps5/src/ogbox_ui.{h,cpp}` draw it from view structs; `ogbox_main.cpp`'s section
   "OGBox 0.0.3: the front end's new look" holds the home, the settings, the share form and the
   game page. Covers and descriptions: `ogbox_library.cpp` (`Covers`, `About`).

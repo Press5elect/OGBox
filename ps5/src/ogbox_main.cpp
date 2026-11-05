@@ -6137,7 +6137,7 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "dither", "crop_overscan", "audio_dsp", "show_fps" } } };
+			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "aniso", "sharpen", "force32", "dither", "crop_overscan", "audio_dsp", "show_fps" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };

@@ -155,6 +155,7 @@ native core's work tree (oldest first; author: subject):
   e2135b5d45 Claude: disc: a split image's parts stay open with their registration (each open of the disc reads them)
   b6ffdc521d Claude: io: dashupdate.xbe for a missing xboxdash.xbe; ke: a polling thread's boost goes
   4ff8a30603 Claude: hle: a device Reset keeps the device's render scale
+  1ab1127700 Claude: hle: anisotropic filtering, forced 32-bit colour and sharpening (all off by default)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -4706,7 +4707,7 @@ index db1badb4a450c7fd707ad8156f981649a2673a83..c97ae0f61469f14af2c63d30dcc37ed6
      HLE_RK_VB = 1, HLE_RK_IB, HLE_RK_PUSHBUF, HLE_RK_FIXUP, HLE_RK_PALETTE,
      HLE_RK_TEXTURE, HLE_RK_CUBE, HLE_RK_VOLUME, HLE_RK_SURFACE,
 diff --git a/hw/xbox/hle/vk/back.c b/hw/xbox/hle/vk/back.c
-index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1d4bb9892 100644
+index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..a8d5658b7ab6701bc81306174fcb95c5cc3fb6ed 100644
 --- a/hw/xbox/hle/vk/back.c
 +++ b/hw/xbox/hle/vk/back.c
 @@ -847,7 +847,20 @@ uint32_t g_hle_rscale = 1;
@@ -4731,6 +4732,15 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1
      /* A Reset replaces only the device's surfaces (the front end destroys the
       * old ones by OBJ_DESTROY): the title's own render targets and textures
       * keep their images. A new scale resizes every image. */
+@@ -899,7 +912,7 @@ static struct {
+ static bool rtd_surf_ok(HleVkSurf *s)
+ {
+     return s && !s->d.parent && hle_surf_ensure(s) && (s->aspect & VK_IMAGE_ASPECT_COLOR_BIT) &&
+-           s->layout != VK_IMAGE_LAYOUT_UNDEFINED && s->texel_bytes;
++           s->layout != VK_IMAGE_LAYOUT_UNDEFINED && s->texel_bytes && !hle_surf_hostfmt(s);
+ }
+ 
+ /* a host-visible buffer of size bytes */
 @@ -1099,6 +1112,7 @@ static void rtd_write(uint64_t value)
          T.vkDestroyBuffer(g_hvk.dev, g_rtd.buf, NULL);
          T.vkFreeMemory(g_hvk.dev, g_rtd.mem, NULL);
@@ -4739,7 +4749,67 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1
      }
  }
  
-@@ -2447,7 +2461,9 @@ static void dispatch(const HleCmdHdr *h)
+@@ -1201,7 +1215,7 @@ static void pix_after(const HleCmdDraw *c)
+     r->rt = g_back.rt;
+     r->ds = g_back.ds;
+     r->kind = c ? 0 : 1;
+-    r->cbytes = rt->texel_bytes;
++    r->cbytes = hle_surf_hostfmt(rt) ? 4 : rt->texel_bytes;   /* the image's texel */
+     r->cfmt = rt->fmt;
+     hle_surf_transition(cb, rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+     VkBufferImageCopy cr = { .bufferOffset = PIX_STRIDE * g_pix.n,
+@@ -1991,8 +2005,17 @@ static void cmd_swap_present(const HleCmdSwap *c)
+         /* the part of src shown (HleCmdSwap.src_w / src_h), in its pixels */
+         const uint32_t sw = c->src_w ? MIN(src->w, c->src_w * src->scale) : src->w;
+         const uint32_t sh = c->src_h ? MIN(src->h, c->src_h * src->scale) : src->h;
+-        if (!g_gamma.identity && !g_gamma.off && !hle_disp_gamma_consumer() &&
+-            hle_gamma_pass(cb, g_back.cur, g_gamma.rgb, src, sw, sh, dst, dw, dh)) {
++        /* the display pass: the gamma ramp (a ramp that isn't the identity, which the presenter
++         * doesn't apply) and the sharpening; an identity ramp where only the sharpening asks */
++        static uint8_t s_identity[3][256];
++        if (!s_identity[0][255]) {
++            for (unsigned i = 0; i < 256; i++) {
++                s_identity[0][i] = s_identity[1][i] = s_identity[2][i] = (uint8_t)i;
++            }
++        }
++        const bool ramp = !g_gamma.identity && !g_gamma.off && !hle_disp_gamma_consumer();
++        if ((ramp || hle_sharpen_strength() > 0.0f) &&
++            hle_gamma_pass(cb, g_back.cur, ramp ? g_gamma.rgb : s_identity, src, sw, sh, dst, dw, dh)) {
+             overlay_blit(cb, dst, dw, dh);
+             fh_copy(cb, dst, dw, dh);
+             submit(c->value);           /* through the ramp instead of the blit */
+@@ -2046,7 +2069,7 @@ static bool readback_packed(const HleCmdReadback *c, VkBuffer buf, VkDeviceSize
+     hle_surf_transition(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+     VkImage img = o->img;
+     VkImageLayout il = o->general ? VK_IMAGE_LAYOUT_GENERAL : o->layout;
+-    if (o->scale > 1) {                         /* the guest gets guest-size texels */
++    if (o->scale > 1 || hle_surf_hostfmt(o)) {  /* the guest gets guest-size texels, in its format */
+         img = hle_surf_down(cb, o, il, level, layer, c->w, c->h);
+         if (!img) {
+             return false;
+@@ -2116,9 +2139,10 @@ static void cmd_readback(const HleCmdReadback *c)
+         hle_surf_transition(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+         VkImage img = s->img;
+         VkImageLayout il = s->layout;
+-        if (s->scale > 1 || w != s->d.w || h != s->d.h) {
++        if (s->scale > 1 || w != s->d.w || h != s->d.h || hle_surf_hostfmt(s)) {
+             /* the guest gets guest-size pixels (or the size asked for:
+-             * a multisampled display persisted at display size) */
++             * a multisampled display persisted at display size), in its own format (a
++             * forced 32-bit target: the blit converts) */
+             img = hle_surf_down(cb, s, il, 0, 0, w, h);
+             il = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+         }
+@@ -2281,7 +2305,7 @@ static void cmd_upload(const HleCmdUpload *c)
+         if (r->x1 < 0 || r->y1 < 0 || c->x[i] < 0 || c->y[i] < 0 || w <= 0 || h <= 0) {
+             continue;
+         }
+-        VkImage tmp = hle_surf_scratch(d->fmt, (uint32_t)w, (uint32_t)h);
++        VkImage tmp = hle_surf_scratch(d->gfmt, (uint32_t)w, (uint32_t)h);   /* the guest's format */
+         if (!tmp) {
+             why = "no scratch image";
+             break;
+@@ -2447,7 +2471,9 @@ static void dispatch(const HleCmdHdr *h)
          break;
      }
      case HLE_OP_SET_RT:   cmd_set_rt(p); break;
@@ -4750,7 +4820,7 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1
      case HLE_OP_CLEAR:
          cmd_clear(p);
          if (g_pix.active) {
-@@ -2548,8 +2564,9 @@ static void dispatch(const HleCmdHdr *h)
+@@ -2548,8 +2574,9 @@ static void dispatch(const HleCmdHdr *h)
  /* After draining: up to ~200 us waiting for the producer's next publish, in
   * WFE on the ring head (its store clears the exclusive monitor; interrupts
   * and the timer event stream bound each WFE), before sleeping on the kick
@@ -4762,7 +4832,7 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1
  static bool ring_wait_brief(HleRing *r, uint32_t seen)
  {
  #if defined(__aarch64__)
-@@ -2571,6 +2588,36 @@ static bool ring_wait_brief(HleRing *r, uint32_t seen)
+@@ -2571,6 +2598,36 @@ static bool ring_wait_brief(HleRing *r, uint32_t seen)
              return false;
          }
      }
@@ -4800,7 +4870,7 @@ index 4a4d30175fe45529f8557bc20eb6405e7f1e9113..04f1cd1b53db8a106d45d8f598ee20e1
      return false;
  #endif
 diff --git a/hw/xbox/hle/vk/back_int.h b/hw/xbox/hle/vk/back_int.h
-index e5c91ee6d8074d586d07ae857990c6964050d95a..2ceac0a71b29384331d495fcc8facd5cb4087b10 100644
+index e5c91ee6d8074d586d07ae857990c6964050d95a..802efa05a4619b5b9f06e3d293222f997561786a 100644
 --- a/hw/xbox/hle/vk/back_int.h
 +++ b/hw/xbox/hle/vk/back_int.h
 @@ -27,6 +27,19 @@ void hle_tl_gap_serve(void);
@@ -4823,7 +4893,18 @@ index e5c91ee6d8074d586d07ae857990c6964050d95a..2ceac0a71b29384331d495fcc8facd5c
  /* surf.c */
  typedef struct HleVkSurf {
      bool alive;
-@@ -57,8 +70,10 @@ typedef struct HleVkSurf {
+@@ -35,6 +48,10 @@ typedef struct HleVkSurf {
+     uint32_t w, h;              /* image extent (views: their level's), scaled */
+     uint32_t scale;             /* host pixels per guest pixel (hle_surf_define) */
+     VkFormat fmt;
++    VkFormat gfmt;              /* the guest's format: what texel_bytes and every copy to or from
++                                   guest memory use. fmt, unless NC_HLE_FORCE32 made a 16-bit
++                                   target 32-bit (hle_surf_hostfmt): then those copies go through
++                                   a scratch image of gfmt (hle_surf_down, hle_surf_scratch) */
+     VkImageAspectFlags aspect;
+     uint32_t texel_bytes;
+     VkImage img;
+@@ -57,8 +74,10 @@ typedef struct HleVkSurf {
      uint32_t rendered_levels;   /* owners: levels 0..n-1 sampled (the highest rendered + 1) */
      uint32_t sview_levels;
      VkImageView sview, cube_view;   /* owners: sampled views */
@@ -4834,6 +4915,27 @@ index e5c91ee6d8074d586d07ae857990c6964050d95a..2ceac0a71b29384331d495fcc8facd5c
      uint32_t oview_ord, oview_levels;
      uint64_t oview_gen;         /* view_gen's, for oview */
      VkImage owner_img;          /* views: the owner image the view was made from */
+@@ -97,6 +116,8 @@ void hle_img_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect,
+ void hle_surf_transition(VkCommandBuffer cb, HleVkSurf *s, VkImageLayout to);
+ /* gamma.c: the swap's copy through the gamma ramp of src's top left sw x sh
+  * pixels; false = not done (blit) */
++/* the display pass's sharpening, 0 (off) to 1 (NC_HLE_SHARPEN) */
++float hle_sharpen_strength(void);
+ bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256],
+                     HleVkSurf *src, uint32_t sw, uint32_t sh, VkImage dst, uint32_t dw, uint32_t dh);
+ /* zread.c: depth-stencil surface src into colour surface dst as its 32-bit
+@@ -118,6 +139,11 @@ VkImage hle_surf_down(VkCommandBuffer cb, HleVkSurf *o, VkImageLayout layout,
+ /* A w x h scratch image of fmt (transfer source and destination) for texels
+  * on their way up; VK_NULL_HANDLE = none (the format cannot be blitted). */
+ VkImage hle_surf_scratch(VkFormat fmt, uint32_t w, uint32_t h);
++/* the target's image is not in the guest's format (forced 32-bit colour) */
++static inline bool hle_surf_hostfmt(const HleVkSurf *s) { return s->fmt != s->gfmt; }
++/* a forced 32-bit R5G6B5 target: the format has no alpha, so the 8888 image's stays 1 (the clears
++ * write it 1, draws don't write it) and is read as 1 (hle_surf_x_alpha) */
++bool hle_surf_alphaless_host(const HleVkSurf *s);
+ void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube);
+ 
+ /* An A8R8G8B8 / X8R8G8B8 target's texels as a 32-bit texture of another
 diff --git a/hw/xbox/hle/vk/batch.c b/hw/xbox/hle/vk/batch.c
 index bfea27d48877b2ee7e6390b081b3a40ca4debfb9..1871da1ff88fc1c8b395c19379f63c4d7395ed85 100644
 --- a/hw/xbox/hle/vk/batch.c
@@ -4902,7 +5004,7 @@ index bf187bc5967efb39fbb05bc92fc2f7076e58a489..b41b6858562f8c32a5cec61646677549
 +    return (int)r;
 +}
 diff --git a/hw/xbox/hle/vk/draw.c b/hw/xbox/hle/vk/draw.c
-index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb61e9da759 100644
+index b72476d61628d9ded95d4d3ac5371168570f590c..1dcadca03f68de7b8f911c6bfb900bcf329ca6bb 100644
 --- a/hw/xbox/hle/vk/draw.c
 +++ b/hw/xbox/hle/vk/draw.c
 @@ -35,13 +35,13 @@
@@ -5553,7 +5655,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      hle_log("hakuX-hle-back", "target copy %u: %ux%u fmt %d (slot %u)", g_nsnap, rt->w, rt->h,
              (int)rt->fmt, slot);
      return (int)g_nsnap++;
-@@ -1583,28 +1787,78 @@ static VkSamplerAddressMode addr_mode(uint32_t a)
+@@ -1583,28 +1787,97 @@ static VkSamplerAddressMode addr_mode(uint32_t a)
      }
  }
  
@@ -5608,6 +5710,25 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
 +     * too). Vulkan's anisotropic filtering is the driver's: an approximation
 +     * of the NV2A's, nearest filtering's especially. */
 +    uint32_t aniso = g_hvk.caps.aniso ? MAX(MIN(tss[TSS_MAXANISOTROPY], 16u), 1u) : 1;
++    /* OGBox 0.0.4: NC_HLE_ANISO=2|4|8|16 (the setting "Anisotropic filtering"; unset: as the title
++     * sets it, the accurate default) raises the degree for textures a title filters smoothly
++     * and gives smaller copies for the distance (linear mag and min, a mip chain). Nearest
++     * filtering (pixel art, menus) and the title's stages that don't mipmap stay as set; so do
++     * the sampler a convolving stage uses (its own, below). */
++    static int s_force_aniso = -1;
++    if (s_force_aniso < 0) {
++        const char *e = getenv("NC_HLE_ANISO");
++        const int v = e ? atoi(e) : 0;
++        s_force_aniso = v == 2 || v == 4 || v == 8 || v == 16 ? v : 0;
++        if (s_force_aniso) {
++            hle_log("hakuX-hle-back", "anisotropic filtering: at least %dx on smooth, mipmapped "
++                    "textures (the device takes up to %.0f)", s_force_aniso, g_hvk.caps.max_aniso);
++        }
++    }
++    if (s_force_aniso && g_hvk.caps.aniso && (tss[TSS_MAGFILTER] & 7) >= 2 &&
++        (tss[TSS_MINFILTER] & 7) >= 2 && (tss[TSS_MIPFILTER] & 7) != 0) {
++        aniso = MAX(aniso, (uint32_t)s_force_aniso);
++    }
      uint64_t key = (uint64_t)(tss[TSS_ADDRESSU] & 7) | (uint64_t)(tss[TSS_ADDRESSV] & 7) << 3 |
                     (uint64_t)(tss[TSS_MAGFILTER] & 7) << 6 |
                     (uint64_t)(tss[TSS_MINFILTER] & 7) << 9 |
@@ -5641,7 +5762,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
              return i;
          }
      }
-@@ -1638,9 +1892,33 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
+@@ -1638,9 +1911,33 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
                   f[0] + f[1] + f[2] < 1.5f ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK :
                                               VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
      }
@@ -5676,7 +5797,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
          .magFilter = lin_mag ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
          .minFilter = lin_min ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
          .mipmapMode = mip >= 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
-@@ -1649,13 +1927,22 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
+@@ -1649,13 +1946,22 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
          .addressModeW = addr_mode(tss[TSS_ADDRESSW]),
          .mipLodBias = bias, .minLod = (float)base,
          .maxLod = mip ? VK_LOD_CLAMP_NONE : base + 0.25f,
@@ -5700,7 +5821,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      g_dr.smp[i].key = key;
      g_dr.smp[i].key2 = key2;
      g_dr.smp[i].s = s;
-@@ -1670,6 +1957,19 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
+@@ -1670,6 +1976,19 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
      return i;
  }
  
@@ -5720,7 +5841,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
  /* ---- pipelines ----------------------------------------------------------------- */
  
  static VkBlendFactor blend_factor(uint32_t f)
-@@ -2110,6 +2410,10 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
+@@ -2110,6 +2429,10 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
              .alphaBlendOp = blend_op(k->op), .colorWriteMask = k->wmask };
          VkPipelineColorBlendStateCreateInfo cb = {
              .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -5731,7 +5852,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
              .attachmentCount = k->cfmt ? 1 : 0, .pAttachments = &ba };
          VkDynamicState dyn[] = {
              VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
-@@ -2121,6 +2425,7 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
+@@ -2121,6 +2444,7 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
              VK_DYNAMIC_STATE_BLEND_CONSTANTS, VK_DYNAMIC_STATE_VERTEX_INPUT_EXT,
              VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
              VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,  /* strip batches (batch.c) */
@@ -5739,7 +5860,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
          };
          VkPipelineDynamicStateCreateInfo dy = {
              .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-@@ -2393,6 +2698,24 @@ static uint32_t stage_lod_down(const HleCmdDraw *c, unsigned st, uint32_t rt_id)
+@@ -2393,6 +2717,24 @@ static uint32_t stage_lod_down(const HleCmdDraw *c, unsigned st, uint32_t rt_id)
      return (uint32_t)lrintf(log2f((float)ts->scale / (float)rt->scale) * 16.0f);
  }
  
@@ -5764,7 +5885,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
  /* Surfaces sampled as textures, each told once (the first 64 ids below 8192) */
  static uint8_t g_rt_seen[8192 / 8];
  static unsigned g_rt_told;
-@@ -2425,14 +2748,14 @@ static uint32_t stage_slot(const HleCmdDraw *c, unsigned st, uint32_t rt_id, uin
+@@ -2425,14 +2767,14 @@ static uint32_t stage_slot(const HleCmdDraw *c, unsigned st, uint32_t rt_id, uin
      } else if (c->tex[st] == rt_id && g_snap_cur >= 0 && g_snap_rt == rt_id &&
                 (rt = hle_surf_get(rt_id)) != NULL) {
          slot = g_snap[g_snap_cur].slot;  /* the target, copied before the draw */
@@ -5784,7 +5905,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      }
      uint32_t id = c->tex[st];
      if (id && !tx && id < 8192 && g_rt_told < 64 && !(g_rt_seen[id >> 3] >> (id & 7) & 1)) {
-@@ -3051,8 +3374,15 @@ static void psframe_log(const HleCmdDraw *c, const HleCmdState *s, const HlePshK
+@@ -3051,8 +3393,15 @@ static void psframe_log(const HleCmdDraw *c, const HleCmdState *s, const HlePshK
              memcpy(f + 4, &s->tss[st][TSS_BUMPENVLSCALE], 8);
              hle_log("hakuX-hle-pipe", "  bump st%u: %g %g %g %g l %g %g", st, f[0], f[1],
                      f[2], f[3], f[4], f[5]);
@@ -5800,7 +5921,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      if (s->rs[RS_FOGENABLE]) {
          float fs, fe, fd;
          memcpy(&fs, &s->rs[RS_FOGSTART], 4);
-@@ -3149,14 +3479,14 @@ static void psframe_log(const HleCmdDraw *c, const HleCmdState *s, const HlePshK
+@@ -3149,14 +3498,14 @@ static void psframe_log(const HleCmdDraw *c, const HleCmdState *s, const HlePshK
              continue;
          }
          hle_log("hakuX-hle-pipe", "  t%u %s xfmt=0x%x %ux%ux%u%s lv=%u f=%u%s addr=%u,%u,%u "
@@ -5817,7 +5938,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      }
  }
  
-@@ -3196,6 +3526,7 @@ static struct {
+@@ -3196,6 +3545,7 @@ static struct {
      VkRect2D sc;
      HleFfPush pc;
      uint32_t cull, ff, topo, zt, zw, zop, bias_en, stn, sop[4], smask, swmask, sref;
@@ -5825,7 +5946,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      uint32_t sraw[4];               /* the registers sop was translated from */
      float bias[2], bc[4];
      bool bc_lost;                   /* a pipeline without colour zeroed the driver's
-@@ -3246,10 +3577,12 @@ static void fixed_bind(VkCommandBuffer cb, HleFfPush *pc)
+@@ -3246,10 +3596,12 @@ static void fixed_bind(VkCommandBuffer cb, HleFfPush *pc)
      FixedKey k;
      memset(&k, 0, sizeof(k));
      for (unsigned s = 0; s < HLE_FF_STAGES; s++) {
@@ -5840,7 +5961,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      }
      VkDescriptorSet set = fixed_set(&k);
      if (set && (!g_rec.valid || g_rec.set0 != set)) {
-@@ -3332,6 +3665,62 @@ static uint32_t first_vertex(uint32_t n, const uint32_t *stride, VkDeviceSize *o
+@@ -3332,6 +3684,62 @@ static uint32_t first_vertex(uint32_t n, const uint32_t *stride, VkDeviceSize *o
      return (uint32_t)q;
  }
  
@@ -5903,7 +6024,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
  void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, uint32_t ds_id,
                         const HleCmdViewport *vpc)
  {
-@@ -3345,6 +3734,17 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3345,6 +3753,17 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          drop(DROP_TARGET, c, rt_id, ds_id);
          return;
      }
@@ -5921,7 +6042,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      {   /* debug: HAKUX_HLE_SKIPVSH=<hash>[/<count>[/<alphatest>]][,...], those
           * programs' draws (with that index count, alpha test on/off) are dropped;
           * the property debug.hakux.skipvsh (same syntax, "0" = none) replaces
-@@ -3469,7 +3869,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3469,7 +3888,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          fs->texture = c->tex[st] != 0;
          fs->unset = c->tex_unset >> st & 1;
          fs->alpha_kill = fs->texture && t[TSS_ALPHAKILL] != 0;
@@ -5930,7 +6051,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
          k.vs.texcoord[ki] = t[TSS_TEXCOORDINDEX] & 7;
          k.ps.nstages = ki + 1;
          k.vs.ntex = ki + 1;
-@@ -3481,8 +3881,13 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3481,8 +3900,13 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          memset(&k.ps, 0, sizeof(k.ps));
          pc.flags = 0;
          for (unsigned st = 0; st < HLE_FF_STAGES; st++) {
@@ -5946,7 +6067,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
              k.vs.texcoord[st] = s->tss[st][TSS_TEXCOORDINDEX] & 7;
          }
          k.vs.ntex = HLE_FF_STAGES;
-@@ -3497,14 +3902,108 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3497,14 +3921,108 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          k.pk.specular = s->rs[RS_SPECULARENABLE] != 0;
          k.pk.point_sprite = c->prim == 0 && s->rs[RS_POINTSPRITEENABLE] != 0;
          k.pk.out_bgra = rt && hle_surf_out_bgra(rt->fmt);
@@ -6056,7 +6177,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
              }
          }
          for (unsigned st = 0; st < 4; st++) {
-@@ -3599,6 +4098,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3599,6 +4117,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
                  mt[0] = half2(t[TSS_BUMPENVMAT00], t[TSS_BUMPENVMAT00 + 1]);
                  mt[1] = half2(t[TSS_BUMPENVMAT00 + 2], t[TSS_BUMPENVMAT00 + 3]);
                  pc.bumpl[st - 1] = half2(t[TSS_BUMPENVLSCALE], t[TSS_BUMPENVLSCALE + 1]);
@@ -6067,7 +6188,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
              }
          }
          psframe_log(c, s, &k.pk, rt_id, pc.psc);
-@@ -3728,6 +4231,32 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3728,6 +4250,32 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
       * the road cancel to 0 (an unsigned subtract clamps at 0 and the add then
       * lights everything in front of the volume). With ONE / ONE the shader
       * does the equation on the target's pixel (fbfetch), the blend is off. */
@@ -6100,7 +6221,16 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      if (k.blend_en && (k.op == 0xF005 || k.op == 0xF006)) {
          unsigned sb = signed_blend(s);
          if (sb && rt && (rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
-@@ -3779,8 +4308,21 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3749,7 +4297,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+     k.wmask = ((cw >> 16) & 1 ? (bgra ? VK_COLOR_COMPONENT_B_BIT : VK_COLOR_COMPONENT_R_BIT) : 0) |
+               ((cw >> 8) & 1 ? VK_COLOR_COMPONENT_G_BIT : 0) |
+               (cw & 1 ? (bgra ? VK_COLOR_COMPONENT_R_BIT : VK_COLOR_COMPONENT_B_BIT) : 0) |
+-              ((cw >> 24) & 1 ? VK_COLOR_COMPONENT_A_BIT : 0);
++              ((cw >> 24) & 1 && !(rt && hle_surf_alphaless_host(rt)) ? VK_COLOR_COMPONENT_A_BIT : 0);
+     k.cfmt = rt ? rt->fmt : 0;
+     k.dfmt = ds ? ds->fmt : 0;
+     k.topo_class = c->prim == 0 ? 0 : c->prim <= 2 ? 1 : 2;
+@@ -3779,8 +4327,21 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
       * them instead of clipping the primitive (MechAssault 2's sky, drawn past
       * the far plane, was black): the rasterizer's depth clamp */
      bool zclamp = ds && s->rs[RS_ZENABLE] != 0 && s->zclamp;
@@ -6123,7 +6253,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
          k.vk.zfree = !ds || s->rs[RS_ZENABLE] == 0;
          k.vk.zclamp = zclamp;
      } else {
-@@ -3788,9 +4330,11 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3788,9 +4349,11 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          k.vs.zclamp = zclamp;
      }
      if (s->psh) {
@@ -6137,7 +6267,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      }
      /* Polygon offset (decals over coplanar surfaces): NV2A adds the offset in
       * depth-buffer units and the slope factor times the polygon's depth slope,
-@@ -3845,7 +4389,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3845,7 +4408,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          zofs *= f;
          zslope *= f;
      }
@@ -6146,7 +6276,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
          memcpy(&pc.psc[18], bias ? &zofs : &(float){ 0.0f }, 4);
          memcpy(&pc.psc[19], bias ? &zslope : &(float){ 0.0f }, 4);
          bias = false;
-@@ -3950,16 +4494,19 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3950,16 +4513,19 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
      VkRect2D sc = full ? (VkRect2D){ { 0, 0 }, { sw, sh } } :
                           (VkRect2D){ { (int32_t)(vpc->x * rs), (int32_t)(vpc->y * rs) },
                                       { vpc->w * rs, vpc->h * rs } };
@@ -6172,7 +6302,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      }
      VkViewport v = { 0, (float)sh, (float)sw, -(float)sh, 0.0f, 1.0f };
      if (!prog && !rhw && !full) {
-@@ -3995,7 +4542,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3995,7 +4561,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          pc.scr[2] = (vx + vw * 0.5f) / aax + vpc->offx;
          pc.scr[3] = (vy + vh * 0.5f) / aay + vpc->offy;
      }
@@ -6183,7 +6313,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      pc.tfactor = s->rs[RS_TEXTUREFACTOR];
      pc.alpha_ref = (s->rs[RS_ALPHAREF] & 0xFF) / 255.0f;
      memcpy(&pc.fog[3], &rect, 4);       /* (bits: HLE_NVRECT_GLSL) */
-@@ -4044,6 +4593,27 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -4044,6 +4612,27 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          T.vkCmdSetDepthCompareOp(cb, (VkCompareOp)g_rec.zop);
          g_dr.emits[EM_DYN]++;
      }
@@ -6211,7 +6341,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      if (REC_CHANGED(bias_en, bias) && eds2) {
          T.vkCmdSetDepthBiasEnable(cb, bias);
          g_dr.emits[EM_DYN]++;
-@@ -4244,44 +4814,14 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -4244,44 +4833,14 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          mp.prim = c->prim;
          mp.end = vfirst + c->count;
      }
@@ -6264,10 +6394,51 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb6
      g_rec.valid = true;
      g_dr.draws++;
 diff --git a/hw/xbox/hle/vk/gamma.c b/hw/xbox/hle/vk/gamma.c
-index 10030afeb9cf43dedddd680727937fa532e7c29c..a47aa543890de7c5b6e718903aed1dfa4ed16936 100644
+index 10030afeb9cf43dedddd680727937fa532e7c29c..a1435e15d58811d33338028f0c1dc077bb7a6a73 100644
 --- a/hw/xbox/hle/vk/gamma.c
 +++ b/hw/xbox/hle/vk/gamma.c
-@@ -205,6 +205,11 @@ static VkImageView dst_view(VkImage img)
+@@ -3,6 +3,11 @@
+  * swap's blit becomes a fullscreen pass that samples the presented surface
+  * and maps each channel through the ramp (the NV2A DAC does this at
+  * scanout). Identity ramps keep the blit (back.c).
++ *
++ * OGBox 0.0.4: NC_HLE_SHARPEN=1..100 (the setting "Sharpening"; unset: none, the picture as the
++ * Xbox made it) sharpens the picture in this same pass, before the ramp: AMD's contrast-adaptive
++ * sharpening (FidelityFX CAS, MIT) on the picture's four neighbours, which sharpens flat areas
++ * little and edges that are already strong little, so it makes no halos or noise.
+  */
+ #include "hw/xbox/hle/base.h"
+ #include "hw/xbox/hle/hle.h"
+@@ -26,15 +31,27 @@ static const char k_vs[] =
+ static const char k_fs[] =
+     "#version 450\n"
+     "layout(set = 0, binding = 0) uniform sampler2D src;\n"
+-    "layout(set = 0, binding = 1, std140) uniform G { uvec4 w[48]; } g;\n"
++    "layout(set = 0, binding = 1, std140) uniform G { uvec4 w[48]; vec4 p; } g;\n"
+     "layout(location = 0) in vec2 uv;\n"
+     "layout(location = 0) out vec4 o;\n"
+     "uint lut(uint i) {\n"
+     "  uint word = g.w[i >> 4][(i >> 2) & 3u];\n"
+     "  return (word >> ((i & 3u) * 8u)) & 0xFFu;\n"
+     "}\n"
++    "vec3 cas(vec3 e) {\n"
++    "  vec2 px = 1.0 / vec2(textureSize(src, 0));\n"
++    "  vec3 b = texture(src, uv + vec2(0.0, -px.y)).rgb, d = texture(src, uv + vec2(-px.x, 0.0)).rgb;\n"
++    "  vec3 f = texture(src, uv + vec2(px.x, 0.0)).rgb, h = texture(src, uv + vec2(0.0, px.y)).rgb;\n"
++    "  vec3 mn = min(min(b, d), min(e, min(f, h))), mx = max(max(b, d), max(e, max(f, h)));\n"
++    "  vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1.0e-4)), 0.0, 1.0));\n"
++    "  vec3 w = amp * (-1.0 / mix(8.0, 5.0, g.p.x));\n"
++    "  return clamp((b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w), 0.0, 1.0);\n"
++    "}\n"
+     "void main() {\n"
+     "  vec4 c = texture(src, uv);\n"
++    "  if (g.p.x > 0.0) {\n"
++    "    c.rgb = cas(clamp(c.rgb, 0.0, 1.0));\n"
++    "  }\n"
+     "  uvec3 v = uvec3(clamp(c.rgb, 0.0, 1.0) * 255.0 + 0.5);\n"
+     "  o = vec4(float(lut(v.r)), float(lut(256u + v.g)), float(lut(512u + v.b)), 255.0)"
+     " / 255.0;\n"
+@@ -205,6 +222,11 @@ static VkImageView dst_view(VkImage img)
          for (unsigned i = 0; i < g_gm.ndst; i++) {
              T.vkDestroyImageView(g_hvk.dev, g_gm.dst[i].view, NULL);
          }
@@ -6279,6 +6450,41 @@ index 10030afeb9cf43dedddd680727937fa532e7c29c..a47aa543890de7c5b6e718903aed1dfa
          g_gm.ndst = 0;
          g_gm.dst_gen = hle_disp_gen();
      }
+@@ -230,6 +252,21 @@ static VkImageView dst_view(VkImage img)
+     return v;
+ }
+ 
++float hle_sharpen_strength(void)
++{
++    static float s_strength = -1.0f;
++    if (s_strength < 0.0f) {
++        const char *e = getenv("NC_HLE_SHARPEN");
++        const int v = e ? atoi(e) : 0;
++        s_strength = v < 1 ? 0.0f : (float)(v > 100 ? 100 : v) / 100.0f;
++        if (s_strength > 0.0f) {
++            hle_log("hakuX-hle-back", "sharpening: %d%% (contrast-adaptive, in the display pass)",
++                    (int)(s_strength * 100.0f + 0.5f));
++        }
++    }
++    return s_strength;
++}
++
+ bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256],
+                     HleVkSurf *src, uint32_t sw, uint32_t sh, VkImage dst, uint32_t dw, uint32_t dh)
+ {
+@@ -242,9 +279,11 @@ bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256
+     }
+     slot %= GM_SLOTS;                   /* this frame slot's earlier use has completed */
+     memcpy(g_gm.map + slot * GM_STRIDE, ramp, 768);
++    const float p[4] = { hle_sharpen_strength(), 0.0f, 0.0f, 0.0f };
++    memcpy(g_gm.map + slot * GM_STRIDE + 768, p, sizeof(p));
+     hle_surf_transition(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+     VkDescriptorImageInfo ii = { g_gm.smp, src->view, src->layout };   /* or GENERAL */
+-    VkDescriptorBufferInfo bi = { g_gm.ubo, slot * GM_STRIDE, 768 };
++    VkDescriptorBufferInfo bi = { g_gm.ubo, slot * GM_STRIDE, 784 };   /* 768 of ramp, the vec4 p */
+     VkWriteDescriptorSet w[2] = {
+         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_gm.set[slot],
+           .dstBinding = 0, .descriptorCount = 1,
 diff --git a/hw/xbox/hle/vk/guest_ram.c b/hw/xbox/hle/vk/guest_ram.c
 index 912d05c3f52f67b0a2d0cf09c3896afabe80fe3c..8c2d43bf22b80ab9751f6a9a18e252084e6688e4 100644
 --- a/hw/xbox/hle/vk/guest_ram.c
@@ -6322,7 +6528,7 @@ index 912d05c3f52f67b0a2d0cf09c3896afabe80fe3c..8c2d43bf22b80ab9751f6a9a18e25208
      g_hram.zero_copy = ahb && ((g_hvk.caps.bda && import(ahb, true)) || import(ahb, false));
      if (!g_hram.zero_copy) {
 diff --git a/hw/xbox/hle/vk/surf.c b/hw/xbox/hle/vk/surf.c
-index a3979f2677b25f46ca9a26b4ed0051367dd5c579..20f43bff06fc6be99e1f2be3afa6f05455d68206 100644
+index a3979f2677b25f46ca9a26b4ed0051367dd5c579..babbaefb3bc453691a960f14ae5495fdccd60fa1 100644
 --- a/hw/xbox/hle/vk/surf.c
 +++ b/hw/xbox/hle/vk/surf.c
 @@ -15,18 +15,21 @@
@@ -6354,7 +6560,54 @@ index a3979f2677b25f46ca9a26b4ed0051367dd5c579..20f43bff06fc6be99e1f2be3afa6f054
      }
  }
  
-@@ -217,26 +220,23 @@ HleVkSurf *hle_surf_get(uint32_t id)
+@@ -155,6 +158,46 @@ static VkFormat surf_format(uint32_t xfmt, VkImageAspectFlags *aspect, uint32_t
+     }
+ }
+ 
++/* OGBox 0.0.4: NC_HLE_FORCE32=1 (the setting "Force 32-bit colour"; unset: the Xbox's own 16 bits,
++ * the accurate default) draws the targets a title makes 16-bit (R5G6B5, X1R5G5B5) in 8 bits a
++ * channel, so skies, fog and shadows don't band and need no dither. The guest still sees 16-bit
++ * pixels: every readback and upload goes through a scratch image of the guest's format (a blit
++ * converts: hle_surf_down, cmd_upload). A1R5G5B5 keeps its own format: its one alpha bit is read
++ * back by blending titles, and 8 bits of it would change what they read. */
++static bool force32(void)
++{
++    static int s_on = -1;
++    if (s_on < 0) {
++        const char *e = getenv("NC_HLE_FORCE32");
++        s_on = e && e[0] == '1';
++        if (s_on) {
++            hle_log("hakuX-hle-back", "forced 32-bit colour: 16-bit targets are drawn in 8888");
++        }
++    }
++    return s_on;
++}
++
++static VkFormat host_format(uint32_t xfmt, VkFormat gfmt)
++{
++    switch (xfmt) {
++    case HLE_XFMT_R5G6B5: case HLE_XFMT_LIN_R5G6B5:
++    case HLE_XFMT_X1R5G5B5: case HLE_XFMT_LIN_X1R5G5B5:
++        if (force32() && gfmt != VK_FORMAT_UNDEFINED && attach_ok(VK_FORMAT_B8G8R8A8_UNORM, false)) {
++            /* the scratch the guest's copies go through must blit to its own format */
++            VkFormatProperties fp;
++            vkGetPhysicalDeviceFormatProperties(g_hvk.phys, gfmt, &fp);
++            const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT |
++                                              VK_FORMAT_FEATURE_BLIT_DST_BIT;
++            if ((fp.optimalTilingFeatures & need) == need) {
++                return VK_FORMAT_B8G8R8A8_UNORM;
++            }
++        }
++        return gfmt;
++    default:
++        return gfmt;
++    }
++}
++
+ static void destroy_now(HleVkSurf *s)
+ {
+     unhint(s);
+@@ -217,26 +260,23 @@ HleVkSurf *hle_surf_get(uint32_t id)
      if (!id) {
          return NULL;
      }
@@ -6392,7 +6645,32 @@ index a3979f2677b25f46ca9a26b4ed0051367dd5c579..20f43bff06fc6be99e1f2be3afa6f054
      return NULL;
  }
  
-@@ -551,7 +551,15 @@ VkImage hle_surf_down(VkCommandBuffer cb, HleVkSurf *o, VkImageLayout layout,
+@@ -270,7 +310,8 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
+             s->id = d->id;
+             g_surf_gen++;                       /* remembered misses may now hit */
+             s->d = *d;
+-            s->fmt = surf_format(d->xfmt, &s->aspect, &s->texel_bytes);
++            s->gfmt = surf_format(d->xfmt, &s->aspect, &s->texel_bytes);
++            s->fmt = host_format(d->xfmt, s->gfmt);
+             s->scale = surf_scale(d, s->aspect);
+             s->w = d->w * s->scale;
+             s->h = d->h * s->scale;
+@@ -369,6 +410,7 @@ static bool ensure_view(HleVkSurf *s)
+     s->w = MAX(o->w >> s->d.level, 1u);
+     s->h = MAX(o->h >> s->d.level, 1u);
+     s->fmt = o->fmt;
++    s->gfmt = o->gfmt;
+     s->aspect = o->aspect;
+     s->texel_bytes = o->texel_bytes;
+     s->layout = VK_IMAGE_LAYOUT_GENERAL;
+@@ -546,12 +588,21 @@ VkImage hle_surf_down(VkCommandBuffer cb, HleVkSurf *o, VkImageLayout layout,
+     VkFormatProperties fp;
+     vkGetPhysicalDeviceFormatProperties(g_hvk.phys, o->fmt, &fp);
+     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+-    VkImage d = (fp.optimalTilingFeatures & need) == need ? down_image(o->fmt, w, h)
++    /* the guest's format (o->gfmt): the blit below converts a forced 32-bit target to it */
++    VkImage d = (fp.optimalTilingFeatures & need) == need ? down_image(o->gfmt, w, h)
+                                                           : VK_NULL_HANDLE;
      if (!d) {
          return VK_NULL_HANDLE;
      }
@@ -6409,7 +6687,24 @@ index a3979f2677b25f46ca9a26b4ed0051367dd5c579..20f43bff06fc6be99e1f2be3afa6f054
      hle_img_barrier(cb, d, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
      VkImageBlit2 r = {
-@@ -744,6 +752,7 @@ void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube)
+@@ -703,8 +754,16 @@ bool hle_surf_read_pending(HleVkSurf *s, uint32_t rt_id)
+     return d != 0;
+ }
+ 
++bool hle_surf_alphaless_host(const HleVkSurf *s)
++{
++    return hle_surf_hostfmt(s) && (s->d.xfmt == HLE_XFMT_R5G6B5 || s->d.xfmt == HLE_XFMT_LIN_R5G6B5);
++}
++
+ bool hle_surf_x_alpha(const HleVkSurf *s)
+ {
++    if (hle_surf_alphaless_host(s)) {
++        return (s->aspect & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
++    }
+     switch (s->d.xfmt) {
+     case HLE_XFMT_X8R8G8B8: case HLE_XFMT_LIN_X8R8G8B8:
+     case HLE_XFMT_X1R5G5B5: case HLE_XFMT_LIN_X1R5G5B5:
+@@ -744,6 +803,7 @@ void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube)
              vci.components.a = VK_COMPONENT_SWIZZLE_ONE;
          }
          T.vkCreateImageView(g_hvk.dev, &vci, NULL, &s->sview);
@@ -6417,7 +6712,16 @@ index a3979f2677b25f46ca9a26b4ed0051367dd5c579..20f43bff06fc6be99e1f2be3afa6f054
          if (s->nfaces == 6) {
              vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
              vci.subresourceRange.layerCount = 6;
-@@ -797,6 +806,7 @@ VkImageView hle_surf_order_view(HleVkSurf *s, uint32_t ord)
+@@ -770,7 +830,7 @@ VkImageView hle_surf_order_view(HleVkSurf *s, uint32_t ord)
+     static const VkComponentSwizzle k_chan[4] = {   /* byte -> the image's channel */
+         VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
+         VK_COMPONENT_SWIZZLE_A };
+-    if (!ord || ord > HLE_DRAW_ORD_RGBA || s->d.parent || !s->img || s->fmt != VK_FORMAT_B8G8R8A8_UNORM ||
++    if (!ord || ord > HLE_DRAW_ORD_RGBA || s->d.parent || !s->img || s->fmt != VK_FORMAT_B8G8R8A8_UNORM || hle_surf_hostfmt(s) ||
+         !(s->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+         return VK_NULL_HANDLE;
+     }
+@@ -797,6 +857,7 @@ VkImageView hle_surf_order_view(HleVkSurf *s, uint32_t ord)
          return VK_NULL_HANDLE;
      }
      s->oview_ord = ord;

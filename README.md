@@ -228,6 +228,15 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
+### Unreleased (0.0.4 test builds)
+
+Added
+- Settings > Anisotropic filtering (2x to 16x), Sharpening and Force 32-bit colour. All off by
+  default: the picture stays the Xbox's own.
+
+Fixed
+- A black screen in the Xbox dashboard at a resolution scale of 5 or 6.
+
 ### 0.0.3
 
 Added

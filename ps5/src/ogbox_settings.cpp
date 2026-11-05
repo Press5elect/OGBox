@@ -71,6 +71,23 @@ std::vector<Option> makeOptions()
 		"As the Xbox: its pattern, by the game's own pixels (with the resolution scale up, it shows as a grain of "
 		"dots). Fine: the same pattern by screen pixel, too fine to see. Off: no dots, but visible colour bands.",
 		{ { "xbox", "As the Xbox" }, { "fine", "Fine" }, { "off", "Off" } }, "xbox", true });
+	/* 0.0.4: anisotropic filtering, 32-bit colour and sharpening (hakuX's NC_HLE_ANISO, NC_HLE_FORCE32 and
+	 * NC_HLE_SHARPEN): all off by default, the Xbox's own picture */
+	o.push_back({ "aniso", Section::Graphics, "Anisotropic filtering",
+		"Keeps floors, roads and walls seen at a slant sharp into the distance, where the game's own filtering "
+		"blurs them. A higher resolution scale doesn't do this. Only textures the game filters smoothly are "
+		"changed (not pixel art or menus). Light on the console's GPU. As the game sets it: the Xbox's own.",
+		{ { "0", "As the game sets it" }, { "2", "2x" }, { "4", "4x" }, { "8", "8x" }, { "16", "16x" } },
+		"0", true });
+	o.push_back({ "force32", Section::Graphics, "Force 32-bit colour",
+		"Games that draw in 16-bit colour (skies, fog, smoke and dark areas show bands of colour) are drawn in 32-bit "
+		"instead, so the bands and the dots that hide them go. The game still sees 16-bit pixels where it reads "
+		"them back, so a few games that depend on that can look wrong with it: turn it off for those. Experimental.",
+		kOnOff, "0", true });
+	o.push_back({ "sharpen", Section::Graphics, "Sharpening",
+		"Sharpens the picture's edges and fine detail (contrast-adaptive: flat areas and already strong edges "
+		"are left alone, so it adds no halos). Light on the GPU.",
+		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
 		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
@@ -580,6 +597,16 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("dither") == "fine" || value("dither") == "off") {   // 0.0.3
 		a.push_back("NC_HLE_DITHER=" + value("dither"));
+	}
+	// 0.0.4: anisotropic filtering, 32-bit colour, sharpening
+	if (value("aniso") == "2" || value("aniso") == "4" || value("aniso") == "8" || value("aniso") == "16") {
+		a.push_back("NC_HLE_ANISO=" + value("aniso"));
+	}
+	if (value("force32") == "1") {
+		a.push_back("NC_HLE_FORCE32=1");
+	}
+	if (value("sharpen") == "30" || value("sharpen") == "60" || value("sharpen") == "90") {
+		a.push_back("NC_HLE_SHARPEN=" + value("sharpen"));
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");
