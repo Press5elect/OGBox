@@ -1,0 +1,7 @@
+name: Without demand paging (PS5)
+description: Fable: The Lost Chapters keeps its memory in its own 4 KB pages, loaded on demand from a page file. The PS5's pages are 16 KB, so OGBox emulates every access to that memory, and the game takes minutes to load. This turns the game's demand paging off (its boot settings, xboot.ini), so its memory is ordinary memory, at full speed. It may run out of memory in big areas: if it does, set Settings > Advanced > Memory to 128 MB.
+author: Press5elect
+
+# Fable: The Lost Chapters (USA, 4D5300D1 v1). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# files/xboot.ini replaces the disc's: the same sizes, demand paging off.
