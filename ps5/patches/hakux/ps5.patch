@@ -146,6 +146,7 @@ native core's work tree (oldest first; author: subject):
   926172f403 Claude: vm: the title's own page tables' mappings emulated from the start
   3745e58a8d Claude: x86emu: x87 and SSE / MMX arithmetic with a memory operand, run on the host's FPU
   4064de707d Claude: io: a queued read or write in one transfer, gathered through a buffer
+  adb7fb74b4 Claude: pb: a report's read waits for a decoder that moves
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -610,7 +611,7 @@ index cb83ba68311d1c7af4c102380d86e44b37ff0eb1..61a7f2096863ee8cb61a5dce9c5920b1
   * (diagnostics: the hitch monitor); false if the host doesn't count them. */
  bool hle_host_disc_stats(uint64_t *ops, uint64_t *bytes, uint64_t *ns);
 diff --git a/hw/xbox/hle/mem/barrier.c b/hw/xbox/hle/mem/barrier.c
-index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bbd56f087d 100644
+index 36b8509d5e968c05ddd70e125354eeb6500e5419..35338a29a05719d85a26d3c9d3f0bb08a329fd7c 100644
 --- a/hw/xbox/hle/mem/barrier.c
 +++ b/hw/xbox/hle/mem/barrier.c
 @@ -1,6 +1,7 @@
@@ -652,7 +653,7 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bb
  static struct {
      uint32_t page[RPT_PAGES];           /* pa >> 12 */
      bool shut[RPT_PAGES];               /* without guest access */
-@@ -638,7 +661,37 @@ static struct {
+@@ -638,10 +661,48 @@ static struct {
      } e[RPT_PENDING];
      uint32_t seq;
      uint64_t waits, ns, timeouts, held, lost;
@@ -690,7 +691,35 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bb
  static int g_rpt_lock;
  static uint32_t (*g_rpt_scout)(void);
  static bool (*g_rpt_held)(void);
-@@ -701,7 +754,8 @@ void hle_barrier_report_pushed(uint32_t pa, uint32_t frame)
++static int (*g_rpt_decoder)(bool start);
++/* OGBox 0.0.3: a read waits for reports the decoder hasn't reached only while the decoder moves.
++ * One title's reads waited out the 250 ms about twice a second with the decoder still (its GET
++ * unchanged, the GPU idle, nothing drawn): each a frozen quarter of a second. Still this long,
++ * or caught up with everything the guest pushed (the scout read a report the decoder never
++ * will: an old run of a recorded buffer), they can't come while the guest waits. */
++#define RPT_STILL_NS 24000000ll
++static uint64_t g_rpt_still, g_rpt_phantom;
+ static HleSem g_rpt_sem;                /* posted at a write while the guest waits */
+ static int g_rpt_waiting;               /* atomic */
+ 
+@@ -667,7 +728,7 @@ static int rpt_page(uint32_t pa)
+     return -1;
+ }
+ 
+-void hle_barrier_set_report_scout(uint32_t (*scout)(void), bool (*held)(void))
++void hle_barrier_set_report_scout(uint32_t (*scout)(void), bool (*held)(void), int (*decoder)(bool start))
+ {
+     static bool sem_made;
+     if (!sem_made) {
+@@ -676,6 +737,7 @@ void hle_barrier_set_report_scout(uint32_t (*scout)(void), bool (*held)(void))
+     }
+     rpt_lock();
+     __atomic_store_n(&g_rpt_held, held, __ATOMIC_RELEASE);
++    __atomic_store_n(&g_rpt_decoder, decoder, __ATOMIC_RELEASE);
+     __atomic_store_n(&g_rpt_scout, scout, __ATOMIC_RELEASE);
+     if (!scout) {                       /* the mode stops: every page's access back */
+         for (unsigned i = 0; i < g_rpt.npages; i++) {
+@@ -701,7 +763,8 @@ void hle_barrier_report_pushed(uint32_t pa, uint32_t frame)
      while (k < RPT_PENDING && g_rpt.e[k].seq) {
          k++;
      }
@@ -700,7 +729,34 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bb
          g_rpt.lost++;                   /* not gated: read as before */
          rpt_unlock();
          return;
-@@ -746,6 +800,12 @@ void hle_barrier_report_written(uint32_t pa)
+@@ -733,6 +796,26 @@ void hle_barrier_report_decoded(uint32_t pa)
+     rpt_unlock();
+ }
+ 
++uint32_t hle_barrier_report_mark(void)
++{
++    rpt_lock();
++    const uint32_t seq = g_rpt.seq;
++    rpt_unlock();
++    return seq;
++}
++
++void hle_barrier_report_drop_since(uint32_t mark)
++{
++    rpt_lock();
++    for (unsigned k = 0; k < RPT_PENDING; k++) {
++        if (g_rpt.e[k].seq && !g_rpt.e[k].decoded && (int32_t)(g_rpt.e[k].seq - mark) > 0) {
++            g_rpt.e[k].seq = 0;
++            g_rpt_phantom++;
++        }
++    }
++    rpt_unlock();
++}
++
+ void hle_barrier_report_written(uint32_t pa)
+ {
+     rpt_lock();
+@@ -746,6 +829,12 @@ void hle_barrier_report_written(uint32_t pa)
      if (best >= 0) {
          g_rpt.e[best].seq = 0;
      }
@@ -713,8 +769,34 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bb
      rpt_unlock();
      if (best >= 0 && __atomic_load_n(&g_rpt_waiting, __ATOMIC_ACQUIRE)) {
          hle_sem_post(&g_rpt_sem);
-@@ -807,17 +867,32 @@ static bool rpt_access(uint32_t pa)
-             if (late && (stuck || hle_now_ns() - t0 > RPT_WAIT_NS)) {
+@@ -799,25 +888,61 @@ static bool rpt_access(uint32_t pa)
+          * a test soon after it (pbdraw.c) */
+         __atomic_store_n(&g_rpt_waiting, 1, __ATOMIC_RELEASE);
+         bool (*held)(void) = __atomic_load_n(&g_rpt_held, __ATOMIC_ACQUIRE);
++        int (*decoder)(bool) = __atomic_load_n(&g_rpt_decoder, __ATOMIC_ACQUIRE);
++        if (decoder) {
++            decoder(true);                      /* its GET now, and a kick */
++        }
++        int64_t moved = t0;
+         for (;;) {
+             rpt_lock();
+             late = rpt_late((unsigned)pg, frame, &ahead);
+-            /* the decoder short of a report and waiting on this thread */
+-            const bool stuck = late && ahead && held && held();
+-            if (late && (stuck || hle_now_ns() - t0 > RPT_WAIT_NS)) {
++            const int64_t now = hle_now_ns();
++            /* the decoder short of a report and waiting on this thread, still, or past them all */
++            const bool waits = late && ahead && held && held();
++            const int ds = late && ahead && !waits && decoder ? decoder(false) : 1;
++            if (ds != 0) {
++                moved = now;
++            }
++            const bool still = ds == 0 && now - moved > RPT_STILL_NS;
++            const bool phantom = ds == 2;
++            const bool stuck = waits || still || phantom;
++            g_rpt_still += still;
++            g_rpt_phantom += phantom;
++            if (late && (stuck || now - t0 > RPT_WAIT_NS)) {
                  /* the back end won't write them now (stuck), or at all (a
                   * test the decoder dropped): not waited for again */
 +                uint32_t first_pa = 0, cleared = 0, undecoded = 0;
@@ -735,10 +817,17 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bb
                      }
                  }
                  if (stuck) {
-                     g_rpt.held++;
+-                    g_rpt.held++;
 -                } else if (g_rpt.timeouts++ < 8) {
 -                    hle_log("hakuX-hle-pb", "report gate: page %08x's reports not written in 30 ms",
 -                            g_rpt.page[pg] << 12);
++                    g_rpt.held += waits;
++                    static unsigned logged;
++                    if (!waits && logged++ < 8) {
++                        hle_log("hakuX-hle-pb", "report gate: page %08x's reports: %u not reached by a decoder %s "
++                                "(given up after %.1f ms)", g_rpt.page[pg] << 12, (unsigned)undecoded,
++                                phantom ? "past all the guest pushed" : "still", (double)(now - t0) / 1e6);
++                    }
 +                } else {
 +                    if (g_rpt.timeouts++ < 8) {
 +                        hle_log("hakuX-hle-pb", "report gate: page %08x's reports not written in %lld ms (given "
@@ -749,6 +838,46 @@ index 36b8509d5e968c05ddd70e125354eeb6500e5419..24904300447f886ac40e7c54078744bb
                  }
                  late = false;
              }
+@@ -856,8 +981,11 @@ static bool rpt_page_shut(uint32_t pa)
+     return shut;
+ }
+ 
+-void hle_barrier_report_stats(uint64_t *waits, uint64_t *ns, uint64_t *timeouts, uint64_t *held)
++void hle_barrier_report_stats(uint64_t *waits, uint64_t *ns, uint64_t *timeouts, uint64_t *held,
++                               uint64_t *still, uint64_t *phantom)
+ {
++    *still = g_rpt_still;
++    *phantom = g_rpt_phantom;
+     *waits = g_rpt.waits;
+     *ns = g_rpt.ns;
+     *timeouts = g_rpt.timeouts;
+diff --git a/hw/xbox/hle/mem/barrier.h b/hw/xbox/hle/mem/barrier.h
+index d2de8916ed17dee27d424bfd94e5aa4c37924353..add5caae790012d0ac22ee7608157e1b2284df5c 100644
+--- a/hw/xbox/hle/mem/barrier.h
++++ b/hw/xbox/hle/mem/barrier.h
+@@ -133,10 +133,19 @@ void hle_barrier_set_catch_up(void (*catch_up)(void));
+ void hle_barrier_report_pushed(uint32_t pa, uint32_t frame);
+ void hle_barrier_report_decoded(uint32_t pa);
+ void hle_barrier_report_written(uint32_t pa);
+-void hle_barrier_set_report_scout(uint32_t (*scout)(void), bool (*held)(void));
++/* decoder(start): start, its GET noted and a kick; then 1 while it moves (its GET changes, or
++ * it waits for the GPU), 0 still, 2 caught up with all the guest pushed (a report it hasn't
++ * reached never comes). */
++void hle_barrier_set_report_scout(uint32_t (*scout)(void), bool (*held)(void), int (*decoder)(bool start));
++/* The scout's reports since mark (hle_barrier_report_mark) that the decoder hasn't reached
++ * dropped: the scout lost the stream, and read them in old commands. */
++uint32_t hle_barrier_report_mark(void);
++void hle_barrier_report_drop_since(uint32_t mark);
+ /* The gate's counts: accesses that waited, their time, waits given up after
+- * 30 ms, and at once (the decoder held by the guest short of the report). */
+-void hle_barrier_report_stats(uint64_t *waits, uint64_t *ns, uint64_t *timeouts, uint64_t *held);
++ * the wait, at once (the decoder held by the guest short of the report), given up with the
++ * decoder still, and reports the decoder will never reach. */
++void hle_barrier_report_stats(uint64_t *waits, uint64_t *ns, uint64_t *timeouts, uint64_t *held,
++                              uint64_t *still, uint64_t *phantom);
+ /* The host, at the guest's first store to a page tracking made clean
+  * (host.h hle_host_mem_test_and_clear). */
+ void hle_mem_first_write(uint64_t ram_addr, unsigned size);
 diff --git a/hw/xbox/hle/pb/kelvin.c b/hw/xbox/hle/pb/kelvin.c
 index e00db2af1198c56ef772dd845ec9a8d72550c4d7..5ebf4e17453da9bde708cdc9aa903ba0552ed3f9 100644
 --- a/hw/xbox/hle/pb/kelvin.c
@@ -2336,7 +2465,7 @@ index 195825563bf8d594be1f1eaab1d1d919caea7a35..81e5453dc10268f722f8e2dc7eedca6f
  void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks);
  /* debug (HAKUX_HLE_PB_NOVIS=1): no occlusion queries; visibility tests
 diff --git a/hw/xbox/hle/pb/pbmode.c b/hw/xbox/hle/pb/pbmode.c
-index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89c7fc1ad4 100644
+index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4039f4617 100644
 --- a/hw/xbox/hle/pb/pbmode.c
 +++ b/hw/xbox/hle/pb/pbmode.c
 @@ -97,6 +97,8 @@ static struct {
@@ -2466,16 +2595,56 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89
                      fifo_open() ? "" : ", FIFO off", ph ? ph : "none");
          }
      }
-@@ -1293,7 +1345,7 @@ static uint32_t scout(void)
+@@ -1273,7 +1325,11 @@ static uint32_t scout_to(uint32_t put)
+         return g_sc.frame;
+     }
+     g_sc.at_trap = false;
++    const uint32_t mark = hle_barrier_report_mark();
+     if (hle_pb_pusher_run(&g_sc.p, put, scout_fetch, NULL, &k_scout) == HLE_PB_ERR_LOOP) {
++        /* what it read since is old commands: their reports never come (each read of one
++         * waited out the gate) */
++        hle_barrier_report_drop_since(mark);
+         static unsigned logged;                 /* it syncs again at the next PUT */
+         if (logged++ < 8) {
+             hle_log("hakuX-hle-pb", "report scout: lost the stream at GET %08x (PUT %08x, %s)",
+@@ -1293,7 +1349,35 @@ static uint32_t scout(void)
   * guest itself (the catch-up's reasons to give up) */
  static bool decoder_held(void)
  {
 -    return g_pb.trap_wait || g_pb.flip_wait || !fifo_open();
 +    return g_pb.trap_wait || g_pb.flip_wait || g_pb.pace_wait || !fifo_open();
++}
++
++/* the barrier's, while a read of a report waits on reports the decoder hasn't reached
++ * (hle_barrier_set_report_scout) */
++static uint32_t g_ds_get;
++
++static int decoder_state(bool start)
++{
++    const uint32_t get = __atomic_load_n(&g_pb.p.get, __ATOMIC_RELAXED);
++    if (start) {
++        g_ds_get = get;
++        hle_pb_kick();
++        return 1;
++    }
++    if (hle_pbd_phase()) {                      /* waits for the GPU: it comes back */
++        g_ds_get = get;
++        return 1;
++    }
++    if (get != g_ds_get) {
++        g_ds_get = get;
++        return 1;
++    }
++    if (g_pb.synced && !__atomic_load_n(&g_pb.in_run, __ATOMIC_RELAXED) &&
++        get == hle_host_gpu_reg(NV_PFIFO_CACHE1_DMA_PUT) && !g_pb.p.sub_active) {
++        return 2;
++    }
++    hle_pb_kick();                              /* asleep with words left: once more */
++    return 0;
  }
  
  void hle_pb_pushed(uint32_t put)
-@@ -1334,6 +1386,30 @@ static bool kick_wait_brief(uint32_t seen)
+@@ -1334,6 +1418,30 @@ static bool kick_wait_brief(uint32_t seen)
              return false;
          }
      }
@@ -2506,7 +2675,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89
  #else
      (void)seen;
      return false;
-@@ -1463,6 +1539,7 @@ void hle_pb_state_set(const HlePbState *s)
+@@ -1463,6 +1571,7 @@ void hle_pb_state_set(const HlePbState *s)
      g_pb.flip_wait = s->flip_wait;
      g_pb.flip_wait_ns = hle_now_ns();
      g_pb.trap_wait = s->trap_wait;
@@ -2514,7 +2683,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89
      g_trel.pending = false;                 /* the scout syncs again at the next PUT */
      g_sc.synced = false;
      memcpy(g_pb.sub_r, s->sub_r, sizeof(s->sub_r));
-@@ -1483,10 +1560,11 @@ static void *decode_thread(void *opaque)
+@@ -1483,10 +1592,11 @@ static void *decode_thread(void *opaque)
      t_decoder = true;
      while (!g_pb.stop) {
          /* asleep until a kick: waiting for the guest, the flip it stalls on
@@ -2529,7 +2698,25 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89
          hle_sem_wait(&g_pb.kick);
          hle_hitch_leave(pa);
          while (!g_pb.stop) {
-@@ -1677,6 +1755,7 @@ void hle_pb_diag(void)
+@@ -1557,7 +1667,7 @@ void hle_pb_start(void)
+         memset(&g_sc, 0, sizeof(g_sc));
+         g_sc_gate = !(e && !strcmp(e, "0"));
+         g_sc_on = false;                /* until the first GET_REPORT */
+-        hle_barrier_set_report_scout(g_sc_gate ? scout : NULL, decoder_held);
++        hle_barrier_set_report_scout(g_sc_gate ? scout : NULL, decoder_held, decoder_state);
+     }
+     hle_host_pb_mode(true);
+     hle_log("hakuX-hle-pb", "push-buffer mode: the title's D3D runs; its push buffer is decoded");
+@@ -1573,7 +1683,7 @@ void hle_pb_stop(void)
+     hle_barrier_set_catch_up(NULL);
+     g_sc_gate = false;
+     __atomic_store_n(&g_sc_on, false, __ATOMIC_RELEASE);
+-    hle_barrier_set_report_scout(NULL, NULL);
++    hle_barrier_set_report_scout(NULL, NULL, NULL);
+     g_pb.stop = true;
+     hle_sem_post(&g_pb.kick);
+     hle_thread_join(&g_pb.th);
+@@ -1677,6 +1787,7 @@ void hle_pb_diag(void)
      /* where the decoder is: waiting for the ISR (trap), a flip, the FIFO
       * access, arena or ring space in a draw, or decoding */
      const char *ph = hle_pbd_phase(), *state = g_pb.trap_wait ? " (trap)" : g_pb.flip_wait ? " (flip stall)"
@@ -2537,7 +2724,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89
                                                : !fifo_open()      ? " (fifo closed)"
                                                : ph && *ph == 'a'  ? " (arena wait)"
                                                : ph                ? " (ring wait)"
-@@ -1720,10 +1799,12 @@ void hle_pb_diag(void)
+@@ -1720,10 +1831,12 @@ void hle_pb_diag(void)
          prev_cu = cu;
          hle_log("hakuX-hle-pb", "catch-up: %llu stores waited for the decoder (caught up %llu; it "
                  "waited on the guest at a trap %llu, a flip stall %llu, the FIFO off %llu; for arena "
@@ -2552,6 +2739,26 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..a672360ccd8b2650263c5e3ef4b33d89
                  (double)g_cu.ns / 1e6);
      }
      static uint64_t prev_coh;
+@@ -1738,13 +1851,15 @@ void hle_pb_diag(void)
+                 (unsigned long long)nbr, (unsigned long long)hot);
+     }
+     static uint64_t prev_rw;
+-    uint64_t rw, rns, rto, rheld;
+-    hle_barrier_report_stats(&rw, &rns, &rto, &rheld);
++    uint64_t rw, rns, rto, rheld, rstill, rphantom;
++    hle_barrier_report_stats(&rw, &rns, &rto, &rheld, &rstill, &rphantom);
+     if (rw != prev_rw) {
+         hle_log("hakuX-hle-pb", "report gate: %llu reads waited for their visibility tests (+%llu), "
+-                "%.1f ms in all, %llu given up, %llu at once (the decoder held short of them)",
++                "%.1f ms in all, %llu given up, %llu at once (the decoder held short of them), "
++                "%llu with the decoder still, %llu reports it will never reach",
+                 (unsigned long long)rw, (unsigned long long)(rw - prev_rw), (double)rns / 1e6,
+-                (unsigned long long)rto, (unsigned long long)rheld);
++                (unsigned long long)rto, (unsigned long long)rheld, (unsigned long long)rstill,
++                (unsigned long long)rphantom);
+         prev_rw = rw;
+     }
+     hle_back_draw_diag();               /* the back end's state recorded per draw (hakuX-hle-emit) */
 diff --git a/hw/xbox/hle/pb/pbmode.h b/hw/xbox/hle/pb/pbmode.h
 index dfcb98b4216a3f4596b21fc9b9194c27cd97f170..4ef4b7c8babf06d9be049610af4b71c5ddba188f 100644
 --- a/hw/xbox/hle/pb/pbmode.h
