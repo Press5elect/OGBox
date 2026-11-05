@@ -149,6 +149,7 @@ native core's work tree (oldest first; author: subject):
   adb7fb74b4 Claude: pb: a report's read waits for a decoder that moves
   7fe4362e60 Claude: mmio sites: no short site where a stub's moved jump lands inside it
   13f138054c Claude: hle: 16-bit dithering by guest pixel, by screen pixel or off
+  5e4f282c66 Claude: dirty: an access beside a closed neighbour in a 16 KiB host page done against RAM
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -20926,7 +20927,7 @@ index cc048c04457bc243803770826d23aef562322ff9..8ad1676027b2a64ae6e4d4844b330205
 +    nc_trainer_port_out(port, bytes, value);
  }
 diff --git a/native/hle/dirty.c b/native/hle/dirty.c
-index 7418aad1ff7021de9749a965a1d23313f46df161..218bcc1e228eca38a72b7a66eab2fd4cd338f860 100644
+index 7418aad1ff7021de9749a965a1d23313f46df161..f636aa1f071e393face800cb230e89ded92543b1 100644
 --- a/native/hle/dirty.c
 +++ b/native/hle/dirty.c
 @@ -90,6 +90,12 @@ void nc_hle_dirty_init(NcVm *vm)
@@ -20973,7 +20974,23 @@ index 7418aad1ff7021de9749a965a1d23313f46df161..218bcc1e228eca38a72b7a66eab2fd4c
      __atomic_store_n(&g_vm->wp[pa / NC_PAGE], NC_WP_WRITTEN, __ATOMIC_RELEASE);
  }
  
-@@ -473,14 +496,31 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
+@@ -469,18 +492,47 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
+             return true;                    /* (2: the page given back, the access runs again) */
+         }
+         hle_mem_stale_access_rw(pa, !known || store);
++        /* OGBox 0.0.3: a host page larger than the guest's (the PS5's 16 KiB) is closed while any of
++         * its 4 KiB pages is: this page's access handled (its wait done, its own closing undone), a
++         * neighbour can keep the host page closed (a report page the gate shut beside a new one: the
++         * game's store to the new one faulted again and again, the game hung). Its bytes are the
++         * guest's now: the access done against RAM, the neighbour left closed. */
++        if (nc_vm_noaccess_has(g_vm, pa) && nc_ram_emulate(g_vm, info, ucontext, guest_stored)) {
++            static unsigned logged;
++            if (logged++ < 8) {
++                nc_log("hakuX-native", "dirty: guest %08x (pa %08x): its host page kept closed by a neighbour; "
++                       "the access done against RAM", (uint32_t)guest, pa);
++            }
++        }
+         return true;
      }
      const uint8_t wp = __atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE);
      if (!wp) {
