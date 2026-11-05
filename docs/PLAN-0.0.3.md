@@ -4,8 +4,6 @@ Research done for this plan:
 - the repository's issues;
 - upstream hakuX: still at the pinned `a7cdb5a975`, with nothing newer;
 - xemu's commits since July 2026: xemu is at v0.8.139, master `6095054b7d`;
-- XPSemu: another original Xbox emulator for the PS5, ported from xemu, Alpha 1 released on
-  1 October.
 
 The work is listed in order. Each step ends with a build that fixes something; none adds
 logging only.
@@ -29,8 +27,7 @@ This session cannot download the reporter's two logs, because GitHub refuses the
 links. The owner downloads them from the issue and attaches them. They were already posted,
 so this is not a request for a new log.
 
-XPSemu (xemu) reaches gameplay in this game at 10 to 30 fps, so it is a hakuX problem, and
-worth fixing. Fable is 64 MB, and loads its levels by streaming from the disc. The suspects,
+xemu reaches gameplay in this game, so it is a hakuX problem, and worth fixing. Fable is 64 MB, and loads its levels by streaming from the disc. The suspects,
 once the log is read:
 - a kernel call hakuX doesn't implement, or implements in part;
 - an XBE section flag;
