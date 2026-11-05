@@ -741,7 +741,7 @@ void writeLastGame(const std::string &path)
 
 /* OGBox 0.1.26: one disc read at a time for the game list's details (the share's disc layer has
  * one disc descriptor; the mods' catalog is the core's one table). */
-std::mutex g_discInfoMutex;
+std::mutex &g_discInfoMutex = ogbox::discMutex();   // 0.0.3: the covers' title images take it too
 
 } // namespace
 
@@ -879,7 +879,7 @@ public:
 	};
 	std::shared_ptr<Details> details;
 	std::string detailsPath, restingPath;
-	double restingSince{ 0.0 };
+	double restingSince{ 0.0 }, detailsSince{ 0.0 };
 	// the settings screen: the app's, or one game's
 	int section{ 0 };
 	bool forGame{ false };
@@ -964,6 +964,7 @@ public:
 		bool returnTo{ false };               // a screen opened from it comes back to it
 		int stateSel{ 0 };
 		double since{ 0.0 };
+		int readTries{ 0 };                   // 0.0.3: its details read again after a failed read
 	} gp;
 	struct Hdd {
 		std::vector<ogbox::HddTitle> titles;
@@ -1243,22 +1244,28 @@ public:
 	 * title ID's records once a disc's certificate was read (info, or one read before: coverTitles,
 	 * so the list's tiles fall back as the details do). 0.1.45 to 0.0.1 took the title ID's record
 	 * alone once it was known, and a cover libretro has under the file's release went. */
-	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> coverTitles;   // file name: title ID, regions
+	struct CoverTitle {
+		uint32_t titleId, regions, version;
+	};
+	std::unordered_map<std::string, CoverTitle> coverTitles;   // file name: its certificate's
 
-	std::vector<std::string> coverNames(const std::string &fileName, const OgboxGameInfo *info = nullptr)
+	/* 0.0.3: with the other sources (ogbox::coverSources): MobCat's scan first, the disc's title
+	 * image last (path: the disc's) */
+	std::vector<std::string> coverNames(const std::string &fileName, const OgboxGameInfo *info = nullptr,
+		const std::string &path = std::string())
 	{
 		if (info && info->ok && info->title_id) {
-			coverTitles[fileName] = { info->title_id, info->regions };
-			return ogbox::coverNames(fileName, info->title_id, info->regions);
+			coverTitles[fileName] = { info->title_id, info->regions, info->version };
+			return ogbox::coverSources(fileName, path, info->title_id, info->regions, info->version);
 		}
 		const auto it = coverTitles.find(fileName);
-		return it == coverTitles.end() ? ogbox::coverNames(fileName)
-			: ogbox::coverNames(fileName, it->second.first, it->second.second);
+		return it == coverTitles.end() ? ogbox::coverSources(fileName, path)
+			: ogbox::coverSources(fileName, path, it->second.titleId, it->second.regions, it->second.version);
 	}
 
 	std::vector<std::string> coverNames(const LibraryEntry &e, const OgboxGameInfo *info = nullptr)
 	{
-		return coverNames(e.name, info);
+		return coverNames(e.name, info, e.kind == LibraryEntry::Image ? e.path : std::string());
 	}
 
 	/* The name the list shows for an entry (the settings' Names). */
@@ -1686,6 +1693,7 @@ public:
 			rainOn = prefs.on("rain");
 			themeCode = prefs.global("theme") == "code";   // 0.1.52
 			ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
+			ogbox::About::get().enable(prefs.global("list_covers") != "0");   // 0.0.3
 			screen = Screen::Boot;
 			screenSince = now_seconds();
 			bootLines = {
@@ -3502,11 +3510,19 @@ public:
 			restingPath = path;
 			restingSince = now;
 		}
-		/* (not while a folder is being listed: one request at a time to a share's server) */
-		if (path.empty() || path == detailsPath || now - restingSince < 0.25 || listing) {
+		/* (not while a folder is being listed: one request at a time to a share's server; not while a
+		 * game's page is open: the page reads its own disc, gamePageInfo) */
+		if (path.empty() || path == detailsPath || now - restingSince < 0.25 || listing || gp.open) {
 			return;
 		}
+		startDetails(path);
+	}
+
+	/* 0.0.3: a disc's details read on a thread (the selection's, or the game page's own) */
+	void startDetails(const std::string &path)
+	{
 		detailsPath = path;
+		detailsSince = now_seconds();
 		auto job = std::make_shared<Details>();
 		details = job;
 		std::thread([job, path]() {
@@ -4916,12 +4932,30 @@ public:
 	/* The page's disc details, from the selection's reading when it is this disc's. */
 	void gamePageInfo()
 	{
-		if (gp.info.ok || !details || detailsPath != gp.path) {
+		if (gp.info.ok || gp.path.empty()) {
 			return;
 		}
-		std::lock_guard<std::mutex> lock(details->mutex);
-		if (details->done) {
-			gp.info = details->info;
+		/* 0.0.3: the page's own reading when the list's isn't this disc's (the page opened before the
+		 * selection had rested, or while a folder was being listed: "reading..." stayed until the page
+		 * was opened again), and again when a read failed (a share's hiccup), three times */
+		if (!details || detailsPath != gp.path) {
+			if (!listing) {
+				startDetails(gp.path);
+			}
+			return;
+		}
+		bool failed = false;
+		{
+			std::lock_guard<std::mutex> lock(details->mutex);
+			if (details->done) {
+				gp.info = details->info;
+				failed = !details->info.ok;
+			}
+		}
+		if (failed && gp.readTries < 3 && now_seconds() - detailsSince > 1.5) {
+			gp.readTries++;
+			pshakux_log("library: %s's details unread: reading again (%d)", gp.path.c_str(), gp.readTries);
+			startDetails(gp.path);
 		}
 	}
 
@@ -5254,7 +5288,7 @@ public:
 				const ogbox::HddTitle &t = hdd.titles[static_cast<size_t>(i)];
 				const ImU32 tc = rowBox(px0, px1, y, rowH, i == sel, hdd.pane == 0);
 				float cw = 0.0f, ch = 0.0f;
-				const ImTextureID img = coverImage(ogbox::coverNames(std::string(), t.titleId, 1), &cw, &ch);
+				const ImTextureID img = coverImage(ogbox::coverSources(std::string(), std::string(), t.titleId, 1), &cw, &ch);
 				const float ih = rowH - 14.0f * k;
 				if (img && cw > 0.0f && ch > 0.0f) {
 					const float s2 = ih / ch;
@@ -5869,6 +5903,15 @@ public:
 			std::strftime(clock, sizeof(clock), "%H:%M", &lt);
 			v.status.push_back({ clock, 0 });
 		}
+		{   /* 0.0.3: the covers downloading: how many of how many, a bar under the head */
+			unsigned done = 0, total = 0;
+			ogbox::Covers::get().progress(done, total);
+			if (total > 0 && prefs.global("list_covers") != "0") {
+				v.coverProgress = static_cast<float>(done) / static_cast<float>(total);
+				v.coverText = "Covers " + std::to_string(done) + " of " + std::to_string(total) + " \xC2\xB7 " +
+					std::to_string(static_cast<int>(100.0f * v.coverProgress)) + "%";
+			}
+		}
 		homeCacheCheck();
 		const std::vector<int> &games = hc.games, &cards = hc.cards;
 		v.gameSel = homeGameAt(selected);
@@ -6136,6 +6179,7 @@ public:
 		if (o.section == ogbox::Section::Library) {
 			placesRead = -100.0;
 			ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
+			ogbox::About::get().enable(prefs.global("list_covers") != "0");   // 0.0.3
 			if (!listing && (folder.empty() || key == "list_sort")) {
 				const LibraryEntry *cur = selectedEntry();
 				openFolder(folder, cur ? cur->path : std::string());
@@ -7107,9 +7151,17 @@ public:
 		}
 		const double played = ogbox::playedAt(gp.path);
 		v.facts.push_back({ "Last played", played > 0.0 ? ogbox::dateText(static_cast<int64_t>(played)) : std::string("never") });
-		v.facts.push_back({ "Title ID", gp.info.ok ? std::string(gp.info.key) : std::string("reading\xE2\x80\xA6") });
+		v.facts.push_back({ "Title ID", gp.info.ok ? std::string(gp.info.key)
+			: gp.readTries >= 3 ? std::string("unreadable") : std::string("reading\xE2\x80\xA6") });
 		v.facts.push_back({ "Serial", rec ? rec->serial : std::string("-") });
 		v.facts.push_back({ "File", base });
+		{   /* 0.0.3: the game's description (Wikipedia's), when kept; asked for the first time here */
+			std::string text, article;
+			if (prefs.global("list_covers") != "0" && ogbox::About::get().find(gp.title, text, article)) {
+				v.about = text;
+				v.aboutSource = "From Wikipedia" + (article.empty() ? std::string() : ", \"" + article + "\"") + " \xC2\xB7 CC BY-SA 4.0";
+			}
+		}
 		const std::vector<int> slots = gp.info.ok ? usedStateSlots(gp.info.key) : std::vector<int>();
 		for (size_t i = 0; i < slots.size(); i++) {
 			const ogbox::StateSlot st = ogbox::stateSlot(gp.info.key, slots[i]);

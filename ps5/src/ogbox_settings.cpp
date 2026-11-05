@@ -196,10 +196,10 @@ std::vector<Option> makeOptions()
 		place("list_ext", "Extended storage", "The extended storage drives (/mnt/ext0, ext1), when there.", kOnOff, "1");
 		place("list_network", "Network shares", "The shares of /data/ogbox/network.cfg.", kOnOff, "1");
 		// 0.1.45: how the list looks
-		place("list_covers", "Covers",
-			"Each disc's box art from libretro's thumbnails (thumbnails.libretro.com), downloaded the first time it "
-			"is shown and kept in /data/ogbox/covers. Found by the disc's Redump name: the file's, else the one the "
-			"database has for its title ID.",
+		place("list_covers", "Covers and descriptions",
+			"Each disc's box art, downloaded the first time it is shown and kept in /data/ogbox/covers: MobCat's scans "
+			"of the boxes by the disc's serial, else libretro's thumbnails by its Redump name, else the picture in "
+			"the disc's own default.xbe. A game's page shows its description from Wikipedia.",
 			kOnOff, "1");
 		place("home_layout", "Layout", "The games as a row of covers with the chosen one's details beside them, or as a "
 			"list with the chosen one's cover and details at the right (for big folders).",

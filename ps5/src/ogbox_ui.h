@@ -154,6 +154,8 @@ struct HomeView {
 	std::vector<std::string> tabs;
 	int tab{ 0 };
 	std::vector<std::pair<std::string, ImU32>> status;   // at the right: words and a dot's colour (0 none)
+	float coverProgress{ -1.0f };   // 0.0.3: the covers downloading, 0..1 (under the status; < 0 none)
+	std::string coverText;          // ... "Covers 12 of 140 · 8%"
 	// the games along the row
 	std::vector<HomeGame> games;
 	std::function<Tex(size_t)> cover;   // a game's cover (only those in sight are asked)
@@ -297,6 +299,7 @@ struct GameView {
 	ImU32 tint{ 0 };
 	std::vector<std::pair<std::string, int>> chips;
 	std::vector<GameFact> facts;
+	std::string about, aboutSource;   // 0.0.3: its description and where it is from ("" none)
 	std::vector<GameState> states;
 	int stateSel{ -1 };           // the states have the controller
 	std::vector<GameAction> actions;

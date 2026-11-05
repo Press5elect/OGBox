@@ -256,6 +256,8 @@ int main(int argc, char **argv)
 	home.logo = logo;
 	home.tabs = { "Games", "USB", "Network" };
 	home.status = { { "Insignia", ui::P().ok }, { "21:42", 0 } };
+	home.coverProgress = 0.37f;   // 0.0.3: the covers downloading
+	home.coverText = "Covers 52 of 140 \xC2\xB7 37%";
 	home.games = games;
 	home.cover = [&](size_t i) { return covers[i]; };
 	home.blur = [&](size_t i) { return blurs[i]; };
@@ -354,6 +356,10 @@ int main(int argc, char **argv)
 	gp.cover = covers[2];
 	gp.chips = { { "Plays well", 1 }, { "NTSC-U", 0 } };
 	gp.facts = { { "Played", "12 h 40 min" }, { "Last", "2 hours ago" }, { "Title ID", "4D530064" }, { "Folder", "Games" } };
+	gp.about = "A made-up game for the tests: a lighthouse keeper's daughter crosses a harbour of drowned streets, "
+		"trading lamps for passage with the creatures that live under the bridges, in a world that changes with the tide. "
+		"Its levels are built from the same twelve rooms, rearranged each night by the sea.";
+	gp.aboutSource = "From Wikipedia, \"Hollow Harbor\" \xC2\xB7 CC BY-SA 4.0";
 	for (int i = 0; i < 4; i++) {
 		ui::GameState s;
 		s.label = i == 0 ? "Where I left off" : "Slot " + std::to_string(i);

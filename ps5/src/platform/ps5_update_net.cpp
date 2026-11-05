@@ -39,7 +39,7 @@ std::string CaBundle()
 std::string UserAgent()
 {
 	const char* version = pshakux_build_version();
-	return std::string("OGBox/") + (version && *version ? version : "dev") + " (PlayStation 5 homebrew)";
+	return std::string("OGBox/") + (version && *version ? version : "dev") + " (PlayStation 5 homebrew; https://github.com/Press5elect/OGBox)";
 }
 
 void Prepare(CURL* curl, const std::string& url, const std::string& agent, const std::string& ca)
@@ -135,7 +135,7 @@ int HttpGet(const std::string& url, std::vector<uint8_t>& out, unsigned seconds)
 	if (result == CURLE_OK)
 		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
 	else
-		pshakux_log("update: %s: %s", url.c_str(), curl_easy_strerror(result));
+		pshakux_log("net: %s: %s", url.c_str(), curl_easy_strerror(result));
 	curl_slist_free_all(headers);
 	curl_easy_cleanup(curl);
 	return static_cast<int>(code);
@@ -202,6 +202,11 @@ void OGBoxUpdate::Start()
 		pshakux_log("update: the updater is ready (curl %s, %s; certificates %s)", v ? v->version : "?",
 			v && v->ssl_version ? v->ssl_version : "no TLS", CaBundle().c_str());
 	});
+}
+
+int OGBoxNet::Get(const std::string& url, std::vector<uint8_t>& out, unsigned seconds)
+{
+	return HttpGet(url, out, seconds);
 }
 
 bool OGBoxUpdate::Recover()

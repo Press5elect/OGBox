@@ -12,6 +12,7 @@
 #define OGBOX_LIBRARY_H
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -54,6 +55,17 @@ std::string shortName(const std::string &fileName);
  * details had read the disc, and where libretro names the cover after the file's release and not
  * that record's (a title ID several releases share), the cover went. */
 std::vector<std::string> coverNames(const std::string &fileName, uint32_t titleId = 0, uint32_t regions = 0);
+/* 0.0.3: with the cover's other sources, best first: MobCat's scan of the disc's box ("@mc:<stem>":
+ * by the serial the title ID makes and the release's version and regions when known, else the
+ * record's region), then libretro's by name (above), then the disc's own title image from its
+ * default.xbe ("@xbe:<title ID>|<disc path>", path known: read only when no other has one). */
+std::vector<std::string> coverSources(const std::string &fileName, const std::string &path, uint32_t titleId = 0,
+	uint32_t regions = 0, uint32_t version = 0);
+/* 0.0.3: MobCat's scan for a title ("" none): its stem in gamedata/covers-mobcat.txt. */
+std::string mobcatCover(uint32_t titleId, const std::string &serial, uint32_t version, uint32_t regions);
+
+/* 0.0.3: one reader of a share's discs at a time (the game list's details, the title images) */
+std::mutex &discMutex();
 
 /* The covers. */
 class Covers {
@@ -70,9 +82,29 @@ public:
 	State findAny(const std::vector<std::string> &names, std::string &path);
 	/* What the downloads have done ("12 downloaded, 3 not on libretro"), for the details. */
 	std::string status() const;
+	/* 0.0.3: the downloads of now: how many of how many asked since the queue was last empty (the
+	 * home's bar); total 0 when none is waiting. */
+	void progress(unsigned &done, unsigned &total) const;
 
 private:
 	Covers();
+	struct Impl;
+	Impl *impl;
+};
+
+/* 0.0.3: a game's description, the first paragraph of its English Wikipedia article (found by a
+ * search for its name, "video game" in the article's description), downloaded on a thread of its own
+ * and kept in the covers' folder (about-<name>.txt; about-<name>.none when there is none). */
+class About {
+public:
+	static About &get();
+	/* The description of a game by its name: true with it (and its article's title) when kept; else
+	 * asked for (when on) and false. */
+	bool find(const std::string &name, std::string &text, std::string &article);
+	void enable(bool on);
+
+private:
+	About();
 	struct Impl;
 	Impl *impl;
 };

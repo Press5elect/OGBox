@@ -11,6 +11,7 @@
  */
 #include "core/ogbox_mods.h"
 #include "core/ogbox_patches.h"
+#include "core/ogbox_xpr.h"
 
 #include "platform/ps5_bootlog.h"
 
@@ -1423,4 +1424,53 @@ bool ogbox_mods_set(const char *key, const char *kind, const char *value)
     }
     pshakux_log("mods: %s %s: %s", key, kind, value && value[0] ? value : "none");
     return true;
+}
+
+/* ---- OGBox 0.0.3: the title image (core/ogbox_xpr.h) ---- */
+
+bool ogbox_game_title_image(const char *image, uint8_t **rgba, int *w, int *h)
+{
+    *rgba = NULL;
+    const bool virt = ps5vfs_is_virtual(image) != 0;
+    const int fd = virt ? ps5vfs_disc_open(image) : open(image, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    NcDiscFile f;
+    bool ok = false;
+    uint8_t *hdr = NULL, *sec = NULL;
+    if (nc_disc_open(&disc, fd) && nc_disc_find(&disc, "\\default.xbe", &f) && f.size >= 0x180) {
+        uint8_t h0[0x180];
+        if (nc_disc_read(&disc, &f, 0, h0, sizeof(h0)) && !memcmp(h0, "XBEH", 4)) {
+            const uint32_t base = le32(h0 + 0x104), hsize = le32(h0 + 0x108);
+            const uint32_t nsec = le32(h0 + 0x11C), sva = le32(h0 + 0x120);
+            if (hsize >= 0x180 && hsize <= (1u << 20) && hsize <= f.size && nsec && nsec < 1024 && (hdr = malloc(hsize)) &&
+                nc_disc_read(&disc, &f, 0, hdr, hsize)) {
+                const uint32_t so = sva - base;
+                for (uint32_t i = 0; i < nsec && so + (i + 1) * 56 <= hsize; i++) {
+                    const uint8_t *s = hdr + so + i * 56;
+                    const uint32_t raw = le32(s + 12), rsize = le32(s + 16), name = le32(s + 20) - base;
+                    if (name + 10 > hsize || memcmp(hdr + name, "$$XTIMAGE", 10) != 0) {
+                        continue;
+                    }
+                    if (rsize >= 32 && rsize <= (4u << 20) && (uint64_t)raw + rsize <= f.size && (sec = malloc(rsize)) &&
+                        nc_disc_read(&disc, &f, raw, sec, rsize)) {
+                        ok = ogbox_xpr_decode(sec, rsize, rgba, w, h);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    free(hdr);
+    free(sec);
+    disc_release(&disc);
+    if (virt) {
+        ps5vfs_disc_close(fd);
+    } else {
+        close(fd);
+    }
+    return ok;
 }

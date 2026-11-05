@@ -9,6 +9,17 @@
 
 #pragma once
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace OGBoxNet
+{
+/// 0.0.3: GET an HTTPS (or HTTP) address with curl and the title's certificates (cacert.pem), redirects
+/// followed: its status (-1 when the network failed) and its body (16 MiB at most).
+int Get(const std::string& url, std::vector<uint8_t>& out, unsigned seconds);
+} // namespace OGBoxNet
+
 namespace OGBoxUpdate
 {
 /// Once at start-up, before the title's files are read: an install a power cut stopped is undone,

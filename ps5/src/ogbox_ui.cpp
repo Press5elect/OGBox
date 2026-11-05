@@ -909,6 +909,20 @@ void drawHomeHead(ImDrawList *dl, ImVec2 S, const HomeView &v)
 			rx -= px(30.0f);
 		}
 	}
+	if (v.coverProgress >= 0.0f) {
+		/* 0.0.3: the covers downloading, under the status at the right */
+		const float bw = px(300.0f), bh = px(5.0f), fs = px(15.0f);
+		const float bx = S.x - L - bw, by = headY + headH + px(16.0f);
+		const ImVec2 ts = measure(F::Small, fs, v.coverText.c_str());
+		text(dl, F::Small, fs, ImVec2(S.x - L - ts.x, by + bh + px(6.0f)), p.textFaint, v.coverText.c_str());
+		dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), IM_COL32(255, 255, 255, 30), bh * 0.5f);
+		const float f = std::max(0.0f, std::min(1.0f, v.coverProgress));
+		float &shown = value("home.coverbar", f);
+		shown = f < shown ? f : approach(shown, f, 10.0f);
+		if (shown > 0.0f) {
+			dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw * shown, by + bh), p.accent, bh * 0.5f);
+		}
+	}
 }
 
 void drawHomeList(ImDrawList *dl, ImVec2 S, const HomeView &v);
@@ -2105,6 +2119,13 @@ void drawGamePage(ImDrawList *dl, ImVec2 S, const GameView &v, float appear)
 			paragraph(dl, F::Body, px(19.0f), ImVec2(fx, y + px(24.0f)), alpha(p.text, a), v.facts[i].value, fw - px(24.0f), 2);
 		}
 		y += px(96.0f);
+	}
+	// 0.0.3: its description, four lines at most, and where it is from
+	if (!v.about.empty()) {
+		const int lines = v.states.empty() ? 5 : 3;
+		y += paragraph(dl, F::Body, px(17.5f), ImVec2(x, y - px(18.0f)), alpha(p.textDim, a), v.about, std::min(w, px(1100.0f)), lines, 1.35f);
+		text(dl, F::Small, px(13.5f), ImVec2(x, y - px(10.0f)), alpha(p.textFaint, a), v.aboutSource.c_str());
+		y += px(30.0f);
 	}
 	// the save states, as pictures
 	if (!v.states.empty()) {
