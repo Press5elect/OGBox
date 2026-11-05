@@ -3712,14 +3712,15 @@ public:
 			ImGui::PopTextWrapPos();
 		}
 		bool first = true;
-		const auto kindOf = [](const OgboxModEntry &e) { return e.cheat ? 2 : e.patch ? 1 : 0; };
+		const auto kindOf = [](const OgboxModEntry &e) { return e.cheat ? 2 : e.patch ? 1 : e.gamefix ? -1 : 0; };
 		for (size_t i = 0; i < modList.size(); i++) {
 			OgboxModEntry &m = modList[i];
 			if (first || (i > 0 && kindOf(modList[i - 1]) != kindOf(m))) {
 				if (!first) {
 					ImGui::Spacing();
 				}
-				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : m.patch ? "PATCHES  (applied to a copy of the disc's XBE at the start)" : "MODS");
+				ImGui::TextColored(mx::label, "%s", m.cheat ? "CHEATS" : m.patch ? "PATCHES  (applied to a copy of the disc's XBE at the start)"
+					: m.gamefix ? "GAME FIXES  (always on)" : "MODS");
 				first = false;
 			}
 			/* 0.1.52: the patches by kind, each under its own heading */
@@ -3743,14 +3744,18 @@ public:
 			if (unchecked && !m.patch) {
 				note = note.empty() ? std::string("release not checked") : note + "   release not checked";
 			}
-			const ImVec4 &colour = other ? (m.on ? mx::fail : mx::line) : m.on ? mx::bright : mx::text;
+			/* 0.0.3: a game fix is on whatever is chosen: greyed, its switch on, CROSS does nothing */
+			if (m.gamefix && !other) {
+				note = "game fix: always on";
+			}
+			const ImVec4 &colour = m.gamefix && !other ? mx::line : other ? (m.on ? mx::fail : mx::line) : m.on ? mx::bright : mx::text;
 			const bool toggled = row("m" + std::to_string(i), text, note, false, colour, Icon::None,
 				other && !m.on ? 0 : m.on ? 2 : 1);
 			if (!modsFocus) {
 				focusLastItem();
 				modsFocus = true;
 			}
-			if (toggled && !(other && !m.on)) {
+			if (toggled && !m.gamefix && !(other && !m.on)) {
 				m.on = !m.on;
 				std::lock_guard<std::mutex> disc(g_discInfoMutex);
 				ogbox_mods_choose_kind(modsKey.c_str(), m.cheat ? "cheat" : m.patch ? "patch" : "mod", m.id, m.on);
@@ -3769,6 +3774,8 @@ public:
 					if (all.find("128") != std::string::npos) {
 						help += " Needs the 128 MB RAM upgrade: with Settings > Console > Memory on Auto, OGBox gives the game 128 MB while it's on.";
 					}
+				} else if (m.gamefix) {
+					help += "A game fix: OGBox always applies it, because the game doesn't run well on the PS5 without it. It can't be turned off.";
 				} else {
 					help += m.cheat ? "Cheats apply while the game runs, from its next start." : "Mods change the game's code and files, from its next start.";
 				}

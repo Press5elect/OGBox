@@ -62,6 +62,8 @@ typedef struct OgboxModEntry {
     char description[384];
     int refresh;           /* a mod's display refresh (120: a 120 fps mod) */
     bool cheat, once, on;
+    /* 0.0.3: a game fix (mod.txt "gamefix: true"): always on, shown greyed, can't be turned off */
+    bool gamefix;
     /* 0.1.45: an XBE patch of gamedata/patches.db (ogbox_patches.h) */
     bool patch;
     char category[16];

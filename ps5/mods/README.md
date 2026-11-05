@@ -18,6 +18,13 @@ mods/
       files/               disc files it replaces or adds (optional)
 ```
 
+## Game fixes (OGBox 0.0.3)
+
+A mod whose `mod.txt` has the line `gamefix: true` is a game fix: something the game needs to run
+well on the PS5. It's always on, whatever `mods.txt` says. The Mods screen lists it first, under
+"Game fixes", greyed with its switch on, and it can't be turned off. The release check still
+applies: a game fix made for another release is left out.
+
 ## The release check (OGBox 0.0.2)
 
 A title ID and version can stand for more than one release of a game (a USA and a European

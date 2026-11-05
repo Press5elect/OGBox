@@ -43,9 +43,10 @@ typedef struct Line {
 typedef struct Mod {
     char id[128];
     char name[128];
-    char description[256];
+    char description[384];
     int refresh;
     bool on;
+    bool gamefix;      /* 0.0.3: "gamefix: true": always on, can't be turned off (the Mods screen greys it) */
     Line *patches;
     size_t npatches;
 } Mod;
@@ -298,6 +299,9 @@ static void load_mod(const char *dir, const char *id)
                 copy(m->description, sizeof(m->description), value);
             } else if (!strcmp(key, "refresh")) {
                 m->refresh = atoi(value);
+            } else if (!strcmp(key, "gamefix")) {
+                m->gamefix = !strcasecmp(value, "true") || !strcmp(value, "1") || !strcasecmp(value, "yes");
+                m->on |= m->gamefix;
             }
         }
     }
@@ -1115,14 +1119,20 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
         read_choices(key, pshakux_title_dir());
     }
     int n = 0;
-    for (unsigned i = 0; i < g_nmods && n < max; i++, n++) {
-        OgboxModEntry *e = &out[n];
+    /* 0.0.3: the game fixes first, then the other mods */
+    for (unsigned pass = 0; pass < 2; pass++)
+    for (unsigned i = 0; i < g_nmods && n < max; i++) {
+        if (g_mods[i].gamefix != (pass == 0)) {
+            continue;
+        }
+        OgboxModEntry *e = &out[n++];
         memset(e, 0, sizeof(*e));
         copy(e->id, sizeof(e->id), g_mods[i].id);
         copy(e->name, sizeof(e->name), g_mods[i].name);
         copy(e->description, sizeof(e->description), g_mods[i].description);
         e->refresh = g_mods[i].refresh;
         e->on = g_mods[i].on;
+        e->gamefix = g_mods[i].gamefix;
         const char *why;
         e->fit = fit_of_mod(key, g_mods[i].id, &why);
         copy(e->fit_why, sizeof(e->fit_why), why);
