@@ -142,6 +142,8 @@ native core's work tree (oldest first; author: subject):
   227a622271 Claude: hle: a big palettized texture's first level described when defined
   1bf0beba56 Claude: hle: a screen-sized copy into a buffer not shown lands in its memory (logged ones)
   68df49c987 Claude: hle: a copy in memory from a frame buffer lands its picture there first
+  327bc62ddb Claude: vm: 4 KiB pages a title's own tables map where 16 KiB host pages can't, emulated (Fable)
+  926172f403 Claude: vm: the title's own page tables' mappings emulated from the start
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -7313,7 +7315,7 @@ index fc4055973a837bf64aa851ac98f2502eb23b8c7e..aa80495b26cad98f84891ac701212caa
  bool nc_cheat_on(int index);
  unsigned nc_cheat_count(void);
 diff --git a/native/core/core.c b/native/core/core.c
-index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648cd737ae9 100644
+index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7466a10a2c765e37cd71902ef8a288ce46611f02 100644
 --- a/native/core/core.c
 +++ b/native/core/core.c
 @@ -2,13 +2,20 @@
@@ -7382,7 +7384,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
          nc_mods_after_load(&c->kernel, c->kernel.image_path);
          g_loaded = true;
      }
-@@ -296,6 +317,7 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
+@@ -296,15 +317,27 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
      nc_log("hakuX-native-frontier", "host fault: %s at guest %08llx, eip %08x (host pc %p)", what,
             (unsigned long long)va, eip, (void *)pc);
      nc_kernel_dump_recent(-1);
@@ -7390,7 +7392,20 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
      nc_kernel_dump_threads(&c->kernel, -1);
      return false;
  }
-@@ -305,6 +327,7 @@ uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_u
+ 
+ /* bumped from the fault handlers of any thread (atomically), read by the stats */
+-uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_unaligned;
++uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_unaligned, g_nc_faults_soft;
++
++#if defined(NC_CPU_NATIVE)
++/* A store to an emulated page (vm.c g_soft): the HLE learns the RAM changed, as with a DMA's. */
++static void soft_stored(uint32_t pa, uint32_t n)
++{
++    if (nc_vm_dma.wrote) {
++        nc_vm_dma.wrote(pa, n);
++    }
++}
++#endif
  
  static struct {
      uint32_t eip, n;
@@ -7398,7 +7413,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
  } g_mfs[16];
  
  static void mmio_fault_sample(uint32_t eip)
-@@ -319,6 +342,36 @@ static void mmio_fault_sample(uint32_t eip)
+@@ -319,6 +352,36 @@ static void mmio_fault_sample(uint32_t eip)
      if (k < 16) {
          g_mfs[k].eip = eip;
          g_mfs[k].n++;
@@ -7435,7 +7450,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
      }
  }
  
-@@ -368,7 +421,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -368,7 +431,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (sig == SIGILL) {
          return false;
      }
@@ -7444,7 +7459,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
      if (sig == SIGBUS && nc_cpu_unaligned_fault(c->cpu, info->si_code, ucontext)) {
          /* Doom 3 keeps a critical section at 0x00BFD88E: RtlEnterCriticalSection's
           * lock inc of its LockCount (0x00BFD89E) took the core down */
-@@ -409,6 +462,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -409,6 +472,49 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
              }
          }
      }
@@ -7457,10 +7472,44 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
 +        }
 +    }
 +#endif
++#if defined(NC_CPU_NATIVE)
++    {   /* OGBox 0.0.3: a page of an emulated block (vm.c g_soft: the title's own 4 KiB mapping): the
++         * access done against RAM; a hot instruction goes through the gate after a few (mmiosite.c) */
++        const uint64_t sva = nc_vm_guest_of(&c->vm, info->si_addr);
++        if (sva != UINT64_MAX && nc_vm_soft(&c->vm, (uint32_t)sva) && nc_vm_phys(&c->vm, (uint32_t)sva) != UINT32_MAX) {
++            if (nc_ram_emulate(&c->vm, info, ucontext, soft_stored)) {
++                __atomic_fetch_add(&g_nc_faults_soft, 1, __ATOMIC_RELAXED);
++                nc_mmio_site_fault(&c->kernel, nc_cpu_guest_eip_at(c->cpu, pc), ucontext);
++                return true;
++            }
++            /* it reached a page the guest doesn't have yet (a demand pager's): the title's tables
++             * may map it now, or its page-fault handler does, and the instruction runs again */
++            uint32_t miss;
++            bool miss_store;
++            if (nc_ram_emulate_miss(&miss, &miss_store)) {
++                if (nc_paging_fault(&c->kernel, miss)) {
++                    return true;
++                }
++                NcFrame *mf = nc_cpu_fault_frame(c->cpu, ucontext);
++                if (mf && nc_kernel_page_fault(&c->kernel, mf, miss, miss_store)) {
++                    nc_cpu_fault_resume(c->cpu, ucontext);
++                    return true;
++                }
++                if (mf && nc_seh_access_violation(&c->kernel, mf, miss, miss_store)) {
++                    nc_cpu_fault_resume(c->cpu, ucontext);
++                    return true;
++                }
++            }
++            return fault_report(c, pc, sva, nc_cpu_guest_eip_at(c->cpu, pc)
++                                                ? "an emulated 4 KiB page: an instruction the emulation doesn't take"
++                                                : "an emulated 4 KiB page, reached from host code");
++        }
++    }
++#endif
      if (nc_hle_dirty_fault(info, ucontext)) {
          __atomic_fetch_add(&g_nc_faults_dirty, 1, __ATOMIC_RELAXED);
          return true;
-@@ -416,8 +478,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -416,8 +522,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (nc_mmio_fault(&c->vm, info, ucontext)) {
          __atomic_fetch_add(&g_nc_faults_mmio, 1, __ATOMIC_RELAXED);
          mmio_fault_sample(nc_cpu_guest_eip_at(c->cpu, pc));
@@ -7477,7 +7526,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
          return true;
      }
      /* A guest page the guest doesn't have: the title's page tables may map
-@@ -431,7 +500,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -431,7 +544,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (wrapped != UINT64_MAX) {
          va = wrapped;
      }
@@ -7490,7 +7539,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..5f91604be0022e68e4f03b25add7a648
          return fault_report(c, pc, (uint64_t)(uintptr_t)info->si_addr, "outside the guest");
      }
      if (nc_vm_phys(&c->vm, (uint32_t)va) != UINT32_MAX) {
-@@ -450,7 +524,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -450,7 +568,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
          nc_log("hakuX-native-frontier", "guest fault at %08x (wrapped address), eip %08x", (uint32_t)va,
                 nc_frame_eip(f));
      }
@@ -8119,7 +8168,7 @@ index e1ef4105b0f4ee7bc4262d96c889f68405138bec..96c8394d2eb16b55b64fc3c0964c61ea
  
  #define SCAN_MAX 300
 diff --git a/native/core/mmio.c b/native/core/mmio.c
-index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c6761746789459018 100644
+index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..330915a00e336bbd5e52cf48e3ea15c1b7352a12 100644
 --- a/native/core/mmio.c
 +++ b/native/core/mmio.c
 @@ -69,6 +69,7 @@ static void count(uint32_t addr, bool write, uint64_t value)
@@ -8130,7 +8179,7 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
  /* The transfer a load/store instruction makes: one or two elements (LDP/STP)
   * of `bytes` each (16 for a Q register), and the base register writeback of
   * the pre- and post-indexed forms. */
-@@ -442,6 +443,299 @@ bool nc_ram_emulate(NcVm *vm, const siginfo_t *info, void *ucontext,
+@@ -442,6 +443,337 @@ bool nc_ram_emulate(NcVm *vm, const siginfo_t *info, void *ucontext,
      return true;
  }
  
@@ -8188,6 +8237,20 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
 +    }
 +}
 +
++/* OGBox 0.0.3: the first guest page an emulated instruction found missing (this thread's) */
++static __thread bool t_miss, t_miss_store;
++static __thread uint32_t t_miss_va;
++
++bool nc_ram_emulate_miss(uint32_t *va, bool *store)
++{
++    if (!t_miss) {
++        return false;
++    }
++    *va = t_miss_va;
++    *store = t_miss_store;
++    return true;
++}
++
 +static bool mem_rw(void *opaque, uint32_t addr, unsigned n, uint8_t *buf, bool store)
 +{
 +    MemCtx *m = opaque;
@@ -8222,6 +8285,11 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
 +    }
 +    const uint32_t pa = in_hole(addr) ? addr - NC_CONTIG_WINDOW : nc_vm_phys(m->vm, addr);
 +    if (pa == UINT32_MAX || (uint64_t)pa + n > m->vm->ram_size) {
++        if (pa == UINT32_MAX && !t_miss) {
++            t_miss = true;      /* the page the access stopped at (nc_ram_emulate_miss) */
++            t_miss_va = addr;
++            t_miss_store = store;
++        }
 +        return false;
 +    }
 +    if (store) {
@@ -8407,6 +8475,21 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
 +    return true;
 +}
 +
++bool nc_ram_emulate_frame(NcVm *vm, NcFrame *f, const uint8_t *ip, void (*stored)(uint32_t pa, uint32_t n))
++{
++    MemCtx m = {.vm = vm, .ram_only = true, .stored = stored};
++    const NcX86Mem mem = {mem_rw, &m};
++    return nc_x86_emulate(f, ip, ncn_seg_base(), &mem);
++}
++
++/* A string instruction (REP MOVS, STOS, LODS) done in part: it stopped at a page the guest doesn't
++ * have (one its own page tables give it when it faults there), its registers moved on as far as
++ * it went. The guest runs the rest itself, and faults where the emulation stopped. */
++static bool string_progress(const NcFrame *before, const NcFrame *after)
++{
++    return before->regs[1] != after->regs[1] || before->regs[6] != after->regs[6] || before->regs[7] != after->regs[7];
++}
++
 +bool nc_ram_emulate(NcVm *vm, const siginfo_t *info, void *ucontext,
 +                    void (*stored)(uint32_t pa, uint32_t n))
 +{
@@ -8416,10 +8499,14 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
 +    }
 +    NcFrame f;
 +    ncn_frame_from_uc(&f, ucontext, true);
++    const NcFrame before = f;
++    t_miss = false;
 +    MemCtx m = {.vm = vm, .ram_only = true, .stored = stored};
 +    const NcX86Mem mem = {mem_rw, &m};
 +    if (!nc_x86_emulate(&f, (const uint8_t *)(uintptr_t)f.rip, ncn_seg_base(), &mem)) {
-+        return false;
++        if (!string_progress(&before, &f)) {
++            return false;
++        }
 +    }
 +    ncn_frame_to_uc(&f, ucontext, true);
 +    return true;
@@ -8430,7 +8517,7 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
  /* nc_mmio_access's store may run again (nc_mmio_retry); one was asked for */
  static __thread bool t_retry_ok, t_retry;
  
-@@ -480,6 +774,11 @@ bool nc_mmio_access(uint32_t addr, unsigned bytes, bool store, uint64_t *v)
+@@ -480,6 +812,11 @@ bool nc_mmio_access(uint32_t addr, unsigned bytes, bool store, uint64_t *v)
      return true;
  }
  
@@ -8443,10 +8530,20 @@ index c2cdfb9d2eaf62cbcd5d0eef354aa5167fb29157..b7457cd495957ff79d05833c67617467
  {
      return g_total;
 diff --git a/native/core/mmio.h b/native/core/mmio.h
-index 799b076eaaa99ff690840018e43db13a1e595dea..c9d4b41c6b28ae255de2e4a791e6578acd8476e2 100644
+index 799b076eaaa99ff690840018e43db13a1e595dea..70d28adfe22f936fec601ac202a463823bd44106 100644
 --- a/native/core/mmio.h
 +++ b/native/core/mmio.h
-@@ -59,6 +59,17 @@ bool nc_mmio_retry(void);
+@@ -44,6 +44,9 @@ bool nc_ram_access_span(const NcVm *vm, const siginfo_t *info, void *ucontext, u
+  * lets the access run on its own). */
+ bool nc_ram_emulate(NcVm *vm, const siginfo_t *info, void *ucontext,
+                     void (*stored)(uint32_t pa, uint32_t n));
++/* OGBox 0.0.3: after nc_ram_emulate refused: the guest page it found missing, if that was why (a
++ * page the title's own tables or its page-fault handler give it). */
++bool nc_ram_emulate_miss(uint32_t *va, bool *store);
+ 
+ /* Writes the busiest MMIO sites to fd. */
+ void nc_mmio_dump_stats(int fd);
+@@ -59,16 +62,37 @@ bool nc_mmio_retry(void);
  bool nc_mmio_take_retry(void);
  /* Accesses emulated so far. */
  uint64_t nc_mmio_total(void);
@@ -8460,11 +8557,18 @@ index 799b076eaaa99ff690840018e43db13a1e595dea..c9d4b41c6b28ae255de2e4a791e6578a
 + * 0 ordinary memory only, -1 not a form the emulation takes. */
 +struct NcFrame;
 +int nc_mmio_emulate_frame(const NcVm *vm, struct NcFrame *f, const uint8_t *ip);
++/* OGBox 0.0.3: the instruction at ip (its bytes; f's EIP its address) done against RAM, a page of an
++ * emulated block included (vm.c g_soft; stores reported through stored): true when done. */
++bool nc_ram_emulate_frame(NcVm *vm, struct NcFrame *f, const uint8_t *ip, void (*stored)(uint32_t pa, uint32_t n));
 +#endif
  /* Host faults the core handled, by kind (core.c nc_core_fault; each costs a
   * signal): FEX's call-return stack, guest stores to pages write tracking
   * cleaned, device registers reached by a fault (not yet hooked sites), atomics
-@@ -69,6 +80,13 @@ extern uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_f
+  * at an alignment the host can't do (emulated each time). */
+-extern uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_unaligned;
++extern uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_unaligned, g_nc_faults_soft;
+ /* debug: the guest EIPs of MMIO faults, sampled (1 in 64): " eip:n ..." of
+  * the busiest since the last call, then cleared */
  void nc_mmio_fault_sites(char *buf, size_t len);
  /* ... the same as arrays: up to max of the busiest, their counts; cleared */
  unsigned nc_mmio_fault_top(uint32_t *eips, uint32_t *counts, unsigned max);
@@ -9402,7 +9506,7 @@ index 0000000000000000000000000000000000000000..1ff7b183342e0bca10983b3168172934
 +
 +#endif
 diff --git a/native/core/vm.c b/native/core/vm.c
-index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de96d542f65 100644
+index 028881e68f3fab7ea2476ab44dd1447a50d3f993..5a125b7b97a1fda0d0ee0c5db7720d6a2920dc08 100644
 --- a/native/core/vm.c
 +++ b/native/core/vm.c
 @@ -1,12 +1,19 @@
@@ -9425,7 +9529,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
  #include <stdlib.h>
  #include <sys/mman.h>
  #include <sys/syscall.h>
-@@ -14,22 +21,338 @@
+@@ -14,22 +21,365 @@
  
  static uint8_t *g_na;   /* per physical page: no guest access (nc_vm_noaccess), made on first use */
  
@@ -9489,6 +9593,14 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +static uint32_t g_hp = NC_PAGE;
 +static uint32_t *g_blk_va;      /* per physical block: the VA block bound to it, or 0 */
 +static uint8_t *g_orphan;       /* per physical page: held by its block's binding */
++/* OGBox 0.0.3: a VA block whose pages can't share one host page (a title's own page tables mapping
++ * 4 KiB pages anywhere: Fable's pager) is emulated: no host page there, its pages kept in the page
++ * table only, and every guest access to it faults and is done against RAM (core.c, mmio.c; a hot
++ * instruction through the gate, mmiosite.c). Per VA block: 1 emulated. */
++static uint8_t *g_soft;
++static unsigned g_soft_blocks, g_soft_logged;
++const uint8_t *nc_vm_soft_map;     /* g_soft, once a block is emulated (vm.h nc_vm_host) */
++unsigned nc_vm_soft_shift = 14;
 +
 +/* OGBox 0.1.58: the title's RAM (NcVm.guest_size). Pages the title holds: used and not a block's
 + * leftover (g_orphan); allocations end where the Xbox's would, at guest_size of those. Contiguous
@@ -9645,6 +9757,25 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +        const uint64_t end = ((uint64_t)va + len + g_hp - 1) & ~(uint64_t)(g_hp - 1);
 +        va &= ~(g_hp - 1);
 +        len = (uint32_t)(end - va);
++        /* an emulated block has no host page: protecting its reservation would open it */
++        if (g_soft) {
++            bool any = false;
++            for (uint64_t b = va; b < end && !any; b += g_hp) {
++                any = g_soft[b / g_hp] != 0;
++            }
++            if (any) {
++                uint64_t run = va;
++                for (uint64_t b = va; b <= end; b += g_hp) {
++                    if (b == end || g_soft[b / g_hp]) {
++                        if (b > run) {
++                            guest_mprotect(vm, (uint32_t)run, (uint32_t)(b - run), prot);
++                        }
++                        run = b + g_hp;
++                    }
++                }
++                return;
++            }
++        }
 +    }
 +#endif
 +    if (mprotect(vm->base + va, len, prot) != 0) {
@@ -9764,7 +9895,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      /* 4 GiB of guest address space with PROT_NONE guards on both sides. */
      vm->reservation_len = (1ull << 32) + 2 * NC_GUARD;
      void *r = mmap(NULL, vm->reservation_len, PROT_NONE,
-@@ -40,6 +363,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
+@@ -40,6 +390,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
      }
      vm->reservation = r;
      vm->base = (uint8_t *)r + NC_GUARD;
@@ -9772,7 +9903,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
  
      /* Guest RAM is an AHB's memory when the platform gives its fd (the
       * GPU imports the same buffer: vertices, uploads and readbacks in place,
-@@ -47,13 +371,19 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
+@@ -47,13 +398,19 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
      const char *mf = getenv("NC_RAM_MEMFD");
      vm->ram_fd = mf && atoi(mf) ? -1 : hle_uma_ram_fd(ram_size);
      if (vm->ram_fd < 0) {
@@ -9792,14 +9923,15 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      vm->page_used = calloc(ram_size / NC_PAGE, 1);
      vm->pte = calloc((1ull << 32) / NC_PAGE, sizeof(uint32_t));
      vm->rmap = calloc(ram_size / NC_PAGE, sizeof(uint32_t));
-@@ -62,15 +392,33 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
+@@ -62,15 +419,34 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
      if (!vm->page_used || !vm->pte || !vm->rmap || !vm->wp || !vm->pin) {
          return false;
      }
 +    if (g_hp > NC_PAGE) {
 +        g_blk_va = calloc(ram_size / g_hp, sizeof(uint32_t));
 +        g_orphan = calloc(ram_size / NC_PAGE, 1);
-+        if (!g_blk_va || !g_orphan) {
++        g_soft = calloc((size_t)((1ull << 32) / g_hp), 1);
++        if (!g_blk_va || !g_orphan || !g_soft) {
 +            return false;
 +        }
 +    }
@@ -9826,7 +9958,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
  
      /* The contiguous window: VA 0x80000000 + pa for all of RAM. And the
       * NV2A's BAR1 aperture at 0xF0000000, another view of RAM, where D3D's
-@@ -78,16 +426,204 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
+@@ -78,16 +454,261 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
      if (!nc_vm_map(vm, NC_CONTIG_WINDOW, 0, ram_size) || !nc_vm_map(vm, NC_GPU_WINDOW, 0, ram_size)) {
          return false;
      }
@@ -9970,11 +10102,16 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +static bool bind_blocks(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
 +{
 +    const uint32_t m = g_hp - 1;
++    for (uint64_t vblk = va & ~m; g_soft && vblk < (uint64_t)va + len; vblk += g_hp) {
++        if (g_soft[vblk / g_hp]) {
++            return false;   /* emulated already: its pages join it (soft_blocks) */
++        }
++    }
 +    if ((va ^ pa) & m) {
 +        static unsigned said;
 +        if (said++ < 16) {
 +            nc_log("hakuX-native", "vm: map va=%08x pa=%08x: not congruent in %u KiB host pages (a 4 KiB remap the "
-+                   "host can't make)", va, pa, g_hp >> 10);
++                   "host can't make): emulated", va, pa, g_hp >> 10);
 +        }
 +        return false;
 +    }
@@ -9986,7 +10123,8 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +            continue;
 +        }
 +        if (bound != UINT32_MAX) {
-+            nc_log("hakuX-native", "vm: va block %08x is bound to pa %08x, not %08x", (uint32_t)vblk, bound, pblk);
++            nc_log("hakuX-native", "vm: va block %08x is bound to pa %08x, not %08x: emulated", (uint32_t)vblk, bound,
++                   pblk);
 +            return false;
 +        }
 +        if (!host_map(vm, (uint32_t)vblk, pblk, g_hp)) {
@@ -10030,10 +10168,61 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +    }
 +}
 +
++/* [va, va + len)'s VA blocks emulated (g_soft): a bound one gives its host page back (its mapped
++ * pages stay in the page table, now reached by emulation), the rest had none. */
++static void soft_blocks(NcVm *vm, uint32_t va, uint32_t len)
++{
++    const uint32_t m = g_hp - 1;
++    for (uint64_t vblk = va & ~m; vblk < (uint64_t)va + len; vblk += g_hp) {
++        if (g_soft[vblk / g_hp]) {
++            continue;
++        }
++        const uint32_t pblk = block_pa(vm, (uint32_t)vblk);
++        if (pblk != UINT32_MAX && g_blk_va[pblk / g_hp] == (uint32_t)vblk) {
++            unbind_block(vm, (uint32_t)vblk, pblk);
++        }
++        g_soft[vblk / g_hp] = 1;
++        g_soft_blocks++;
++        if (!nc_vm_soft_map) {
++            nc_vm_soft_shift = (unsigned)__builtin_ctz(g_hp);
++            __atomic_store_n(&nc_vm_soft_map, g_soft, __ATOMIC_RELEASE);
++        }
++        if (g_soft_logged++ < 16) {
++            nc_log("hakuX-native", "vm: va block %08x emulated (%u now): the title's 4 KiB pages there are reached by "
++                   "emulating each access", (uint32_t)vblk, g_soft_blocks);
++        }
++    }
++}
++
++/* A mapping the title's own page tables make: emulated from the start when host pages are larger
++ * than the Xbox's. A bound block would show the block's other 4 KiB pages at their addresses
++ * whether the tables map them or not, so a demand pager's access to a page it hasn't loaded yet
++ * would read another page's bytes instead of faulting (Fable: its strings came back empty). */
++bool nc_vm_map_emulated(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
++{
++    if (g_hp > NC_PAGE && g_soft && va < NC_CONTIG_WINDOW) {
++        pthread_mutex_lock(&g_prot_lock);
++        soft_blocks(vm, va, len);
++        pthread_mutex_unlock(&g_prot_lock);
++    }
++    return nc_vm_map(vm, va, pa, len);
++}
++
++bool nc_vm_soft(const NcVm *vm, uint32_t va)
++{
++    (void)vm;
++    return g_soft && g_soft[va / g_hp];
++}
++
++unsigned nc_vm_soft_blocks(void)
++{
++    return g_soft_blocks;
++}
++
  bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
  {
      if ((va | pa | len) & (NC_PAGE - 1) || (uint64_t)pa + len > vm->ram_size ||
-@@ -95,14 +631,20 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
+@@ -95,14 +716,23 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
          nc_log("hakuX-native", "vm: bad map va=%08x pa=%08x len=%x", va, pa, len);
          return false;
      }
@@ -10044,9 +10233,12 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +    pthread_mutex_lock(&g_prot_lock);
 +    if (g_hp > NC_PAGE && !window) {
 +        if (!bind_blocks(vm, va, pa, len)) {
-+            pthread_mutex_unlock(&g_prot_lock);
-+            nc_vm_hist(NC_VMOP_FAILED, va, len, pa);
-+            return false;
++            if (!g_soft || va >= NC_CONTIG_WINDOW) {
++                pthread_mutex_unlock(&g_prot_lock);
++                nc_vm_hist(NC_VMOP_FAILED, va, len, pa);
++                return false;
++            }
++            soft_blocks(vm, va, len);
 +        }
 +    } else if (!host_map(vm, va, pa, len)) {
 +        pthread_mutex_unlock(&g_prot_lock);
@@ -10058,7 +10250,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      for (uint32_t off = 0; off < len; off += NC_PAGE) {
          const uint32_t page = (pa + off) / NC_PAGE;
          vm->pte[(va + off) / NC_PAGE] = (pa + off) | NC_PTE_VALID;
-@@ -118,12 +660,35 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
+@@ -118,12 +748,38 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
              }
              vm->rmap[page] = va + off;
          }
@@ -10071,13 +10263,16 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          } else if (vm->wp[page] == NC_WP_CLEAN) {
 -            mprotect(vm->base + va + off, NC_PAGE, PROT_READ); /* still tracked */
 +            guest_mprotect(vm, va + off, NC_PAGE, PROT_READ); /* still tracked */
-+        }
-+    }
+         }
+     }
 +    if (g_hp > NC_PAGE && !window) {
 +        /* a host page keeps no access, or tracking, only when all its pages
 +         * have it (nc_vm_noaccess and protect_blocks set whole blocks) */
 +        const uint32_t m = g_hp - 1;
 +        for (uint64_t vblk = va & ~m; vblk < (uint64_t)va + len; vblk += g_hp) {
++            if (g_soft && g_soft[vblk / g_hp]) {
++                continue;   /* no host page */
++            }
 +            const uint32_t pblk = block_pa(vm, (uint32_t)vblk);
 +            bool na = g_na != NULL, clean = true;
 +            for (uint32_t o = 0; o < g_hp; o += NC_PAGE) {
@@ -10090,13 +10285,13 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +            } else if (clean) {
 +                guest_mprotect(vm, (uint32_t)vblk, g_hp, PROT_READ);
 +            }
-         }
-     }
++        }
++    }
 +    pthread_mutex_unlock(&g_prot_lock);
      return true;
  }
  
-@@ -132,13 +697,27 @@ void (*nc_vm_read_hook)(uint32_t va, uint32_t len);
+@@ -132,13 +788,27 @@ void (*nc_vm_read_hook)(uint32_t va, uint32_t len);
  void (*nc_vm_free_hook)(uint32_t pa, uint32_t len);
  NcVmDma nc_vm_dma;
  
@@ -10126,7 +10321,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      uint32_t run_va = 0, run_n = 0;
      for (uint32_t i = 0; i <= n; i++) {
          uint32_t va = 0;
-@@ -153,20 +732,53 @@ static void prot_views(NcVm *vm, uint32_t page, uint32_t n, int prot)
+@@ -153,20 +823,53 @@ static void prot_views(NcVm *vm, uint32_t page, uint32_t n, int prot)
              continue;
          }
          if (run_n) {
@@ -10181,7 +10376,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      /* The flag is set before the pages are protected and cleared after
       * they're writable again: a guest store that faults on another thread
       * meanwhile always finds its page marked (dirty.c takes the fault as a
-@@ -188,7 +800,28 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro)
+@@ -188,7 +891,28 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro)
          while (i + k < n && !(g_na && __atomic_load_n(&g_na[page + i + k], __ATOMIC_ACQUIRE))) {
              k++;
          }
@@ -10210,7 +10405,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          for (uint32_t j = i; g_na && j < i + k; j++) {
              if (__atomic_load_n(&g_na[page + j], __ATOMIC_ACQUIRE)) {
                  prot_views(vm, page + j, 1, PROT_NONE);
-@@ -201,10 +834,17 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro)
+@@ -201,10 +925,17 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro)
              __atomic_store_n(&vm->wp[page + i], 0, __ATOMIC_RELEASE);
          }
      }
@@ -10228,7 +10423,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      const uint32_t page = pa / NC_PAGE;
      if (!n || (uint64_t)page + n > vm->ram_size / NC_PAGE) {
          return;
-@@ -219,12 +859,14 @@ void nc_vm_noaccess(NcVm *vm, uint32_t pa, uint32_t n, bool on)
+@@ -219,12 +950,14 @@ void nc_vm_noaccess(NcVm *vm, uint32_t pa, uint32_t n, bool on)
              free(na);
          }
      }
@@ -10243,7 +10438,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          return;
      }
      /* back to what write tracking wants, in runs of the same */
-@@ -240,6 +882,7 @@ void nc_vm_noaccess(NcVm *vm, uint32_t pa, uint32_t n, bool on)
+@@ -240,6 +973,7 @@ void nc_vm_noaccess(NcVm *vm, uint32_t pa, uint32_t n, bool on)
      for (uint32_t i = 0; i < n; i++) {
          __atomic_store_n(&g_na[page + i], 0, __ATOMIC_RELEASE);
      }
@@ -10251,7 +10446,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
  }
  
  bool nc_vm_noaccess_has(NcVm *vm, uint32_t pa)
-@@ -252,13 +895,61 @@ void nc_vm_protect_page(NcVm *vm, uint32_t pa, bool ro)
+@@ -252,13 +986,66 @@ void nc_vm_protect_page(NcVm *vm, uint32_t pa, bool ro)
      nc_vm_protect_pages(vm, pa & ~(NC_PAGE - 1), 1, ro);
  }
  
@@ -10292,7 +10487,12 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +                vm->pte[v / NC_PAGE] = 0;
 +            }
 +            if (block_pa(vm, (uint32_t)vblk) == UINT32_MAX) {
-+                unbind_block(vm, (uint32_t)vblk, pblk);
++                if (g_soft && g_soft[vblk / g_hp]) {
++                    g_soft[vblk / g_hp] = 0;   /* empty: an ordinary block again (no host page to give back) */
++                    g_soft_blocks--;
++                } else {
++                    unbind_block(vm, (uint32_t)vblk, pblk);
++                }
 +            }
 +        }
 +        pthread_mutex_unlock(&g_prot_lock);
@@ -10313,7 +10513,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      for (uint32_t off = 0; off < len; off += NC_PAGE) {
          const uint32_t e = vm->pte[(va + off) / NC_PAGE];
          if ((e & NC_PTE_VALID) && vm->rmap[e / NC_PAGE] == va + off) {
-@@ -266,6 +957,7 @@ bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len)
+@@ -266,6 +1053,7 @@ bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len)
          }
          vm->pte[(va + off) / NC_PAGE] = 0;
      }
@@ -10321,7 +10521,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      return true;
  }
  
-@@ -293,8 +985,8 @@ uint32_t nc_vm_alloc_phys_ex(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, u
+@@ -293,8 +1081,8 @@ uint32_t nc_vm_alloc_phys_ex(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, u
      const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
      const uint32_t step = (align > NC_PAGE ? align : NC_PAGE) / NC_PAGE;
      const uint32_t first = nc_align_up(lo, step * NC_PAGE) / NC_PAGE;
@@ -10332,7 +10532,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          return UINT32_MAX;
      }
      const uint32_t top = (last - pages) / step * step;
-@@ -350,8 +1042,21 @@ void nc_vm_free_phys(NcVm *vm, uint32_t pa, uint32_t len)
+@@ -350,8 +1138,21 @@ void nc_vm_free_phys(NcVm *vm, uint32_t pa, uint32_t len)
                  }
              }
          }
@@ -10356,7 +10556,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          if (nc_vm_free_hook) {
              nc_vm_free_hook(pa, pages * NC_PAGE);
          }
-@@ -381,6 +1086,9 @@ void nc_vm_pin(NcVm *vm, uint32_t pa, bool known, int lock)
+@@ -381,6 +1182,9 @@ void nc_vm_pin(NcVm *vm, uint32_t pa, bool known, int lock)
   * pages move too (relocate). */
  static bool movable(const NcVm *vm, uint32_t p)
  {
@@ -10366,7 +10566,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      const uint32_t va = vm->rmap[p];
      return va && !vm->pin[p] && !(g_na && g_na[p]) && vm->pte[va / NC_PAGE] == ((p * NC_PAGE) | NC_PTE_VALID);
  }
-@@ -410,7 +1118,8 @@ static bool relocate(NcVm *vm, uint32_t q, uint32_t to)
+@@ -410,7 +1214,8 @@ static bool relocate(NcVm *vm, uint32_t q, uint32_t to)
          nc_vm_dma.wait(a > b ? a : b);
      }
      const uint32_t va = vm->rmap[q];
@@ -10376,7 +10576,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      vm->page_used[to] = 1;
      if (!nc_vm_map(vm, va, to * NC_PAGE, NC_PAGE)) {
          vm->page_used[to] = 0;
-@@ -431,8 +1140,8 @@ uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t
+@@ -431,8 +1236,8 @@ uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t
      const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
      const uint32_t step = (align > NC_PAGE ? align : NC_PAGE) / NC_PAGE;
      const uint32_t first = nc_align_up(lo, step * NC_PAGE) / NC_PAGE;
@@ -10387,7 +10587,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          return UINT32_MAX;
      }
      const uint32_t free_all = free_pages(vm);
-@@ -494,8 +1203,8 @@ uint32_t nc_vm_alloc_phys_top(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi,
+@@ -494,8 +1299,8 @@ uint32_t nc_vm_alloc_phys_top(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi,
      const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
      const uint32_t step = (align > NC_PAGE ? align : NC_PAGE) / NC_PAGE;
      const uint32_t first = nc_align_up(lo, step * NC_PAGE) / NC_PAGE;
@@ -10398,7 +10598,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
          return UINT32_MAX;
      }
      /* A window over a page that can't move fails, and so does every other
-@@ -529,7 +1238,7 @@ uint32_t nc_vm_alloc_phys_top(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi,
+@@ -529,7 +1334,7 @@ uint32_t nc_vm_alloc_phys_top(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi,
      if (used && free_pages(vm) - (pages - used) < used) {
          return UINT32_MAX;              /* nowhere to move them */
      }
@@ -10407,7 +10607,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      const uint32_t below = NC_TOP_RESERVE / NC_PAGE < ram_pages ? ram_pages - NC_TOP_RESERVE / NC_PAGE : ram_pages;
      int64_t to = below;
      bool reserve = false;
-@@ -602,12 +1311,15 @@ static uint32_t smallest_run(const NcVm *vm, uint32_t first, uint32_t last, uint
+@@ -602,12 +1407,15 @@ static uint32_t smallest_run(const NcVm *vm, uint32_t first, uint32_t last, uint
   * long-lived allocations (page tables) fill holes and leave the
   * large runs whole for MmAllocateContiguousMemory; from the top end of the
   * run, the highest of equals, so the kernel's own memory stays high (low RAM
@@ -10426,7 +10626,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      uint32_t run;
      uint32_t p = smallest_run(vm, first, last, pages, &run);
      if (p == UINT32_MAX) {
-@@ -626,8 +1338,8 @@ uint32_t nc_vm_alloc_phys(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi)
+@@ -626,8 +1434,8 @@ uint32_t nc_vm_alloc_phys(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi)
  uint32_t nc_vm_alloc_phys_high(NcVm *vm, uint32_t len)
  {
      uint32_t moved;
@@ -10437,7 +10637,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
  }
  
  static uint32_t free_pages(const NcVm *vm)
-@@ -641,7 +1353,8 @@ static uint32_t free_pages(const NcVm *vm)
+@@ -641,7 +1449,8 @@ static uint32_t free_pages(const NcVm *vm)
  
  uint32_t nc_vm_free_bytes(const NcVm *vm)
  {
@@ -10447,7 +10647,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
  }
  
  void nc_vm_free_runs(const NcVm *vm, char *buf, size_t len)
-@@ -680,9 +1393,93 @@ void nc_vm_free_runs(const NcVm *vm, char *buf, size_t len)
+@@ -680,9 +1489,107 @@ void nc_vm_free_runs(const NcVm *vm, char *buf, size_t len)
   * title, as on the Xbox: Halo asks for its game state at physical 0x61000,
   * just above the kernel, and 0x3A6000 (25 MiB in all) at start, after its
   * image, heap and stacks have their pages. */
@@ -10490,6 +10690,20 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
 +    }
 +    for (uint32_t v = b0; v < b1; v += g_hp) {
 +        const uint32_t lo = v > va ? v : va, hi = v + g_hp < va + len ? v + g_hp : va + len;
++        if (g_soft && g_soft[v / g_hp]) {
++            /* emulated: any free page will do */
++            for (uint32_t a = lo; a < hi; a += NC_PAGE) {
++                if (nc_vm_phys(vm, a) != UINT32_MAX) {
++                    continue;
++                }
++                const uint32_t pg = nc_vm_alloc_phys(vm, NC_PAGE, 0, vm->ram_size);
++                if (pg == UINT32_MAX || !nc_vm_map(vm, a, pg, NC_PAGE)) {
++                    return false;
++                }
++                nc_vm_host_zero(vm, pg, NC_PAGE);
++            }
++            continue;
++        }
 +        uint32_t pblk = block_pa(vm, v);
 +        if (pblk == UINT32_MAX) {
 +            /* a free block, the highest below the reserve, else in it */
@@ -10541,7 +10755,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
      const uint32_t ram_pages = vm->ram_size / NC_PAGE;
      for (uint32_t done = 0; done < len;) {
          uint32_t piece = len - done, pa = UINT32_MAX;
-@@ -728,7 +1525,7 @@ bool nc_vm_alloc_at(NcVm *vm, uint32_t va, uint32_t len, uint32_t *pa_out)
+@@ -728,7 +1635,7 @@ bool nc_vm_alloc_at(NcVm *vm, uint32_t va, uint32_t len, uint32_t *pa_out)
          if (!nc_vm_map(vm, va + done, pa, piece)) {
              return false;
          }
@@ -10551,7 +10765,7 @@ index 028881e68f3fab7ea2476ab44dd1447a50d3f993..e473ebcaa70e5c68fd9bbcb25ff71de9
              *pa_out = pa;
          }
 diff --git a/native/core/vm.h b/native/core/vm.h
-index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e7487ba1360 100644
+index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..f53b7599da3b4a6067704ecb75f9cc0dd37edd55 100644
 --- a/native/core/vm.h
 +++ b/native/core/vm.h
 @@ -20,12 +20,30 @@ extern "C" {
@@ -10586,7 +10800,7 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e74
      uint8_t *ram;          /* host view of all of physical RAM (== base + 0x80000000) */
      uint8_t *page_used;    /* physical page allocator: one byte per page */
      uint32_t *pte;         /* per guest page: physical address | NC_PTE_VALID, or 0 */
-@@ -48,12 +66,37 @@ typedef struct NcVm {
+@@ -48,12 +66,45 @@ typedef struct NcVm {
  #define NC_PTE_VALID 1u
  
  bool nc_vm_init(NcVm *vm, uint32_t ram_size);
@@ -10613,6 +10827,14 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e74
 +#endif
 +#endif
 +uint32_t nc_vm_host_page(void);
++
++/* OGBox 0.0.3: va is in an emulated block (a 4 KiB mapping the host's larger pages can't make:
++ * vm.c g_soft): its pages have no host page, every guest access is emulated. */
++bool nc_vm_soft(const NcVm *vm, uint32_t va);
++/* nc_vm_map for the title's own page tables (paging.c): emulated blocks when host pages are
++ * larger, so a page the tables don't map faults as on the Xbox. */
++bool nc_vm_map_emulated(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len);
++unsigned nc_vm_soft_blocks(void);
  
  /* Map guest VA [va, va+len) onto physical [pa, pa+len). Page-aligned. */
  bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len);
@@ -10624,7 +10846,7 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e74
  /* The same for n pages from pa: one mprotect per window, and one per run of
   * pages a guest VA range maps in order. */
  void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro);
-@@ -62,6 +105,14 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro);
+@@ -62,6 +113,14 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro);
   * wants (off). The host's view (vm->phys) keeps its access. */
  void nc_vm_noaccess(NcVm *vm, uint32_t pa, uint32_t n, bool on);
  bool nc_vm_noaccess_has(NcVm *vm, uint32_t pa);
@@ -10639,7 +10861,7 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e74
  
  /* Before host code writes guest memory through a system call (read/pread
   * into a guest buffer: a protected page fails the call instead of faulting):
-@@ -101,6 +152,36 @@ typedef struct NcVmDma {
+@@ -101,6 +160,36 @@ typedef struct NcVmDma {
  } NcVmDma;
  extern NcVmDma nc_vm_dma;
  
@@ -10676,29 +10898,72 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e74
  /* Back guest VA [va, va+len) with nothing again (accesses fault). */
  bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len);
  
-@@ -158,19 +239,33 @@ uint32_t nc_vm_free_bytes(const NcVm *vm);
+@@ -158,19 +247,76 @@ uint32_t nc_vm_free_bytes(const NcVm *vm);
   * largest, as text (out-of-memory reports). */
  void nc_vm_free_runs(const NcVm *vm, char *buf, size_t len);
  
++
++/* OGBox 0.0.3: host copies to and from guest memory that hold across 4 KiB pages of an emulated
++ * block (vm.c g_soft: each page's bytes are in the RAM view, not side by side at the address). */
++static inline void nc_vm_copy_in(const NcVm *vm, void *dst, uint32_t va, uint32_t len);
++static inline void nc_vm_copy_out(const NcVm *vm, uint32_t va, const void *src, uint32_t len);
++static inline void nc_vm_fill(const NcVm *vm, uint32_t va, int c, uint32_t len);
 +#if defined(NC_CPU_NATIVE)
 +/* Where the contiguous window's start belongs to the host (NC_HOLE_END: the
 + * PS5's system module at 0x80000000; even a read of it ends the process):
 + * nothing there is the guest's (vm.c claims the RAM it would reach), and
 + * host code that still computes such an address reaches its own view of
 + * RAM instead. */
++/* OGBox 0.0.3: the emulated blocks (vm.c g_soft), NULL until there is one, and their size's shift:
++ * host code reaches a page there through the RAM view (no host page at its address). */
++extern const uint8_t *nc_vm_soft_map;
++extern unsigned nc_vm_soft_shift;
++
 +static inline void *nc_vm_host(const NcVm *vm, uint32_t va)
 +{
 +    const uint32_t hole = NC_HOLE_END;
-+    return hole && va - NC_CONTIG_WINDOW < hole - NC_CONTIG_WINDOW ? vm->phys + (va - NC_CONTIG_WINDOW)
-+                                                                   : vm->base + va;
++    if (hole && va - NC_CONTIG_WINDOW < hole - NC_CONTIG_WINDOW) {
++        return vm->phys + (va - NC_CONTIG_WINDOW);
++    }
++    if (__builtin_expect(nc_vm_soft_map != NULL, 0) && nc_vm_soft_map[va >> nc_vm_soft_shift]) {
++        /* a page of an emulated block: its bytes in the RAM view (within this 4 KiB page; a span
++         * that crosses pages goes a page at a time: nc_vm_soft_span) */
++        const uint32_t e = vm->pte[va / NC_PAGE];
++        if (e & NC_PTE_VALID) {
++            return vm->phys + (e & ~(NC_PAGE - 1)) + (va & (NC_PAGE - 1));
++        }
++    }
++    return vm->base + va;
++}
++
++/* [va, va + len) touches an emulated block: host code copying it goes a 4 KiB page at a time. */
++static inline bool nc_vm_soft_span(uint32_t va, uint32_t len)
++{
++    if (!nc_vm_soft_map || !len) {
++        return false;
++    }
++    const uint64_t end = (uint64_t)va + len;
++    for (uint64_t b = va >> nc_vm_soft_shift; b <= ((end - 1) >> nc_vm_soft_shift); b++) {
++        if (nc_vm_soft_map[b]) {
++            return true;
++        }
++    }
++    return false;
 +}
 +#else
  static inline void *nc_vm_host(const NcVm *vm, uint32_t va)
  {
      return vm->base + va;
  }
-+#endif
  
++static inline bool nc_vm_soft_span(uint32_t va, uint32_t len)
++{
++    (void)va;
++    (void)len;
++    return false;
++}
++#endif
++
  static inline uint32_t nc_vm_rd32(const NcVm *vm, uint32_t va)
  {
 -    return nc_rd32(vm->base + va);
@@ -10712,6 +10977,58 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..0ab9564b9ee1ad9f1beeff98072e7e74
  }
  
  /* Guest VA of a host pointer inside the reservation, or UINT64_MAX. */
+@@ -196,4 +342,51 @@ static inline uint64_t nc_vm_guest_of_wrapped(const NcVm *vm, const void *host)
+ }
+ #endif
+ 
++
++static inline void nc_vm_copy_in(const NcVm *vm, void *dst, uint32_t va, uint32_t len)
++{
++    uint8_t *d = (uint8_t *)dst;
++    if (!nc_vm_soft_span(va, len)) {
++        memcpy(d, nc_vm_host(vm, va), len);
++        return;
++    }
++    while (len) {
++        const uint32_t n = NC_PAGE - (va & (NC_PAGE - 1)) < len ? NC_PAGE - (va & (NC_PAGE - 1)) : len;
++        memcpy(d, nc_vm_host(vm, va), n);
++        d += n;
++        va += n;
++        len -= n;
++    }
++}
++
++static inline void nc_vm_copy_out(const NcVm *vm, uint32_t va, const void *src, uint32_t len)
++{
++    const uint8_t *s = (const uint8_t *)src;
++    if (!nc_vm_soft_span(va, len)) {
++        memcpy(nc_vm_host(vm, va), s, len);
++        return;
++    }
++    while (len) {
++        const uint32_t n = NC_PAGE - (va & (NC_PAGE - 1)) < len ? NC_PAGE - (va & (NC_PAGE - 1)) : len;
++        memcpy(nc_vm_host(vm, va), s, n);
++        s += n;
++        va += n;
++        len -= n;
++    }
++}
++
++static inline void nc_vm_fill(const NcVm *vm, uint32_t va, int c, uint32_t len)
++{
++    if (!nc_vm_soft_span(va, len)) {
++        memset(nc_vm_host(vm, va), c, len);
++        return;
++    }
++    while (len) {
++        const uint32_t n = NC_PAGE - (va & (NC_PAGE - 1)) < len ? NC_PAGE - (va & (NC_PAGE - 1)) : len;
++        memset(nc_vm_host(vm, va), c, n);
++        va += n;
++        len -= n;
++    }
++}
++
+ #endif
 diff --git a/native/core/xdvdfs.c b/native/core/xdvdfs.c
 index 4645e59f809a0019f3005499905c0e977873b5f6..2f154add20ce4cfca940c9a652fdcbe6dc5541c6 100644
 --- a/native/core/xdvdfs.c
@@ -15336,10 +15653,10 @@ index 0000000000000000000000000000000000000000..70987a6c1a5b19bac00abef971646f01
 +#endif
 diff --git a/native/cpu/x86emu.c b/native/cpu/x86emu.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..373ade59b46bf5ecf1ccf1dfa6eabf6802f2d1fb
+index 0000000000000000000000000000000000000000..32dd9310853c1147c444b1f0943a5c1f65b99ab3
 --- /dev/null
 +++ b/native/cpu/x86emu.c
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,703 @@
 +/*
 + * hakuX native core — native CPU backend: one guest instruction's memory
 + * access, emulated (x86emu.h).
@@ -15889,6 +16206,21 @@ index 0000000000000000000000000000000000000000..373ade59b46bf5ecf1ccf1dfa6eabf68
 +            }
 +            f->eflags = fl;
 +            f->rip += d.len;
++            return true;
++        }
++        if (op == 0xFF && osz == 4 && (d.reg == 2 || d.reg == 4)) {
++            /* OGBox 0.0.3: call / jmp through memory (a C++ object's table in an emulated page) */
++            if (!rd(m, a, 4, &v)) {
++                return false;
++            }
++            if (d.reg == 2) {
++                const uint32_t esp = gpr(f, 4) - 4;
++                if (!wr(m, esp, 4, (uint32_t)(f->rip + d.len))) {
++                    return false;
++                }
++                set_reg(f, 4, esp, 4);
++            }
++            f->rip = v;
 +            return true;
 +        }
 +        if (op == 0xFF && d.reg == 6) {        /* push r/m */
@@ -20433,7 +20765,7 @@ index ee80e14c197e2b979f50407b6b32a34ba6f36070..1bea98b26a301a9b3176c05d9fa9be2c
  bool hle_host_disc_stats(uint64_t *ops, uint64_t *bytes, uint64_t *ns)
  {
 diff --git a/native/kernel/ex.c b/native/kernel/ex.c
-index 91c413b0b50b7e6091065f88c9fc1a229a27d606..65874e967a9cfac9dc8a5da0c16f57585986e1f2 100644
+index 91c413b0b50b7e6091065f88c9fc1a229a27d606..8d6086ee9ba6e6b8f23d3b1e0aeb99896abab519 100644
 --- a/native/kernel/ex.c
 +++ b/native/kernel/ex.c
 @@ -7,6 +7,7 @@
@@ -20452,7 +20784,15 @@ index 91c413b0b50b7e6091065f88c9fc1a229a27d606..65874e967a9cfac9dc8a5da0c16f5758
  
  /* ------------------------------------------------------------------ pool */
  
-@@ -42,6 +44,25 @@ static uint32_t pool_alloc(NcKernel *k, uint32_t size)
+@@ -35,13 +37,32 @@ static uint32_t pool_alloc(NcKernel *k, uint32_t size)
+         const uint32_t pa = nc_vm_alloc_phys_high(k->vm, len);
+         if (pa != UINT32_MAX) {
+             const uint32_t p = NC_CONTIG_WINDOW | pa;
+-            memset(nc_vm_host(k->vm, p), 0, len);
++            nc_vm_fill(k->vm, p, 0, len);
+             nc_vm_wr32(k->vm, p, size);
+             nc_vm_wr32(k->vm, p + 4, POOL_PAGES);
+             k->pool_ex += len;
              return p + POOL_HDR;
          }
      }
@@ -20465,9 +20805,9 @@ index 91c413b0b50b7e6091065f88c9fc1a229a27d606..65874e967a9cfac9dc8a5da0c16f5758
 +        const uint32_t len = nc_align_up(size + POOL_HDR, NC_PAGE);
 +        uint32_t base;
 +        if (nc_ps_stack_alloc(k, len, &base)) {
-+            memset(nc_vm_host(k->vm, base), 0, POOL_HDR);
++            nc_vm_fill(k->vm, base, 0, POOL_HDR);
 +            for (uint32_t o = 0; o < len; o += NC_PAGE) {
-+                memset(nc_vm_host(k->vm, base + o), 0, NC_PAGE);
++                nc_vm_fill(k->vm, base + o, 0, NC_PAGE);
 +            }
 +            nc_vm_wr32(k->vm, base, size);
 +            nc_vm_wr32(k->vm, base + 4, POOL_SYSVA);
@@ -20499,6 +20839,24 @@ index 91c413b0b50b7e6091065f88c9fc1a229a27d606..65874e967a9cfac9dc8a5da0c16f5758
              const uint32_t len = nc_align_up(size, NC_PAGE);
              nc_vm_wr32(k->vm, hdr + 4, 0);
              k->pool_ex -= len;
+@@ -456,7 +489,7 @@ static uint64_t ExQueryNonVolatileSetting(NcKernel *k, NcFrame *f, const uint32_
+     const uint8_t *e = eeprom(k);
+     /* the game region is the encrypted section's, decrypted (the kernel's
+      * copy); the sections whole are the image's, as the chip has them */
+-    memcpy(nc_vm_host(k->vm, a[2]), s->index == 0x104 ? g_sec + 0x2C : e + s->offset, s->size);
++    nc_vm_copy_out(k->vm, a[2], s->index == 0x104 ? g_sec + 0x2C : e + s->offset, s->size);
+     return NC_STATUS_SUCCESS;
+ }
+ 
+@@ -471,7 +504,7 @@ static uint64_t ExSaveNonVolatileSetting(NcKernel *k, NcFrame *f, const uint32_t
+     uint8_t *e = eeprom(k);
+     const uint32_t n = a[3] < s->size ? a[3] : s->size;
+     memset(e + s->offset, 0, s->size);
+-    memcpy(e + s->offset, nc_vm_host(k->vm, a[2]), n);
++    nc_vm_copy_in(k->vm, e + s->offset, a[2], n);
+     eeprom_seal();
+     eeprom_store();
+     return NC_STATUS_SUCCESS;
 @@ -503,6 +536,7 @@ static uint64_t XeLoadSection(NcKernel *k, NcFrame *f, const uint32_t *a)
          nc_vm_wr32(k->vm, s + 0x18, 0);
          return NC_STATUS_NO_MEMORY;
@@ -20525,6 +20883,33 @@ index 91c413b0b50b7e6091065f88c9fc1a229a27d606..65874e967a9cfac9dc8a5da0c16f5758
          section_release(k, s, va, vsize);
          nc_cpu_invalidate(k->cpu, va, vsize);
      }
+@@ -762,7 +800,7 @@ static uint64_t HalReadWritePCISpace(NcKernel *k, NcFrame *f, const uint32_t *a)
+     nc_log("hakuX-native", "hal: PCI %s bus %u slot %u reg %02x len %u", a[5] & 0xff ? "write" : "read", a[0], a[1],
+            a[2], a[4]);
+     if (!(a[5] & 0xff)) {
+-        memset(nc_vm_host(k->vm, a[3]), 0, a[4]);
++        nc_vm_fill(k->vm, a[3], 0, a[4]);
+     }
+     return 0;
+ }
+@@ -862,7 +900,7 @@ void nc_kernel_launch_page_restore(NcKernel *k, const uint8_t page[NC_LAUNCH_PAG
+         nc_log("hakuX-native", "relaunch: no launch data page for the title");
+         return;
+     }
+-    memcpy(nc_vm_host(k->vm, va), page, NC_LAUNCH_PAGE);
++    nc_vm_copy_out(k->vm, va, page, NC_LAUNCH_PAGE);
+     nc_vm_wr32(k->vm, slot, va);
+ }
+ 
+@@ -904,7 +942,7 @@ static uint64_t HalReturnToFirmware(NcKernel *k, NcFrame *f, const uint32_t *a)
+     }
+     char launch[LAUNCH_PATH_LEN + 1] = "";
+     if (page) {
+-        memcpy(launch, nc_vm_host(k->vm, page + LAUNCH_PATH_OFF), LAUNCH_PATH_LEN);
++        nc_vm_copy_in(k->vm, launch, page + LAUNCH_PATH_OFF, LAUNCH_PATH_LEN);
+     }
+     /* the title is done (the dashboard, a reboot): the game closes */
+     k->quit = true;
 @@ -940,6 +978,19 @@ static uint64_t HalReadSMBusValue(NcKernel *k, NcFrame *f, const uint32_t *a)
      return NC_STATUS_SUCCESS;
  }
@@ -20545,6 +20930,24 @@ index 91c413b0b50b7e6091065f88c9fc1a229a27d606..65874e967a9cfac9dc8a5da0c16f5758
  /* HalReadSMCTrayState(TrayState, TrayStateChangeCount): the tray closed, a
   * disc in it or none (the dashboard booted alone); it never moves. */
  static uint64_t HalReadSMCTrayState(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1016,7 +1067,7 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
+     const char *path = k->image_path[0] ? k->image_path : "\\Device\\CdRom0\\default.xbe";
+     const uint32_t len = (uint32_t)strlen(path) + 1;
+     uint32_t buf = nc_pool_alloc(k, len);
+-    memcpy(nc_vm_host(k->vm, buf), path, len);
++    nc_vm_copy_out(k->vm, buf, path, len);
+     uint32_t s = data_va(k, "XeImageFileName");
+     if (s) {
+         *(uint16_t *)nc_vm_host(k->vm, s) = (uint16_t)(len - 1);
+@@ -1044,7 +1095,7 @@ void nc_kernel_set_hd_key(NcKernel *k)
+     const uint32_t va = data_va(k, "XboxHDKey");
+     if (va) {
+         const uint8_t *e = eeprom(k);
+-        memcpy(nc_vm_host(k->vm, va), g_sec_plain ? e + 0x36 : g_sec + 0x1C, 16);
++        nc_vm_copy_out(k->vm, va, g_sec_plain ? e + 0x36 : g_sec + 0x1C, 16);
+     }
+ }
+ 
 @@ -1072,7 +1123,7 @@ void nc_ex_register(NcKernel *k)
      nc_kernel_impl(k, "HalReturnToFirmware", HalReturnToFirmware);
      nc_kernel_impl(k, "HalInitiateShutdown", HalInitiateShutdown);
@@ -20913,7 +21316,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c09778571729567c9e9e9 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..4a064cee78cd6c34372fe73f0f103bb66f05f935 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -20974,6 +21377,15 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
  typedef struct NcLink {
      char name[64];
      char target[256];
+@@ -210,7 +247,7 @@ static void ansi(NcKernel *k, uint32_t str, char *out, size_t cap)
+     if (len >= cap) {
+         len = (uint16_t)(cap - 1);
+     }
+-    memcpy(out, nc_vm_host(k->vm, buf), len);
++    nc_vm_copy_in(k->vm, out, buf, len);
+     out[len] = 0;
+ }
+ 
 @@ -381,6 +418,15 @@ static int host_path(int part, const char *rel, char *out, size_t cap)
      for (char *tok = strtok_r(tmp, "\\", &save); tok; tok = strtok_r(NULL, "\\", &save)) {
          const bool last = !save || !*save;
@@ -21399,7 +21811,79 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      return nf->fd >= 0 && fstat(nf->fd, &st) == 0 ? (uint64_t)st.st_size : 0;
  }
  
-@@ -1469,6 +1728,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1427,6 +1686,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
+     return true;
+ }
+ 
++/* OGBox 0.0.3: host I/O into or out of guest memory [va, va + len), a 4 KiB page at a time where it
++ * touches an emulated block (vm.c g_soft: no host page there, nc_vm_host gives the RAM view's
++ * page). io: reads (write false) or writes len bytes at host pointer h from offset o; false on a
++ * failure. */
++typedef bool (*IoPiece)(void *ctx, uint64_t o, uint8_t *h, uint32_t len);
++
++static bool io_guest(NcKernel *k, uint32_t va, uint32_t len, uint64_t o, IoPiece io, void *ctx)
++{
++    if (!nc_vm_soft_span(va, len)) {
++        return io(ctx, o, nc_vm_host(k->vm, va), len);
++    }
++    while (len) {
++        const uint32_t n = NC_PAGE - (va & (NC_PAGE - 1)) < len ? NC_PAGE - (va & (NC_PAGE - 1)) : len;
++        if (!io(ctx, o, nc_vm_host(k->vm, va), n)) {
++            return false;
++        }
++        va += n;
++        o += n;
++        len -= n;
++    }
++    return true;
++}
++
++typedef struct PieceCtx {
++    NcKernel *k;
++    NcFile *nf;
++    int part;
++    bool write;
++} PieceCtx;
++
++static bool piece_file_read(void *c, uint64_t o, uint8_t *h, uint32_t len)
++{
++    PieceCtx *p = c;
++    return p->nf->kind == F_DISC ? nc_disc_read_file(p->k->disc, &p->nf->disc, o, h, len)
++                                 : pread(p->nf->fd, h, len, (off_t)o) == (ssize_t)len;
++}
++
++static bool piece_file_write(void *c, uint64_t o, uint8_t *h, uint32_t len)
++{
++    PieceCtx *p = c;
++    return pwrite(p->nf->fd, h, len, (off_t)o) == (ssize_t)len;
++}
++
++static bool piece_raw(void *c, uint64_t o, uint8_t *h, uint32_t len)
++{
++    PieceCtx *p = c;
++    raw_io(p->part, o, h, len, p->write);
++    return true;
++}
++
++static void raw_io_guest(NcKernel *k, int part, uint64_t off, uint32_t va, uint32_t len, bool write)
++{
++    PieceCtx c = {.k = k, .part = part, .write = write};
++    io_guest(k, va, len, off, piece_raw, &c);
++}
++
+ /* NtReadFile's work for a buffer of runs (len bytes in all): a[] as
+  * NtReadFile takes it, its Buffer and Length aside. */
+ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned nrun, uint32_t len)
+@@ -1447,7 +1762,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+         uint64_t o = off;
+         for (unsigned i = 0; i < nrun; i++) {
+             nc_vm_will_write(run[i].va, run[i].len);
+-            raw_io(raw, o, nc_vm_host(k->vm, run[i].va), run[i].len, false);
++            raw_io_guest(k, raw, o, run[i].va, run[i].len, false);
+             o += run[i].len;
+         }
+         io_moved(k, nf, a[7], off + len);
+@@ -1469,6 +1784,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -21407,7 +21891,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1746,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +1802,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -21425,7 +21909,20 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1515,8 +1782,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1502,10 +1825,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+         bool ok = true;
+         uint64_t o = off;
+         for (unsigned i = 0; ok && i < nrun; i++) {
+-            uint8_t *h = nc_vm_host(k->vm, run[i].va);
+             nc_vm_will_write(run[i].va, run[i].len); /* pread into a protected page fails rather than faults */
+-            ok = nf->kind == F_DISC ? nc_disc_read_file(k->disc, &nf->disc, o, h, run[i].len)
+-                                    : pread(nf->fd, h, run[i].len, (off_t)o) == (ssize_t)run[i].len;
++            PieceCtx pc = {.k = k, .nf = nf};
++            ok = io_guest(k, run[i].va, run[i].len, o, piece_file_read, &pc);
+             o += run[i].len;
+         }
+         if (!ok) {
+@@ -1515,11 +1837,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -21435,8 +21932,30 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
 +    if (g_trace_io || lg) {
          uint8_t b[8] = {0};
          if (n >= 8 && run[0].len >= 8) {
-             memcpy(b, nc_vm_host(k->vm, va0), 8);
-@@ -1680,6 +1948,24 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+-            memcpy(b, nc_vm_host(k->vm, va0), 8);
++            nc_vm_copy_in(k->vm, b, va0, 8);
+         }
+         nc_log("hakuX-native-io", "read %s +%llx %u into %08x -> %08x n=%u%s%s [%02x%02x%02x%02x %02x%02x%02x%02x]",
+                nf->path, (unsigned long long)off, len, va0, st, n, a[1] ? " event" : "", a[2] ? " apc" : "",
+@@ -1635,7 +1958,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+         if (nf->partition == 0) {
+             const uint64_t off = io_offset(k, nf, a[7]);
+             nc_vm_will_read(a[5], a[6]);
+-            raw_io(0, off, nc_vm_host(k->vm, a[5]), a[6], true);
++            raw_io_guest(k, 0, off, a[5], a[6], true);
+             io_moved(k, nf, a[7], off + a[6]);
+             if (g_trace_io) {
+                 nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
+@@ -1649,7 +1972,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+         const uint64_t o = io_offset(k, nf, a[7]);
+         io_moved(k, nf, a[7], o + a[6]);
+         nc_vm_will_read(a[5], a[6]);
+-        raw_io(partition_root(nf), o, nc_vm_host(k->vm, a[5]), a[6], true);
++        raw_io_guest(k, partition_root(nf), o, a[5], a[6], true);
+         /* The FATX superblock: "FATX", volume id, sectors per cluster. */
+         const uint8_t *sb = nc_vm_host(k->vm, a[5]);
+         if (o == 0 && a[6] >= 12 && !memcmp(sb, "FATX", 4)) {
+@@ -1680,14 +2003,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
              regrow(nf, size, off); /* the gap a write past the end leaves */
          }
      }
@@ -21459,9 +21978,25 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
 +    }
 +    writes_drain();   /* in place: after those queued */
      nc_vm_will_read(a[5], a[6]);   /* pwrite from a page without access fails rather than faults */
-     ssize_t n = pwrite(nf->fd, nc_vm_host(k->vm, a[5]), a[6], (off_t)off);
+-    ssize_t n = pwrite(nf->fd, nc_vm_host(k->vm, a[5]), a[6], (off_t)off);
++    ssize_t n;
++    if (nc_vm_soft_span(a[5], a[6])) {
++        PieceCtx pc = {.k = k, .nf = nf};
++        n = io_guest(k, a[5], a[6], off, piece_file_write, &pc) ? (ssize_t)a[6] : -1;
++    } else {
++        n = pwrite(nf->fd, nc_vm_host(k->vm, a[5]), a[6], (off_t)off);
++    }
      uint32_t st = n == (ssize_t)a[6] ? NC_STATUS_SUCCESS : 0xC000007Fu; /* STATUS_DISK_FULL */
-@@ -1748,6 +2034,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
+     nf->wrote |= n > 0;
+     if (g_trace_io) {
+         uint8_t b[8] = {0};
+         if (n >= 8) {
+-            memcpy(b, nc_vm_host(k->vm, a[5]), 8);
++            nc_vm_copy_in(k->vm, b, a[5], 8);
+         }
+         nc_log("hakuX-native-io", "write %s +%llx %u from %08x -> %08x [%02x%02x%02x%02x %02x%02x%02x%02x]", nf->path,
+                (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+@@ -1748,6 +2095,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
  /* NtQueryInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -21469,7 +22004,13 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1813,9 +2100,30 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1808,14 +2156,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+     if (a[3] < len) {
+         return STATUS_BUFFER_TOO_SMALL;
+     }
+-    memcpy(nc_vm_host(k->vm, a[2]), o, len);
++    nc_vm_copy_out(k->vm, a[2], o, len);
+     io_status(k, a[1], NC_STATUS_SUCCESS, len);
      return NC_STATUS_SUCCESS;
  }
  
@@ -21500,7 +22041,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1853,7 +2161,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2222,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -21510,7 +22051,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2170,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2231,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -21528,7 +22069,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2422,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2483,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -21571,7 +22112,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2474,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2535,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -21583,7 +22124,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
              }
              free(dir);
          }
-@@ -2198,6 +2514,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2198,6 +2575,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
   * FileAttributes 0x38, FileNameLength 0x3C, FileName (ANSI) 0x40. */
  static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -21591,7 +22132,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      NcFile *nf = file_of(k, a[0]);
      if (!nf || !nf->is_dir) {
          return nf ? STATUS_INVALID_DEVICE_REQUEST : NC_STATUS_INVALID_HANDLE;
-@@ -2282,6 +2599,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -2282,6 +2660,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  /* NtQueryFullAttributesFile(ObjectAttributes, FileInformation (FILE_NETWORK_OPEN_INFORMATION)) */
  static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -21599,7 +22140,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info);
      if (st != NC_STATUS_SUCCESS) {
-@@ -2295,6 +2613,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
+@@ -2295,6 +2674,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
  /* NtDeleteFile(ObjectAttributes) */
  static uint64_t NtDeleteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -21607,7 +22148,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      char name[512], path[512], host[512];
      ansi(k, nc_vm_rd32(k->vm, a[0] + 4), name, sizeof(name));
      if (!resolve_name(k, nc_vm_rd32(k->vm, a[0]), name, sizeof(name))) {
-@@ -2386,6 +2705,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2766,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -21657,7 +22198,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2768,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2829,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -21667,7 +22208,25 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..1dfbe58805c9f5176f8c097785717295
      } else {
          nc_log("hakuX-native-io", "scsi %02x (%u bytes): zeros", cdb[0], n);
      }
-@@ -2779,7 +3144,7 @@ bool nc_file_state_save(NcBuf *b)
+@@ -2455,7 +2881,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
+ {
+     nc_log("hakuX-native-io", "device control %08x on device %08x (out %u)", a[0], a[1], a[5]);
+     if (a[4] && a[5]) {
+-        memset(nc_vm_host(k->vm, a[4]), 0, a[5]);
++        nc_vm_fill(k->vm, a[4], 0, a[5]);
+     }
+     if (a[6]) {
+         nc_vm_wr32(k->vm, a[6], 0);
+@@ -2525,7 +2951,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
+     if (max < len) {
+         return STATUS_BUFFER_TOO_SMALL;
+     }
+-    memcpy(nc_vm_host(k->vm, nc_vm_rd32(k->vm, a[1] + 4)), nf->path, len);
++    nc_vm_copy_out(k->vm, nc_vm_rd32(k->vm, a[1] + 4), nf->path, len);
+     *(uint16_t *)nc_vm_host(k->vm, a[1]) = len;
+     return NC_STATUS_SUCCESS;
+ }
+@@ -2779,7 +3205,7 @@ bool nc_file_state_save(NcBuf *b)
  static void file_drop(NcFile *nf)
  {
      if (nf->used) {
@@ -21972,7 +22531,7 @@ index 04ea92559c748fb42e90fa9c8c70c71d11ce5185..84efd5f35a2393f281f010312aa8ff4e
                  break;
              }
 diff --git a/native/kernel/kernel.c b/native/kernel/kernel.c
-index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd08328a38f 100644
+index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..dc34cf9d7865cfa597f4e76d79af69df805f2291 100644
 --- a/native/kernel/kernel.c
 +++ b/native/kernel/kernel.c
 @@ -1,13 +1,19 @@
@@ -22277,7 +22836,25 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
          }
          char ds[240];
          uint32_t dp[6], dn[6];
-@@ -764,6 +906,37 @@ static void stats_tick(NcKernel *k)
+@@ -738,10 +880,14 @@ static void stats_tick(NcKernel *k)
+         const uint64_t ncr = __atomic_load_n(&g_nc_faults_callret, __ATOMIC_RELAXED),
+                        ndi = __atomic_load_n(&g_nc_faults_dirty, __ATOMIC_RELAXED),
+                        nmm = __atomic_load_n(&g_nc_faults_mmio, __ATOMIC_RELAXED),
+-                       nua = __atomic_load_n(&g_nc_faults_unaligned, __ATOMIC_RELAXED);
++                       nua = __atomic_load_n(&g_nc_faults_unaligned, __ATOMIC_RELAXED),
++                       nso = __atomic_load_n(&g_nc_faults_soft, __ATOMIC_RELAXED);
++        static uint64_t so;
+         nc_log("hakuX-native-stats", "host faults per s: call-return %.0f dirty pages %.0f (pages%s) mmio %.0f "
+-               "(eips%s) unaligned atomics %.0f", (double)(ncr - cr) / s, (double)(ndi - di) / s, ds,
+-               (double)(nmm - mm) / s, ms, (double)(nua - ua) / s);
++               "(eips%s) unaligned atomics %.0f emulated pages %.0f (%u blocks)", (double)(ncr - cr) / s,
++               (double)(ndi - di) / s, ds, (double)(nmm - mm) / s, ms, (double)(nua - ua) / s, (double)(nso - so) / s,
++               nc_vm_soft_blocks());
++        so = nso;
+         cr = ncr;
+         di = ndi;
+         mm = nmm;
+@@ -764,6 +910,37 @@ static void stats_tick(NcKernel *k)
             "(Ex %u, objects %u, lost %u KiB, %u free ranges)",
             nc_vm_free_bytes(k->vm) >> 10, contig >> 10, blocks, virt >> 10, (k->pool_len - pool_free) >> 10,
             k->pool_len >> 10, k->pool_ex >> 10, k->pool_ob >> 10, k->pool_lost >> 10, k->pool_nfree);
@@ -22315,7 +22892,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
      memset(g_kcount, 0, sizeof(g_kcount));
      g_kcalls = g_sysops = 0;
      memset(g_sysop_kind, 0, sizeof(g_sysop_kind));
-@@ -890,6 +1063,78 @@ static NcCpu *g_clock_cpu;
+@@ -890,6 +1067,78 @@ static NcCpu *g_clock_cpu;
   * clock (clock_tick). */
  #define CLOCK_SLACK_NS (2 * CLOCK_PERIOD_NS)
  
@@ -22394,7 +22971,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
  static void *clock_thread(void *arg)
  {
      const char *e = getenv("NC_CLOCK_TICK");
-@@ -919,8 +1164,12 @@ static void *clock_thread(void *arg)
+@@ -919,8 +1168,12 @@ static void *clock_thread(void *arg)
              host = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec + 100000000ull;
          }
          const struct timespec ts = {(time_t)(host / 1000000000ull), (long)(host % 1000000000ull)};
@@ -22409,7 +22986,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
          }
          bool irq = false;
          const uint64_t woke = nc_ke_now_ns();
-@@ -1030,7 +1279,7 @@ static void clock_tick(NcKernel *k)
+@@ -1030,7 +1283,7 @@ static void clock_tick(NcKernel *k)
          const NcThread *cur = k->current;
          for (unsigned i = 0; cur && i < k->threads_hi; i++) {
              const NcThread *t = &k->threads[i];
@@ -22418,7 +22995,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
                  k->resched = true;
                  break;
              }
-@@ -1117,6 +1366,16 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
+@@ -1117,6 +1370,16 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
  
  static void kcall(NcKernel *k, NcFrame *f, unsigned ordinal)
  {
@@ -22435,7 +23012,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
      nc_ke_tick_time(k);
      clock_tick(k);
      const uint32_t esp = nc_frame_gpr(f, NC_ESP);
-@@ -1356,7 +1615,14 @@ bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
+@@ -1356,7 +1619,14 @@ bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
       * which runs again after IRET) and the error code (not present,
       * supervisor, W for a write); IF clears. */
      nc_vm_wr32(k->vm, esp + 12, nc_frame_eflags(f));
@@ -22450,7 +23027,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
      nc_vm_wr32(k->vm, esp + 4, nc_frame_eip(f));
      nc_vm_wr32(k->vm, esp, write ? 2u : 0u);
      nc_frame_set_gpr(f, NC_ESP, esp);
-@@ -1552,10 +1818,42 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
+@@ -1552,10 +1822,42 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
      nc_log("hakuX-native", "resumed after %.1f s: the guest's time leaves it out", ns / 1e9);
  }
  
@@ -22493,7 +23070,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
      nc_kernel_pause_point(opaque, f, false);
      nc_ke_time_enter();
      if (g_slow_sysops < 0) {
-@@ -1591,6 +1889,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1591,6 +1893,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
  {
      NcKernel *k = opaque;
      g_sysop_kind[(unsigned)op & 31]++;
@@ -22508,7 +23085,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
      if ((++g_sysops & 0xFFF) == 0) {
          stats_tick(k);
      }
-@@ -1631,6 +1937,28 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1631,6 +1941,28 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
      case NC_SYSOP_INVD:
          nc_frame_set_eip(f, eip + size);
          break;
@@ -22537,7 +23114,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..7cab40acf6d3022dfae73016cd325cd0
      case NC_SYSOP_INVLPG:
          nc_paging_flush(k); /* a title that edits its page tables (paging.c) */
          nc_frame_set_eip(f, eip + size);
-@@ -1677,6 +2005,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
+@@ -1677,6 +2009,14 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
              nc_frame_bypass_hook(f);
          }
          break;
@@ -22775,7 +23352,7 @@ index 0d893f53d93f8dd6b8600af46a07e83582d1967a..a4f580bbb127bbdc9c9e80203ff9d8d4
      k->dpc_thread = thread_at(k, refs.dpc_thread);
      k->isr_thread = thread_at(k, refs.isr_thread);
 diff --git a/native/kernel/mm.c b/native/kernel/mm.c
-index 06879c350fa67b35854e780f0b59d9e4ae2550c5..af09177a879024d2ee91f41497544286d334de1f 100644
+index 06879c350fa67b35854e780f0b59d9e4ae2550c5..27c6916a57c1f4d167cdb3b3ed8034228d3b6b43 100644
 --- a/native/kernel/mm.c
 +++ b/native/kernel/mm.c
 @@ -9,6 +9,7 @@
@@ -22912,6 +23489,15 @@ index 06879c350fa67b35854e780f0b59d9e4ae2550c5..af09177a879024d2ee91f41497544286
          decommit(k, base, size);
      } else {
          return NC_STATUS_INVALID_PARAMETER;
+@@ -418,7 +487,7 @@ static uint64_t NtQueryVirtualMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+         info[5] = committed ? r->protect : 0;
+         info[6] = r->image ? MEM_IMAGE : MEM_PRIVATE;
+     }
+-    memcpy(nc_vm_host(k->vm, mbi), info, sizeof(info));
++    nc_vm_copy_out(k->vm, mbi, info, sizeof(info));
+     return NC_STATUS_SUCCESS;
+ }
+ 
 @@ -568,7 +637,10 @@ static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t h
          if (n <= 4 || !(n & (n - 1))) {
              char runs[400];
@@ -23047,7 +23633,12 @@ index 06879c350fa67b35854e780f0b59d9e4ae2550c5..af09177a879024d2ee91f41497544286
      uint32_t committed = 0, reserved = 0, image = 0;
      for (unsigned i = 0; i < g_nregions; i++) {
          reserved += g_regions[i].size;
-@@ -1002,8 +1094,22 @@ static uint64_t MmQueryStatistics(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -998,12 +1090,26 @@ static uint64_t MmQueryStatistics(NcKernel *k, NcFrame *f, const uint32_t *a)
+         }
+     }
+     const uint32_t s[9] = {0x24, total, total - used, committed, reserved, 0, k->pool_len / NC_PAGE, 0, image};
+-    memcpy(nc_vm_host(k->vm, a[0]), s, sizeof(s));
++    nc_vm_copy_out(k->vm, a[0], s, sizeof(s));
      return NC_STATUS_SUCCESS;
  }
  
@@ -23090,10 +23681,10 @@ index 06879c350fa67b35854e780f0b59d9e4ae2550c5..af09177a879024d2ee91f41497544286
      return !r->fail;
 diff --git a/native/kernel/mmiosite.c b/native/kernel/mmiosite.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..877b28bf6c4ddd5254f4ecef9606776da03d17d7
+index 0000000000000000000000000000000000000000..6ee35ad08112fbcf90c0039b721edb782f8fba3e
 --- /dev/null
 +++ b/native/kernel/mmiosite.c
-@@ -0,0 +1,809 @@
+@@ -0,0 +1,823 @@
 +/*
 + * hakuX native core — device register accesses through the gate (the
 + * native CPU).
@@ -23854,6 +24445,14 @@ index 0000000000000000000000000000000000000000..877b28bf6c4ddd5254f4ecef9606776d
 +    nc_frame_set_eip(f, stub + S_BODY);
 +}
 +
++/* a store through the gate to an emulated page: the HLE learns the RAM changed */
++static void soft_site_stored(uint32_t pa, uint32_t n)
++{
++    if (nc_vm_dma.wrote) {
++        nc_vm_dma.wrote(pa, n);
++    }
++}
++
 +void nc_mmio_site_run(NcKernel *k, NcFrame *f)
 +{
 +    const uint32_t stub = nc_frame_eip(f) - 7;
@@ -23862,11 +24461,17 @@ index 0000000000000000000000000000000000000000..877b28bf6c4ddd5254f4ecef9606776d
 +    const uint32_t eip = nc_rd32(st + S_EIP);
 +    nc_frame_set_eip(f, eip);
 +    NcX86Access acc;
-+    const bool device = nc_x86_access(f, st + S_ORIG, ncn_seg_base(), &acc) && nc_mmio_is_device(acc.ea);
++    const bool known = nc_x86_access(f, st + S_ORIG, ncn_seg_base(), &acc);
++    const bool device = known && nc_mmio_is_device(acc.ea);
++    /* OGBox 0.0.3: or a page of an emulated block (vm.c g_soft), done against RAM */
++    const bool soft = known && !device && nc_vm_soft(k->vm, acc.ea) && nc_vm_phys(k->vm, acc.ea) != UINT32_MAX;
 +    if (device && k->in_isr && k->current == k->isr_thread) {
 +        nc_fr_note('m', 0, 0, eip, acc.ea);     /* an ISR's device access (the flight recorder) */
 +    }
 +    int r = device ? nc_mmio_emulate_frame(k->vm, f, st + S_ORIG) : 0;
++    if (soft) {
++        r = nc_ram_emulate_frame(k->vm, f, st + S_ORIG, soft_site_stored) ? 1 : -1;
++    }
 +    if (r <= 0) {
 +        /* ordinary memory (or a form the emulation refused): the bytes go back
 +         * and the instruction runs where it is, from the start */
@@ -23904,7 +24509,7 @@ index 0000000000000000000000000000000000000000..877b28bf6c4ddd5254f4ecef9606776d
 +}
 +#endif
 diff --git a/native/kernel/paging.c b/native/kernel/paging.c
-index 1e0fc61311ac602212b4bcac9c730ed4d3bb2cc8..054601d191cdcbcbb6cf8ebb4642d884ec389e0c 100644
+index 1e0fc61311ac602212b4bcac9c730ed4d3bb2cc8..b7228980a55134d844c35f10b8b736eea9978ce6 100644
 --- a/native/kernel/paging.c
 +++ b/native/kernel/paging.c
 @@ -37,7 +37,7 @@ uint32_t nc_paging_cr3(NcKernel *k)
@@ -23916,8 +24521,48 @@ index 1e0fc61311ac602212b4bcac9c730ed4d3bb2cc8..054601d191cdcbcbb6cf8ebb4642d884
          g_pd_pa = pa;
          nc_log("hakuX-native", "paging: the title reads CR3; page directory at pa %08x", pa);
      }
+@@ -60,7 +60,7 @@ static void map_page(NcKernel *k, uint32_t va, uint32_t pa, uint32_t len)
+         }
+         return;
+     }
+-    nc_vm_map(k->vm, va, pa, len);
++    nc_vm_map_emulated(k->vm, va, pa, len);
+     for (uint32_t off = 0; off < len; off += NC_PAGE) {
+         nc_vm_pin(k->vm, pa + off, true, 0); /* in the title's tables: it stays put */
+     }
+diff --git a/native/kernel/pool.c b/native/kernel/pool.c
+index 2b6706aa8f5570e400daeeff05802b54e3a5ee8e..dcb85336797c9bcee4af0481999f9c8a50f1eb66 100644
+--- a/native/kernel/pool.c
++++ b/native/kernel/pool.c
+@@ -17,7 +17,7 @@ void nc_pool_init(NcKernel *k, uint32_t va, uint32_t len)
+     k->pool_len = len;
+     k->pool_free[0] = (NcRange){va, len};
+     k->pool_nfree = 1;
+-    memset(nc_vm_host(k->vm, va), 0, len);
++    nc_vm_fill(k->vm, va, 0, len);
+ }
+ 
+ /* More pool: a chunk of free physical RAM joins the free list. */
+@@ -28,7 +28,7 @@ static bool pool_grow(NcKernel *k, uint32_t size)
+     if (pa == UINT32_MAX) {
+         return false;
+     }
+-    memset(nc_vm_host(k->vm, NC_CONTIG_WINDOW | pa), 0, chunk);
++    nc_vm_fill(k->vm, NC_CONTIG_WINDOW | pa, 0, chunk);
+     k->pool_len += chunk;
+     nc_pool_free(k, NC_CONTIG_WINDOW | pa, chunk);
+     return true;
+@@ -49,7 +49,7 @@ uint32_t nc_pool_alloc(NcKernel *k, uint32_t size)
+             memmove(r, r + 1, (k->pool_nfree - i - 1) * sizeof(*r));
+             k->pool_nfree--;
+         }
+-        memset(nc_vm_host(k->vm, va), 0, size);
++        nc_vm_fill(k->vm, va, 0, size);
+         return va;
+     }
+     if (pool_grow(k, size)) {
 diff --git a/native/kernel/ps.c b/native/kernel/ps.c
-index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..d00fa1bdb70ac18f66c766b87409d653dbf37a94 100644
+index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..db52428b4f3d5d8d49cd71db02731cbebbe8904d 100644
 --- a/native/kernel/ps.c
 +++ b/native/kernel/ps.c
 @@ -18,6 +18,7 @@
@@ -23938,6 +24583,24 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..d00fa1bdb70ac18f66c766b87409d653
  static void list_init(NcVm *vm, uint32_t head)
  {
      nc_vm_wr32(vm, head, head);
+@@ -202,7 +206,7 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
+     kt[KT_BASE_PRIORITY] = DEFAULT_PRIORITY;
+     nc_vm_wr32(vm, et + KT_QUANTUM, 36);
+     if (!k->kprocess && (k->kprocess = nc_pool_alloc(k, KPROCESS_SIZE)) != 0) {
+-        memset(nc_vm_host(vm, k->kprocess), 0, KPROCESS_SIZE);
++        nc_vm_fill(vm, k->kprocess, 0, KPROCESS_SIZE);
+         list_init(vm, k->kprocess + KP_READY_LIST);
+         list_init(vm, k->kprocess + KP_THREAD_LIST);
+         nc_vm_wr32(vm, k->kprocess + KP_QUANTUM, 60); /* 20 ms */
+@@ -245,7 +249,7 @@ void nc_ps_old_stacks(NcKernel *k)
+             continue;
+         }
+         if (nc_vm_alloc_at(k->vm, t->stack_base, NC_PAGE, NULL)) {
+-            memset(nc_vm_host(k->vm, t->stack_base), 0, NC_PAGE);
++            nc_vm_fill(k->vm, t->stack_base, 0, NC_PAGE);
+             n++;
+         }
+     }
 @@ -255,8 +259,13 @@ void nc_ps_old_stacks(NcKernel *k)
  }
  
@@ -24180,8 +24843,88 @@ index e9f43c1f789f07c646fc44cc1090e8b3eeab73e3..d00fa1bdb70ac18f66c766b87409d653
 +        }
      }
  }
+diff --git a/native/kernel/rtl.c b/native/kernel/rtl.c
+index 5aeff8bacc1cb3cbd1f4caa9e05ea99eb640d3c3..ea282b93b1fd0d69a48146c8cf23e9d12d029401 100644
+--- a/native/kernel/rtl.c
++++ b/native/kernel/rtl.c
+@@ -6,6 +6,8 @@
+  * Second, Milliseconds, Weekday (CSHORT each). Times are FILETIMEs.
+  */
+ #include "native/kernel/kernel.h"
++
++#include <stdlib.h>
+ #include "native/kernel/rtl_case.h"
+ 
+ #include <ctype.h>
+@@ -53,7 +55,13 @@ static void str_free(NcKernel *k, uint32_t buf)
+ /* RtlInitAnsiString(DestinationString, SourceString) */
+ static uint64_t RtlInitAnsiString(NcKernel *k, NcFrame *f, const uint32_t *a)
+ {
+-    uint16_t len = a[1] ? (uint16_t)strlen((const char *)nc_vm_host(k->vm, a[1])) : 0;
++    uint16_t len = 0;
++    if (a[1]) {
++        /* a byte at a time: the string may cross an emulated block's pages (vm.c g_soft) */
++        while (len < 0xFFFE && *(const char *)nc_vm_host(k->vm, a[1] + len)) {
++            len++;
++        }
++    }
+     str_set(k, a[0], len, a[1] ? len + 1 : 0, a[1]);
+     return 0;
+ }
+@@ -124,14 +132,14 @@ static uint64_t RtlCompareMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+ /* RtlZeroMemory(Destination, Length) */
+ static uint64_t RtlZeroMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+ {
+-    memset(nc_vm_host(k->vm, a[0]), 0, a[1]);
++    nc_vm_fill(k->vm, a[0], 0, a[1]);
+     return 0;
+ }
+ 
+ /* RtlFillMemory(Destination, Length, Fill) */
+ static uint64_t RtlFillMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+ {
+-    memset(nc_vm_host(k->vm, a[0]), (uint8_t)a[2], a[1]);
++    nc_vm_fill(k->vm, a[0], (uint8_t)a[2], a[1]);
+     return 0;
+ }
+ 
+@@ -147,6 +155,16 @@ static uint64_t RtlFillMemoryUlong(NcKernel *k, NcFrame *f, const uint32_t *a)
+ /* RtlMoveMemory(Destination, Source, Length): the ranges may overlap */
+ static uint64_t RtlMoveMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+ {
++    if (nc_vm_soft_span(a[0], a[2]) || nc_vm_soft_span(a[1], a[2])) {
++        /* OGBox 0.0.3: an emulated block's pages (vm.c g_soft) a page at a time, through a copy */
++        uint8_t *tmp = malloc(a[2] ? a[2] : 1);
++        if (tmp) {
++            nc_vm_copy_in(k->vm, tmp, a[1], a[2]);
++            nc_vm_copy_out(k->vm, a[0], tmp, a[2]);
++            free(tmp);
++        }
++        return 0;
++    }
+     memmove(nc_vm_host(k->vm, a[0]), nc_vm_host(k->vm, a[1]), a[2]);
+     return 0;
+ }
+@@ -365,7 +383,7 @@ static uint64_t RtlTimeToTimeFields(NcKernel *k, NcFrame *f, const uint32_t *a)
+     tf[4] = (int16_t)(ms_day / 60000u % 60);
+     tf[5] = (int16_t)(ms_day / 1000u % 60);
+     tf[6] = (int16_t)(ms_day % 1000u);
+-    memcpy(nc_vm_host(k->vm, a[1]), tf, sizeof(tf));
++    nc_vm_copy_out(k->vm, a[1], tf, sizeof(tf));
+     return 0;
+ }
+ 
+@@ -373,7 +391,7 @@ static uint64_t RtlTimeToTimeFields(NcKernel *k, NcFrame *f, const uint32_t *a)
+ static uint64_t RtlTimeFieldsToTime(NcKernel *k, NcFrame *f, const uint32_t *a)
+ {
+     int16_t tf[8];
+-    memcpy(tf, nc_vm_host(k->vm, a[0]), sizeof(tf));
++    nc_vm_copy_in(k->vm, tf, a[0], sizeof(tf));
+     if (tf[0] < 1601 || tf[1] < 1 || tf[1] > 12 || tf[2] < 1 || tf[2] > k_month_days[leap(tf[0])][tf[1] - 1]) {
+         return 0;
+     }
 diff --git a/native/kernel/seh.c b/native/kernel/seh.c
-index 057ea96405acc914184b7b6ab20355ee579003cb..070efd08fa432f31d61a9ad750259c0a35b10440 100644
+index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a23257bfa 100644
 --- a/native/kernel/seh.c
 +++ b/native/kernel/seh.c
 @@ -19,6 +19,7 @@
@@ -24386,6 +25129,15 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..070efd08fa432f31d61a9ad750259c0a
  /* RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue): calls the
   * handlers above TargetFrame to unwind and unlinks them, then returns. */
  static uint64_t RtlUnwind(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -301,7 +462,7 @@ static uint64_t RtlUnwind(NcKernel *k, NcFrame *f, const uint32_t *a)
+     l->rec = a[2];
+     if (!l->rec) {
+         l->rec = l->base + LV_REC;
+-        memset(nc_vm_host(k->vm, l->rec), 0, ER_SIZE);
++        nc_vm_fill(k->vm, l->rec, 0, ER_SIZE);
+         wr(k, l->rec + ER_CODE, STATUS_UNWIND);
+         wr(k, l->rec + ER_ADDRESS, rd(k, esp));
+     }
 diff --git a/native/kernel/xc_crypto.c b/native/kernel/xc_crypto.c
 index 0fffaa7fa10d0cd32d55f38361466383fdd1c7c8..da49215ac40d17b87600e21025a23644aa98f160 100644
 --- a/native/kernel/xc_crypto.c
