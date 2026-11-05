@@ -147,6 +147,8 @@ native core's work tree (oldest first; author: subject):
   3745e58a8d Claude: x86emu: x87 and SSE / MMX arithmetic with a memory operand, run on the host's FPU
   4064de707d Claude: io: a queued read or write in one transfer, gathered through a buffer
   adb7fb74b4 Claude: pb: a report's read waits for a decoder that moves
+  7fe4362e60 Claude: mmio sites: no short site where a stub's moved jump lands inside it
+  13f138054c Claude: hle: 16-bit dithering by guest pixel, by screen pixel or off
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -3611,7 +3613,7 @@ index 3cc32f0ef4a5a4c2a5c765c9ef8e42a9d2a14bfe..470706ece90238edff29a35c3014f040
 +
  #endif
 diff --git a/hw/xbox/hle/shader/psh.c b/hw/xbox/hle/shader/psh.c
-index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..b8eb64d09935d64d1a9c6b0b9cc306a5d329516d 100644
+index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..95ca671a29f5428605a0ac886f15ec0d278e59ed 100644
 --- a/hw/xbox/hle/shader/psh.c
 +++ b/hw/xbox/hle/shader/psh.c
 @@ -28,6 +28,7 @@ typedef struct Buf {
@@ -4116,7 +4118,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..b8eb64d09935d64d1a9c6b0b9cc306a5
      }
      static const char *const k_dbg[17] = {
          "outc", "t0", "v0", "r0", "vec4(vec3(fogf), 1.0)", "v1", "t3", "vec4(vec3(r0.a), 1.0)",
-@@ -599,7 +889,31 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
+@@ -599,7 +889,32 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
          "    ivec4 r = clamp(dv %s sv, ivec4(-128), ivec4(127));\n"
          "    oColor = vec4(r & 255) / 255.0; }\n", "oColor", k->sblend == 1 ? "+" : "-");
      }
@@ -4130,7 +4132,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..b8eb64d09935d64d1a9c6b0b9cc306a5
 +            k->fb_const, blend_factor(k->fb_src), blend_factor(k->fb_dst), blend_eq(k->fb_op));
 +    }
 +    if (k->dither) {
-+        /* ordered dithering (a 4 x 4 Bayer matrix, by guest pixel: the
++        /* ordered dithering (a 4 x 4 Bayer matrix, by guest pixel (bit 2: by screen pixel): the
 +         * target's resolution scale divided out, so a scaled target holds the
 +         * pattern a title samples back) into the target's 5 / 6 bits. After
 +         * the blend where the shader blends (fblend); else before the
@@ -4138,10 +4140,11 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..b8eb64d09935d64d1a9c6b0b9cc306a5
 +         * approximation) */
 +        put(&b, "  { const float bm[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,\n"
 +                "      3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);\n"
-+                "    ivec2 p = ivec2(gl_FragCoord.xy / float(max((pc.flags >> 16) & 255u, 1u))) & 3;\n"
++                "    ivec2 p = ivec2(gl_FragCoord.xy%s) & 3;\n"
 +                "    float dt = (bm[p.y * 4 + p.x] + 0.5) / 16.0 - 0.5;\n"
 +                "    oColor.rgb = clamp(oColor.rgb + dt / %s, 0.0, 1.0); }\n",
-+            k->dither == 1 ? "vec3(31.0, 63.0, 31.0)" : "vec3(31.0)");
++            (k->dither & 4) ? "" : " / float(max((pc.flags >> 16) & 255u, 1u))",
++            (k->dither & 3) == 1 ? "vec3(31.0, 63.0, 31.0)" : "vec3(31.0)");
 +    }
 +    /* the replaced depth replaces W-buffering's too: the fragment's, whatever
 +     * made it (the polygon offset with it) */
@@ -4150,7 +4153,7 @@ index 0ea8b4a7a06a87ee91beb0621cbde287c0948f9e..b8eb64d09935d64d1a9c6b0b9cc306a5
          *unsupported = unsup;
      }
 diff --git a/hw/xbox/hle/shader/psh.h b/hw/xbox/hle/shader/psh.h
-index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..e17fb05a87a2d2f285bf3ed11b80ba7d5e7e9547 100644
+index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..75f60b38769de1585cba6e60b501a9d786ab5a1d 100644
 --- a/hw/xbox/hle/shader/psh.h
 +++ b/hw/xbox/hle/shader/psh.h
 @@ -10,6 +10,7 @@
@@ -4208,7 +4211,7 @@ index 313e1ff5d9c7e484af7e8dfc43a8d1bea944eaef..e17fb05a87a2d2f285bf3ed11b80ba7d
 +    uint8_t conv, conv_mm;
 +    uint8_t dither;                     /* SET_DITHER_ENABLE into a 16-bit target: 1
 +                                           R5G6B5, 2 1555 (ordered, 4 x 4 by guest
-+                                           pixel) */
++                                           pixel; | 4 by screen pixel) */
 +    /* Blended, dithered draws (fbfetch): the shader blends with the target's
 +     * pixel by fb_src / fb_dst (D3D's blend factors) and fb_op (the blend
 +     * equation; fb_const the BLENDCOLOR where a factor takes it), then
@@ -4885,7 +4888,7 @@ index bf187bc5967efb39fbb05bc92fc2f7076e58a489..b41b6858562f8c32a5cec61646677549
 +    return (int)r;
 +}
 diff --git a/hw/xbox/hle/vk/draw.c b/hw/xbox/hle/vk/draw.c
-index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194a3f03914 100644
+index b72476d61628d9ded95d4d3ac5371168570f590c..79e9f3c2dae406f88696d36bce36dfb61e9da759 100644
 --- a/hw/xbox/hle/vk/draw.c
 +++ b/hw/xbox/hle/vk/draw.c
 @@ -35,13 +35,13 @@
@@ -5929,7 +5932,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
              k.vs.texcoord[st] = s->tss[st][TSS_TEXCOORDINDEX] & 7;
          }
          k.vs.ntex = HLE_FF_STAGES;
-@@ -3497,14 +3902,96 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3497,14 +3902,108 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          k.pk.specular = s->rs[RS_SPECULARENABLE] != 0;
          k.pk.point_sprite = c->prim == 0 && s->rs[RS_POINTSPRITEENABLE] != 0;
          k.pk.out_bgra = rt && hle_surf_out_bgra(rt->fmt);
@@ -5938,9 +5941,21 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
 +        k.pk.two_side = prog && s->rs[RS_TWOSIDEDLIGHTING] != 0;
 +        /* SET_DITHER_ENABLE into a 16-bit target: the NV2A dithers what it
 +         * writes there (8-bit channels lose nothing to it) */
-+        if (s->rs[RS_DITHERENABLE] && rt) {
++        /* OGBox 0.0.3: NC_HLE_DITHER (the setting "16-bit dithering"): xbox (the default) its 4 x 4
++         * pattern by guest pixel, as the console; fine by screen pixel (a scaled picture shows the
++         * console's pattern as blocks the size of a guest pixel: a grain of dots); off none (the
++         * target's 5 / 6 bits only: bands) */
++        static int s_dither = -1;
++        if (s_dither < 0) {
++            const char *e = getenv("NC_HLE_DITHER");
++            s_dither = e && !strcmp(e, "off") ? 0 : e && !strcmp(e, "fine") ? 2 : 1;
++            hle_log("hakuX-hle-back", "16-bit dithering: %s", s_dither == 0 ? "off" : s_dither == 2
++                    ? "by screen pixel" : "by guest pixel, as the console");
++        }
++        if (s->rs[RS_DITHERENABLE] && rt && s_dither) {
 +            k.pk.dither = rt->fmt == VK_FORMAT_R5G6B5_UNORM_PACK16 ? 1 :
 +                          rt->fmt == VK_FORMAT_A1R5G5B5_UNORM_PACK16 ? 2 : 0;
++            k.pk.dither |= k.pk.dither && s_dither == 2 ? 4 : 0;
 +        }
 +        /* SET_ANTI_ALIASING_CONTROL with multisampling on, into an antialiased
 +         * target, colour or depth: its sample mask, alpha-to-coverage and
@@ -6027,7 +6042,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
              }
          }
          for (unsigned st = 0; st < 4; st++) {
-@@ -3599,6 +4086,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3599,6 +4098,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
                  mt[0] = half2(t[TSS_BUMPENVMAT00], t[TSS_BUMPENVMAT00 + 1]);
                  mt[1] = half2(t[TSS_BUMPENVMAT00 + 2], t[TSS_BUMPENVMAT00 + 3]);
                  pc.bumpl[st - 1] = half2(t[TSS_BUMPENVLSCALE], t[TSS_BUMPENVLSCALE + 1]);
@@ -6038,7 +6053,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
              }
          }
          psframe_log(c, s, &k.pk, rt_id, pc.psc);
-@@ -3728,6 +4219,32 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3728,6 +4231,32 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
       * the road cancel to 0 (an unsigned subtract clamps at 0 and the add then
       * lights everything in front of the volume). With ONE / ONE the shader
       * does the equation on the target's pixel (fbfetch), the blend is off. */
@@ -6071,7 +6086,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
      if (k.blend_en && (k.op == 0xF005 || k.op == 0xF006)) {
          unsigned sb = signed_blend(s);
          if (sb && rt && (rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
-@@ -3779,8 +4296,21 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3779,8 +4308,21 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
       * them instead of clipping the primitive (MechAssault 2's sky, drawn past
       * the far plane, was black): the rasterizer's depth clamp */
      bool zclamp = ds && s->rs[RS_ZENABLE] != 0 && s->zclamp;
@@ -6094,7 +6109,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
          k.vk.zfree = !ds || s->rs[RS_ZENABLE] == 0;
          k.vk.zclamp = zclamp;
      } else {
-@@ -3788,9 +4318,11 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3788,9 +4330,11 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          k.vs.zclamp = zclamp;
      }
      if (s->psh) {
@@ -6108,7 +6123,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
      }
      /* Polygon offset (decals over coplanar surfaces): NV2A adds the offset in
       * depth-buffer units and the slope factor times the polygon's depth slope,
-@@ -3845,7 +4377,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3845,7 +4389,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          zofs *= f;
          zslope *= f;
      }
@@ -6117,7 +6132,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
          memcpy(&pc.psc[18], bias ? &zofs : &(float){ 0.0f }, 4);
          memcpy(&pc.psc[19], bias ? &zslope : &(float){ 0.0f }, 4);
          bias = false;
-@@ -3950,16 +4482,19 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3950,16 +4494,19 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
      VkRect2D sc = full ? (VkRect2D){ { 0, 0 }, { sw, sh } } :
                           (VkRect2D){ { (int32_t)(vpc->x * rs), (int32_t)(vpc->y * rs) },
                                       { vpc->w * rs, vpc->h * rs } };
@@ -6143,7 +6158,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
      }
      VkViewport v = { 0, (float)sh, (float)sw, -(float)sh, 0.0f, 1.0f };
      if (!prog && !rhw && !full) {
-@@ -3995,7 +4530,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -3995,7 +4542,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          pc.scr[2] = (vx + vw * 0.5f) / aax + vpc->offx;
          pc.scr[3] = (vy + vh * 0.5f) / aay + vpc->offy;
      }
@@ -6154,7 +6169,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
      pc.tfactor = s->rs[RS_TEXTUREFACTOR];
      pc.alpha_ref = (s->rs[RS_ALPHAREF] & 0xFF) / 255.0f;
      memcpy(&pc.fog[3], &rect, 4);       /* (bits: HLE_NVRECT_GLSL) */
-@@ -4044,6 +4581,27 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -4044,6 +4593,27 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          T.vkCmdSetDepthCompareOp(cb, (VkCompareOp)g_rec.zop);
          g_dr.emits[EM_DYN]++;
      }
@@ -6182,7 +6197,7 @@ index b72476d61628d9ded95d4d3ac5371168570f590c..019816e5b7f38cc346686fdbf295c194
      if (REC_CHANGED(bias_en, bias) && eds2) {
          T.vkCmdSetDepthBiasEnable(cb, bias);
          g_dr.emits[EM_DYN]++;
-@@ -4244,44 +4802,14 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
+@@ -4244,44 +4814,14 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
          mp.prim = c->prim;
          mp.end = vfirst + c->count;
      }
@@ -24120,10 +24135,10 @@ index 06879c350fa67b35854e780f0b59d9e4ae2550c5..27c6916a57c1f4d167cdb3b3ed803422
      return !r->fail;
 diff --git a/native/kernel/mmiosite.c b/native/kernel/mmiosite.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ee35ad08112fbcf90c0039b721edb782f8fba3e
+index 0000000000000000000000000000000000000000..37a07b50fe1c3678668168aef0277aee32da43c0
 --- /dev/null
 +++ b/native/kernel/mmiosite.c
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,906 @@
 +/*
 + * hakuX native core — device register accesses through the gate (the
 + * native CPU).
@@ -24363,6 +24378,78 @@ index 0000000000000000000000000000000000000000..6ee35ad08112fbcf90c0039b721edb78
 +    return -1;
 +}
 +
++/* OGBox 0.0.3: a stub's moved branch pointing into (lo, hi). A short site moves the instructions
++ * after it into its stub, a jump among them with its target kept: from then on that jump is in
++ * the stub, not near its target, and only the stubs show it. One game crashed so: "mov esi,[esi+8];
++ * jmp +3" moved for one site (the jump's target kept: the test after the next mov), then that next
++ * mov a site of its own, moving the test: the first stub jumped into the second site's jump, and
++ * ran the middle of it. */
++static bool stubs_branch_into(NcVm *vm, uint32_t lo, uint32_t hi)
++{
++    for (uint32_t va = g_lo; va && va + STUB_SIZE <= g_hi; va += STUB_SIZE) {
++        uint8_t st[STUB_SIZE + 15];
++        if (!ram_read(vm, va, st, STUB_SIZE)) {
++            break;
++        }
++        if (st[0] != 0x9A && st[0] != 0xEB) {
++            if (va >= g_next) {
++                break;              /* past the stubs made (a savestate's are before g_next too) */
++            }
++            continue;
++        }
++        memset(st + STUB_SIZE, 0xCC, 15);
++        for (unsigned o = S_BODY; o < STUB_SIZE && st[o] != 0xCC;) {
++            NcX86Insn in;
++            const unsigned len = nc_x86_decode(st + o, 15, va + o, &in);
++            if (!len) {
++                break;
++            }
++            if ((in.flow == NC_FLOW_JCC || in.flow == NC_FLOW_JMP || in.flow == NC_FLOW_CALL) && in.target > lo &&
++                in.target < hi) {
++                return true;
++            }
++            o += len;
++        }
++    }
++    return false;
++}
++
++/* The other way round: a branch about to move whose target is inside another site's jump
++ * (between its first byte and the end of what it moved). */
++static bool inside_a_patch(NcVm *vm, uint32_t t)
++{
++    for (uint32_t va = g_lo; va && va + STUB_SIZE <= g_hi; va += STUB_SIZE) {
++        uint8_t st[STUB_SIZE];
++        if (!ram_read(vm, va, st, STUB_SIZE)) {
++            break;
++        }
++        if (st[0] != 0x9A && st[0] != 0xEB) {
++            if (va >= g_next) {
++                break;
++            }
++            continue;
++        }
++        const uint32_t eip = nc_rd32(st + S_EIP);
++        if (t > eip && t < eip + st[S_LEN] + st[S_MOVED]) {
++            uint8_t now[5];
++            if (ram_read(vm, eip, now, 5) && now[0] == 0xE9 && eip + 5 + nc_rd32(now + 1) == va) {
++                return true;        /* still patched */
++            }
++        }
++    }
++    return false;
++}
++
++static bool moves_into_a_patch(NcVm *vm, const uint32_t *body_rel, unsigned bl)
++{
++    for (unsigned i = 0; i < bl; i++) {
++        if (body_rel[i] && inside_a_patch(vm, body_rel[i])) {
++            return true;
++        }
++    }
++    return false;
++}
++
 +/* A direct branch or an address within 128 KiB pointing into (lo, hi): the
 + * bytes there can't move. Near the site (512 bytes each way) by the decoded
 + * instructions when the decode comes into step, else by byte patterns; past
@@ -24387,6 +24474,9 @@ index 0000000000000000000000000000000000000000..6ee35ad08112fbcf90c0039b721edb78
 +        }
 +    }
 +    if (b - a < 8 || lo - a < NEAR + 16 || b - hi < NEAR + 32) {
++        return true;
++    }
++    if (stubs_branch_into(vm, lo, hi)) {
 +        return true;
 +    }
 +    const int near = near_branches_into(vm, lo, hi);
@@ -24583,6 +24673,10 @@ index 0000000000000000000000000000000000000000..6ee35ad08112fbcf90c0039b721edb78
 +        moved = p - (eip + n);
 +        if (pointed_into(vm, eip, p)) {
 +            refuse(s, "short, and a branch or an address points into what would move", code);
++            return;
++        }
++        if (moves_into_a_patch(vm, body_rel, bl)) {
++            refuse(s, "short, and a jump it would move goes into another site's jump", code);
 +            return;
 +        }
 +        if (thread_inside(k, eip, p)) {
@@ -24809,6 +24903,10 @@ index 0000000000000000000000000000000000000000..6ee35ad08112fbcf90c0039b721edb78
 +    }
 +    if (pointed_into(vm, eip, p)) {
 +        why = "a branch or an address points into what would move";
++        goto refused;
++    }
++    if (moves_into_a_patch(vm, body_rel, bl)) {
++        why = "a jump it would move goes into another site's jump";
 +        goto refused;
 +    }
 +    if (thread_inside(k, eip, p)) {

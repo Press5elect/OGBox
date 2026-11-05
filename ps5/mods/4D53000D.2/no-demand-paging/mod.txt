@@ -1,0 +1,10 @@
+name: Without demand paging (PS5)
+description: The game keeps its memory in its own 4 KB pages, loaded on demand. The PS5's pages are 16 KB, so OGBox would emulate every access and the game would take minutes to load. This turns the game's demand paging off (xboot.ini), so its memory runs at full speed. If it runs out of memory in big areas, set Settings > Console > Memory to 128 MB.
+author: Press5elect
+gamefix: true
+edit: xboot.ini | UseDemandPaging | UseDemandPaging        = false
+
+# Fable (Europe, 4D53000D v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The edit line turns the disc's xboot.ini line "UseDemandPaging = true" off; the rest of the file as
+# the disc has it.

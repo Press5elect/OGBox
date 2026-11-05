@@ -25,6 +25,17 @@ well on the PS5. It's always on, whatever `mods.txt` says. The Mods screen lists
 "Game fixes", greyed with its switch on, and it can't be turned off. The release check still
 applies: a game fix made for another release is left out.
 
+A mod can also change one line of a disc file instead of replacing the file, so it fits every
+release of the game:
+
+```
+edit: xboot.ini | UseDemandPaging | UseDemandPaging        = false
+```
+
+The disc's `xboot.ini` with its first line that starts with `UseDemandPaging` (after its spaces,
+any case) replaced by the new line, its line ending kept; the rest of the file as the disc has it.
+Up to four edit lines a mod.
+
 ## The release check (OGBox 0.0.2)
 
 A title ID and version can stand for more than one release of a game (a USA and a European

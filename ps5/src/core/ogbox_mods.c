@@ -35,6 +35,8 @@
 #define MAX_MODS 32
 #define MAX_CHEATS 256
 
+#define MOD_EDITS 4
+
 typedef struct Line {
     char *xbe; /* the XBE section it belongs to */
     char *text;
@@ -47,6 +49,10 @@ typedef struct Mod {
     int refresh;
     bool on;
     bool gamefix;      /* 0.0.3: "gamefix: true": always on, can't be turned off (the Mods screen greys it) */
+    /* 0.0.3: "edit: <disc file> | <line start> | <new line>": the disc's file with the first line that
+     * starts so replaced, over the disc (the rest as the disc has it: one line fits every release) */
+    char edit[MOD_EDITS][320];
+    unsigned nedits;
     Line *patches;
     size_t npatches;
 } Mod;
@@ -299,6 +305,8 @@ static void load_mod(const char *dir, const char *id)
                 copy(m->description, sizeof(m->description), value);
             } else if (!strcmp(key, "refresh")) {
                 m->refresh = atoi(value);
+            } else if (!strcmp(key, "edit") && m->nedits < MOD_EDITS) {
+                copy(m->edit[m->nedits++], sizeof(m->edit[0]), value);
             } else if (!strcmp(key, "gamefix")) {
                 m->gamefix = !strcasecmp(value, "true") || !strcmp(value, "1") || !strcasecmp(value, "yes");
                 m->on |= m->gamefix;
@@ -795,6 +803,91 @@ static void write_files(FILE *out, const char *dir, const char *rel)
     free_names(names, n);
 }
 
+/* 0.0.3: a mod's edit line ("<disc file> | <line start> | <new line>") written over the disc: the disc's
+ * file with the first line starting with <line start> (after its spaces, any case) replaced, its line
+ * ending kept, in work_dir/mod-edits/<mod>/; its line in the manifest */
+static void write_edit(FILE *out, const NcDisc *disc, const char *work_dir, const char *mod, const char *edit)
+{
+    char line[320];
+    copy(line, sizeof(line), edit);
+    char *bar1 = strstr(line, " | "), *bar2 = bar1 ? strstr(bar1 + 3, " | ") : NULL;
+    if (!bar1 || !bar2) {
+        pshakux_log("mods:   mod %s: an edit line isn't \"<file> | <line start> | <new line>\": %s", mod, edit);
+        return;
+    }
+    *bar1 = 0;
+    *bar2 = 0;
+    char *file = trim(line), *old = bar1 + 3, *neu = bar2 + 3;
+    const size_t nold = strlen(old), nneu = strlen(neu);
+    OgboxBuf b;
+    memset(&b, 0, sizeof(b));
+    if (!disc || !nold || !disc_file(disc, file, &b)) {
+        pshakux_log("mods:   mod %s: %s isn't on the disc: its edit left out", mod, file);
+        return;
+    }
+    /* the line that starts with <old> (after its spaces), to its line ending */
+    uint8_t *at = NULL;
+    size_t span = 0;
+    for (size_t i = 0; i < b.size;) {
+        size_t j = i;
+        while (j < b.size && (b.data[j] == ' ' || b.data[j] == '\t')) {
+            j++;
+        }
+        size_t e = i;
+        while (e < b.size && b.data[e] != '\r' && b.data[e] != '\n') {
+            e++;
+        }
+        if (e - j >= nold && !strncasecmp((const char *)b.data + j, old, nold)) {
+            at = b.data + i;
+            span = e - i;
+            break;
+        }
+        i = e;
+        while (i < b.size && (b.data[i] == '\r' || b.data[i] == '\n')) {
+            i++;
+        }
+    }
+    if (!at) {
+        pshakux_log("mods:   mod %s: no line of the disc's %s starts with \"%s\": its edit left out", mod, file, old);
+        free(b.data);
+        return;
+    }
+    char dir[1024], host[1200];
+    snprintf(dir, sizeof(dir), "%s/mod-edits", work_dir);
+    mkdir(dir, 0777);
+    snprintf(dir, sizeof(dir), "%s/mod-edits/%s", work_dir, mod);
+    mkdir(dir, 0777);
+    char flat[256];
+    copy(flat, sizeof(flat), file);
+    for (char *p = flat; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            *p = '_';
+        }
+    }
+    snprintf(host, sizeof(host), "%s/%s", dir, flat);
+    FILE *f = fopen(host, "wb");
+    const size_t head = (size_t)(at - b.data), tail = b.size - head - span;
+    const bool ok = f && fwrite(b.data, 1, head, f) == head && fwrite(neu, 1, nneu, f) == nneu &&
+                    fwrite(at + span, 1, tail, f) == tail;
+    if (f) {
+        fclose(f);
+    }
+    free(b.data);
+    if (!ok) {
+        pshakux_log("mods:   mod %s: %s cannot be written (%s)", mod, host, strerror(errno));
+        return;
+    }
+    char sub[256];
+    copy(sub, sizeof(sub), file);
+    for (char *p = sub; *p; p++) {
+        if (*p == '/') {
+            *p = '\\';
+        }
+    }
+    fprintf(out, "file\t%s\t%s\n", sub, host);
+    pshakux_log("mods:   mod %s: %s edited (the line \"%s...\" now \"%s\")", mod, file, old, neu);
+}
+
 static bool write_manifest(const char *path, const char *game_dir, const NcDisc *disc, const char *key,
                            const char *work_dir)
 {
@@ -809,6 +902,9 @@ static bool write_manifest(const char *path, const char *game_dir, const NcDisc 
             char files[1024];
             snprintf(files, sizeof(files), "%s/%s/files", game_dir, g_mods[i].id);
             write_files(out, files, "");
+            for (unsigned e = 0; e < g_mods[i].nedits; e++) {
+                write_edit(out, disc, work_dir, g_mods[i].id, g_mods[i].edit[e]);
+            }
             if (g_mods[i].refresh > refresh) {
                 refresh = g_mods[i].refresh;
             }

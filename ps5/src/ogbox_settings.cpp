@@ -65,6 +65,12 @@ std::vector<Option> makeOptions()
 		"instead of flickering where they overlap. Costs some GPU time: turn it off for a game that "
 		"needs the speed and shows no flicker.",
 		kOnOff, "1", true });
+	/* 0.0.3: dithering into 16-bit targets (hakuX's vk/draw.c NC_HLE_DITHER) */
+	o.push_back({ "dither", Section::Graphics, "16-bit dithering",
+		"Games that draw in 16-bit colour are dithered by the Xbox in a fine pattern of dots, to hide colour bands. "
+		"As the Xbox: its pattern, by the game's own pixels (with the resolution scale up, it shows as a grain of "
+		"dots). Fine: the same pattern by screen pixel, too fine to see. Off: no dots, but visible colour bands.",
+		{ { "xbox", "As the Xbox" }, { "fine", "Fine" }, { "off", "Off" } }, "xbox", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
 		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
@@ -565,6 +571,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("exact_depth") == "0") {   // 0.0.1
 		a.push_back("NC_HLE_EXACT_DEPTH=0");
+	}
+	if (value("dither") == "fine" || value("dither") == "off") {   // 0.0.3
+		a.push_back("NC_HLE_DITHER=" + value("dither"));
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");
