@@ -116,6 +116,12 @@ The owner shouldn't have to send logs for each guess.
   `.cci`). In hakuX's image reader next to ISO and CHD, and in the game library's scan. Less
   space on the drive and less to read over a network share; images people already made for
   their consoles play as they are. Idea from Cerbios (closed source: nothing of its code used).
+- **The XBE's 64 MB limit at 128 MB.** hakuX never reads the XBE's init flags (header 0x124);
+  `XINIT_LIMIT_DEVKIT_MEMORY` (0x4) keeps a title to 64 MB on a 128 MB console with a stock
+  kernel (Cerbios's `DisableLimitMem`, off by default). Today Memory: 128 MB gives every game
+  128 MB, likely why "a few games hang with it". Honour the flag at 128 MB (the kernel's highest
+  page, MmQueryStatistics, contiguous allocations below 64 MB for such a title); a 128 MB patch
+  (720p mods) clears the flag. Then 128 MB can be safe for all games.
 
 ## Order
 
