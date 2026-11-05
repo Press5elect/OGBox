@@ -4,7 +4,7 @@ author: Press5elect
 gamefix: true
 edit: xboot.ini | UseDemandPaging | UseDemandPaging        = false
 
-# Fable (Europe, 4D53000D v2). Copyright (c) 2026 Press5elect: any use of this mod
+# Fable (4D53000D, every release: v2 Europe, v3 USA and Europe, ...). Copyright (c) 2026 Press5elect: any use of this mod
 # or its source, including through AI tools, requires credit to Press5elect.
 # The edit line turns the disc's xboot.ini line "UseDemandPaging = true" off; the rest of the file as
 # the disc has it.

@@ -44,6 +44,7 @@ typedef struct Line {
 
 typedef struct Mod {
     char id[128];
+    char dir[1024];    /* 0.0.3: the folder it's in (mods/<key> or mods/<title ID>) */
     char name[128];
     char description[384];
     int refresh;
@@ -278,6 +279,7 @@ static void load_mod(const char *dir, const char *id)
     Mod *m = &g_mods[g_nmods++];
     memset(m, 0, sizeof(*m));
     copy(m->id, sizeof(m->id), id);
+    copy(m->dir, sizeof(m->dir), dir);
     copy(m->name, sizeof(m->name), id);
     char xbe[256] = "";
     bool in_section = false;
@@ -888,6 +890,8 @@ static void write_edit(FILE *out, const NcDisc *disc, const char *work_dir, cons
     pshakux_log("mods:   mod %s: %s edited (the line \"%s...\" now \"%s\")", mod, file, old, neu);
 }
 
+static bool load_game(const char *key, char *dir, size_t n);
+
 static bool write_manifest(const char *path, const char *game_dir, const NcDisc *disc, const char *key,
                            const char *work_dir)
 {
@@ -897,10 +901,11 @@ static bool write_manifest(const char *path, const char *game_dir, const NcDisc 
         return false;
     }
     int refresh = 0;
-    for (unsigned i = 0; i < g_nmods && game_dir; i++) {
+    (void)game_dir;
+    for (unsigned i = 0; i < g_nmods; i++) {
         if (g_mods[i].on) {
             char files[1024];
-            snprintf(files, sizeof(files), "%s/%s/files", game_dir, g_mods[i].id);
+            snprintf(files, sizeof(files), "%s/%s/files", g_mods[i].dir, g_mods[i].id);
             write_files(out, files, "");
             for (unsigned e = 0; e < g_mods[i].nedits; e++) {
                 write_edit(out, disc, work_dir, g_mods[i].id, g_mods[i].edit[e]);
@@ -939,35 +944,11 @@ void ogbox_mods_prepare(int disc_fd, const char *work_dir)
         pshakux_log("mods: the game's key (its default.xbe's certificate) cannot be read: no mods");
         return;
     }
-    char mods_dir[1024];
-    snprintf(mods_dir, sizeof(mods_dir), "%s/mods", pshakux_title_dir());
-    size_t nfolders = 0;
-    char **folders = list_dir(mods_dir, &nfolders, true);
-    const char *folder = NULL;
-    for (size_t i = 0; i < nfolders; i++) {
-        if (!strcasecmp(folders[i], key)) {
-            folder = folders[i];
-        }
-    }
     char game_dir[1024] = "";
-    if (folder) {
-        snprintf(game_dir, sizeof(game_dir), "%s/%s", mods_dir, folder);
+    if (load_game(key, game_dir, sizeof(game_dir))) {
+        pshakux_log("mods: %s: %u mods and %u cheats (mods/%s and mods/<title ID>)", key, g_nmods, g_ncheats, key);
     } else {
-        pshakux_log("mods: %s: none in %s", key, mods_dir);
-    }
-    free_names(folders, nfolders);
-
-    if (game_dir[0]) {
-        size_t nmods = 0;
-        char **ids = list_dir(game_dir, &nmods, true);
-        for (size_t i = 0; i < nmods; i++) {
-            load_mod(game_dir, ids[i]);
-        }
-        free_names(ids, nmods);
-        char cheats[1100];
-        snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
-        load_cheats(cheats);
-        pshakux_log("mods: %s: %u mods and %u cheats in %s", key, g_nmods, g_ncheats, game_dir);
+        pshakux_log("mods: %s: none in %s/mods", key, pshakux_title_dir());
     }
     for (unsigned i = 0; i < g_nmods; i++) {
         pshakux_log("mods:   mod %s: %s (%zu patch lines%s)", g_mods[i].id, g_mods[i].name, g_mods[i].npatches,
@@ -1052,6 +1033,55 @@ static void catalog_reset(void)
 }
 
 /* The title folder's mods/<key> (any case), or false. */
+static bool find_game_dir(const char *key, char *out, size_t n);
+
+/* 0.0.3: a game's mods and cheats: mods/<title ID>.<version> (a release's: its mods and cheats), then
+ * mods/<title ID> (every release's: its mods, those the release's folder hasn't one of the same name).
+ * A game fix that changes a disc file's line or adds files fits every release of a game; byte patches
+ * and cheats are a release's. dir: the release's folder ("" none). Whether either was found. */
+static bool load_game(const char *key, char *dir, size_t n)
+{
+    bool any = false;
+    dir[0] = 0;
+    if (find_game_dir(key, dir, n)) {
+        any = true;
+        size_t nmods = 0;
+        char **ids = list_dir(dir, &nmods, true);
+        for (size_t i = 0; i < nmods; i++) {
+            load_mod(dir, ids[i]);
+        }
+        free_names(ids, nmods);
+        char cheats[1100];
+        snprintf(cheats, sizeof(cheats), "%s/cheats.txt", dir);
+        load_cheats(cheats);
+    } else {
+        dir[0] = 0;
+    }
+    char title[32];
+    copy(title, sizeof(title), key);
+    char *dot = strchr(title, '.');
+    if (dot) {
+        *dot = 0;
+        char all[1024];
+        if (find_game_dir(title, all, sizeof(all))) {
+            any = true;
+            size_t nmods = 0;
+            char **ids = list_dir(all, &nmods, true);
+            for (size_t i = 0; i < nmods; i++) {
+                bool have = false;
+                for (unsigned k = 0; k < g_nmods; k++) {
+                    have = have || !strcasecmp(g_mods[k].id, ids[i]);
+                }
+                if (!have) {
+                    load_mod(all, ids[i]);
+                }
+            }
+            free_names(ids, nmods);
+        }
+    }
+    return any;
+}
+
 static bool find_game_dir(const char *key, char *out, size_t n)
 {
     char mods_dir[1024];
@@ -1169,17 +1199,7 @@ bool ogbox_mods_check_disc(const char *image, const char *key, uint32_t *crc)
     if (ok) {
         catalog_reset();
         char game_dir[1024];
-        if (find_game_dir(key, game_dir, sizeof(game_dir))) {
-            size_t nmods = 0;
-            char **ids = list_dir(game_dir, &nmods, true);
-            for (size_t i = 0; i < nmods; i++) {
-                load_mod(game_dir, ids[i]);
-            }
-            free_names(ids, nmods);
-            char cheats[1100];
-            snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
-            load_cheats(cheats);
-        }
+        load_game(key, game_dir, sizeof(game_dir));
         fit_check(&disc, key);
         catalog_reset();
         if (crc) {
@@ -1202,16 +1222,7 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
     if (!key || !key[0]) {
         return 0;
     }
-    if (find_game_dir(key, game_dir, sizeof(game_dir))) {
-        size_t nmods = 0;
-        char **ids = list_dir(game_dir, &nmods, true);
-        for (size_t i = 0; i < nmods; i++) {
-            load_mod(game_dir, ids[i]);
-        }
-        free_names(ids, nmods);
-        char cheats[1100];
-        snprintf(cheats, sizeof(cheats), "%s/cheats.txt", game_dir);
-        load_cheats(cheats);
+    if (load_game(key, game_dir, sizeof(game_dir))) {
         read_choices(key, pshakux_title_dir());
     }
     int n = 0;

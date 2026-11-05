@@ -18,6 +18,14 @@ mods/
       files/               disc files it replaces or adds (optional)
 ```
 
+## Every release of a game (OGBox 0.0.3)
+
+A folder named with the title ID alone (`4D5300D1/`) holds mods for every release and region of
+the game: OGBox loads them after the release's own folder (`4D5300D1.1/`), whose mod of the same
+name wins. It suits a mod that changes a disc file's line (`edit:`) or adds files; a mod of XBE
+byte patches is a release's (the release check leaves it out on another), and cheats.txt is only
+read from the release's folder.
+
 ## Game fixes (OGBox 0.0.3)
 
 A mod whose `mod.txt` has the line `gamefix: true` is a game fix: something the game needs to run
