@@ -40,6 +40,17 @@ dirty_of() { # the "+dirty <digest>" of a work tree, or nothing
 revision=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)
 dirty=$(dirty_of "$root")
 version=$(tr -d ' \n' < "$ps5/version.txt" 2>/dev/null || true)
+# OGBox 0.0.3: param.json's contentVersion (what the console and the homebrew stores show) is
+# version.txt's: X.Y.Z as XX.(Y*100+Z, three digits).000 (0.0.3: 00.003.000). A build where they
+# differ stops, so the two can't drift apart again.
+if [[ $version =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    content=$(printf '%02d.%03d.000' "${BASH_REMATCH[1]}" $(( BASH_REMATCH[2] * 100 + BASH_REMATCH[3] )))
+    have=$(sed -n 's/.*"contentVersion": *"\([^"]*\)".*/\1/p' "$ps5/sce_sys/param.json")
+    if [[ $have != "$content" ]]; then
+        echo "build-identity.sh: ps5/version.txt says $version, so sce_sys/param.json's contentVersion must be $content (it is $have)" >&2
+        exit 1
+    fi
+fi
 hakux_revision=$(git -C "$hakux" rev-parse HEAD 2>/dev/null || echo unknown)
 hakux_dirty=
 # vendor/hakuX is the pin with this repository's patches applied: that difference is the patches
