@@ -51,32 +51,14 @@ it is built, the rules the owner has set, and where the work stands.
 
 ## Where it stands (5 November 2026)
 
-- **v0.0.2 is released.** Its tag is at `266ad8c`. It fixed a 30 fps drop and loading screens
-  that showed only the bar, and added the BLACK 60 fps test mod. Issue #1 (a data folder on an
-  unplugged USB drive) is answered and fixed on main.
-- **Branch `ui-0.0.3`** has the new front end. Nothing on it has run on the console yet.
-  OGBox-0.0.3-test1 went to the owner from commit `c5ac23c`.
-  - `ps5/src/ogbox_ui.{h,cpp}` draw the new look from view structs: the Manrope/Inter fonts,
-    the background lit by the chosen game's cover, and the motion. Fonts are loaded by the
-    `ps5OverlayMoreFonts` hook in `ogbox_theme.cpp`.
-  - In `ogbox_main.cpp`, the section "OGBox 0.0.3: the front end's new look" holds the home
-    (`drawHomeScreen`/`homeInput`), the settings in layers (`settingsModel`/`settingsInput`),
-    the network shares form, the game page (`drawGamePageNew`) and the overlays.
-  - `ps5/src/ogbox_shares.{h,cpp}` manage the shares. They are mounted at `/smb/<name>`, and
-    `ps5vfs_unmount` was added to `platform/vfs`.
-  - `ps5/src/platform/ps5_keyboard.*` adds USB keyboard support, taken from Crux2. It adds the
-    imports `sceSysmoduleLoadModule` and `sceSysmoduleGetModuleHandleInternal`. If test1 won't
-    start, suspect these first.
-  - Themes are Dark (the default) and Code. Emerald is gone.
-  - The older screens (mods, storage, hard disk, quick menu, boot) only took the new colours.
-- **The plan:** `docs/PLAN-0.0.3.md` has the research and the order of the fixes.
-- **Next:**
-  1. Fix what the owner reports from test1.
-  2. Restyle the older screens properly.
-  3. Find servers on the network for the share form.
-  4. Merge `ui-0.0.3` into main.
-  5. Release 0.0.3 when the owner asks.
-- **The emulator roadmap, after the UI:** a Diagnose screen; capturing anomalies automatically
-  so the owner needn't send logs; a report ZIP; tracking changed textures; a benchmark mode.
+- **v0.0.3 is released** from main (tag `v0.0.3`): the new front end (`ui-0.0.3`, merged), the
+  Fable fixes (demand paging as an always-on game fix, soft pages, the report gate), covers from
+  libretro, MobCat and the XBE, CCI and split images, the 64 MB limit, the async boot log.
+  Notes: `docs/releases/v0.0.3.md`.
+- The front end: `ps5/src/ogbox_ui.{h,cpp}` draw it from view structs; `ogbox_main.cpp`'s section
+  "OGBox 0.0.3: the front end's new look" holds the home, the settings, the share form and the
+  game page. Covers and descriptions: `ogbox_library.cpp` (`Covers`, `About`).
+- **The plan:** `docs/PLAN-0.0.3.md`. Still to do: xemu's NV2A fixes (its table), automatic
+  reports, texture dirty tracking and a benchmark mode, restyling the older screens.
 
 The mockups the UI follows are a Design artifact in the claude.ai app (OGBox UI Mockups).

@@ -4,8 +4,8 @@
 emulator, to the PlayStation 5, as a homebrew title (`PPSA99251`) for a jailbroken console.**
 OGBox by Press5elect. It was called PSHakuX up to 0.1.5.
 
-**Latest release: [v0.0.2](https://github.com/Press5elect/OGBox/releases/tag/v0.0.2)** (highly
-experimental). Download `OGBox-v0.0.2.zip` there; 0.0.1 offers it at its next start (Settings >
+**Latest release: [v0.0.3](https://github.com/Press5elect/OGBox/releases/tag/v0.0.3)** (highly
+experimental). Download `OGBox-v0.0.3.zip` there; 0.0.2 offers it at its next start (Settings >
 Updates), and later versions install themselves the same way.
 
 OGBox is built on hakuX (rfandango and contributors, GPL-3.0-or-later) and on the parts of hakuX
@@ -23,7 +23,7 @@ xemu's work and neither project supports it.
 
 ## Where it is
 
-**Highly experimental.** 0.0.2 is the second public release (0.0.1 the first, after the bring-up
+**Highly experimental.** 0.0.3 is the third public release (0.0.1 the first, after the bring-up
 builds 0.1.1 to 0.1.59). Some games boot and play; many don't start, or stop, slow down, lose graphics or sound
 partway. Expect crashes and freezes: OGBox says so every time it starts.
 
@@ -227,6 +227,34 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.3
+
+Added
+- A new front end: a home of covers or a list (Settings > Game list > Layout), a game page with
+  its save states, settings in layers, a USB keyboard, and Dark and Code themes.
+- Network shares (SMB and NFS) added and edited on the console; the share form finds SMB servers
+  on the network.
+- Covers from libretro, MobCat's box scans and the disc's own title image, all of a folder's
+  downloaded in one go with a progress bar; game descriptions from Wikipedia.
+- Compressed CCI images and images split in parts (`game.1.iso`, `game.2.iso`).
+- Game fixes: mods a game needs, always on. Mods can change one line of a disc file and can
+  cover every release of a game.
+- Settings > 16-bit dithering: as the Xbox, fine, or off.
+
+Changed
+- Memory 128 MB gives a game that asks for 64 MB only (most do) 64 MB, as a 128 MB console does.
+- The boot log is written by a thread of its own.
+
+Fixed
+- Games freezing at random, the quick menu barely answering (each log line waited for the disk).
+- Games demand-paging their memory loading for minutes, or crashing at the start.
+- Regular quarter-second freezes in games that read visibility tests.
+- A game hanging when a new block of its memory shared a 16 KB PS5 page with a closed one.
+- A menu freezing behind a video (a polling thread kept its priority boost).
+- Xbox Live menus restarting the console when no dashboard is installed.
+- Slow first-time installs to the cache drive and slow disc reads into emulated memory.
+- The game list at 5 fps on a network share, and a game page stuck at "reading".
 
 ### 0.0.2
 
