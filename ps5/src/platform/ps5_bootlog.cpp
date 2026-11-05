@@ -77,6 +77,169 @@ int s_term_fd = 2; // the host reference build's terminal: the standard error th
 std::atomic<bool> s_owns_stderr{false};
 struct timespec s_start{};
 
+// 0.0.3: the log's lines go through memory to a writer thread of their own. A line written
+// straight to the file (pshakux_log's write, standard error's fflush) waited for the file system:
+// with the heartbeat's fsync and a game's own writes in flight, 600 to 900 ms a line on the PS5,
+// on the emulated CPU's thread (hakuX logs from it) and the presenter's: the game and the quick
+// menu stood still. Fixed storage (the crash report drains it, in a signal handler).
+constexpr size_t LOG_RING = size_t(4) << 20;
+char s_ring[LOG_RING];
+size_t s_ring_head = 0, s_ring_len = 0;     // the oldest byte, and how many
+unsigned long long s_ring_dropped = 0;
+pthread_mutex_t s_ring_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t s_ring_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t s_ring_empty = PTHREAD_COND_INITIALIZER;
+std::atomic<bool> s_writer_up{false};
+bool s_writer_busy = false;                 // a chunk taken out, being written
+int s_pipe_read = -1;                       // standard error's pipe (its reader thread)
+
+void RingPut(const char* data, size_t n)
+{
+  pthread_mutex_lock(&s_ring_lock);
+  if (s_ring_len + n > LOG_RING)
+  {
+    s_ring_dropped += n;
+  }
+  else
+  {
+    size_t at = (s_ring_head + s_ring_len) % LOG_RING;
+    for (size_t done = 0; done < n;)
+    {
+      const size_t k = std::min(n - done, LOG_RING - at);
+      std::memcpy(s_ring + at, data + done, k);
+      done += k;
+      at = (at + k) % LOG_RING;
+    }
+    s_ring_len += n;
+  }
+  pthread_cond_signal(&s_ring_cond);
+  pthread_mutex_unlock(&s_ring_lock);
+}
+
+// One line of the log: through the writer (when it runs), else straight to the file.
+void LogWrite(const char* data, size_t n)
+{
+  if (s_log_fd < 0)
+    return;
+  if (s_writer_up.load(std::memory_order_acquire))
+    RingPut(data, n);
+  else
+    (void)!write(s_log_fd, data, n);
+}
+
+// The ring's bytes into the file; the caller holds the lock (released while it writes).
+void RingWriteOut()
+{
+  static char chunk[256 * 1024];
+  while (s_ring_len)
+  {
+    const size_t n = std::min({s_ring_len, sizeof(chunk), LOG_RING - s_ring_head});
+    std::memcpy(chunk, s_ring + s_ring_head, n);
+    s_ring_head = (s_ring_head + n) % LOG_RING;
+    s_ring_len -= n;
+    s_writer_busy = true;
+    pthread_mutex_unlock(&s_ring_lock);
+    if (s_log_fd >= 0)
+      (void)!write(s_log_fd, chunk, n);
+    pthread_mutex_lock(&s_ring_lock);
+    s_writer_busy = false;
+  }
+  if (s_ring_dropped)
+  {
+    char note[96];
+    const int k = std::snprintf(note, sizeof(note), "[log: %llu bytes of lines dropped: the file system was slow]\n",
+                                s_ring_dropped);
+    s_ring_dropped = 0;
+    pthread_mutex_unlock(&s_ring_lock);
+    if (s_log_fd >= 0 && k > 0)
+      (void)!write(s_log_fd, note, static_cast<size_t>(k));
+    pthread_mutex_lock(&s_ring_lock);
+  }
+  pthread_cond_broadcast(&s_ring_empty);
+}
+
+double Since(const struct timespec& then);
+
+void* LogWriterMain(void*)
+{
+#if defined(__PROSPERO__)
+  pthread_set_name_np(pthread_self(), "ogbox-logw");
+#endif
+  double last_sync = 0;
+  pthread_mutex_lock(&s_ring_lock);
+  for (;;)
+  {
+    if (!s_ring_len)
+    {
+      struct timespec until;
+      clock_gettime(CLOCK_REALTIME, &until);
+      until.tv_nsec += 100 * 1000000L;
+      if (until.tv_nsec >= 1000000000L)
+      {
+        until.tv_sec++;
+        until.tv_nsec -= 1000000000L;
+      }
+      pthread_cond_timedwait(&s_ring_cond, &s_ring_lock, &until);
+    }
+    RingWriteOut();
+    // on the disk every 2 s (a console that crashes whole loses what the cache held): here, off
+    // every other thread's way
+    const double now = Since(s_start);
+    if (now - last_sync >= 2.0 && s_log_fd >= 0)
+    {
+      last_sync = now;
+      pthread_mutex_unlock(&s_ring_lock);
+      fsync(s_log_fd);
+      pthread_mutex_lock(&s_ring_lock);
+    }
+  }
+  return nullptr;
+}
+
+// Standard error's pipe into the ring: never waits for the file.
+void* LogPipeMain(void*)
+{
+#if defined(__PROSPERO__)
+  pthread_set_name_np(pthread_self(), "ogbox-logpipe");
+#endif
+  char buf[16384];
+  for (;;)
+  {
+    const ssize_t n = read(s_pipe_read, buf, sizeof(buf));
+    if (n > 0)
+      RingPut(buf, static_cast<size_t>(n));
+    else if (n == 0 || (errno != EINTR && errno != EAGAIN))
+      break;
+  }
+  return nullptr;
+}
+
+// Everything given so far in the file (relaunch, exit): waits for the writer.
+void LogFlush()
+{
+  if (!s_writer_up.load(std::memory_order_acquire))
+    return;
+  if (s_owns_stderr.load(std::memory_order_relaxed))
+    std::fflush(stderr);
+  if (s_pipe_read >= 0)
+    usleep(20000);   // (the pipe's last lines into the ring)
+  pthread_mutex_lock(&s_ring_lock);
+  for (int i = 0; i < 100 && (s_ring_len || s_writer_busy); i++)
+  {
+    pthread_cond_signal(&s_ring_cond);
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += 50 * 1000000L;
+    if (until.tv_nsec >= 1000000000L)
+    {
+      until.tv_sec++;
+      until.tv_nsec -= 1000000000L;
+    }
+    pthread_cond_timedwait(&s_ring_empty, &s_ring_lock, &until);
+  }
+  pthread_mutex_unlock(&s_ring_lock);
+}
+
 
 // The watcher: klog's copy of standard error, and the heartbeat.
 pthread_mutex_t s_forward_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -403,10 +566,7 @@ void Heartbeat()
   if (const pshakux_status_fn status = s_status.load(std::memory_order_acquire))
     status(line, sizeof(line));
   pshakux_log("alive: t=%llu ms%s%s", ms, line[0] ? " " : "", line);
-  // 0.0.2: on the disk at each heartbeat: a crash of the whole console (a kernel panic loses what
-  // the cache held) leaves the log as of the last one, not of the last relaunch
-  if (s_log_fd >= 0)
-    fsync(s_log_fd);
+  // 0.0.2: on the disk at each heartbeat (0.0.3: the log writer's fsync, every 2 s)
 }
 
 void* WatcherMain(void*)
@@ -509,8 +669,24 @@ extern "C" void pshakux_log(const char* format, ...)
   {
     length = std::snprintf(line, sizeof(line), "[%9.3f] %s\n", Since(s_start), text);
     if (length > 0)
-      (void)!write(s_log_fd, line, std::min<size_t>(static_cast<size_t>(length), sizeof(line) - 1));
+      LogWrite(line, std::min<size_t>(static_cast<size_t>(length), sizeof(line) - 1));
   }
+}
+
+// 0.0.3: the crash report's: what the ring holds into the file before the report's own lines
+// (written straight to the file), unless another thread holds the ring (a signal handler can't wait).
+extern "C" void pshakux_log_drain_crash(void)
+{
+  if (s_log_fd < 0 || pthread_mutex_trylock(&s_ring_lock) != 0)
+    return;
+  while (s_ring_len)
+  {
+    const size_t n = std::min(s_ring_len, LOG_RING - s_ring_head);
+    (void)!write(s_log_fd, s_ring + s_ring_head, n);
+    s_ring_head = (s_ring_head + n) % LOG_RING;
+    s_ring_len -= n;
+  }
+  pthread_mutex_unlock(&s_ring_lock);
 }
 
 extern "C" void pshakux_thread_named(const char* name)
@@ -632,7 +808,36 @@ extern "C" void pshakux_diag_start(const char* title_name)
   // copies those lines on to klog.
   if (s_log_fd >= 0)
   {
-    const int second = open(log_path, O_WRONLY | O_APPEND);
+    // 0.0.3: the log's writer thread (LogWriterMain), and standard error into it through a pipe
+    // (LogPipeMain), so that no line waits for the file system
+    {
+      pthread_t writer;
+      if (pthread_create(&writer, nullptr, &LogWriterMain, nullptr) == 0)
+      {
+        pthread_detach(writer);
+        s_writer_up.store(true, std::memory_order_release);
+      }
+    }
+    int pipe_fds[2] = {-1, -1};
+    int second = -1;
+    if (s_writer_up.load(std::memory_order_acquire) && pipe(pipe_fds) == 0)
+    {
+      pthread_t reader;
+      s_pipe_read = pipe_fds[0];
+      if (pthread_create(&reader, nullptr, &LogPipeMain, nullptr) == 0)
+      {
+        pthread_detach(reader);
+        second = pipe_fds[1];
+      }
+      else
+      {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        s_pipe_read = -1;
+      }
+    }
+    if (second < 0)
+      second = open(log_path, O_WRONLY | O_APPEND);
     FILE* const stream = (second >= 0) ? fdopen(second, "a") : nullptr;
     if (stream)
     {
@@ -692,6 +897,7 @@ extern "C" void pshakux_diag_set_status(pshakux_status_fn status, int fast)
 
 extern "C" void pshakux_diag_drain(void)
 {
+  LogFlush();
   Forward();
 }
 
@@ -708,6 +914,7 @@ extern "C" void pshakux_diag_session_end(int status)
   if (line[0])
     pshakux_log("session: %s", line);
 #endif
+  LogFlush();
   Forward();
   if (s_log_fd >= 0)
     fsync(s_log_fd);

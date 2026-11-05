@@ -517,6 +517,7 @@ void Report(int signal, siginfo_t* info, void* ctx)
 {
   if (nc_log_flush)
     nc_log_flush();               // 0.1.30: the core's queued lines first (native/core/log.c)
+  pshakux_log_drain_crash();   // 0.0.3: the log's lines before the report's
   Out o;
   SetStamp();
   const ucontext_t* const context = static_cast<const ucontext_t*>(ctx);
@@ -671,6 +672,7 @@ void InstallFor(int signal)
     pshakux_log("==== OGBox stopped: std::terminate: %s%s%s ====", what, type[0] ? " (type " : "", type[0] ? type : "");
     if (type[0])
       pshakux_log("  (type names are mangled: c++filt reads them)");
+    pshakux_log_drain_crash();
     Out o;
     SetStamp();
     const char* const name = pshakux_thread_name();

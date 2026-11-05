@@ -46,6 +46,8 @@ void pshakux_log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 /// The boot log's descriptor (-1: none), for the crash report.
 int pshakux_log_fd(void);
+/* 0.0.3: the lines still in memory into the file (the crash report, first; never waits) */
+void pshakux_log_drain_crash(void);
 
 /// Seconds since pshakux_diag_start, from the monotonic clock.
 double pshakux_uptime(void);

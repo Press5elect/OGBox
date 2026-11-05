@@ -1535,6 +1535,7 @@ public:
 	 * keeps the lines that say how far the exit got. */
 	static void syncLog()
 	{
+		pshakux_diag_drain();   // 0.0.3: the lines the log's writer still holds
 		const int fd = pshakux_log_fd();
 		if (fd >= 0) {
 			fsync(fd);
