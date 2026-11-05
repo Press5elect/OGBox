@@ -197,9 +197,9 @@ std::vector<Option> makeOptions()
 		place("list_network", "Network shares", "The shares of /data/ogbox/network.cfg.", kOnOff, "1");
 		// 0.1.45: how the list looks
 		place("list_covers", "Covers and descriptions",
-			"Each disc's box art, downloaded the first time it is shown and kept in /data/ogbox/covers: MobCat's scans "
-			"of the boxes by the disc's serial, else libretro's thumbnails by its Redump name, else the picture in "
-			"the disc's own default.xbe. A game's page shows its description from Wikipedia.",
+			"Each disc's box art, downloaded the first time it is shown and kept in the data folder's covers: "
+			"libretro's thumbnails by its Redump name, else MobCat's scans of the boxes by the disc's serial, else "
+			"the picture in the disc's own default.xbe. A game's page shows its description from Wikipedia.",
 			kOnOff, "1");
 		place("home_layout", "Layout", "The games as a row of covers with the chosen one's details beside them, or as a "
 			"list with the chosen one's cover and details at the right (for big folders).",

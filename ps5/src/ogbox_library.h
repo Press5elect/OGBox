@@ -55,9 +55,9 @@ std::string shortName(const std::string &fileName);
  * details had read the disc, and where libretro names the cover after the file's release and not
  * that record's (a title ID several releases share), the cover went. */
 std::vector<std::string> coverNames(const std::string &fileName, uint32_t titleId = 0, uint32_t regions = 0);
-/* 0.0.3: with the cover's other sources, best first: MobCat's scan of the disc's box ("@mc:<stem>":
- * by the serial the title ID makes and the release's version and regions when known, else the
- * record's region), then libretro's by name (above), then the disc's own title image from its
+/* 0.0.3: with the cover's other sources, best first: libretro's by name (above), then MobCat's scan
+ * of the disc's box ("@mc:<stem>": by the serial the title ID makes and the release's version and
+ * regions when known, else the record's region), then the disc's own title image from its
  * default.xbe ("@xbe:<title ID>|<disc path>", path known: read only when no other has one). */
 std::vector<std::string> coverSources(const std::string &fileName, const std::string &path, uint32_t titleId = 0,
 	uint32_t regions = 0, uint32_t version = 0);

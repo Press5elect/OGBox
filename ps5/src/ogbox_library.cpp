@@ -467,13 +467,12 @@ std::vector<std::string> coverSources(const std::string &fileName, const std::st
 			: r.find("japan") != std::string::npos || r.find("asia") != std::string::npos || r.find("korea") != std::string::npos ? 2
 			: r.empty() ? 0 : 4;
 	}
-	std::vector<std::string> out;
+	/* libretro's fronts first (a PNG of ~250 KB), MobCat's scans of the whole box for what libretro
+	 * hasn't (1 to 2 MB each: the home's covers came in at one every two seconds) */
+	std::vector<std::string> out = coverNames(fileName, given, givenRegions);
 	const std::string mc = mobcatCover(titleId, rec ? rec->serial : std::string(), version, regions);
 	if (!mc.empty()) {
 		out.push_back("@mc:" + mc);
-	}
-	for (const std::string &n : coverNames(fileName, given, givenRegions)) {
-		out.push_back(n);
 	}
 	if (titleId && !path.empty()) {
 		char b[16];
@@ -628,8 +627,13 @@ struct Covers::Impl {
 		if (!written) {
 			std::remove(tmp.c_str());
 		}
+		if (written) {
+			struct stat st;
+			bytes_xbe = stat(dst.c_str(), &st) == 0 ? static_cast<size_t>(st.st_size) : 0;
+		}
 		return written ? 200 : 500;
 	}
+	size_t bytes_xbe{ 0 };
 
 	void run()
 	{
@@ -664,6 +668,7 @@ struct Covers::Impl {
 				}
 			} else if (xbe(name)) {
 				status = fetchXbe(name);
+				bytes = bytes_xbe;
 			} else {
 				std::string location, host = kHost;
 				std::string path = kSystem + urlEncode(libretroName(name)) + ".png";
@@ -692,7 +697,8 @@ struct Covers::Impl {
 			const char *from = mobcat(name) ? "MobCat" : xbe(name) ? "the disc's title image" : "libretro";
 			if (status == 200) {
 				(mobcat(name) ? scans : xbe(name) ? images : downloaded)++;
-				pshakux_log("covers: %s from %s (%zu bytes)", name.c_str(), from, bytes);
+				pshakux_log("covers: %s from %s (%zu bytes), kept in %s", xbe(name) ? name.substr(0, 13).c_str() : name.c_str(),
+					from, bytes, coversDir().c_str());
 			} else if (status == 404 || status == 415) {
 				writeFile(pathOf(name, ".none"), std::string());
 				missing++;
@@ -764,6 +770,15 @@ Covers::State Covers::find(const std::string &name, std::string &path)
 
 Covers::State Covers::findAny(const std::vector<std::string> &names, std::string &path)
 {
+	/* 0.0.3: one already kept, whichever source it came from (the order of the sources changed: a
+	 * cover kept stays), before any is asked for */
+	for (const std::string &n : names) {
+		const std::string kept = Impl::pathOf(n, ".png");
+		if (exists(kept)) {
+			path = kept;
+			return State::Ready;
+		}
+	}
 	State last = State::None;
 	for (const std::string &n : names) {
 		last = find(n, path);
