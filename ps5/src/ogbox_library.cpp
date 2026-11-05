@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cerrno>
 #include <condition_variable>
 #include <cstdio>
@@ -531,6 +532,10 @@ struct Covers::Impl {
 	unsigned downloaded{ 0 }, missing{ 0 }, failed{ 0 }, scans{ 0 }, images{ 0 };
 	unsigned batchDone{ 0 }, batchTotal{ 0 };
 	bool busy{ false };
+	/* 0.0.3: a folder's games, fetched in order (Covers::want): the next one not yet settled */
+	std::vector<std::vector<std::string>> wanted;
+	size_t wantPos{ 0 };
+	Covers *owner{ nullptr };
 	double offlineUntil{ 0.0 };
 
 	static bool mobcat(const std::string &name) { return !name.compare(0, 4, "@mc:"); }
@@ -640,13 +645,41 @@ struct Covers::Impl {
 		pshakux_thread_named("ogbox-covers");
 		for (;;) {
 			std::string name;
+			/* 0.0.3: nothing asked for: the folder's next game whose cover isn't settled asks for
+			 * its next source (findAny queues one), until the folder's games are all settled */
+			for (;;) {
+				size_t pos;
+				std::vector<std::string> names;
+				{
+					std::lock_guard<std::mutex> lock(mutex);
+					if (!queue.empty() || !on.load() || wantPos >= wanted.size() ||
+						static_cast<double>(std::time(nullptr)) < offlineUntil) {
+						break;
+					}
+					pos = wantPos;
+					names = wanted[pos];
+				}
+				std::string path;
+				const State st = owner->findAny(names, path);
+				std::lock_guard<std::mutex> lock(mutex);
+				if (st != State::Queued && pos == wantPos) {
+					wantPos++;   // settled: a cover, none, or covers off
+				}
+				if (st == State::Queued || st == State::None) {
+					break;
+				}
+			}
 			{
 				std::unique_lock<std::mutex> lock(mutex);
 				if (queue.empty()) {
 					busy = false;
 					batchDone = batchTotal = 0;   // the bar's next batch from nothing
 				}
-				cv.wait(lock, [&] { return !queue.empty() && on.load(); });
+				cv.wait_for(lock, std::chrono::seconds(30),
+					[&] { return (!queue.empty() || wantPos < wanted.size()) && on.load(); });
+				if (queue.empty()) {
+					continue;     // the folder's next game (or the network's rest is over)
+				}
 				name = queue.front();
 				queue.pop_front();
 				busy = true;
@@ -724,7 +757,18 @@ Covers &Covers::get()
 	return covers;
 }
 
-Covers::Covers() : impl(new Impl) {}
+Covers::Covers() : impl(new Impl)
+{
+	impl->owner = this;
+}
+
+void Covers::want(std::vector<std::vector<std::string>> games)
+{
+	std::lock_guard<std::mutex> lock(impl->mutex);
+	impl->wanted = std::move(games);
+	impl->wantPos = 0;
+	impl->cv.notify_all();
+}
 
 void Covers::enable(bool on)
 {
@@ -802,6 +846,11 @@ std::string Covers::status() const
 void Covers::progress(unsigned &done, unsigned &total) const
 {
 	std::lock_guard<std::mutex> lock(impl->mutex);
+	if (impl->wantPos < impl->wanted.size()) {
+		done = static_cast<unsigned>(impl->wantPos);
+		total = static_cast<unsigned>(impl->wanted.size());
+		return;
+	}
 	done = impl->batchDone;
 	total = impl->busy || !impl->queue.empty() ? impl->batchTotal : 0;
 }

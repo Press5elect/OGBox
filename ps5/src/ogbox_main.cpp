@@ -5701,6 +5701,16 @@ public:
 			g.tint = ui::tintFor(g.title);
 			hc.list.push_back(std::move(g));
 		}
+		/* 0.0.3: every game's cover of the folder asked for now, in the list's order, not only those in
+		 * sight (the home asked for a cover as it came on screen or was chosen) */
+		if (prefs.global("list_covers") != "0" && !hc.games.empty()) {
+			std::vector<std::vector<std::string>> all;
+			all.reserve(hc.games.size());
+			for (const int i : hc.games) {
+				all.push_back(coverNames(entries[static_cast<size_t>(i)]));
+			}
+			ogbox::Covers::get().want(std::move(all));
+		}
 	}
 
 	/* An entry's place in the covers' row (-1 not a game). */

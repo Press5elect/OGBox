@@ -82,8 +82,12 @@ public:
 	State findAny(const std::vector<std::string> &names, std::string &path);
 	/* What the downloads have done ("12 downloaded, 3 not on libretro"), for the details. */
 	std::string status() const;
+	/* 0.0.3: every game of a folder (each its names, as findAny takes them): their covers fetched
+	 * one after another in the background, in this order, until each has one or none of its sources
+	 * has; what is shown or chosen meanwhile goes first. A new list replaces the last. */
+	void want(std::vector<std::vector<std::string>> games);
 	/* 0.0.3: the downloads of now: how many of how many asked since the queue was last empty (the
-	 * home's bar); total 0 when none is waiting. */
+	 * home's bar); total 0 when none is waiting. With a folder's games wanted: its games done of all. */
 	void progress(unsigned &done, unsigned &total) const;
 
 private:
