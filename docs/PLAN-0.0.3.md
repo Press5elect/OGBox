@@ -103,20 +103,24 @@ The owner shouldn't have to send logs for each guess.
 
 - Redraw the older screens (mods, data folder, hard disk manager, quick menu, boot) with
   `ogbox_ui`, so they match the home and the settings.
-- **Find servers for the share form.** Send an SMB NetBIOS name query and an mDNS `_smb._tcp`
+- **Done (test14). Find servers for the share form.** Send an SMB NetBIOS name query and an mDNS `_smb._tcp`
   query on the local network, and list what answers, so a server is chosen instead of typed.
 - **A compatibility mark per game** on the home's chips (plays well, playable, starts, broken),
   from a list in the repository that the owner updates.
 
-## 6. Later (on hold)
+## 6. Done in 0.0.3 test builds (were on hold)
 
-- **Compressed and split game images.** Read `.cci` (Cerbios Compressed Image: an ISO in
+Done (test14): the two items below, and the server list for the share form (5, above).
+
+## 6a. The items
+
+- **Done (test14): .cci and split images; .cso not (no Xbox tool writes it). Compressed and split game images.** Read `.cci` (Cerbios Compressed Image: an ISO in
   fixed-size LZ4-compressed blocks with a block index; format as Team Resurgent's Repackinator
   writes it) and `.cso`, and images split in parts (`game.1.iso` + `game.2.iso`, the same for
   `.cci`). In hakuX's image reader next to ISO and CHD, and in the game library's scan. Less
   space on the drive and less to read over a network share; images people already made for
   their consoles play as they are. Idea from Cerbios (closed source: nothing of its code used).
-- **The XBE's 64 MB limit at 128 MB.** hakuX never reads the XBE's init flags (header 0x124);
+- **Done (test14). The XBE's 64 MB limit at 128 MB.** hakuX never reads the XBE's init flags (header 0x124);
   `XINIT_LIMIT_DEVKIT_MEMORY` (0x4) keeps a title to 64 MB on a 128 MB console with a stock
   kernel (Cerbios's `DisableLimitMem`, off by default). Today Memory: 128 MB gives every game
   128 MB, likely why "a few games hang with it". Honour the flag at 128 MB (the kernel's highest
