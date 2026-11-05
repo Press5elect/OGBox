@@ -69,6 +69,7 @@ it is built, the rules the owner has set, and where the work stands.
     start, suspect these first.
   - Themes are Dark (the default) and Code. Emerald is gone.
   - The older screens (mods, storage, hard disk, quick menu, boot) only took the new colours.
+- **The plan:** `docs/PLAN-0.0.3.md` has the research and the order of the fixes.
 - **Next:**
   1. Fix what the owner reports from test1.
   2. Restyle the older screens properly.
