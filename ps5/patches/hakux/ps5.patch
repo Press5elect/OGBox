@@ -169,6 +169,7 @@ native core's work tree (oldest first; author: subject):
   96b7d40329 Claude: apu: the two EP run experiments reverted
   3a54302ddc Claude: io: the first 2000 opens logged; apu: NC_APU_EP_PROFILE, NC_APU_DSP_KEEP
   a1cefd6dac Claude: apu: the EP profile dumps its code, registers, memory and DMA once
+  61339c3b5d Claude: apu: full DSP gives way to Fast when the EP puts out nothing in 32 runs
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18930,10 +18931,10 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e1204f513f8 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..da7f8d1fa912c5d306de5914c20aea540d88774d 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
-@@ -20,17 +20,136 @@
+@@ -20,17 +20,167 @@
   */
  
  #include "native/dev/apu/apu_int.h"
@@ -18956,12 +18957,44 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
 +    int64_t last_us;
 +} g_epp = {.on = -1};
 +
-+static void ep_profile_sample(DSPState *ep)
++/* OGBox 0.0.4: full DSP plays what the EP puts out (FIFO 0, one frame a run). In NFS Carbon the
++ * EP's program put out one frame and then looped at P:05b9 for good, in the JIT and in the
++ * interpreter alike (test17's EP profile): with full DSP the game had no sound, or, before Fast
++ * took over, sound slowed to a stop. 32 runs in a row (about 170 ms) that put out nothing and full
++ * DSP gives way to Fast for the rest of the run, the log saying where the EP is.
++ * NC_APU_DSP_KEEP=1: it stays. */
++static unsigned g_ep_quiet_runs;
++
++static void ep_output_watch(MCPXAPUState *d)
  {
 -    static int last_known_preference = -1;
-+    if (g_epp.on <= 0) {
++    static int keep = -1;
++    if (keep < 0) {
++        keep = getenv("NC_APU_DSP_KEEP") != NULL;
++    }
++    if (!g_apu_config.use_dsp || keep || ++g_ep_quiet_runs < 32) {
 +        return;
 +    }
++    uint32_t pc = d->ep.dsp->core.pc;
++#if NC_HAVE_DSP_JIT
++    if (d->ep.dsp->jit) {
++        Dsp56300State st;
++        dsp56300_get_state(d->ep.dsp->jit, &st);
++        pc = st.pc;
++    }
++#endif
++    g_apu_config.use_dsp = false;
++    mcpx_apu_update_dsp_preference(d);
++    nc_log("hakuX-apu", "full DSP: the EP put out no sound in %u runs (its program at P:%04x, %s): the rest of "
++           "this run mixes as Fast does (Settings > Audio)", g_ep_quiet_runs, pc, dsp_engine_name(d->ep.dsp));
++}
+ 
+-    if (last_known_preference == (int)g_apu_config.use_dsp) {
++static void ep_profile_sample(DSPState *ep)
++{
++    if (g_epp.on <= 0) {
+         return;
+     }
 +    uint32_t pc = ep->core.pc;
 +#if NC_HAVE_DSP_JIT
 +    if (ep->jit) {
@@ -18973,8 +19006,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
 +    g_epp.hits[pc % DSP_PRAM_SIZE]++;
 +    g_epp.samples++;
 +}
- 
--    if (last_known_preference == (int)g_apu_config.use_dsp) {
++
 +static void ep_profile_report(DSPState *ep)
 +{
 +    if (g_epp.on < 0) {
@@ -18983,8 +19015,8 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
 +        g_epp.last_us = apu_host_us();
 +    }
 +    if (g_epp.on <= 0 || apu_host_us() - g_epp.last_us < 5000000) {
-         return;
-     }
++        return;
++    }
 +    g_epp.last_us = apu_host_us();
 +    nc_log("hakuX-apu", "EP profile: %llu runs, %llu output frames, %llu runs at the allowance; the program "
 +           "counter's %llu samples (one each 1000 cycles), busiest:", (unsigned long long)g_epp.runs,
@@ -19073,7 +19105,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
      if (g_apu_config.use_dsp) {
          d->monitor.point = MCPX_APU_DEBUG_MON_GP_OR_EP;
          d->gp.realtime = true;
-@@ -40,8 +159,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
+@@ -40,8 +190,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
          d->gp.realtime = false;
          d->ep.realtime = false;
      }
@@ -19082,7 +19114,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
  }
  
  static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
-@@ -163,6 +280,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -163,6 +311,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -19090,7 +19122,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
          assert(index < GP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_GPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -220,6 +338,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -220,6 +369,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -19098,15 +19130,16 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
          assert(index < EP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -242,6 +361,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -242,6 +392,8 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      //     base, end, cur, len);
  
      if (dir && index == 0) {
 +        g_epp.outs++;
++        g_ep_quiet_runs = 0;
          bool did_sink = ep_sink_samples(d, ptr, len);
          if (did_sink) {
              /* Since we are sinking, push silence out */
-@@ -333,7 +453,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -333,7 +485,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19115,7 +19148,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -422,7 +542,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -422,7 +574,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19124,7 +19157,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +584,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +616,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
@@ -19142,7 +19175,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,16 +615,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +647,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -19161,7 +19194,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +632,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +664,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19175,7 +19208,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +652,28 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +684,29 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19200,6 +19233,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
 +                g_epp.limited++;
 +                frame_limit(d->ep.dsp);
 +            }
++            ep_output_watch(d);
          }
      }
 +    g_apu_dsp_us[1] += apu_host_us() - t_ep;
@@ -19207,7 +19241,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e12
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +710,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +743,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
