@@ -164,6 +164,7 @@ native core's work tree (oldest first; author: subject):
   e470c88379 Claude: apu: full DSP short of real time falls back to Fast within a second
   d648f2679e Claude: apu: the EP runs the cycles its 8 frames have on the chip, not twice them
   75dc745c36 Claude: apu: the EP's run back at twice its chip cycles (the chip's own left no sound)
+  f2429e134a Claude: apu: an EP run that only waits for its next frame stops there
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18454,7 +18455,7 @@ index a12ae47b40c96ca4c3c2feaaaa5dfd62efcd363e..79c7b2ab0ec3c7e112c6cd4dba4a839e
  int apu_out_queued(void);
  /* one EP frame in (the frame thread: the only producer; there is room) */
 diff --git a/native/dev/apu/dsp/dsp.c b/native/dev/apu/dsp/dsp.c
-index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd2c1225e1 100644
+index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152062a9700 100644
 --- a/native/dev/apu/dsp/dsp.c
 +++ b/native/dev/apu/dsp/dsp.c
 @@ -59,6 +59,12 @@ DSPState *dsp_init(void *rw_opaque,
@@ -18509,7 +18510,13 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd
          v = dsp_dma_read(&dsp->dma, DMA_CONTROL);
          break;
      case 0xFFFFD7:
-@@ -111,6 +138,11 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
+@@ -106,11 +133,17 @@ static uint32_t read_peripheral(dsp_core_t* core, uint32_t address) {
+ 
+ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value) {
+     DSPState* dsp = container_of(core, DSPState, core);
++    dsp->periph_writes++;
+ 
+     switch(address) {
      case 0xFFFFC4:
          if (value & 1) {
              core->is_idle = true;
@@ -18521,7 +18528,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd
          }
          break;
      case 0xFFFFC5:
-@@ -126,6 +158,9 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
+@@ -126,6 +159,9 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
          dsp_dma_write(&dsp->dma, DMA_START_BLOCK, value);
          break;
      case 0xFFFFD6:
@@ -18531,7 +18538,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd
          dsp_dma_write(&dsp->dma, DMA_CONTROL, value);
          break;
      case 0xFFFFD7:
-@@ -138,41 +173,64 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
+@@ -138,41 +174,64 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
  
  void dsp_step(DSPState* dsp)
  {
@@ -18621,7 +18628,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd
  }
  
  void dsp_bootstrap(DSPState* dsp)
-@@ -186,12 +244,24 @@ void dsp_bootstrap(DSPState* dsp)
+@@ -186,12 +245,24 @@ void dsp_bootstrap(DSPState* dsp)
              dsp->core.pram[i] &= 0x00ffffff;
          }
      }
@@ -18647,7 +18654,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd
  }
  
  uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
-@@ -213,6 +283,11 @@ uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
+@@ -213,6 +284,11 @@ uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
          return 0;
      }
  
@@ -18659,7 +18666,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd
      return dsp56k_read_memory(&dsp->core, space_id, address);
  }
  
-@@ -235,5 +310,11 @@ void dsp_write_memory(DSPState* dsp, char space, uint32_t address, uint32_t valu
+@@ -235,5 +311,11 @@ void dsp_write_memory(DSPState* dsp, char space, uint32_t address, uint32_t valu
          return;
      }
  
@@ -18895,7 +18902,7 @@ index c7dabcc99c76e7235b248b93739a9a408f0ebad4..d8af8fd82ffc04726da9134f824b9485
  
      }
 diff --git a/native/dev/apu/dsp/dsp_state.h b/native/dev/apu/dsp/dsp_state.h
-index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536f993f99d 100644
+index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..1e4ec1ba6a7cd66907648dd6e0321dbf98a22b21 100644
 --- a/native/dev/apu/dsp/dsp_state.h
 +++ b/native/dev/apu/dsp/dsp_state.h
 @@ -27,6 +27,7 @@
@@ -18906,7 +18913,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  struct DSPState {
      dsp_core_t core;
-@@ -36,6 +37,13 @@ struct DSPState {
+@@ -36,6 +37,21 @@ struct DSPState {
      uint32_t interrupts;
  
      bool is_gp;
@@ -18916,12 +18923,20 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
 +    bool jit_state_valid;
 +    Dsp56300State jit_state;
 +    uint32_t jit_dma_reads;
++    /* OGBox 0.0.4: a run that only waits (dsp_jit_waiting): its registers at the last check, the
++     * checks in a row that found no change, the peripheral writes seen then */
++    uint32_t spin_regs[64];
++    uint32_t spin_pc;
++    unsigned spin_same;
++    uint32_t spin_writes;
++    uint64_t spin_skipped;
 +#endif
++    uint32_t periph_writes;     /* OGBox 0.0.4: writes to the peripherals (dsp.c) */
  };
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098537ad7c6 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a168225d14 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
 @@ -20,17 +20,19 @@
@@ -19044,7 +19059,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +534,24 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +534,48 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19054,16 +19069,42 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
      if ((d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPRST) &&
          (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPDSPRST)) {
          if (d->ep_frame_div % 8 == 0) {
-             dsp_start_frame(d->ep.dsp);
+-            dsp_start_frame(d->ep.dsp);
 -            d->ep.dsp->core.is_idle = false;
 -            d->ep.dsp->core.cycle_count = 0;
++            DSPState *ep = d->ep.dsp;
++            dsp_start_frame(ep);
++            bool waits = false;
++#if NC_HAVE_DSP_JIT
++            if (ep->jit) {
++                dsp_jit_wait_reset(ep);
++            }
++#endif
              do {
-                 dsp_run(d->ep.dsp, 1000);
+-                dsp_run(d->ep.dsp, 1000);
 -            } while (!d->ep.dsp->core.is_idle && d->ep.realtime);
-+            } while (!d->ep.dsp->core.is_idle && d->ep.realtime &&
-+                     d->ep.dsp->core.cycle_count < 8 * DSP_FRAME_LIMIT);
-+            if (d->ep.realtime && !d->ep.dsp->core.is_idle) {
-+                frame_limit(d->ep.dsp);
++                dsp_run(ep, 1000);
++#if NC_HAVE_DSP_JIT
++                /* OGBox 0.0.4: a program that only waits for its next frame (test10: the EP never
++                 * went idle, ~950 us of host time a GP frame in its allowance) stops waiting here */
++                waits = ep->jit && ep->core.cycle_count < 8 * DSP_FRAME_LIMIT && dsp_jit_waiting(ep);
++#endif
++            } while (!waits && !ep->core.is_idle && d->ep.realtime &&
++                     ep->core.cycle_count < 8 * DSP_FRAME_LIMIT);
++#if NC_HAVE_DSP_JIT
++            if (waits) {
++                static bool said;
++                const uint64_t left = 8ull * DSP_FRAME_LIMIT - ep->core.cycle_count;
++                ep->spin_skipped += left;
++                if (!said) {
++                    said = true;
++                    nc_log("hakuX-apu", "EP DSP waits at P:%06x with nothing changing (%u cycles into its run): the "
++                           "rest of each such run is skipped", ep->spin_pc, ep->core.cycle_count);
++                }
++            }
++#endif
++            if (d->ep.realtime && !ep->core.is_idle && !waits) {
++                frame_limit(ep);
 +            }
          }
      }
@@ -19072,7 +19113,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +588,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +612,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
@@ -19346,10 +19387,10 @@ index 0000000000000000000000000000000000000000..7a3e1be79051c807defde2324e9bae5f
 +#endif
 diff --git a/native/dev/apu/dsp/jit.c b/native/dev/apu/dsp/jit.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a632e10f451b5850575b1fdc94f3169932dd821
+index 0000000000000000000000000000000000000000..c3e202367be2243a1a64807d5015c7ae5c7e02c5
 --- /dev/null
 +++ b/native/dev/apu/dsp/jit.c
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,220 @@
 +/*
 + * MCPX DSP emulator - DSP56300 JIT backend
 + *
@@ -19541,12 +19582,41 @@ index 0000000000000000000000000000000000000000..7a632e10f451b5850575b1fdc94f3169
 +    }
 +    dsp56300_set_state(dsp->jit, &state);
 +}
++
++void dsp_jit_wait_reset(DSPState *dsp)
++{
++    dsp->spin_same = 0;
++    dsp->spin_pc = 0xFFFFFFFFu;
++}
++
++bool dsp_jit_waiting(DSPState *dsp)
++{
++    static int s_on = -1;
++    if (s_on < 0) {
++        const char *e = getenv("NC_APU_EP_WAIT");      /* 0: run every allowance out, as before */
++        s_on = !(e && e[0] == '0');
++    }
++    if (!s_on) {
++        return false;
++    }
++    Dsp56300State st;
++    dsp56300_get_state(dsp->jit, &st);
++    const bool same = st.pc != 0xFFFFFFFFu && dsp->spin_pc != 0xFFFFFFFFu &&
++                      (st.pc > dsp->spin_pc ? st.pc - dsp->spin_pc : dsp->spin_pc - st.pc) <= 16 &&
++                      !memcmp(st.registers, dsp->spin_regs, sizeof(st.registers)) &&
++                      dsp->periph_writes == dsp->spin_writes && !(dsp->dma.control & DMA_CONTROL_RUNNING);
++    dsp->spin_same = same ? dsp->spin_same + 1 : 0;
++    memcpy(dsp->spin_regs, st.registers, sizeof(st.registers));
++    dsp->spin_pc = st.pc;
++    dsp->spin_writes = dsp->periph_writes;
++    return dsp->spin_same >= 3;
++}
 diff --git a/native/dev/apu/dsp/jit.h b/native/dev/apu/dsp/jit.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..025ff7fffe96910d550088146ca01cb5327d28ad
+index 0000000000000000000000000000000000000000..e6a75783809deb50406fcb63c4bab83e9627ecb5
 --- /dev/null
 +++ b/native/dev/apu/dsp/jit.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,27 @@
 +/* Copyright (C) 2026-present PortareOS */
 +/* DSP56300 JIT bridge; the C interpreter remains available in every build. */
 +#ifndef NATIVE_APU_DSP_JIT_H
@@ -19565,6 +19635,12 @@ index 0000000000000000000000000000000000000000..025ff7fffe96910d550088146ca01cb5
 +void dsp_jit_step(DSPState *dsp);
 +void dsp_jit_save(DSPState *dsp);
 +void dsp_jit_load(DSPState *dsp);
++/* OGBox 0.0.4: after a run of the JIT, whether the program only waits: no register but the
++ * program counter changed (within a few words), no peripheral written and no DMA running, for
++ * three runs in a row. Such a program waits for its next frame's interrupt, which can't come in
++ * this one: the rest of its allowance is skipped. dsp_jit_wait_reset at a frame's start. */
++bool dsp_jit_waiting(DSPState *dsp);
++void dsp_jit_wait_reset(DSPState *dsp);
 +#endif
 +
 +#endif
