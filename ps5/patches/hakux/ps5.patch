@@ -156,6 +156,7 @@ native core's work tree (oldest first; author: subject):
   b6ffdc521d Claude: io: dashupdate.xbe for a missing xboxdash.xbe; ke: a polling thread's boost goes
   4ff8a30603 Claude: hle: a device Reset keeps the device's render scale
   1ab1127700 Claude: hle: anisotropic filtering, forced 32-bit colour and sharpening (all off by default)
+  096e7d9c31 Claude: apu: guest accesses ahead of the frame thread; full DSP falls back to Fast when too slow
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -17681,10 +17682,18 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b62924221652f 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300e22c980c 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
-@@ -29,19 +29,37 @@
+@@ -21,6 +21,7 @@
+ /* hakuX native core: the device on the core's MMIO window (0xFE800000) and
+  * interrupt line 5, its frame thread, and its settings. */
+ 
++#include <sched.h>
+ #include "native/dev/apu/apu_int.h"
+ #include "native/core/mmio.h"
+ #include "native/core/vm.h"
+@@ -29,19 +30,37 @@
  /* HAKUX_APU_STATS=1 -> 1 Hz hakuX-apu line (audio evidence) */
  static bool g_apu_stats;
  static int g_apu_fifo_min = INT_MAX, g_apu_fifo_max;
@@ -17723,7 +17732,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
  };
  
  /* ------------------------------------------------------------ platform */
-@@ -102,9 +120,20 @@ static void update_irq(MCPXAPUState *d)
+@@ -102,9 +121,20 @@ static void update_irq(MCPXAPUState *d)
          ((d->regs[NV_PAPU_ISTS] & ~NV_PAPU_ISTS_GINTSTS) &
           d->regs[NV_PAPU_IEN])) {
          apu_or(&d->regs[NV_PAPU_ISTS], NV_PAPU_ISTS_GINTSTS);
@@ -17744,7 +17753,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
          nc_irq_set(MCPX_APU_IRQ, false);
      }
      pthread_mutex_unlock(&d->irq_lock);
-@@ -166,6 +195,7 @@ static uint64_t mcpx_apu_read(MCPXAPUState *d, uint32_t addr, unsigned int size)
+@@ -166,6 +196,7 @@ static uint64_t mcpx_apu_read(MCPXAPUState *d, uint32_t addr, unsigned int size)
  static void mcpx_apu_spin_wait(void)
  {
      MCPXAPUState *d = g_state;
@@ -17752,7 +17761,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
      if (d) {
          apu_st(&d->gp_boost_until_us, apu_host_us() + GP_BOOST_US);
      }
-@@ -448,6 +478,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -448,6 +479,7 @@ static void se_frame(MCPXAPUState *d)
          d->sleep_acc_us = 0;
      }
      d->frame_count++;
@@ -17760,7 +17769,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
      if (g_apu_stats) {
          int used = apu_out_queued();
          g_apu_fifo_min = MIN(g_apu_fifo_min, used);
-@@ -471,6 +502,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -471,6 +503,7 @@ static void se_frame(MCPXAPUState *d)
  
          if (d->monitor.fifo_capacity_bytes > 0) {
              apu_out_push(d->monitor.frame_buf, sizeof(d->monitor.frame_buf));
@@ -17768,7 +17777,14 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
          }
          memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
      }
-@@ -545,10 +577,8 @@ void mcpx_apu_reset(MCPXAPUState *d)
+@@ -539,16 +572,14 @@ static void monitor_init(MCPXAPUState *d)
+ 
+ void mcpx_apu_reset(MCPXAPUState *d)
+ {
+-    pthread_mutex_lock(&d->lock); // FIXME: Can fail if thread is pegged, add flag
++    apu_lock_guest(d);   /* OGBox 0.0.4: ahead of the frame thread (was: "can fail if thread is pegged") */
+     memset(d->regs, 0, sizeof(d->regs));
+ 
      mcpx_apu_vp_reset(d);
  
      // FIXME: Reset DSP state
@@ -17781,7 +17797,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
      apu_st(&d->set_irq, false);
      d->snapshot_just_loaded = false;
      d->next_frame_time_us = 0;
-@@ -588,6 +618,86 @@ void mcpx_apu_post_load(MCPXAPUState *d)
+@@ -588,6 +619,132 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      update_irq(d);
  }
  
@@ -17865,10 +17881,56 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
 +    mcpx_apu_vp_diag(d, s);
 +}
 +
++/* OGBox 0.0.4: a guest thread waiting for the lock (apu_lock_guest) gets it now, before the next
++ * frame: the frame thread waits (2 ms at most) until it has it, then queues behind it */
++static void let_guest_in(MCPXAPUState *d)
++{
++    if (!__atomic_load_n(&d->lock_waiters, __ATOMIC_SEQ_CST)) {
++        return;
++    }
++    pthread_mutex_unlock(&d->lock);
++    const int64_t t0 = apu_host_us();
++    while (__atomic_load_n(&d->lock_waiters, __ATOMIC_SEQ_CST) && apu_host_us() - t0 < 2000) {
++        sched_yield();
++    }
++    pthread_mutex_lock(&d->lock);
++}
++
++/* OGBox 0.0.4: full DSP (NC_APU_DSP=1) runs the GP's and EP's programs in the DSP interpreter
++ * where no DSP JIT is built (the PS5): about a third of real time (a GP frame of 0.67 ms of sound
++ * took ~2 ms). The sound then came in pieces, the movies that follow it stuttered, and games
++ * waited on the GP. When three seconds' frames in a row took more than 1.25 times their own
++ * length, the rest of the run mixes as Fast does, and the log says so. */
++static void dsp_speed_watch(MCPXAPUState *d, int64_t work_us)
++{
++    static int64_t s_work_us, s_frames;
++    static int s_slow_windows;
++    static bool s_fell_back;
++    if (!g_apu_config.use_dsp || s_fell_back) {
++        s_work_us = s_frames = 0;
++        s_slow_windows = 0;
++        return;
++    }
++    s_work_us += work_us;
++    if (++s_frames < 1500) {              /* a second's GP frames */
++        return;
++    }
++    const double per_frame = (double)s_work_us / (double)s_frames;
++    s_slow_windows = per_frame > 1.25 * GP_FRAME_US ? s_slow_windows + 1 : 0;
++    if (s_slow_windows >= 3) {
++        s_fell_back = true;
++        g_apu_config.use_dsp = false;
++        nc_log("hakuX-apu", "full DSP: a GP frame takes %.0f us of its %d (%.0f%% of real time) on this "
++               "console's DSP interpreter: the rest of this run mixes as Fast does (Settings > Audio)",
++               per_frame, GP_FRAME_US, 100.0 * GP_FRAME_US / per_frame);
++    }
++    s_work_us = s_frames = 0;
++}
++
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = arg;
-@@ -608,6 +718,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -608,6 +765,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          int xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
          uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
@@ -17876,7 +17938,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
          if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
-@@ -617,6 +728,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -617,6 +775,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          /* taken and cleared at once: one the guest thread raises meanwhile
           * stays for the next frame (a plain clear after update_irq lost it) */
          if (apu_xchg(&d->set_irq, false)) {
@@ -17884,7 +17946,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
              if (d->snapshot_just_loaded) {
                  /* Swallow exactly the FIRST post-restore IRQ assert: a voice
                   * that was at completion when the snapshot was taken re-emits
-@@ -634,6 +746,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -634,6 +793,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          }
  
          if (frames_stopped(d)) {
@@ -17892,7 +17954,18 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
              nc_pause_idle(true);                /* stopped until the guest acts */
              /* timed: the guest's register writes signal without d->lock (its
               * thread never takes it), so one can come between the check and
-@@ -670,10 +783,16 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -660,7 +820,10 @@ static void *mcpx_apu_frame_thread(void *arg)
+         if (nc_paused()) {
+             continue;                           /* the throttle let go for the pause: no frame */
+         }
++        const int64_t work0_us = apu_host_us();
+         se_frame(d);
++        dsp_speed_watch(d, apu_host_us() - work0_us);
++        let_guest_in(d);
+     }
+     pthread_mutex_unlock(&d->lock);
+     return NULL;
+@@ -670,10 +833,16 @@ static void *mcpx_apu_frame_thread(void *arg)
   * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
   * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
   * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
@@ -17910,7 +17983,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
      g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
      g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
      g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
-@@ -684,7 +803,7 @@ static void config_init(void)
+@@ -684,7 +853,7 @@ static void config_init(void)
  static void *apu_trace_thread(void *arg)
  {
      MCPXAPUState *d = arg;
@@ -17919,7 +17992,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
          sleep(2);
          nc_log("hakuX-native-apu",
                 "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
-@@ -727,9 +846,19 @@ static void *apu_trace_thread(void *arg)
+@@ -727,9 +896,19 @@ static void *apu_trace_thread(void *arg)
      return NULL;
  }
  
@@ -17940,7 +18013,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,10 +883,48 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,10 +933,48 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -17959,7 +18032,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..5c0ac917ed2697327668ed497e7b6292
 +    if (!d) {
 +        return;
 +    }
-+    pthread_mutex_lock(&d->lock);
++    apu_lock_guest(d);
 +    apu_st(&d->exiting, true);
 +    pthread_cond_broadcast(&d->cond);   /* a frame thread stopped until the guest acts */
 +    pthread_mutex_unlock(&d->lock);
@@ -18018,10 +18091,38 @@ index a4fc3d3d5b1643256eff5dddb7ece9b4fd329f68..4accc4c5735f1c0769921c437a2ac3a1
  extern ApuConfig g_apu_config;
  
 diff --git a/native/dev/apu/apu_int.h b/native/dev/apu/apu_int.h
-index a12ae47b40c96ca4c3c2feaaaa5dfd62efcd363e..8f25342ad83dfc9d8e3d7c673017f277edaa6b1f 100644
+index a12ae47b40c96ca4c3c2feaaaa5dfd62efcd363e..79c7b2ab0ec3c7e112c6cd4dba4a839e05a80fce 100644
 --- a/native/dev/apu/apu_int.h
 +++ b/native/dev/apu/apu_int.h
-@@ -122,6 +122,9 @@ extern MCPXAPUState *g_state; /* the one APU: the savestate section's */
+@@ -69,6 +69,11 @@ typedef struct MCPXAPUState {
+ 
+     pthread_t apu_thread;
+     pthread_mutex_t lock;
++    /* OGBox 0.0.4: the guest's threads waiting for lock (apu_lock_guest). The frame thread lets
++     * them in between frames: with full DSP slower than real time it never slept, and re-took the
++     * lock as soon as it let it go, so a guest write to the GP's memory waited forever (a game
++     * frozen on its first sound) */
++    int lock_waiters;
+     pthread_cond_t cond;
+     /* update_irq: the line recomputed from ISTS/IEN and set as one step. The
+      * guest's acknowledge (its CPU thread) and the frame thread's raise
+@@ -112,6 +117,15 @@ typedef struct MCPXAPUState {
+     } monitor;
+ } MCPXAPUState;
+ 
++/* OGBox 0.0.4: the APU's lock for a guest access (or the core's): ahead of the frame thread */
++static inline void apu_lock_guest(MCPXAPUState *d)
++{
++    __atomic_add_fetch(&d->lock_waiters, 1, __ATOMIC_SEQ_CST);
++    pthread_mutex_lock(&d->lock);
++    __atomic_sub_fetch(&d->lock_waiters, 1, __ATOMIC_SEQ_CST);
++}
++
++
+ extern MCPXAPUState *g_state; /* the one APU: the savestate section's */
+ 
+ /* ---- the output device (out.c): 48 kHz 16-bit stereo, a ring of EP frames
+@@ -122,6 +136,9 @@ extern MCPXAPUState *g_state; /* the one APU: the savestate section's */
   * it at the high watermark). Returns the callback's size in bytes (the
   * device's, or the request's). */
  int apu_out_open(int capacity_bytes, int samples, pthread_cond_t *wake);
@@ -18500,7 +18601,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..c04b76de12257a912e5081c62bc42dbaac18393f 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..78ed8e4db4b8fec861cee1098840e1406171adb0 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
 @@ -20,17 +20,16 @@
@@ -18551,6 +18652,24 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..c04b76de12257a912e5081c62bc42dba
          assert(index < EP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
+@@ -333,7 +332,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+ {
+     MCPXAPUState *d = opaque;
+ 
+-    pthread_mutex_lock(&d->lock);
++    apu_lock_guest(d);   /* OGBox 0.0.4: ahead of the frame thread */
+ 
+     assert(size == 4);
+     assert(addr % 4 == 0);
+@@ -422,7 +421,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+ {
+     MCPXAPUState *d = opaque;
+ 
+-    pthread_mutex_lock(&d->lock);
++    apu_lock_guest(d);   /* OGBox 0.0.4: ahead of the frame thread */
+ 
+     assert(size == 4);
+     assert(addr % 4 == 0);
 @@ -464,6 +463,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
@@ -19311,7 +19430,7 @@ index 0000000000000000000000000000000000000000..5cfc278b02b43386b7ca69bf9985e95d
 +
 +#endif
 diff --git a/native/dev/apu/state.c b/native/dev/apu/state.c
-index 3be5d5011e7e6c7df3ac7e593306ad3539de6b1c..1e7b07202754b18b2126b0e80a11016927013458 100644
+index 3be5d5011e7e6c7df3ac7e593306ad3539de6b1c..e4227f97a6afbf9319c07c2a5884dffdba3a34fb 100644
 --- a/native/dev/apu/state.c
 +++ b/native/dev/apu/state.c
 @@ -40,6 +40,7 @@ struct ApuField {
@@ -19380,19 +19499,23 @@ index 3be5d5011e7e6c7df3ac7e593306ad3539de6b1c..1e7b07202754b18b2126b0e80a110169
      END,
  };
  static const ApuDesc k_apu = {"mcpx-apu", k_apu_fields};
-@@ -249,6 +289,8 @@ bool nc_apu_state_save(NcBuf *b)
+@@ -248,7 +288,9 @@ bool nc_apu_state_save(NcBuf *b)
+     MCPXAPUState *d = g_state;
      const NcApuState st = {APU_STATE_VERSION};
      nc_rec_put(b, &nc_rec_NcApuState, &st);
-     pthread_mutex_lock(&d->lock);
+-    pthread_mutex_lock(&d->lock);
++    apu_lock_guest(d);   /* OGBox 0.0.4: ahead of the frame thread */
 +    dsp_state_prepare_save(d->gp.dsp);
 +    dsp_state_prepare_save(d->ep.dsp);
      put(b, &k_apu, d);
      pthread_cond_signal(&d->cond);
      pthread_mutex_unlock(&d->lock);
-@@ -267,7 +309,15 @@ bool nc_apu_state_load(NcRd *r, unsigned v)
+@@ -266,8 +308,16 @@ bool nc_apu_state_load(NcRd *r, unsigned v)
+         return false;
      }
      mcpx_apu_reset(d);
-     pthread_mutex_lock(&d->lock);
+-    pthread_mutex_lock(&d->lock);
++    apu_lock_guest(d);   /* OGBox 0.0.4: ahead of the frame thread */
 +#if NC_HAVE_DSP_JIT
 +    d->gp.dsp->jit_state_valid = d->ep.dsp->jit_state_valid = false;
 +    d->gp.dsp->jit_dma_reads = d->ep.dsp->jit_dma_reads = 0;

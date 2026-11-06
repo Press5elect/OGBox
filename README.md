@@ -252,6 +252,7 @@ Changed
 Fixed
 - A black screen in the Xbox dashboard at a resolution scale of 5 or 6.
 - Covers filling in one by one after coming back from a game.
+- Games freezing, and movies stuttering, with Audio processing set to Full DSP.
 
 ### 0.0.3
 
