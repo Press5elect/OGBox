@@ -11,10 +11,10 @@ index 4b68766..4496a78 100644
  ]
  
 diff --git a/crates/emu-ffi/Cargo.toml b/crates/emu-ffi/Cargo.toml
-index 5c9e22c..3fab9ad 100644
+index 5c9e22c..775d57b 100644
 --- a/crates/emu-ffi/Cargo.toml
 +++ b/crates/emu-ffi/Cargo.toml
-@@ -18,3 +18,8 @@ cbindgen = "0.29"
+@@ -18,3 +18,10 @@ cbindgen = "0.29"
  [dependencies]
  dsp56300-core = { version = "1.0.0", path = "../core" }
  dsp56300-emu = { version = "1.0.0", path = "../emu", default-features = false }
@@ -23,6 +23,8 @@ index 5c9e22c..3fab9ad 100644
 +# OGBox (PS5): the JIT's code in read-write-execute memory; dsp56300_create returns NULL
 +# where the process may not map it (the caller then interprets).
 +rwx-memory = ["dsp56300-emu/rwx-memory"]
++# ... from the linking program (dsp56300_host_map_rwx, dsp56300_host_unmap_rwx)
++host-memory = ["dsp56300-emu/host-memory"]
 diff --git a/crates/emu-ffi/build.rs b/crates/emu-ffi/build.rs
 index 1aab775..a998ce1 100644
 --- a/crates/emu-ffi/build.rs
@@ -55,20 +57,23 @@ index bde6c77..195acde 100644
          MemoryMap::default()
      } else {
 diff --git a/crates/emu/Cargo.toml b/crates/emu/Cargo.toml
-index 70da7f8..d6bf1aa 100644
+index 70da7f8..54c8d6b 100644
 --- a/crates/emu/Cargo.toml
 +++ b/crates/emu/Cargo.toml
-@@ -18,6 +18,9 @@ cli = ["dep:clap"]
+@@ -18,6 +18,12 @@ cli = ["dep:clap"]
  # preemption quantum, so the slice/preemption differential tests can compare
  # a fully inline loop against a preempted one in the same process.
  tunable-loop-quantum = []
 +# OGBox (PS5): JIT code in read-write-execute memory (src/rwx.rs), for hosts where read+execute
 +# pages are execute-only.
 +rwx-memory = ["dep:libc"]
++# OGBox (PS5): that memory from the program linking the library (dsp56300_host_map_rwx and
++# dsp56300_host_unmap_rwx, src/rwx.rs).
++host-memory = ["rwx-memory"]
  
  [dependencies]
  dsp56300-core = { version = "1.0.0", path = "../core" }
-@@ -27,6 +30,7 @@ cranelift-jit = "0.134.3"
+@@ -27,6 +33,7 @@ cranelift-jit = "0.134.3"
  cranelift-module = "0.134.3"
  cranelift-native = "0.134.3"
  target-lexicon = "0.13"
@@ -105,10 +110,10 @@ index 74c9c4b..3347d86 100644
 +pub mod rwx;
 diff --git a/crates/emu/src/rwx.rs b/crates/emu/src/rwx.rs
 new file mode 100644
-index 0000000..470dcf7
+index 0000000..6f6fb99
 --- /dev/null
 +++ b/crates/emu/src/rwx.rs
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,139 @@
 +//! Read-write-execute JIT memory, for hosts that make read+execute pages execute-only.
 +//!
 +//! OGBox (Press5elect), for the PS5: there a page mapped read and execute can't be read, so the
@@ -116,6 +121,15 @@ index 0000000..470dcf7
 +//! would fault once the default provider's `finalize` took the write bit away. This provider maps
 +//! its chunks read, write and execute once and leaves them so; x86-64 keeps its instruction cache
 +//! coherent with stores, so `finalize` has nothing to do.
++//!
++//! Where the memory comes from:
++//! - with the `host-memory` feature, from the program linking this library:
++//!   `void *dsp56300_host_map_rwx(size_t len)` (NULL when it can't) and
++//!   `void dsp56300_host_unmap_rwx(void *p, size_t len)`. On the PS5 an anonymous map asked for
++//!   read, write and execute succeeds and isn't executable (the first call into it faults); OGBox
++//!   gives the JIT the memory it runs the Xbox's own code from (direct memory, execute granted
++//!   after the map).
++//! - otherwise an anonymous map, read-write-execute (Linux, FreeBSD).
 +
 +use std::io;
 +use std::ptr;
@@ -138,55 +152,56 @@ index 0000000..470dcf7
 +
 +unsafe impl Send for RwxMemoryProvider {}
 +
-+/// Read-write-execute memory, by the first way the host allows: an anonymous map so (Linux,
-+/// FreeBSD); an anonymous read-write map given execute after (a host that refuses the three at
-+/// once); a shared memory object mapped read-write and given execute after, as OGBox maps the
-+/// Xbox's memory on the PS5 (memfd_create, which its link binds to the platform layer's shared
-+/// memory on direct memory).
-+fn map_rwx(len: usize) -> io::Result<*mut u8> {
-+    let rwx = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
-+    let rw = libc::PROT_READ | libc::PROT_WRITE;
-+    unsafe {
-+        let p = libc::mmap(ptr::null_mut(), len, rwx, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0);
-+        if p != libc::MAP_FAILED {
-+            return Ok(p as *mut u8);
-+        }
-+        let p = libc::mmap(ptr::null_mut(), len, rw, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0);
-+        if p != libc::MAP_FAILED {
-+            if libc::mprotect(p, len, rwx) == 0 {
-+                return Ok(p as *mut u8);
-+            }
-+            libc::munmap(p, len);
-+        }
-+        #[cfg(any(target_os = "freebsd", target_os = "linux"))]
-+        {
-+            let fd = libc::memfd_create(c"dsp56300-jit".as_ptr(), 0);
-+            if fd >= 0 {
-+                let ok = libc::ftruncate(fd, len as libc::off_t) == 0;
-+                let p = if ok {
-+                    libc::mmap(ptr::null_mut(), len, rw, libc::MAP_SHARED, fd, 0)
-+                } else {
-+                    libc::MAP_FAILED
-+                };
-+                libc::close(fd);    // the map keeps the object
-+                if p != libc::MAP_FAILED {
-+                    if libc::mprotect(p, len, rwx) == 0 {
-+                        return Ok(p as *mut u8);
-+                    }
-+                    libc::munmap(p, len);
-+                }
-+            }
-+        }
-+    }
-+    Err(io::Error::other("no read-write-execute memory for the JIT"))
++#[cfg(feature = "host-memory")]
++unsafe extern "C" {
++    fn dsp56300_host_map_rwx(len: usize) -> *mut u8;
++    fn dsp56300_host_unmap_rwx(p: *mut u8, len: usize);
 +}
 +
-+/// Whether this process may map read-write-execute memory (checked with one chunk's first 64 KiB:
-+/// a whole number of the PS5's 16 KiB pages).
++#[cfg(feature = "host-memory")]
++fn map_rwx(len: usize) -> io::Result<*mut u8> {
++    let p = unsafe { dsp56300_host_map_rwx(len) };
++    if p.is_null() {
++        Err(io::Error::other("the host gave no read-write-execute memory for the JIT"))
++    } else {
++        Ok(p)
++    }
++}
++
++#[cfg(feature = "host-memory")]
++fn unmap(p: *mut u8, len: usize) {
++    unsafe { dsp56300_host_unmap_rwx(p, len) };
++}
++
++#[cfg(not(feature = "host-memory"))]
++fn map_rwx(len: usize) -> io::Result<*mut u8> {
++    let p = unsafe {
++        libc::mmap(
++            ptr::null_mut(),
++            len,
++            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
++            libc::MAP_PRIVATE | libc::MAP_ANON,
++            -1,
++            0,
++        )
++    };
++    if p == libc::MAP_FAILED {
++        Err(io::Error::last_os_error())
++    } else {
++        Ok(p as *mut u8)
++    }
++}
++
++#[cfg(not(feature = "host-memory"))]
++fn unmap(p: *mut u8, len: usize) {
++    unsafe { libc::munmap(p as *mut libc::c_void, len) };
++}
++
++/// Whether read-write-execute memory can be had (checked with one chunk, then given back).
 +pub fn rwx_available() -> bool {
-+    match map_rwx(1 << 16) {
++    match map_rwx(CHUNK) {
 +        Ok(p) => {
-+            unsafe { libc::munmap(p as *mut libc::c_void, 1 << 16) };
++            unmap(p, CHUNK);
 +            true
 +        }
 +        Err(_) => false,
@@ -224,7 +239,7 @@ index 0000000..470dcf7
 +
 +    unsafe fn free_memory(&mut self) {
 +        for c in self.chunks.drain(..) {
-+            unsafe { libc::munmap(c.ptr as *mut libc::c_void, c.len) };
++            unmap(c.ptr, c.len);
 +        }
 +    }
 +

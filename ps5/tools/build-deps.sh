@@ -171,7 +171,8 @@ fi
 # target (ps5/rust/ps5/x86_64-unknown-freebsd.json: FreeBSD's, with emulated thread-locals, as the
 # console's clang makes them, and no dynamic linking), so the build takes a nightly toolchain,
 # pinned, with rust-src. Its patch (ps5/patches/dsp56300): the JIT's code in read-write-execute
-# memory, where the PS5 makes read+execute pages execute-only. Six of std's imports that the
+# memory, where the PS5 makes read+execute pages execute-only, which OGBox gives it
+# (host-memory: ps5/hakux/apu/dsp_jit_mem_ps5.c). Six of std's imports that the
 # console's libkernel stub defines (and lld would export a definition of) are renamed in the
 # archive to ogbox_rs_<name>; ps5/hakux/compat/rust_std_stubs.c defines them and the calls the
 # console lacks. Its crates' licences go to $bld/dsp56300-THIRD-PARTY.txt (the notices).
@@ -192,7 +193,7 @@ if [[ $(cat "$bld/dsp56300.done" 2>/dev/null) != "$dsp_stamp" ]]; then
         ( cd "$src/dsp56300" && RUSTFLAGS="-Cpanic=abort" CARGO_TARGET_DIR="$target_dir" \
             cargo "+$dsp_toolchain" build --locked --release -Zjson-target-spec -Zbuild-std=std,panic_abort \
             --target "$ps5/rust/ps5/x86_64-unknown-freebsd.json" \
-            -p dsp56300-emu-ffi --no-default-features --features rwx-memory ) > "$bld/dsp56300.log" 2>&1 \
+            -p dsp56300-emu-ffi --no-default-features --features host-memory ) > "$bld/dsp56300.log" 2>&1 \
             || { tail -30 "$bld/dsp56300.log" >&2; exit 1; }
         objcopy=$(dirname "$("$sdk/toolchain/../bin/prospero-clang" -print-prog-name=clang 2>/dev/null || echo /usr/lib/llvm-20/bin/clang)")/llvm-objcopy
         [[ -x $objcopy ]] || objcopy=/usr/lib/llvm-20/bin/llvm-objcopy

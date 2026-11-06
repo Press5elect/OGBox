@@ -242,7 +242,7 @@ hakux_target(hakux_apu)
 # library (no Rust toolchain) the interpreter runs, as before.
 set(PSHAKUX_DSP56300_LIB "${PSHAKUX_PORTS}/lib/libdsp56300_emu_ffi.a")
 if(EXISTS "${PSHAKUX_DSP56300_LIB}" AND EXISTS "${PSHAKUX_PORTS}/include/dsp56300.h")
-	target_sources(hakux_apu PRIVATE ${NC_APU}/dsp/jit.c)
+	target_sources(hakux_apu PRIVATE ${NC_APU}/dsp/jit.c ${PSHAKUX_HX}/apu/dsp_jit_mem_ps5.c)
 	target_compile_definitions(hakux_apu PRIVATE NC_HAVE_DSP_JIT=1)
 	target_include_directories(hakux_apu PRIVATE ${PSHAKUX_PORTS}/include)
 	set(PSHAKUX_DSP_ARCHIVES "${PSHAKUX_DSP56300_LIB}")
