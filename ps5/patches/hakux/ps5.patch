@@ -158,6 +158,7 @@ native core's work tree (oldest first; author: subject):
   1ab1127700 Claude: hle: anisotropic filtering, forced 32-bit colour and sharpening (all off by default)
   096e7d9c31 Claude: apu: guest accesses ahead of the frame thread; full DSP falls back to Fast when too slow
   9b09663d38 Claude: apu: the DSP56300 JIT in the CMake build; NC_APU_RAW for the host
+  45e1c2cfc8 Claude: apu: a DSP JIT that stopped on a panic hands its state to the interpreter
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18149,7 +18150,7 @@ index a12ae47b40c96ca4c3c2feaaaa5dfd62efcd363e..79c7b2ab0ec3c7e112c6cd4dba4a839e
  int apu_out_queued(void);
  /* one EP frame in (the frame thread: the only producer; there is room) */
 diff --git a/native/dev/apu/dsp/dsp.c b/native/dev/apu/dsp/dsp.c
-index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..940b72112e9951e4c560b0c0e9ea5e347ea5bef1 100644
+index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd2c1225e1 100644
 --- a/native/dev/apu/dsp/dsp.c
 +++ b/native/dev/apu/dsp/dsp.c
 @@ -59,6 +59,12 @@ DSPState *dsp_init(void *rw_opaque,
@@ -18226,14 +18227,13 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..940b72112e9951e4c560b0c0e9ea5e34
          dsp_dma_write(&dsp->dma, DMA_CONTROL, value);
          break;
      case 0xFFFFD7:
-@@ -138,41 +173,65 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
+@@ -138,41 +173,64 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
  
  void dsp_step(DSPState* dsp)
  {
 +#if NC_HAVE_DSP_JIT
 +    if (dsp->jit) {
-+        dsp56300_step(dsp->jit);
-+        dsp_jit_save(dsp);
++        dsp_jit_step(dsp);
 +        return;
 +    }
 +#endif
@@ -18317,7 +18317,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..940b72112e9951e4c560b0c0e9ea5e34
  }
  
  void dsp_bootstrap(DSPState* dsp)
-@@ -186,12 +245,24 @@ void dsp_bootstrap(DSPState* dsp)
+@@ -186,12 +244,24 @@ void dsp_bootstrap(DSPState* dsp)
              dsp->core.pram[i] &= 0x00ffffff;
          }
      }
@@ -18343,7 +18343,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..940b72112e9951e4c560b0c0e9ea5e34
  }
  
  uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
-@@ -213,6 +284,11 @@ uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
+@@ -213,6 +283,11 @@ uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
          return 0;
      }
  
@@ -18355,7 +18355,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..940b72112e9951e4c560b0c0e9ea5e34
      return dsp56k_read_memory(&dsp->core, space_id, address);
  }
  
-@@ -235,5 +311,11 @@ void dsp_write_memory(DSPState* dsp, char space, uint32_t address, uint32_t valu
+@@ -235,5 +310,11 @@ void dsp_write_memory(DSPState* dsp, char space, uint32_t address, uint32_t valu
          return;
      }
  
@@ -19019,10 +19019,10 @@ index 0000000000000000000000000000000000000000..7a3e1be79051c807defde2324e9bae5f
 +#endif
 diff --git a/native/dev/apu/dsp/jit.c b/native/dev/apu/dsp/jit.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..48114bc93d1cbdbefcec0fd450e680aa61e78f0a
+index 0000000000000000000000000000000000000000..7a632e10f451b5850575b1fdc94f3169932dd821
 --- /dev/null
 +++ b/native/dev/apu/dsp/jit.c
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,191 @@
 +/*
 + * MCPX DSP emulator - DSP56300 JIT backend
 + *
@@ -19088,10 +19088,36 @@ index 0000000000000000000000000000000000000000..48114bc93d1cbdbefcec0fd450e680aa
 +    return dsp56300_create(&info);
 +}
 +
++/* OGBox 0.0.4: the engine stopped on a panic (dsp56300_failed; the crate catches its panics and
++ * logs them where it is built to unwind): its state into the interpreter's, which goes on from
++ * there (the instance is left: its code may be what failed) */
++static bool jit_failed(DSPState *dsp)
++{
++    if (!dsp56300_failed(dsp->jit)) {
++        return false;
++    }
++    nc_log("hakuX-apu", "dsp jit: the %s DSP's JIT stopped (the line before says why): its interpreter runs on",
++           dsp->is_gp ? "GP" : "EP");
++    dsp_jit_save(dsp);
++    dsp->jit = NULL;
++    return true;
++}
++
++void dsp_jit_step(DSPState *dsp)
++{
++    dsp56300_step(dsp->jit);
++    if (!jit_failed(dsp)) {
++        dsp_jit_save(dsp);
++    }
++}
++
 +void dsp_jit_run(DSPState *dsp, int cycles)
 +{
 +    const uint32_t before = dsp56300_cycle_count(dsp->jit);
 +    dsp56300_run(dsp->jit, cycles);
++    if (jit_failed(dsp)) {
++        return;
++    }
 +    const uint32_t after = dsp56300_cycle_count(dsp->jit);
 +    if (after == before && !dsp56300_halt_requested(dsp->jit)) {
 +        /* WAIT/STOP executes nothing until an interrupt can wake the DSP;
@@ -19190,10 +19216,10 @@ index 0000000000000000000000000000000000000000..48114bc93d1cbdbefcec0fd450e680aa
 +}
 diff --git a/native/dev/apu/dsp/jit.h b/native/dev/apu/dsp/jit.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..31f9bb31bc661382f1d3a00ce4693a28cfc088de
+index 0000000000000000000000000000000000000000..025ff7fffe96910d550088146ca01cb5327d28ad
 --- /dev/null
 +++ b/native/dev/apu/dsp/jit.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +/* Copyright (C) 2026-present PortareOS */
 +/* DSP56300 JIT bridge; the C interpreter remains available in every build. */
 +#ifndef NATIVE_APU_DSP_JIT_H
@@ -19209,6 +19235,7 @@ index 0000000000000000000000000000000000000000..31f9bb31bc661382f1d3a00ce4693a28
 +
 +Dsp56300Jit *dsp_jit_create(DSPState *dsp);
 +void dsp_jit_run(DSPState *dsp, int cycles);
++void dsp_jit_step(DSPState *dsp);
 +void dsp_jit_save(DSPState *dsp);
 +void dsp_jit_load(DSPState *dsp);
 +#endif

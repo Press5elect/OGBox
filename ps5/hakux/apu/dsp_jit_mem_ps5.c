@@ -1,6 +1,6 @@
 /*
- * OGBox - the DSP56300 JIT's code memory on the PS5 (the dsp56300 crate's host-memory feature:
- * dsp56300_host_map_rwx, dsp56300_host_unmap_rwx).
+ * OGBox - the DSP56300 JIT's code memory on the PS5, and its panics' messages (the dsp56300 crate's
+ * host-memory feature: dsp56300_host_map_rwx, dsp56300_host_unmap_rwx, dsp56300_host_log).
  *
  * Copyright (C) 2026 Press5elect
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -101,4 +101,12 @@ void dsp56300_host_unmap_rwx(void *p, size_t len)
         }
     }
     pthread_mutex_unlock(&g_lock);
+}
+
+/* A panic in the JIT (caught by the crate: native/dev/apu/dsp/jit.c goes on with the interpreter),
+ * its message and where */
+void dsp56300_host_log(const char *line)
+{
+    nc_log("hakuX-apu", "%s", line ? line : "dsp56300: panicked");
+    nc_log_flush();
 }

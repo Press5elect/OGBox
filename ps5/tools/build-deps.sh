@@ -190,8 +190,10 @@ if [[ $(cat "$bld/dsp56300.done" 2>/dev/null) != "$dsp_stamp" ]]; then
         git -C "$src/dsp56300" apply "$ps5/patches/dsp56300/ogbox-ps5.patch"
         rm -f "$src/dsp56300/rust-toolchain.toml"   # (its channel, 1.99.1, can't build std for a target)
         target_dir="$bld/dsp56300"
-        ( cd "$src/dsp56300" && RUSTFLAGS="-Cpanic=abort" CARGO_TARGET_DIR="$target_dir" \
-            cargo "+$dsp_toolchain" build --locked --release -Zjson-target-spec -Zbuild-std=std,panic_abort \
+        # (unwinding: the crate catches its panics at the C boundary, logs them and stops the JIT, the
+        # interpreter going on, instead of the title aborting; the console's libunwind unwinds)
+        ( cd "$src/dsp56300" && CARGO_TARGET_DIR="$target_dir" \
+            cargo "+$dsp_toolchain" build --locked --release -Zjson-target-spec -Zbuild-std=std,panic_unwind \
             --target "$ps5/rust/ps5/x86_64-unknown-freebsd.json" \
             -p dsp56300-emu-ffi --no-default-features --features host-memory ) > "$bld/dsp56300.log" 2>&1 \
             || { tail -30 "$bld/dsp56300.log" >&2; exit 1; }

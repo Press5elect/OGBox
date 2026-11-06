@@ -11,7 +11,7 @@ index 4b68766..4496a78 100644
  ]
  
 diff --git a/crates/emu-ffi/Cargo.toml b/crates/emu-ffi/Cargo.toml
-index 5c9e22c..775d57b 100644
+index 5c9e22c..8944ac9 100644
 --- a/crates/emu-ffi/Cargo.toml
 +++ b/crates/emu-ffi/Cargo.toml
 @@ -18,3 +18,10 @@ cbindgen = "0.29"
@@ -24,7 +24,7 @@ index 5c9e22c..775d57b 100644
 +# where the process may not map it (the caller then interprets).
 +rwx-memory = ["dsp56300-emu/rwx-memory"]
 +# ... from the linking program (dsp56300_host_map_rwx, dsp56300_host_unmap_rwx)
-+host-memory = ["dsp56300-emu/host-memory"]
++host-memory = ["rwx-memory", "dsp56300-emu/host-memory"]
 diff --git a/crates/emu-ffi/build.rs b/crates/emu-ffi/build.rs
 index 1aab775..a998ce1 100644
 --- a/crates/emu-ffi/build.rs
@@ -41,11 +41,81 @@ index 1aab775..a998ce1 100644
      cc::Build::new()
          .file("examples/quickstart.c")
          .include("include")
+diff --git a/crates/emu-ffi/include/dsp56300.h b/crates/emu-ffi/include/dsp56300.h
+index 1e5f658..c620318 100644
+--- a/crates/emu-ffi/include/dsp56300.h
++++ b/crates/emu-ffi/include/dsp56300.h
+@@ -222,6 +222,17 @@ typedef struct {
+   uint32_t stack[2][16];
+ } Dsp56300State;
+ 
++extern void dsp56300_host_log(const char *line);
++
++/**
++ * Whether the engine stopped on a panic (OGBox): the caller goes on without it, from the state
++ * `dsp56300_get_state` gives.
++ *
++ * # Safety
++ * `dsp` must be a valid pointer to a `DspJit`.
++ */
++bool dsp56300_failed(const Dsp56300Jit *dsp);
++
+ /**
+  * Create a new DSP JIT instance.
+  *
 diff --git a/crates/emu-ffi/src/lib.rs b/crates/emu-ffi/src/lib.rs
-index bde6c77..195acde 100644
+index bde6c77..0926064 100644
 --- a/crates/emu-ffi/src/lib.rs
 +++ b/crates/emu-ffi/src/lib.rs
-@@ -205,6 +205,10 @@ impl CMemSpace {
+@@ -174,6 +174,47 @@ unsafe fn convert_create_info(info: *const CCreateInfo) -> MemoryMap {
+ pub struct DspJit {
+     state: DspState,
+     jit: JitEngine,
++    /// OGBox: a panic in the engine (caught where the build unwinds): nothing runs any more
++    failed: bool,
++}
++
++/// OGBox: the engine's panics (built with unwinding) caught at the C boundary instead of taking
++/// the program down; with `host-memory`, each one's message goes to the program's log
++/// (`void dsp56300_host_log(const char *line)`).
++#[cfg(feature = "host-memory")]
++unsafe extern "C" {
++    fn dsp56300_host_log(line: *const std::ffi::c_char);
++}
++
++fn install_panic_log() {
++    #[cfg(feature = "host-memory")]
++    {
++        static ONCE: std::sync::Once = std::sync::Once::new();
++        ONCE.call_once(|| {
++            std::panic::set_hook(Box::new(|info| {
++                let line = format!("dsp56300: panicked: {info}");
++                if let Ok(c) = std::ffi::CString::new(line) {
++                    unsafe { dsp56300_host_log(c.as_ptr()) };
++                }
++            }));
++        });
++    }
++}
++
++/// OGBox: `f` with a panic caught (false then)
++fn guarded<F: FnOnce()>(f: F) -> bool {
++    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok()
++}
++
++/// Whether the engine stopped on a panic (OGBox): the caller goes on without it, from the state
++/// `dsp56300_get_state` gives.
++///
++/// # Safety
++/// `dsp` must be a valid pointer to a `DspJit`.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn dsp56300_failed(dsp: *const DspJit) -> bool {
++    let dsp = unsafe { &*dsp };
++    dsp.failed
+ }
+ 
+ /// FFI-safe memory space enum.
+@@ -205,6 +246,10 @@ impl CMemSpace {
  /// All buffer and callback pointers in `info` must be valid.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn dsp56300_create(info: *const CCreateInfo) -> *mut DspJit {
@@ -56,6 +126,54 @@ index bde6c77..195acde 100644
      let map = if info.is_null() {
          MemoryMap::default()
      } else {
+@@ -212,11 +257,17 @@ pub unsafe extern "C" fn dsp56300_create(info: *const CCreateInfo) -> *mut DspJi
+     };
+ 
+     let pram_size = map.p_space_end() as usize;
+-    let state = DspState::new(map);
++    install_panic_log();
++    let mut made = None;
++    if !guarded(|| made = Some((DspState::new(map), JitEngine::new(pram_size)))) {
++        return std::ptr::null_mut();
++    }
++    let (state, jit) = made.unwrap();
+ 
+     Box::into_raw(Box::new(DspJit {
+         state,
+-        jit: JitEngine::new(pram_size),
++        jit,
++        failed: false,
+     }))
+ }
+ 
+@@ -275,7 +326,13 @@ pub unsafe extern "C" fn dsp56300_reset(dsp: *mut DspJit) {
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn dsp56300_step(dsp: *mut DspJit) {
+     let dsp = unsafe { &mut *dsp };
+-    dsp.state.execute_one(&mut dsp.jit);
++    if dsp.failed {
++        return;
++    }
++    let (state, jit) = (&mut dsp.state, &mut dsp.jit);
++    dsp.failed = !guarded(|| {
++        state.execute_one(jit);
++    });
+ }
+ 
+ /// Run for the given number of cycles.
+@@ -285,7 +342,11 @@ pub unsafe extern "C" fn dsp56300_step(dsp: *mut DspJit) {
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn dsp56300_run(dsp: *mut DspJit, cycles: i32) {
+     let dsp = unsafe { &mut *dsp };
+-    dsp.state.run(&mut dsp.jit, cycles);
++    if dsp.failed {
++        return;
++    }
++    let (state, jit) = (&mut dsp.state, &mut dsp.jit);
++    dsp.failed = !guarded(|| state.run(jit, cycles));
+ }
+ 
+ /// Check if a halt has been requested.
 diff --git a/crates/emu/Cargo.toml b/crates/emu/Cargo.toml
 index 70da7f8..54c8d6b 100644
 --- a/crates/emu/Cargo.toml
