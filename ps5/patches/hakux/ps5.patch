@@ -161,6 +161,7 @@ native core's work tree (oldest first; author: subject):
   45e1c2cfc8 Claude: apu: a DSP JIT that stopped on a panic hands its state to the interpreter
   c930bf36eb Claude: apu: full DSP whose JIT didn't start mixes as Fast does from the start
   b370c67170 Claude: disc: folder tables kept in memory and read ahead; vk: VK_EXT_external_memory_host
+  e470c88379 Claude: apu: full DSP short of real time falls back to Fast within a second
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -17978,7 +17979,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300e22c980c 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9cea71a7a 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18093,7 +18094,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
      apu_st(&d->set_irq, false);
      d->snapshot_just_loaded = false;
      d->next_frame_time_us = 0;
-@@ -588,6 +619,132 @@ void mcpx_apu_post_load(MCPXAPUState *d)
+@@ -588,6 +619,154 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      update_irq(d);
  }
  
@@ -18192,33 +18193,55 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
 +    pthread_mutex_lock(&d->lock);
 +}
 +
-+/* OGBox 0.0.4: full DSP (NC_APU_DSP=1) runs the GP's and EP's programs in the DSP interpreter
-+ * where no DSP JIT is built (the PS5): about a third of real time (a GP frame of 0.67 ms of sound
-+ * took ~2 ms). The sound then came in pieces, the movies that follow it stuttered, and games
-+ * waited on the GP. When three seconds' frames in a row took more than 1.25 times their own
-+ * length, the rest of the run mixes as Fast does, and the log says so. */
++/* OGBox 0.0.4: full DSP (NC_APU_DSP=1) runs the GP's and EP's programs whole each frame, in the
++ * DSP JIT, or its interpreter where there is none. On the PS5 neither keeps real time in every
++ * game: the interpreter took ~2000 us of a frame's 666, the JIT ~1150 us (test9, four games). The
++ * sound then plays slow, and so do the movies timed by it. Measured every sixth of a second (250
++ * frames), the first half second left out (the JIT compiling the programs): three slow windows in a
++ * row (more than 1.25 times real time) and the rest of the run mixes as Fast does, about a second
++ * in (it was three seconds, the length of a first movie's start). The log says which engine and
++ * how the time divides between the GP and the EP. NC_APU_DSP_TIMING=1: every window logged. */
++extern int64_t g_apu_dsp_us[2];     /* dsp/gp_ep.c */
++
 +static void dsp_speed_watch(MCPXAPUState *d, int64_t work_us)
 +{
-+    static int64_t s_work_us, s_frames;
++    static int64_t s_work_us, s_frames, s_seen, s_dsp0[2];
 +    static int s_slow_windows;
 +    static bool s_fell_back;
++    static int s_timing = -1;
++    if (s_timing < 0) {
++        s_timing = getenv("NC_APU_DSP_TIMING") != NULL;
++    }
 +    if (!g_apu_config.use_dsp || s_fell_back) {
 +        s_work_us = s_frames = 0;
 +        s_slow_windows = 0;
 +        return;
 +    }
++    if (++s_seen <= 750) {                /* the first half second: compiling */
++        s_dsp0[0] = g_apu_dsp_us[0];
++        s_dsp0[1] = g_apu_dsp_us[1];
++        return;
++    }
 +    s_work_us += work_us;
-+    if (++s_frames < 1500) {              /* a second's GP frames */
++    if (++s_frames < 250) {
 +        return;
 +    }
 +    const double per_frame = (double)s_work_us / (double)s_frames;
++    const double gp = (double)(g_apu_dsp_us[0] - s_dsp0[0]) / (double)s_frames;
++    const double ep = (double)(g_apu_dsp_us[1] - s_dsp0[1]) / (double)s_frames;
++    s_dsp0[0] = g_apu_dsp_us[0];
++    s_dsp0[1] = g_apu_dsp_us[1];
++    if (s_timing) {
++        nc_log("hakuX-apu", "full DSP: %.0f us a GP frame (of %d): GP %.0f, EP %.0f", per_frame, GP_FRAME_US, gp, ep);
++    }
 +    s_slow_windows = per_frame > 1.25 * GP_FRAME_US ? s_slow_windows + 1 : 0;
 +    if (s_slow_windows >= 3) {
 +        s_fell_back = true;
 +        g_apu_config.use_dsp = false;
-+        nc_log("hakuX-apu", "full DSP: a GP frame takes %.0f us of its %d (%.0f%% of real time) on this "
-+               "console's DSP interpreter: the rest of this run mixes as Fast does (Settings > Audio)",
-+               per_frame, GP_FRAME_US, 100.0 * GP_FRAME_US / per_frame);
++        mcpx_apu_update_dsp_preference(d);
++        nc_log("hakuX-apu", "full DSP: a frame takes %.0f us of its %d (%.0f%% of real time; GP %.0f us, EP %.0f, the "
++               "rest the voices) in the DSP %s: the rest of this run mixes as Fast does (Settings > Audio)",
++               per_frame, GP_FRAME_US, 100.0 * GP_FRAME_US / per_frame, gp, ep, dsp_engine_name(d->gp.dsp));
 +    }
 +    s_work_us = s_frames = 0;
 +}
@@ -18226,7 +18249,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = arg;
-@@ -608,6 +765,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -608,6 +787,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          int xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
          uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
@@ -18234,7 +18257,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
          if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
-@@ -617,6 +775,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -617,6 +797,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          /* taken and cleared at once: one the guest thread raises meanwhile
           * stays for the next frame (a plain clear after update_irq lost it) */
          if (apu_xchg(&d->set_irq, false)) {
@@ -18242,7 +18265,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
              if (d->snapshot_just_loaded) {
                  /* Swallow exactly the FIRST post-restore IRQ assert: a voice
                   * that was at completion when the snapshot was taken re-emits
-@@ -634,6 +793,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -634,6 +815,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          }
  
          if (frames_stopped(d)) {
@@ -18250,7 +18273,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
              nc_pause_idle(true);                /* stopped until the guest acts */
              /* timed: the guest's register writes signal without d->lock (its
               * thread never takes it), so one can come between the check and
-@@ -660,7 +820,10 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -660,7 +842,10 @@ static void *mcpx_apu_frame_thread(void *arg)
          if (nc_paused()) {
              continue;                           /* the throttle let go for the pause: no frame */
          }
@@ -18261,7 +18284,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
      }
      pthread_mutex_unlock(&d->lock);
      return NULL;
-@@ -670,10 +833,16 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -670,10 +855,16 @@ static void *mcpx_apu_frame_thread(void *arg)
   * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
   * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
   * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
@@ -18279,7 +18302,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
      g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
      g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
      g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
-@@ -684,7 +853,7 @@ static void config_init(void)
+@@ -684,7 +875,7 @@ static void config_init(void)
  static void *apu_trace_thread(void *arg)
  {
      MCPXAPUState *d = arg;
@@ -18288,7 +18311,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
          sleep(2);
          nc_log("hakuX-native-apu",
                 "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
-@@ -727,9 +896,19 @@ static void *apu_trace_thread(void *arg)
+@@ -727,9 +918,19 @@ static void *apu_trace_thread(void *arg)
      return NULL;
  }
  
@@ -18309,7 +18332,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ebb8313b6d87b6ea6d5dff6b7348e300
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,10 +933,48 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,10 +955,48 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -18896,10 +18919,10 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec332dd4ef 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098537ad7c6 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
-@@ -20,17 +20,16 @@
+@@ -20,17 +20,19 @@
   */
  
  #include "native/dev/apu/apu_int.h"
@@ -18907,6 +18930,9 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  
  static const int16_t ep_silence[256][2] = { 0 };
  
++/* OGBox 0.0.4: the host time the GP's and the EP's programs took (apu.c's dsp_speed_watch) */
++int64_t g_apu_dsp_us[2];
++
  void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
  {
 -    static int last_known_preference = -1;
@@ -18922,7 +18948,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
      if (g_apu_config.use_dsp) {
          d->monitor.point = MCPX_APU_DEBUG_MON_GP_OR_EP;
          d->gp.realtime = true;
-@@ -40,8 +39,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
+@@ -40,8 +42,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
          d->gp.realtime = false;
          d->ep.realtime = false;
      }
@@ -18931,7 +18957,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  }
  
  static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
-@@ -163,6 +160,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -163,6 +163,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -18939,7 +18965,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
          assert(index < GP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_GPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -220,6 +218,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -220,6 +221,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -18947,7 +18973,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
          assert(index < EP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -333,7 +332,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -333,7 +335,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -18956,7 +18982,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -422,7 +421,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -422,7 +424,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -18965,7 +18991,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +463,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +466,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
@@ -18983,7 +19009,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,6 +494,7 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +497,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -18991,7 +19017,9 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  
      bool ep_enabled = (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPRST) &&
                        (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPDSPRST);
-@@ -492,8 +503,6 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+ 
++    const int64_t t_gp = apu_host_us();
+     /* Run GP */
      if ((d->gp.regs[NV_PAPU_GPRST] & NV_PAPU_GPRST_GPRST) &&
          (d->gp.regs[NV_PAPU_GPRST] & NV_PAPU_GPRST_GPDSPRST)) {
          dsp_start_frame(d->gp.dsp);
@@ -19000,7 +19028,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +510,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +514,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19014,7 +19042,14 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -523,13 +535,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +534,24 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+         }
+     }
+ 
++    const int64_t t_ep = apu_host_us();
++    g_apu_dsp_us[0] += t_ep - t_gp;
+     /* Run EP */
+     if ((d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPRST) &&
          (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPDSPRST)) {
          if (d->ep_frame_div % 8 == 0) {
              dsp_start_frame(d->ep.dsp);
@@ -19030,11 +19065,12 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec
 +            }
          }
      }
++    g_apu_dsp_us[1] += apu_host_us() - t_ep;
 +    gp_probe_frame_end(d);
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +581,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +588,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
