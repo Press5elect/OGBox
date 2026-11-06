@@ -244,6 +244,8 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 Added
 - Settings > Anisotropic filtering (2x to 16x), Sharpening and Force 32-bit colour. All off by
   default: the picture stays the Xbox's own.
+- Audio processing > Full DSP translates the Xbox's audio programs to the console's own code (a
+  DSP56300 recompiler) instead of interpreting them.
 
 Changed
 - Covers are kept under the game's file name, and a picture of your own with that name wins.

@@ -236,13 +236,27 @@ add_library(hakux_apu OBJECT
 	${NC_APU}/vp/resample.c ${NC_APU}/vp/resample_sinc.c ${NC_APU}/vp/simd.c ${NC_APU}/vp/vp.c
 	${PSHAKUX_HX}/apu/out_ps5.c)
 hakux_target(hakux_apu)
-# (hakuX-lr's DSP56300 JIT is a Rust crate: not built for the console; the DSP interpreter runs)
-target_compile_definitions(hakux_apu PRIVATE NC_HAVE_DSP_JIT=0)
+# OGBox 0.0.4: the DSP56300 JIT (Matt Borgerson's dsp56300 crate, MIT, on Cranelift: its C FFI as a
+# static library, built for the console by tools/build-deps.sh with ps5/patches/dsp56300). Full
+# DSP runs the GP's and EP's programs translated to x86-64 instead of interpreted; without the
+# library (no Rust toolchain) the interpreter runs, as before.
+set(PSHAKUX_DSP56300_LIB "${PSHAKUX_PORTS}/lib/libdsp56300_emu_ffi.a")
+if(EXISTS "${PSHAKUX_DSP56300_LIB}" AND EXISTS "${PSHAKUX_PORTS}/include/dsp56300.h")
+	target_sources(hakux_apu PRIVATE ${NC_APU}/dsp/jit.c)
+	target_compile_definitions(hakux_apu PRIVATE NC_HAVE_DSP_JIT=1)
+	target_include_directories(hakux_apu PRIVATE ${PSHAKUX_PORTS}/include)
+	set(PSHAKUX_DSP_ARCHIVES "${PSHAKUX_DSP56300_LIB}")
+	message(STATUS "OGBox: the DSP56300 JIT (${PSHAKUX_DSP56300_LIB})")
+else()
+	target_compile_definitions(hakux_apu PRIVATE NC_HAVE_DSP_JIT=0)
+	set(PSHAKUX_DSP_ARCHIVES "")
+	message(STATUS "OGBox: no DSP56300 JIT library (tools/build-deps.sh, needs cargo): the DSP interpreter")
+endif()
 target_include_directories(hakux_apu PRIVATE ${HAKUX_DIR}/native/compat/glib)
 target_compile_options(hakux_apu PRIVATE -Wno-unused-variable)
 
 # ---- the PS5 side of the core (ps5/hakux/compat: the properties, the Linux calls)
-add_library(hakux_ps5 OBJECT ${PSHAKUX_HX}/compat/hakux_ps5.c)
+add_library(hakux_ps5 OBJECT ${PSHAKUX_HX}/compat/hakux_ps5.c ${PSHAKUX_HX}/compat/rust_std_stubs.c)
 hakux_target(hakux_ps5)
 target_include_directories(hakux_ps5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

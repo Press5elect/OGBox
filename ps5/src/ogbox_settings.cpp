@@ -121,8 +121,9 @@ std::vector<Option> makeOptions()
 	// ---- Audio (0.1.59's APU, hakuX-lr's: its DSP programs run, or the fast mix; the voices' resampler)
 	o.push_back({ "audio_dsp", Section::Audio, "Audio processing",
 		"Fast: the game's voices mixed directly, as hakuX does. Full DSP: the Xbox's own audio programs run (effects, "
-		"reverb, the mix as the console makes it): accurate, much heavier. Where the console can't keep it in real time, a game "
-		"switches to Fast by itself after a few seconds (the boot log says so).",
+		"reverb, the mix as the console makes it): accurate, heavier. Its programs are translated to the console's own code "
+		"(a DSP56300 recompiler); where it still can't keep up in real time, a game switches to Fast by itself after a "
+		"few seconds (the boot log says so).",
 		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"How each voice is brought to the output rate. Sinc: clean highs. Linear: lighter, a little dull.",

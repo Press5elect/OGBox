@@ -1,0 +1,240 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 4b68766..4496a78 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -444,6 +444,7 @@ dependencies = [
+  "cranelift-module",
+  "cranelift-native",
+  "dsp56300-core",
++ "libc",
+  "target-lexicon",
+ ]
+ 
+diff --git a/crates/emu-ffi/Cargo.toml b/crates/emu-ffi/Cargo.toml
+index 5c9e22c..3fab9ad 100644
+--- a/crates/emu-ffi/Cargo.toml
++++ b/crates/emu-ffi/Cargo.toml
+@@ -18,3 +18,8 @@ cbindgen = "0.29"
+ [dependencies]
+ dsp56300-core = { version = "1.0.0", path = "../core" }
+ dsp56300-emu = { version = "1.0.0", path = "../emu", default-features = false }
++
++[features]
++# OGBox (PS5): the JIT's code in read-write-execute memory; dsp56300_create returns NULL
++# where the process may not map it (the caller then interprets).
++rwx-memory = ["dsp56300-emu/rwx-memory"]
+diff --git a/crates/emu-ffi/build.rs b/crates/emu-ffi/build.rs
+index 1aab775..a998ce1 100644
+--- a/crates/emu-ffi/build.rs
++++ b/crates/emu-ffi/build.rs
+@@ -17,6 +17,11 @@ fn main() {
+ 
+     // Compile the C quickstart example into a static lib so it can be called
+     // from the Rust test suite, verifying the C API works as documented.
++    // OGBox (PS5): not for a target whose C library the host compiler doesn't have (the test
++    // suite, which needs it, runs on the host).
++    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("freebsd") {
++        return;
++    }
+     cc::Build::new()
+         .file("examples/quickstart.c")
+         .include("include")
+diff --git a/crates/emu-ffi/src/lib.rs b/crates/emu-ffi/src/lib.rs
+index bde6c77..195acde 100644
+--- a/crates/emu-ffi/src/lib.rs
++++ b/crates/emu-ffi/src/lib.rs
+@@ -205,6 +205,10 @@ impl CMemSpace {
+ /// All buffer and callback pointers in `info` must be valid.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn dsp56300_create(info: *const CCreateInfo) -> *mut DspJit {
++    #[cfg(feature = "rwx-memory")]
++    if !dsp56300_emu::rwx::rwx_available() {
++        return std::ptr::null_mut();
++    }
+     let map = if info.is_null() {
+         MemoryMap::default()
+     } else {
+diff --git a/crates/emu/Cargo.toml b/crates/emu/Cargo.toml
+index 70da7f8..d6bf1aa 100644
+--- a/crates/emu/Cargo.toml
++++ b/crates/emu/Cargo.toml
+@@ -18,6 +18,9 @@ cli = ["dep:clap"]
+ # preemption quantum, so the slice/preemption differential tests can compare
+ # a fully inline loop against a preempted one in the same process.
+ tunable-loop-quantum = []
++# OGBox (PS5): JIT code in read-write-execute memory (src/rwx.rs), for hosts where read+execute
++# pages are execute-only.
++rwx-memory = ["dep:libc"]
+ 
+ [dependencies]
+ dsp56300-core = { version = "1.0.0", path = "../core" }
+@@ -27,6 +30,7 @@ cranelift-jit = "0.134.3"
+ cranelift-module = "0.134.3"
+ cranelift-native = "0.134.3"
+ target-lexicon = "0.13"
++libc = { version = "0.2", optional = true }
+ clap = { version = "4", features = ["derive"], optional = true }
+ 
+ [[bin]]
+diff --git a/crates/emu/src/jit.rs b/crates/emu/src/jit.rs
+index bd793c5..b7fbb64 100644
+--- a/crates/emu/src/jit.rs
++++ b/crates/emu/src/jit.rs
+@@ -392,7 +392,11 @@ impl JitEngine {
+         let isa = isa_builder
+             .finish(settings::Flags::new(flag_builder))
+             .unwrap();
+-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
++        #[allow(unused_mut)]
++        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
++        // OGBox (PS5): code in read-write-execute memory (see rwx.rs).
++        #[cfg(feature = "rwx-memory")]
++        builder.memory_provider(Box::new(crate::rwx::RwxMemoryProvider::new()));
+         JITModule::new(builder)
+     }
+ 
+diff --git a/crates/emu/src/lib.rs b/crates/emu/src/lib.rs
+index 74c9c4b..3347d86 100644
+--- a/crates/emu/src/lib.rs
++++ b/crates/emu/src/lib.rs
+@@ -3,3 +3,5 @@
+ pub mod core;
+ pub mod emit;
+ pub mod jit;
++#[cfg(feature = "rwx-memory")]
++pub mod rwx;
+diff --git a/crates/emu/src/rwx.rs b/crates/emu/src/rwx.rs
+new file mode 100644
+index 0000000..470dcf7
+--- /dev/null
++++ b/crates/emu/src/rwx.rs
+@@ -0,0 +1,129 @@
++//! Read-write-execute JIT memory, for hosts that make read+execute pages execute-only.
++//!
++//! OGBox (Press5elect), for the PS5: there a page mapped read and execute can't be read, so the
++//! constants Cranelift's x86-64 backend places after a function's code (and loads RIP-relative)
++//! would fault once the default provider's `finalize` took the write bit away. This provider maps
++//! its chunks read, write and execute once and leaves them so; x86-64 keeps its instruction cache
++//! coherent with stores, so `finalize` has nothing to do.
++
++use std::io;
++use std::ptr;
++
++use cranelift_jit::{BranchProtection, JITMemoryKind, JITMemoryProvider};
++use cranelift_module::ModuleResult;
++
++const CHUNK: usize = 1 << 20;
++
++struct Chunk {
++    ptr: *mut u8,
++    len: usize,
++    used: usize,
++}
++
++/// Bump allocation from read-write-execute chunks of at least 1 MiB.
++pub struct RwxMemoryProvider {
++    chunks: Vec<Chunk>,
++}
++
++unsafe impl Send for RwxMemoryProvider {}
++
++/// Read-write-execute memory, by the first way the host allows: an anonymous map so (Linux,
++/// FreeBSD); an anonymous read-write map given execute after (a host that refuses the three at
++/// once); a shared memory object mapped read-write and given execute after, as OGBox maps the
++/// Xbox's memory on the PS5 (memfd_create, which its link binds to the platform layer's shared
++/// memory on direct memory).
++fn map_rwx(len: usize) -> io::Result<*mut u8> {
++    let rwx = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
++    let rw = libc::PROT_READ | libc::PROT_WRITE;
++    unsafe {
++        let p = libc::mmap(ptr::null_mut(), len, rwx, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0);
++        if p != libc::MAP_FAILED {
++            return Ok(p as *mut u8);
++        }
++        let p = libc::mmap(ptr::null_mut(), len, rw, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0);
++        if p != libc::MAP_FAILED {
++            if libc::mprotect(p, len, rwx) == 0 {
++                return Ok(p as *mut u8);
++            }
++            libc::munmap(p, len);
++        }
++        #[cfg(any(target_os = "freebsd", target_os = "linux"))]
++        {
++            let fd = libc::memfd_create(c"dsp56300-jit".as_ptr(), 0);
++            if fd >= 0 {
++                let ok = libc::ftruncate(fd, len as libc::off_t) == 0;
++                let p = if ok {
++                    libc::mmap(ptr::null_mut(), len, rw, libc::MAP_SHARED, fd, 0)
++                } else {
++                    libc::MAP_FAILED
++                };
++                libc::close(fd);    // the map keeps the object
++                if p != libc::MAP_FAILED {
++                    if libc::mprotect(p, len, rwx) == 0 {
++                        return Ok(p as *mut u8);
++                    }
++                    libc::munmap(p, len);
++                }
++            }
++        }
++    }
++    Err(io::Error::other("no read-write-execute memory for the JIT"))
++}
++
++/// Whether this process may map read-write-execute memory (checked with one chunk's first 64 KiB:
++/// a whole number of the PS5's 16 KiB pages).
++pub fn rwx_available() -> bool {
++    match map_rwx(1 << 16) {
++        Ok(p) => {
++            unsafe { libc::munmap(p as *mut libc::c_void, 1 << 16) };
++            true
++        }
++        Err(_) => false,
++    }
++}
++
++impl RwxMemoryProvider {
++    pub fn new() -> Self {
++        Self { chunks: Vec::new() }
++    }
++}
++
++impl Default for RwxMemoryProvider {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl JITMemoryProvider for RwxMemoryProvider {
++    fn allocate(&mut self, size: usize, align: u64, _kind: JITMemoryKind) -> io::Result<*mut u8> {
++        let align = (align as usize).max(16);
++        if let Some(c) = self.chunks.last_mut() {
++            let start = (c.ptr as usize + c.used).next_multiple_of(align) - c.ptr as usize;
++            if start + size <= c.len {
++                c.used = start + size;
++                return Ok(unsafe { c.ptr.add(start) });
++            }
++        }
++        let len = (size + align).next_multiple_of(CHUNK).max(CHUNK);
++        let ptr = map_rwx(len)?;
++        let start = (ptr as usize).next_multiple_of(align) - ptr as usize;
++        self.chunks.push(Chunk { ptr, len, used: start + size });
++        Ok(unsafe { ptr.add(start) })
++    }
++
++    unsafe fn free_memory(&mut self) {
++        for c in self.chunks.drain(..) {
++            unsafe { libc::munmap(c.ptr as *mut libc::c_void, c.len) };
++        }
++    }
++
++    fn finalize(&mut self, _branch_protection: BranchProtection) -> ModuleResult<()> {
++        Ok(())
++    }
++}
++
++impl Drop for RwxMemoryProvider {
++    fn drop(&mut self) {
++        unsafe { self.free_memory() };
++    }
++}

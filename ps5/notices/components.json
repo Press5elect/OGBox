@@ -579,6 +579,24 @@
    }
   },
   {
+   "id": "dsp56300",
+   "name": "dsp56300 (the APU's DSP56300 JIT for full DSP: its C interface dsp56300-emu-ffi, built for the console by ps5/tools/build-deps.sh), on Cranelift, with Rust's standard library and the crates it is made of (THIRD-PARTY-dsp56300.txt names each, with its licence and texts)",
+   "licence": "MIT (dsp56300); Apache-2.0 WITH LLVM-exception (Cranelift, regalloc2, target-lexicon, wasmtime's crates); MIT OR Apache-2.0 (Rust's standard library and most crates); Zlib (foldhash), MIT (region, libm), and the others THIRD-PARTY-dsp56300.txt names",
+   "copyright": "Matt Borgerson (dsp56300); the Cranelift and Wasmtime Project Developers (Bytecode Alliance); the Rust Project Developers; and the authors THIRD-PARTY-dsp56300.txt names",
+   "modifications": "OGBox's ps5/patches/dsp56300: the JIT's code in read-write-execute memory (a feature, rwx-memory), and no C example built for the console; six of the standard library's imports renamed in the archive (ogbox_rs_<name>, ps5/hakux/compat/rust_std_stubs.c)",
+   "texts": {
+    "dsp56300-LICENSE.txt": ".deps/src/dsp56300/LICENSE",
+    "THIRD-PARTY-dsp56300.txt": ".deps/build/dsp56300-THIRD-PARTY.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/mborgerson/dsp56300 (and crates.io for the crates; the Rust toolchain's rust-src for the standard library)",
+    "revision": "@dsp56300"
+   }
+  },
+  {
    "id": "hakux-lr",
    "name": "hakuX-lr (PortareOS's hakuX fork): its HLE GPU accuracy work (two-sided lighting, colour sign and key, convolution filters, line width, dithering, antialiasing control, window clip, DOT_ZW / BRDF, texture formats), its APU (the sinc resampler, SSE2/AVX2 mixing, stereo downmix and 3D routing, guards), CHD images, disc, DVD security, cheat, SEH and kernel-pool fixes, merged into hakuX-native",
    "licence": "GPL-3.0-or-later",

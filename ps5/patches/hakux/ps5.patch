@@ -157,6 +157,7 @@ native core's work tree (oldest first; author: subject):
   4ff8a30603 Claude: hle: a device Reset keeps the device's render scale
   1ab1127700 Claude: hle: anisotropic filtering, forced 32-bit colour and sharpening (all off by default)
   096e7d9c31 Claude: apu: guest accesses ahead of the frame thread; full DSP falls back to Fast when too slow
+  9b09663d38 Claude: apu: the DSP56300 JIT in the CMake build; NC_APU_RAW for the host
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -7390,7 +7391,7 @@ index 0000000000000000000000000000000000000000..1b159f7c74989aee9c0bd03ff1854177
 +  message(STATUS "libchdr not in ${NC_CHDR}: no CHD images")
 +endif()
 diff --git a/native/cmake/hle.cmake b/native/cmake/hle.cmake
-index c2ca6390434b8f582bead701fd6da748ef5dd1d5..97af8b515eabfad287f4b87d09e517ae10e149f4 100644
+index c2ca6390434b8f582bead701fd6da748ef5dd1d5..c569cf28bb04ed66b2b92fcf12e8885e3d299698 100644
 --- a/native/cmake/hle.cmake
 +++ b/native/cmake/hle.cmake
 @@ -8,7 +8,14 @@ set(NC_DEPS "D:/tools/native-deps" CACHE PATH "native core third-party sources")
@@ -7423,7 +7424,7 @@ index c2ca6390434b8f582bead701fd6da748ef5dd1d5..97af8b515eabfad287f4b87d09e517ae
    ${NC_HLE}/shader/ff_gen.c
    ${NC_HLE}/shader/ffhw.c
    ${NC_HLE}/shader/glsl_compile.c
-@@ -82,29 +91,37 @@ add_library(hakux_hle STATIC
+@@ -82,29 +91,52 @@ add_library(hakux_hle STATIC
  )
  target_include_directories(hakux_hle PUBLIC "${NC_REPO}" "${NC_DEPS}/root" "${NC_DEPS}/vma/include"
                             "${NC_DEPS}/glslang")
@@ -7453,8 +7454,23 @@ index c2ca6390434b8f582bead701fd6da748ef5dd1d5..97af8b515eabfad287f4b87d09e517ae
 +  ${NC_APU}/vp/simd.c
    ${NC_APU}/vp/vp.c
  )
-+# (hakuX-lr's DSP56300 JIT is a Rust crate: not in this build; the DSP interpreter runs)
-+target_compile_definitions(hakux_apu PUBLIC NC_HAVE_DSP_JIT=0)
++# The DSP56300 JIT (Matt Borgerson's dsp56300 crate, MIT: github.com/mborgerson/dsp56300, its C
++# FFI dsp56300-emu-ffi, a Rust static library on Cranelift). OGBox 0.0.4: NC_DSP56300_DIR names a
++# built checkout (crates/emu-ffi/include and NC_DSP56300_LIB, the static library); without it the
++# DSP interpreter runs, as before.
++set(NC_DSP56300_DIR "" CACHE PATH "a dsp56300 checkout with dsp56300-emu-ffi built (empty: the interpreter)")
++set(NC_DSP56300_LIB "" CACHE FILEPATH "its libdsp56300_emu_ffi.a (default: target/release)")
++if(NC_DSP56300_DIR)
++  if(NOT NC_DSP56300_LIB)
++    set(NC_DSP56300_LIB "${NC_DSP56300_DIR}/target/release/libdsp56300_emu_ffi.a")
++  endif()
++  target_sources(hakux_apu PRIVATE ${NC_APU}/dsp/jit.c)
++  target_include_directories(hakux_apu PUBLIC "${NC_DSP56300_DIR}/crates/emu-ffi/include")
++  target_compile_definitions(hakux_apu PUBLIC NC_HAVE_DSP_JIT=1)
++  target_link_libraries(hakux_apu PUBLIC "${NC_DSP56300_LIB}" dl pthread m)
++else()
++  target_compile_definitions(hakux_apu PUBLIC NC_HAVE_DSP_JIT=0)
++endif()
 +if(ANDROID)
 +  target_sources(hakux_apu PRIVATE ${NC_APU}/out.c)
 +  target_link_libraries(hakux_apu PUBLIC aaudio log)
@@ -19229,13 +19245,16 @@ index a7c29f432a965e644a78bedc022a0dc6a7105f78..9380bde112803173f5981a6a29bd2157
  void nc_audio_set_paused(bool on)
 diff --git a/native/dev/apu/out_null.c b/native/dev/apu/out_null.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..38eaf3fabc166ba79288d3cae5d0fa98ec832c6c
+index 0000000000000000000000000000000000000000..fa5c0114487f8d590d1290138e28b17e8a8cc3a7
 --- /dev/null
 +++ b/native/dev/apu/out_null.c
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,141 @@
 +/* Copyright (C) 2026-present PortareOS */
 +/* Paced silent output for Linux diagnostics. The emulated APU stays active. */
 +#include "native/dev/apu/apu_int.h"
++
++#include <stdio.h>
++#include <stdlib.h>
 +
 +static struct {
 +    uint32_t capacity;
@@ -19255,9 +19274,26 @@ index 0000000000000000000000000000000000000000..38eaf3fabc166ba79288d3cae5d0fa98
 +                 __atomic_load_n(&g_null.tail, __ATOMIC_ACQUIRE));
 +}
 +
++/* OGBox 0.0.4: NC_APU_RAW=<file>: the output as raw 48 kHz stereo 16-bit (the host's checks of
++ * the DSP JIT against the interpreter) */
++static FILE *raw_out(void)
++{
++    static FILE *f;
++    static bool tried;
++    if (!tried) {
++        tried = true;
++        const char *p = getenv("NC_APU_RAW");
++        f = p && *p ? fopen(p, "wb") : NULL;
++    }
++    return f;
++}
++
 +void apu_out_push(const void *frame, int bytes)
 +{
-+    (void)frame;
++    if (raw_out() && frame && bytes > 0) {
++        fwrite(frame, 1, (size_t)bytes, raw_out());
++        fflush(raw_out());
++    }
 +    uint64_t head = __atomic_load_n(&g_null.head, __ATOMIC_RELAXED);
 +    if (bytes < 0 || head + (uint64_t)bytes - __atomic_load_n(&g_null.tail, __ATOMIC_ACQUIRE) > g_null.capacity) {
 +        nc_log("hakuX-apu", "diagnostic audio: invalid push or ring overflow");

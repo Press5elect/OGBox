@@ -177,7 +177,9 @@ set(link_archives
 	${PSHAKUX_PORTS}/lib/libsmb2.a ${PSHAKUX_PORTS}/lib/libnfs.a
 	# 0.0.1: the updater's (tools/build-deps.sh): ZIPs, and HTTPS (zlib is the RADV archive's)
 	${PSHAKUX_PORTS}/lib/libzip.a ${PSHAKUX_PORTS}/lib/libcurl.a ${PSHAKUX_PORTS}/lib/libpsl.a
-	${PSHAKUX_PORTS}/lib/libssl.a ${PSHAKUX_PORTS}/lib/libcrypto.a)
+	${PSHAKUX_PORTS}/lib/libssl.a ${PSHAKUX_PORTS}/lib/libcrypto.a
+	# 0.0.4: the DSP56300 JIT, when built (cmake/hakux.cmake)
+	${PSHAKUX_DSP_ARCHIVES})
 if(NOT EXISTS ${CMAKE_BINARY_DIR}/radv-archive.txt)
 	file(WRITE ${CMAKE_BINARY_DIR}/radv-archive.txt "")
 endif()

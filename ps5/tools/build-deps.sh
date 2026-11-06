@@ -110,6 +110,10 @@ fetch libnfs https://github.com/sahlberg/libnfs 7613236464317bee2d9636f087f99514
 # as Crux2 has them (PCSX2's 3rdparty copies).
 fetch libzip https://github.com/nih-at/libzip refs/tags/v1.12.1
 fetch rapidjson https://github.com/Tencent/rapidjson 24b5e7a8b27f42fa16b96fc70aade9106cf7102f
+# OGBox 0.0.4: the DSP56300 JIT for the APU's full DSP: Matt Borgerson's dsp56300 (MIT, the
+# Cranelift JIT xemu takes; its master on 2026-11-06, after its 1.0.0 release), with
+# ps5/patches/dsp56300.
+fetch dsp56300 https://github.com/mborgerson/dsp56300 b36db2c23ee2dd6e643f48e4dc6288074030e1a0
 
 # ---------------------------------------------------------------- cross builds
 common=(-G Ninja -DCMAKE_TOOLCHAIN_FILE="$sdk/toolchain/prospero.cmake" -DCMAKE_BUILD_TYPE=Release
@@ -160,6 +164,49 @@ if ! have rapidjson; then
     rm -rf "$sys/include/rapidjson"
     cp -r "$src/rapidjson/include/rapidjson" "$sys/include/"
     mark rapidjson
+fi
+
+# The DSP56300 JIT: dsp56300-emu-ffi as a static library for the console (hakux.cmake links it;
+# without it the DSP interpreter runs). Rust's standard library is built again for the console's
+# target (ps5/rust/ps5/x86_64-unknown-freebsd.json: FreeBSD's, with emulated thread-locals, as the
+# console's clang makes them, and no dynamic linking), so the build takes a nightly toolchain,
+# pinned, with rust-src. Its patch (ps5/patches/dsp56300): the JIT's code in read-write-execute
+# memory, where the PS5 makes read+execute pages execute-only. Six of std's imports that the
+# console's libkernel stub defines (and lld would export a definition of) are renamed in the
+# archive to ogbox_rs_<name>; ps5/hakux/compat/rust_std_stubs.c defines them and the calls the
+# console lacks. Its crates' licences go to $bld/dsp56300-THIRD-PARTY.txt (the notices).
+dsp_toolchain=nightly-2026-11-05
+dsp_symbols="chown chroot lchown linkat setpgid pthread_setname_np"
+dsp_stamp="$dsp_toolchain b36db2c $(sha256sum "$ps5/patches/dsp56300/ogbox-ps5.patch" "$ps5/rust/ps5/x86_64-unknown-freebsd.json" | cut -c1-16 | tr '\n' ' ')"
+if [[ $(cat "$bld/dsp56300.done" 2>/dev/null) != "$dsp_stamp" ]]; then
+    rm -f "$sys/lib/libdsp56300_emu_ffi.a" "$sys/include/dsp56300.h"
+    if ! command -v rustup >/dev/null; then
+        echo "==> [deps] no rustup: the DSP56300 JIT is not built (full DSP interprets; https://rustup.rs)" >&2
+    else
+        step "the DSP56300 JIT (dsp56300 b36db2c, Rust $dsp_toolchain)"
+        rustup toolchain install "$dsp_toolchain" --profile minimal --component rust-src >/dev/null 2>&1
+        git -C "$src/dsp56300" checkout -q -- . && git -C "$src/dsp56300" clean -qfd -e .pshakux-revision
+        git -C "$src/dsp56300" apply "$ps5/patches/dsp56300/ogbox-ps5.patch"
+        rm -f "$src/dsp56300/rust-toolchain.toml"   # (its channel, 1.99.1, can't build std for a target)
+        target_dir="$bld/dsp56300"
+        ( cd "$src/dsp56300" && RUSTFLAGS="-Cpanic=abort" CARGO_TARGET_DIR="$target_dir" \
+            cargo "+$dsp_toolchain" build --locked --release -Zjson-target-spec -Zbuild-std=std,panic_abort \
+            --target "$ps5/rust/ps5/x86_64-unknown-freebsd.json" \
+            -p dsp56300-emu-ffi --no-default-features --features rwx-memory ) > "$bld/dsp56300.log" 2>&1 \
+            || { tail -30 "$bld/dsp56300.log" >&2; exit 1; }
+        objcopy=$(dirname "$("$sdk/toolchain/../bin/prospero-clang" -print-prog-name=clang 2>/dev/null || echo /usr/lib/llvm-20/bin/clang)")/llvm-objcopy
+        [[ -x $objcopy ]] || objcopy=/usr/lib/llvm-20/bin/llvm-objcopy
+        renames=()
+        for name in $dsp_symbols; do renames+=(--redefine-sym "$name=ogbox_rs_$name"); done
+        "$objcopy" "${renames[@]}" "$target_dir/x86_64-unknown-freebsd/release/libdsp56300_emu_ffi.a" \
+            "$sys/lib/libdsp56300_emu_ffi.a"
+        cp "$src/dsp56300/crates/emu-ffi/include/dsp56300.h" "$sys/include/"
+        # every crate linked (the standard library's included) with its licence and its texts
+        python3 "$ps5/tools/rust-licences.py" "$src/dsp56300" "$dsp_toolchain" "$target_dir" \
+            > "$bld/dsp56300-THIRD-PARTY.txt"
+        rustc "+$dsp_toolchain" --version > "$bld/dsp56300.toolchain.txt"
+        echo "$dsp_stamp" > "$bld/dsp56300.done"
+    fi
 fi
 
 # glslang (its own script: it is also built for the PC's tests).

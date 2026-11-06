@@ -112,6 +112,9 @@ def pins() -> dict:
         "@xxhash": read(deps / "xxhash/.pshakux-revision"),
         "@libnfs": read(deps / "libnfs/.pshakux-revision"),
         "@libchdr": read(deps / "libchdr/.pshakux-revision"),
+        "@dsp56300": read(deps / "dsp56300/.pshakux-revision") + " + ps5/patches/dsp56300, Rust " +
+                     read(ROOT / ".deps/build/dsp56300.done").split(" ")[0] + " (" +
+                     read(ROOT / ".deps/build/dsp56300.toolchain.txt") + ")",
         "@libzip": read(deps / "libzip/.pshakux-revision"),
         "@rapidjson": read(deps / "rapidjson/.pshakux-revision"),
         "@certifi": certifi_version(),
