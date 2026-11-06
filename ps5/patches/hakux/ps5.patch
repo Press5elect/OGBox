@@ -168,6 +168,7 @@ native core's work tree (oldest first; author: subject):
   bd48d2d7fc Claude: apu: an EP run ends once the EP has put out its frame
   96b7d40329 Claude: apu: the two EP run experiments reverted
   3a54302ddc Claude: io: the first 2000 opens logged; apu: NC_APU_EP_PROFILE, NC_APU_DSP_KEEP
+  a1cefd6dac Claude: apu: the EP profile dumps its code, registers, memory and DMA once
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18929,10 +18930,10 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a1146be8473 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..98c2478e044f5db9b57ecf7d1e1a2e1204f513f8 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
-@@ -20,17 +20,84 @@
+@@ -20,17 +20,136 @@
   */
  
  #include "native/dev/apu/apu_int.h"
@@ -19007,6 +19008,58 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
 +        nc_log("hakuX-apu", "EP profile:   P:%04x %5.1f%% |%s", at, 100.0 * best / (double)g_epp.samples, words);
 +        g_epp.hits[at] = 0;
 +    }
++    /* where it is now: its code around the program counter, its registers, the X and Y memory
++     * its address registers point at, and the DMA */
++    static bool dumped;
++    if (!dumped) {
++        dumped = true;
++        uint32_t pc = ep->core.pc, regs[64] = {0};
++#if NC_HAVE_DSP_JIT
++        if (ep->jit) {
++            Dsp56300State st;
++            dsp56300_get_state(ep->jit, &st);
++            pc = st.pc;
++            memcpy(regs, st.registers, sizeof(regs));
++        }
++#endif
++        const uint32_t from = pc >= 0x30 ? pc - 0x30 : 0;
++        for (uint32_t a = from; a < from + 0x60 && a < DSP_PRAM_SIZE; a += 8) {
++            char words[96] = "";
++            int o = 0;
++            for (uint32_t i = 0; i < 8; i++) {
++                o += snprintf(words + o, sizeof(words) - (size_t)o, " %06x", dsp_read_memory(ep, 'P', a + i));
++            }
++            nc_log("hakuX-apu", "EP dump: P:%04x%s", a, words);
++        }
++        char line[512];
++        int o = snprintf(line, sizeof(line), "EP dump: pc %04x", pc);
++        static const char *const names[64] = {[4] = "x0", [5] = "x1", [6] = "y0", [7] = "y1", [8] = "a0",
++            [9] = "b0", [10] = "a2", [11] = "b2", [12] = "a1", [13] = "b1", [16] = "r0", [17] = "r1",
++            [18] = "r2", [19] = "r3", [20] = "r4", [21] = "r5", [22] = "r6", [23] = "r7", [24] = "n0",
++            [25] = "n1", [26] = "n2", [27] = "n3", [28] = "n4", [29] = "n5", [30] = "n6", [31] = "n7",
++            [32] = "m0", [33] = "m1", [34] = "m2", [35] = "m3", [36] = "m4", [37] = "m5", [38] = "m6",
++            [39] = "m7", [57] = "sr", [58] = "omr", [59] = "sp", [62] = "la", [63] = "lc"};
++        for (int i = 0; i < 64 && o < (int)sizeof(line) - 16; i++) {
++            if (names[i]) {
++                o += snprintf(line + o, sizeof(line) - (size_t)o, " %s %06x", names[i], regs[i]);
++            }
++        }
++        nc_log("hakuX-apu", "%s", line);
++        for (int r = 0; r < 8; r++) {
++            const uint32_t at = regs[16 + r] & 0xFFFF;
++            char x[96] = "", y[96] = "";
++            int ox = 0, oy = 0;
++            for (uint32_t i = 0; i < 6; i++) {
++                const uint32_t a = (at >= 2 ? at - 2 : 0) + i;
++                ox += snprintf(x + ox, sizeof(x) - (size_t)ox, " %06x", dsp_read_memory(ep, 'X', a));
++                oy += snprintf(y + oy, sizeof(y) - (size_t)oy, " %06x", dsp_read_memory(ep, 'Y', a));
++            }
++            nc_log("hakuX-apu", "EP dump: r%d %04x: X from %04x%s | Y%s", r, at, at >= 2 ? at - 2 : 0, x, y);
++        }
++        nc_log("hakuX-apu", "EP dump: dma control %06x configuration %06x start %06x next %06x eol %d; "
++               "interrupts %06x", ep->dma.control, ep->dma.configuration, ep->dma.start_block, ep->dma.next_block,
++               ep->dma.eol, ep->interrupts);
++    }
 +    memset(g_epp.hits, 0, sizeof(g_epp.hits));
 +    g_epp.samples = g_epp.runs = g_epp.outs = g_epp.limited = 0;
 +}
@@ -19020,7 +19073,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
      if (g_apu_config.use_dsp) {
          d->monitor.point = MCPX_APU_DEBUG_MON_GP_OR_EP;
          d->gp.realtime = true;
-@@ -40,8 +107,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
+@@ -40,8 +159,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
          d->gp.realtime = false;
          d->ep.realtime = false;
      }
@@ -19029,7 +19082,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
  }
  
  static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
-@@ -163,6 +228,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -163,6 +280,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -19037,7 +19090,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
          assert(index < GP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_GPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -220,6 +286,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -220,6 +338,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -19045,7 +19098,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
          assert(index < EP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -242,6 +309,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -242,6 +361,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      //     base, end, cur, len);
  
      if (dir && index == 0) {
@@ -19053,7 +19106,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
          bool did_sink = ep_sink_samples(d, ptr, len);
          if (did_sink) {
              /* Since we are sinking, push silence out */
-@@ -333,7 +401,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -333,7 +453,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19062,7 +19115,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -422,7 +490,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -422,7 +542,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19071,7 +19124,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +532,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +584,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
@@ -19089,7 +19142,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,16 +563,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +615,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -19108,7 +19161,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +580,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +632,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19122,7 +19175,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +600,28 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +652,28 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19154,7 +19207,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a11
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +658,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +710,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
