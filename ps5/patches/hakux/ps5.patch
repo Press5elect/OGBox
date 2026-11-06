@@ -166,6 +166,8 @@ native core's work tree (oldest first; author: subject):
   75dc745c36 Claude: apu: the EP's run back at twice its chip cycles (the chip's own left no sound)
   f2429e134a Claude: apu: an EP run that only waits for its next frame stops there
   bd48d2d7fc Claude: apu: an EP run ends once the EP has put out its frame
+  96b7d40329 Claude: apu: the two EP run experiments reverted
+  3a54302ddc Claude: io: the first 2000 opens logged; apu: NC_APU_EP_PROFILE, NC_APU_DSP_KEEP
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -17983,7 +17985,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9cea71a7a 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ec29a3b47b3d525fb00ec4cb8324636ab0721573 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18098,7 +18100,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
      apu_st(&d->set_irq, false);
      d->snapshot_just_loaded = false;
      d->next_frame_time_us = 0;
-@@ -588,6 +619,154 @@ void mcpx_apu_post_load(MCPXAPUState *d)
+@@ -588,6 +619,158 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      update_irq(d);
  }
  
@@ -18239,7 +18241,11 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
 +        nc_log("hakuX-apu", "full DSP: %.0f us a GP frame (of %d): GP %.0f, EP %.0f", per_frame, GP_FRAME_US, gp, ep);
 +    }
 +    s_slow_windows = per_frame > 1.25 * GP_FRAME_US ? s_slow_windows + 1 : 0;
-+    if (s_slow_windows >= 3) {
++    static int s_keep = -1;
++    if (s_keep < 0) {
++        s_keep = getenv("NC_APU_DSP_KEEP") != NULL;   /* full DSP however slow (the EP profile's runs) */
++    }
++    if (s_slow_windows >= 3 && !s_keep) {
 +        s_fell_back = true;
 +        g_apu_config.use_dsp = false;
 +        mcpx_apu_update_dsp_preference(d);
@@ -18253,7 +18259,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = arg;
-@@ -608,6 +787,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -608,6 +791,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          int xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
          uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
@@ -18261,7 +18267,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
          if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
-@@ -617,6 +797,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -617,6 +801,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          /* taken and cleared at once: one the guest thread raises meanwhile
           * stays for the next frame (a plain clear after update_irq lost it) */
          if (apu_xchg(&d->set_irq, false)) {
@@ -18269,7 +18275,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
              if (d->snapshot_just_loaded) {
                  /* Swallow exactly the FIRST post-restore IRQ assert: a voice
                   * that was at completion when the snapshot was taken re-emits
-@@ -634,6 +815,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -634,6 +819,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          }
  
          if (frames_stopped(d)) {
@@ -18277,7 +18283,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
              nc_pause_idle(true);                /* stopped until the guest acts */
              /* timed: the guest's register writes signal without d->lock (its
               * thread never takes it), so one can come between the check and
-@@ -660,7 +842,10 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -660,7 +846,10 @@ static void *mcpx_apu_frame_thread(void *arg)
          if (nc_paused()) {
              continue;                           /* the throttle let go for the pause: no frame */
          }
@@ -18288,7 +18294,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
      }
      pthread_mutex_unlock(&d->lock);
      return NULL;
-@@ -670,10 +855,16 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -670,10 +859,16 @@ static void *mcpx_apu_frame_thread(void *arg)
   * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
   * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
   * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
@@ -18306,7 +18312,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
      g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
      g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
      g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
-@@ -684,7 +875,7 @@ static void config_init(void)
+@@ -684,7 +879,7 @@ static void config_init(void)
  static void *apu_trace_thread(void *arg)
  {
      MCPXAPUState *d = arg;
@@ -18315,7 +18321,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
          sleep(2);
          nc_log("hakuX-native-apu",
                 "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
-@@ -727,9 +918,19 @@ static void *apu_trace_thread(void *arg)
+@@ -727,9 +922,19 @@ static void *apu_trace_thread(void *arg)
      return NULL;
  }
  
@@ -18336,7 +18342,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..c42fd75b1ad7525a72e74d80bf2d38b9
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,10 +955,48 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,10 +959,48 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -18456,7 +18462,7 @@ index a12ae47b40c96ca4c3c2feaaaa5dfd62efcd363e..79c7b2ab0ec3c7e112c6cd4dba4a839e
  int apu_out_queued(void);
  /* one EP frame in (the frame thread: the only producer; there is room) */
 diff --git a/native/dev/apu/dsp/dsp.c b/native/dev/apu/dsp/dsp.c
-index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152062a9700 100644
+index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd2c1225e1 100644
 --- a/native/dev/apu/dsp/dsp.c
 +++ b/native/dev/apu/dsp/dsp.c
 @@ -59,6 +59,12 @@ DSPState *dsp_init(void *rw_opaque,
@@ -18511,13 +18517,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152
          v = dsp_dma_read(&dsp->dma, DMA_CONTROL);
          break;
      case 0xFFFFD7:
-@@ -106,11 +133,17 @@ static uint32_t read_peripheral(dsp_core_t* core, uint32_t address) {
- 
- static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value) {
-     DSPState* dsp = container_of(core, DSPState, core);
-+    dsp->periph_writes++;
- 
-     switch(address) {
+@@ -111,6 +138,11 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
      case 0xFFFFC4:
          if (value & 1) {
              core->is_idle = true;
@@ -18529,7 +18529,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152
          }
          break;
      case 0xFFFFC5:
-@@ -126,6 +159,9 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
+@@ -126,6 +158,9 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
          dsp_dma_write(&dsp->dma, DMA_START_BLOCK, value);
          break;
      case 0xFFFFD6:
@@ -18539,7 +18539,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152
          dsp_dma_write(&dsp->dma, DMA_CONTROL, value);
          break;
      case 0xFFFFD7:
-@@ -138,41 +174,64 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
+@@ -138,41 +173,64 @@ static void write_peripheral(dsp_core_t* core, uint32_t address, uint32_t value)
  
  void dsp_step(DSPState* dsp)
  {
@@ -18629,7 +18629,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152
  }
  
  void dsp_bootstrap(DSPState* dsp)
-@@ -186,12 +245,24 @@ void dsp_bootstrap(DSPState* dsp)
+@@ -186,12 +244,24 @@ void dsp_bootstrap(DSPState* dsp)
              dsp->core.pram[i] &= 0x00ffffff;
          }
      }
@@ -18655,7 +18655,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152
  }
  
  uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
-@@ -213,6 +284,11 @@ uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
+@@ -213,6 +283,11 @@ uint32_t dsp_read_memory(DSPState* dsp, char space, uint32_t address)
          return 0;
      }
  
@@ -18667,7 +18667,7 @@ index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..83aabe2b735a5bb6681d45a1b9d71152
      return dsp56k_read_memory(&dsp->core, space_id, address);
  }
  
-@@ -235,5 +311,11 @@ void dsp_write_memory(DSPState* dsp, char space, uint32_t address, uint32_t valu
+@@ -235,5 +310,11 @@ void dsp_write_memory(DSPState* dsp, char space, uint32_t address, uint32_t valu
          return;
      }
  
@@ -18903,7 +18903,7 @@ index c7dabcc99c76e7235b248b93739a9a408f0ebad4..d8af8fd82ffc04726da9134f824b9485
  
      }
 diff --git a/native/dev/apu/dsp/dsp_state.h b/native/dev/apu/dsp/dsp_state.h
-index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..afc6492d66a2b30d2c5c0e6d852eeb0779abb01b 100644
+index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536f993f99d 100644
 --- a/native/dev/apu/dsp/dsp_state.h
 +++ b/native/dev/apu/dsp/dsp_state.h
 @@ -27,6 +27,7 @@
@@ -18914,7 +18914,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..afc6492d66a2b30d2c5c0e6d852eeb07
  
  struct DSPState {
      dsp_core_t core;
-@@ -36,6 +37,22 @@ struct DSPState {
+@@ -36,6 +37,13 @@ struct DSPState {
      uint32_t interrupts;
  
      bool is_gp;
@@ -18924,24 +18924,15 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..afc6492d66a2b30d2c5c0e6d852eeb07
 +    bool jit_state_valid;
 +    Dsp56300State jit_state;
 +    uint32_t jit_dma_reads;
-+    /* OGBox 0.0.4: a run that only waits (dsp_jit_waiting): its registers at the last check, the
-+     * checks in a row that found no change, the peripheral writes seen then */
-+    uint32_t spin_regs[64];
-+    uint32_t spin_pc;
-+    unsigned spin_same;
-+    uint32_t spin_writes;
-+    uint64_t spin_skipped;
 +#endif
-+    uint32_t periph_writes;     /* OGBox 0.0.4: writes to the peripherals (dsp.c) */
-+    bool frame_out;             /* OGBox 0.0.4: (the EP) its output frame written in this run */
  };
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec2e5f5e43 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..94368aab4eba423abf5cfec347a51a1146be8473 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
-@@ -20,17 +20,19 @@
+@@ -20,17 +20,84 @@
   */
  
  #include "native/dev/apu/apu_int.h"
@@ -18949,17 +18940,79 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  
  static const int16_t ep_silence[256][2] = { 0 };
  
+-void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
 +/* OGBox 0.0.4: the host time the GP's and the EP's programs took (apu.c's dsp_speed_watch) */
 +int64_t g_apu_dsp_us[2];
 +
- void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
++/* OGBox 0.0.4: NC_APU_EP_PROFILE=1 (boot.txt env): where the EP's program spends its runs. Its
++ * program counter after every 1000 cycles, counted by address; every 5 s the busiest addresses and
++ * their instruction words, the runs, the output frames it wrote (FIFO 0) and the runs that ended
++ * at their cycle allowance. Off: nothing is counted. */
++static struct {
++    int on;
++    uint32_t hits[DSP_PRAM_SIZE];
++    uint64_t samples, runs, outs, limited;
++    int64_t last_us;
++} g_epp = {.on = -1};
++
++static void ep_profile_sample(DSPState *ep)
  {
 -    static int last_known_preference = -1;
--
++    if (g_epp.on <= 0) {
++        return;
++    }
++    uint32_t pc = ep->core.pc;
++#if NC_HAVE_DSP_JIT
++    if (ep->jit) {
++        Dsp56300State st;
++        dsp56300_get_state(ep->jit, &st);
++        pc = st.pc;
++    }
++#endif
++    g_epp.hits[pc % DSP_PRAM_SIZE]++;
++    g_epp.samples++;
++}
+ 
 -    if (last_known_preference == (int)g_apu_config.use_dsp) {
--        return;
--    }
--
++static void ep_profile_report(DSPState *ep)
++{
++    if (g_epp.on < 0) {
++        const char *e = getenv("NC_APU_EP_PROFILE");
++        g_epp.on = e && e[0] == '1';
++        g_epp.last_us = apu_host_us();
++    }
++    if (g_epp.on <= 0 || apu_host_us() - g_epp.last_us < 5000000) {
+         return;
+     }
++    g_epp.last_us = apu_host_us();
++    nc_log("hakuX-apu", "EP profile: %llu runs, %llu output frames, %llu runs at the allowance; the program "
++           "counter's %llu samples (one each 1000 cycles), busiest:", (unsigned long long)g_epp.runs,
++           (unsigned long long)g_epp.outs, (unsigned long long)g_epp.limited, (unsigned long long)g_epp.samples);
++    for (int k = 0; k < 16; k++) {
++        uint32_t best = 0, at = 0;
++        for (uint32_t i = 0; i < DSP_PRAM_SIZE; i++) {
++            if (g_epp.hits[i] > best) {
++                best = g_epp.hits[i];
++                at = i;
++            }
++        }
++        if (!best) {
++            break;
++        }
++        char words[96] = "";
++        int o = 0;
++        for (uint32_t i = 0; i < 4 && at + i < DSP_PRAM_SIZE; i++) {
++            o += snprintf(words + o, sizeof(words) - (size_t)o, " %06x", dsp_read_memory(ep, 'P', at + i));
++        }
++        nc_log("hakuX-apu", "EP profile:   P:%04x %5.1f%% |%s", at, 100.0 * best / (double)g_epp.samples, words);
++        g_epp.hits[at] = 0;
++    }
++    memset(g_epp.hits, 0, sizeof(g_epp.hits));
++    g_epp.samples = g_epp.runs = g_epp.outs = g_epp.limited = 0;
++}
+ 
++void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
++{
 +    /* Set on the state every time, not cached in a static: the libretro core
 +     * boots again in its frontend's process (a reset, a title's relaunch)
 +     * with a new, zeroed APU, which kept monitor point 0 (AC97) and sent
@@ -18967,7 +19020,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
      if (g_apu_config.use_dsp) {
          d->monitor.point = MCPX_APU_DEBUG_MON_GP_OR_EP;
          d->gp.realtime = true;
-@@ -40,8 +42,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
+@@ -40,8 +107,6 @@ void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
          d->gp.realtime = false;
          d->ep.realtime = false;
      }
@@ -18976,7 +19029,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  }
  
  static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
-@@ -163,6 +163,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -163,6 +228,7 @@ static void gp_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -18984,7 +19037,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
          assert(index < GP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_GPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -220,6 +221,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -220,6 +286,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      uint32_t end;
      uint64_t cur_reg;
      if (dir) {
@@ -18992,15 +19045,15 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
          assert(index < EP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -242,6 +244,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+@@ -242,6 +309,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
      //     base, end, cur, len);
  
      if (dir && index == 0) {
-+        d->ep.dsp->frame_out = true;
++        g_epp.outs++;
          bool did_sink = ep_sink_samples(d, ptr, len);
          if (did_sink) {
              /* Since we are sinking, push silence out */
-@@ -333,7 +336,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -333,7 +401,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19009,7 +19062,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -422,7 +425,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -422,7 +490,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19018,7 +19071,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +467,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +532,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
@@ -19036,7 +19089,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,16 +498,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +563,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -19055,7 +19108,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +515,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +580,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19069,7 +19122,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +535,67 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +600,28 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19079,61 +19132,20 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
      if ((d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPRST) &&
          (d->ep.regs[NV_PAPU_EPRST] & NV_PAPU_GPRST_GPDSPRST)) {
          if (d->ep_frame_div % 8 == 0) {
--            dsp_start_frame(d->ep.dsp);
+             dsp_start_frame(d->ep.dsp);
 -            d->ep.dsp->core.is_idle = false;
 -            d->ep.dsp->core.cycle_count = 0;
-+            DSPState *ep = d->ep.dsp;
-+            dsp_start_frame(ep);
-+            bool waits = false, put_out = false;
-+            ep->frame_out = false;
-+#if NC_HAVE_DSP_JIT
-+            if (ep->jit) {
-+                dsp_jit_wait_reset(ep);
-+            }
-+#endif
++            ep_profile_report(d->ep.dsp);
++            g_epp.runs++;
              do {
--                dsp_run(d->ep.dsp, 1000);
+                 dsp_run(d->ep.dsp, 1000);
 -            } while (!d->ep.dsp->core.is_idle && d->ep.realtime);
-+                dsp_run(ep, 1000);
-+#if NC_HAVE_DSP_JIT
-+                /* OGBox 0.0.4: a program that only waits for its next frame (test10: the EP never
-+                 * went idle, ~950 us of host time a GP frame in its allowance) stops waiting here */
-+                waits = ep->jit && ep->core.cycle_count < 8 * DSP_FRAME_LIMIT && dsp_jit_waiting(ep);
-+                /* OGBox 0.0.4: the run ends once the EP has put out its frame (FIFO 0, one a run:
-+                 * 1024 bytes, 8 GP frames' stereo). Its program never went idle (test10-13: the
-+                 * allowance reached every run, with its registers moving), so it went on with the
-+                 * next block's work at once, up to twice its chip cycles of host time (~950 us a GP
-+                 * frame on the PS5's JIT, beyond the frame's 666). Stopped here, it picks up from
-+                 * the same place at its next frame: the same program, in step with the frames
-+                 * instead of ahead of them. A run that puts out nothing goes on to the allowance. */
-+                put_out = ep->jit && ep->frame_out;
-+#endif
-+            } while (!waits && !put_out && !ep->core.is_idle && d->ep.realtime &&
-+                     ep->core.cycle_count < 8 * DSP_FRAME_LIMIT);
-+#if NC_HAVE_DSP_JIT
-+            if (put_out) {
-+                static unsigned said;
-+                if (said < 2) {
-+                    said++;
-+                    nc_log("hakuX-apu", "EP DSP put out its frame %u cycles into its run (allowance %u): the run "
-+                           "ends there", ep->core.cycle_count, 8u * DSP_FRAME_LIMIT);
-+                }
-+            }
-+#endif
-+#if NC_HAVE_DSP_JIT
-+            if (waits) {
-+                static bool said;
-+                const uint64_t left = 8ull * DSP_FRAME_LIMIT - ep->core.cycle_count;
-+                ep->spin_skipped += left;
-+                if (!said) {
-+                    said = true;
-+                    nc_log("hakuX-apu", "EP DSP waits at P:%06x with nothing changing (%u cycles into its run): the "
-+                           "rest of each such run is skipped", ep->spin_pc, ep->core.cycle_count);
-+                }
-+            }
-+#endif
-+            if (d->ep.realtime && !ep->core.is_idle && !waits && !put_out) {
-+                frame_limit(ep);
++                ep_profile_sample(d->ep.dsp);
++            } while (!d->ep.dsp->core.is_idle && d->ep.realtime &&
++                     d->ep.dsp->core.cycle_count < 8 * DSP_FRAME_LIMIT);
++            if (d->ep.realtime && !d->ep.dsp->core.is_idle) {
++                g_epp.limited++;
++                frame_limit(d->ep.dsp);
 +            }
          }
      }
@@ -19142,7 +19154,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +632,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +658,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
@@ -19416,10 +19428,10 @@ index 0000000000000000000000000000000000000000..7a3e1be79051c807defde2324e9bae5f
 +#endif
 diff --git a/native/dev/apu/dsp/jit.c b/native/dev/apu/dsp/jit.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3e202367be2243a1a64807d5015c7ae5c7e02c5
+index 0000000000000000000000000000000000000000..7a632e10f451b5850575b1fdc94f3169932dd821
 --- /dev/null
 +++ b/native/dev/apu/dsp/jit.c
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,191 @@
 +/*
 + * MCPX DSP emulator - DSP56300 JIT backend
 + *
@@ -19611,41 +19623,12 @@ index 0000000000000000000000000000000000000000..c3e202367be2243a1a64807d5015c7ae
 +    }
 +    dsp56300_set_state(dsp->jit, &state);
 +}
-+
-+void dsp_jit_wait_reset(DSPState *dsp)
-+{
-+    dsp->spin_same = 0;
-+    dsp->spin_pc = 0xFFFFFFFFu;
-+}
-+
-+bool dsp_jit_waiting(DSPState *dsp)
-+{
-+    static int s_on = -1;
-+    if (s_on < 0) {
-+        const char *e = getenv("NC_APU_EP_WAIT");      /* 0: run every allowance out, as before */
-+        s_on = !(e && e[0] == '0');
-+    }
-+    if (!s_on) {
-+        return false;
-+    }
-+    Dsp56300State st;
-+    dsp56300_get_state(dsp->jit, &st);
-+    const bool same = st.pc != 0xFFFFFFFFu && dsp->spin_pc != 0xFFFFFFFFu &&
-+                      (st.pc > dsp->spin_pc ? st.pc - dsp->spin_pc : dsp->spin_pc - st.pc) <= 16 &&
-+                      !memcmp(st.registers, dsp->spin_regs, sizeof(st.registers)) &&
-+                      dsp->periph_writes == dsp->spin_writes && !(dsp->dma.control & DMA_CONTROL_RUNNING);
-+    dsp->spin_same = same ? dsp->spin_same + 1 : 0;
-+    memcpy(dsp->spin_regs, st.registers, sizeof(st.registers));
-+    dsp->spin_pc = st.pc;
-+    dsp->spin_writes = dsp->periph_writes;
-+    return dsp->spin_same >= 3;
-+}
 diff --git a/native/dev/apu/dsp/jit.h b/native/dev/apu/dsp/jit.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6a75783809deb50406fcb63c4bab83e9627ecb5
+index 0000000000000000000000000000000000000000..025ff7fffe96910d550088146ca01cb5327d28ad
 --- /dev/null
 +++ b/native/dev/apu/dsp/jit.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,21 @@
 +/* Copyright (C) 2026-present PortareOS */
 +/* DSP56300 JIT bridge; the C interpreter remains available in every build. */
 +#ifndef NATIVE_APU_DSP_JIT_H
@@ -19664,12 +19647,6 @@ index 0000000000000000000000000000000000000000..e6a75783809deb50406fcb63c4bab83e
 +void dsp_jit_step(DSPState *dsp);
 +void dsp_jit_save(DSPState *dsp);
 +void dsp_jit_load(DSPState *dsp);
-+/* OGBox 0.0.4: after a run of the JIT, whether the program only waits: no register but the
-+ * program counter changed (within a few words), no peripheral written and no DMA running, for
-+ * three runs in a row. Such a program waits for its next frame's interrupt, which can't come in
-+ * this one: the rest of its allowance is skipped. dsp_jit_wait_reset at a frame's start. */
-+bool dsp_jit_waiting(DSPState *dsp);
-+void dsp_jit_wait_reset(DSPState *dsp);
 +#endif
 +
 +#endif
@@ -23201,7 +23178,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea6944cbaf5f 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc09051931a45 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -23694,7 +23671,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
              if (fd < 0) {
                  nc_log("hakuX-native-io", "open %s (%s): %s", path, host, strerror(errno));
                  if (old_path[0]) {
-@@ -1192,6 +1470,7 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1192,23 +1470,59 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          nf->old_size = old_size;
          snprintf(nf->host, sizeof(nf->host), "%s", host);
      }
@@ -23702,7 +23679,21 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      snprintf(nf->path, sizeof(nf->path), "%s", path);
      nf->async = !(options & FILE_SYNCHRONOUS_IO);
      nf->no_buffering = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
-@@ -1205,10 +1484,39 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+     nf->can_write = (access & ACCESS_WRITES) != 0;
+     nc_kernel_trace_trigger(path);
+     *handle = file_handle(k, nf);
+-    nc_log("hakuX-native-io", "open %s -> %s%s", path, nf->is_dir ? "dir " : "",
+-           *info == 2 ? "(created)" : *info == 3 ? "(overwritten)" : *info == 0 ? "(superseded)" : "");
++    /* OGBox 0.0.4: the first 2000 opens (the dashboard opened ~19,000 files in half a minute, most
++     * of its log); failures are logged as before */
++    static unsigned s_opens;
++    if (++s_opens <= 2000) {
++        nc_log("hakuX-native-io", "open %s -> %s%s%s", path, nf->is_dir ? "dir " : "",
++               *info == 2 ? "(created)" : *info == 3 ? "(overwritten)" : *info == 0 ? "(superseded)" : "",
++               s_opens == 2000 ? " (the last open logged: files opened from here on aren't)" : "");
++    }
+     return *handle ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
+ }
  
  /* NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
   *   FileAttributes, ShareAccess, CreateDisposition, CreateOptions) */
@@ -23742,7 +23733,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1221,6 +1529,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1221,6 +1535,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, a[1], a[2], FILE_OPEN, a[5], &h, &info);
@@ -23752,7 +23743,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1236,6 +1547,9 @@ static uint64_t file_size(const NcFile *nf)
+@@ -1236,6 +1553,9 @@ static uint64_t file_size(const NcFile *nf)
          return nf->disc.size;
      }
      struct stat st;
@@ -23762,7 +23753,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      return nf->fd >= 0 && fstat(nf->fd, &st) == 0 ? (uint64_t)st.st_size : 0;
  }
  
-@@ -1427,6 +1741,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
+@@ -1427,6 +1747,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
      return true;
  }
  
@@ -23825,7 +23816,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
  /* NtReadFile's work for a buffer of runs (len bytes in all): a[] as
   * NtReadFile takes it, its Buffer and Length aside. */
  static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned nrun, uint32_t len)
-@@ -1447,7 +1817,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1447,7 +1823,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          uint64_t o = off;
          for (unsigned i = 0; i < nrun; i++) {
              nc_vm_will_write(run[i].va, run[i].len);
@@ -23834,7 +23825,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
              o += run[i].len;
          }
          io_moved(k, nf, a[7], off + len);
-@@ -1469,6 +1839,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1469,6 +1845,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -23842,7 +23833,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1857,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +1863,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -23860,7 +23851,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1502,10 +1880,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1502,10 +1886,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          bool ok = true;
          uint64_t o = off;
          for (unsigned i = 0; ok && i < nrun; i++) {
@@ -23873,7 +23864,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
              o += run[i].len;
          }
          if (!ok) {
-@@ -1515,11 +1892,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1515,11 +1898,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -23888,7 +23879,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
          }
          nc_log("hakuX-native-io", "read %s +%llx %u into %08x -> %08x n=%u%s%s [%02x%02x%02x%02x %02x%02x%02x%02x]",
                 nf->path, (unsigned long long)off, len, va0, st, n, a[1] ? " event" : "", a[2] ? " apc" : "",
-@@ -1635,7 +2013,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1635,7 +2019,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
          if (nf->partition == 0) {
              const uint64_t off = io_offset(k, nf, a[7]);
              nc_vm_will_read(a[5], a[6]);
@@ -23897,7 +23888,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
              io_moved(k, nf, a[7], off + a[6]);
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
-@@ -1649,7 +2027,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1649,7 +2033,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
          const uint64_t o = io_offset(k, nf, a[7]);
          io_moved(k, nf, a[7], o + a[6]);
          nc_vm_will_read(a[5], a[6]);
@@ -23906,7 +23897,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
          /* The FATX superblock: "FATX", volume id, sectors per cluster. */
          const uint8_t *sb = nc_vm_host(k->vm, a[5]);
          if (o == 0 && a[6] >= 12 && !memcmp(sb, "FATX", 4)) {
-@@ -1680,14 +2058,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1680,14 +2064,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
              regrow(nf, size, off); /* the gap a write past the end leaves */
          }
      }
@@ -23947,7 +23938,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
          }
          nc_log("hakuX-native-io", "write %s +%llx %u from %08x -> %08x [%02x%02x%02x%02x %02x%02x%02x%02x]", nf->path,
                 (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-@@ -1748,6 +2150,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
+@@ -1748,6 +2156,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
  /* NtQueryInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -23955,7 +23946,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1808,14 +2211,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1808,14 +2217,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
      if (a[3] < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -23992,7 +23983,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1853,7 +2277,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2283,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -24002,7 +23993,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2286,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2292,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -24020,7 +24011,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2538,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2544,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -24063,7 +24054,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2590,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2596,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -24075,7 +24066,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
              }
              free(dir);
          }
-@@ -2198,6 +2630,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2198,6 +2636,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
   * FileAttributes 0x38, FileNameLength 0x3C, FileName (ANSI) 0x40. */
  static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24083,7 +24074,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      NcFile *nf = file_of(k, a[0]);
      if (!nf || !nf->is_dir) {
          return nf ? STATUS_INVALID_DEVICE_REQUEST : NC_STATUS_INVALID_HANDLE;
-@@ -2282,6 +2715,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -2282,6 +2721,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  /* NtQueryFullAttributesFile(ObjectAttributes, FileInformation (FILE_NETWORK_OPEN_INFORMATION)) */
  static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24091,7 +24082,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info);
      if (st != NC_STATUS_SUCCESS) {
-@@ -2295,6 +2729,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
+@@ -2295,6 +2735,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
  /* NtDeleteFile(ObjectAttributes) */
  static uint64_t NtDeleteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24099,7 +24090,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      char name[512], path[512], host[512];
      ansi(k, nc_vm_rd32(k->vm, a[0] + 4), name, sizeof(name));
      if (!resolve_name(k, nc_vm_rd32(k->vm, a[0]), name, sizeof(name))) {
-@@ -2386,6 +2821,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2827,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -24149,7 +24140,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2884,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2890,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -24159,7 +24150,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      } else {
          nc_log("hakuX-native-io", "scsi %02x (%u bytes): zeros", cdb[0], n);
      }
-@@ -2455,7 +2936,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
+@@ -2455,7 +2942,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
  {
      nc_log("hakuX-native-io", "device control %08x on device %08x (out %u)", a[0], a[1], a[5]);
      if (a[4] && a[5]) {
@@ -24168,7 +24159,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      }
      if (a[6]) {
          nc_vm_wr32(k->vm, a[6], 0);
-@@ -2525,7 +3006,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
+@@ -2525,7 +3012,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
      if (max < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -24177,7 +24168,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..326cc27e40605b74f5bf88614f9fea69
      *(uint16_t *)nc_vm_host(k->vm, a[1]) = len;
      return NC_STATUS_SUCCESS;
  }
-@@ -2779,7 +3260,7 @@ bool nc_file_state_save(NcBuf *b)
+@@ -2779,7 +3266,7 @@ bool nc_file_state_save(NcBuf *b)
  static void file_drop(NcFile *nf)
  {
      if (nf->used) {

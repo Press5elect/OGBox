@@ -593,7 +593,7 @@ void* WatcherMain(void*)
       next_beat = now + 0.25; // a fast heartbeat was asked for within a quiet interval
     }
   }
-  Forward();
+  Forward(0.5);   // 0.0.4: at most half a second of klog (see pshakux_diag_drain)
   return nullptr;
 }
 
@@ -895,10 +895,14 @@ extern "C" void pshakux_diag_set_status(pshakux_status_fn status, int fast)
   s_status.store(status, std::memory_order_release);
 }
 
+// OGBox 0.0.4: the log's file is what counts; klog gets what it can in half a second. Unbounded,
+// leaving a session that had logged a lot (the dashboard: ~19,000 file opens) waited for klog to
+// take the whole backlog, the watcher (its heartbeat) stopped behind the same lock, and OGBox
+// could not be closed.
 extern "C" void pshakux_diag_drain(void)
 {
   LogFlush();
-  Forward();
+  Forward(0.5);
 }
 
 extern "C" void pshakux_diag_session_end(int status)
@@ -915,7 +919,7 @@ extern "C" void pshakux_diag_session_end(int status)
     pshakux_log("session: %s", line);
 #endif
   LogFlush();
-  Forward();
+  Forward(0.5);
   if (s_log_fd >= 0)
     fsync(s_log_fd);
 }
