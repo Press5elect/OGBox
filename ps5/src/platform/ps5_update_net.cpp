@@ -12,6 +12,7 @@
 // transfer that brings less than 1 KiB a second for a minute stopped. A download goes to its file
 // as it comes, not through memory.
 
+#include <cstdio>
 #include "ps5_update_net.h"
 #include "ps5_update.h"
 #include "ps5_bootlog.h"
@@ -193,7 +194,24 @@ void OGBoxUpdate::Start()
 		curl_global_init(CURL_GLOBAL_DEFAULT);
 		PS5Update::Setup setup;
 		setup.app_dir = pshakux_title_dir();
+		/* 0.0.4: a developer build of X.Y.Z runs before X.Y.Z's release: the release is offered */
 		setup.version = pshakux_build_version();
+		if (!pshakux_build_release()) {
+			unsigned a = 0, b = 0, c = 0;
+			if (std::sscanf(setup.version.c_str(), "%u.%u.%u", &a, &b, &c) == 3) {
+				char before[48];
+				if (c > 0) {
+					std::snprintf(before, sizeof(before), "%u.%u.%u", a, b, c - 1);
+				} else if (b > 0) {
+					std::snprintf(before, sizeof(before), "%u.%u.999999", a, b - 1);
+				} else {
+					std::snprintf(before, sizeof(before), "%u.999999.999999", a > 0 ? a - 1 : 0);
+				}
+				pshakux_log("update: a developer build of %s: releases from v%s on are offered", setup.version.c_str(),
+					setup.version.c_str());
+				setup.version = before;
+			}
+		}
 		setup.http_get = HttpGet;
 		setup.http_download = HttpDownload;
 		setup.log = [](const char* line) { pshakux_log("%s", line); };

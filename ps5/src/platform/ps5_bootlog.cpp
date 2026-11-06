@@ -420,7 +420,7 @@ void LogHeader()
               s_continued ? " again (a relaunch: the session's log goes on)" : "", when);
 #endif
   pshakux_log("build identity: %s", pshakux_build_identity());
-  pshakux_log("build: OGBox %s, revision %.12s%s, built %s; RADV %s; payload SDK %.12s", pshakux_build_version(),
+  pshakux_log("build: OGBox %s, revision %.12s%s, built %s; RADV %s; payload SDK %.12s", pshakux_build_label(),
              pshakux_build_revision(), pshakux_build_dirty() ? " with uncommitted changes (dirty)" : "", pshakux_build_stamp(),
              pshakux_build_radv(), pshakux_build_sdk());
   pshakux_log("build: hakuX %s; CPU backend %s", pshakux_build_hakux(), pshakux_build_cpu());

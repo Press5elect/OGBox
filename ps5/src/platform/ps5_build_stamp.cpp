@@ -31,6 +31,18 @@ extern "C" const char* pshakux_build_version(void)
   return PSHAKUX_BUILD_VERSION;
 }
 
+// OGBox 0.0.4: the version as shown: "v0.0.4", or "v0.0.4 - developer build" for any build that
+// isn't a release (build-identity.sh: OGBOX_RELEASE=1 from a clean tree)
+extern "C" const char* pshakux_build_label(void)
+{
+  return PSHAKUX_BUILD_RELEASE ? "v" PSHAKUX_BUILD_VERSION : "v" PSHAKUX_BUILD_VERSION " - developer build";
+}
+
+extern "C" int pshakux_build_release(void)
+{
+  return PSHAKUX_BUILD_RELEASE;
+}
+
 extern "C" const char* pshakux_build_revision(void)
 {
   return PSHAKUX_BUILD_REVISION;

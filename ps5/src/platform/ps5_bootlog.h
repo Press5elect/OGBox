@@ -125,6 +125,10 @@ long pshakux_sysconf(int name);
 const char* pshakux_build_stamp(void);
 const char* pshakux_build_identity(void);
 const char* pshakux_build_version(void);
+/* OGBox 0.0.4: the version as shown ("v0.0.4", or "v0.0.4 - developer build"), and whether this
+ * is a release build */
+const char* pshakux_build_label(void);
+int pshakux_build_release(void);
 const char* pshakux_build_revision(void);
 int pshakux_build_dirty(void);
 const char* pshakux_build_radv(void);

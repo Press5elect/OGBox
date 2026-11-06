@@ -11,6 +11,11 @@
  * 0.0.3: first MobCat's scans of the boxes (github.com/MobCat/MobCats-original-xbox-game-list, over
  * HTTPS with curl: the front cut from the scan, scaled and kept as mc-<stem>.jpg), and last the
  * disc's own title image (its default.xbe's, kept as xbe-<title ID>.png).
+ * 0.0.4: as PSFlyCast and PSSwanStation keep them, a game's cover is covers/<its file's name>.png
+ * (or .jpg, .jpeg): a picture of your own put there wins over every source, and a downloaded one is
+ * moved there once it has come (its source's name was the folder's until then: a cover from
+ * libretro had the Redump name, not the file's). Covers kept under a source's name by 0.0.3 are
+ * moved the same way the first time they are shown.
  */
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
@@ -471,6 +476,10 @@ std::vector<std::string> coverSources(const std::string &fileName, const std::st
 	/* libretro's fronts first (a PNG of ~250 KB), MobCat's scans of the whole box for what libretro
 	 * hasn't (1 to 2 MB each: the home's covers came in at one every two seconds) */
 	std::vector<std::string> out = coverNames(fileName, given, givenRegions);
+	/* 0.0.4: the game's own cover, covers/<file name> (Covers::findAny), before every source */
+	if (!fileName.empty()) {
+		out.insert(out.begin(), "@own:" + stemOf(fileName));
+	}
 	const std::string mc = mobcatCover(titleId, rec ? rec->serial : std::string(), version, regions);
 	if (!mc.empty()) {
 		out.push_back("@mc:" + mc);
@@ -539,6 +548,38 @@ struct Covers::Impl {
 	double offlineUntil{ 0.0 };
 
 	static bool mobcat(const std::string &name) { return !name.compare(0, 4, "@mc:"); }
+	static bool own(const std::string &name) { return !name.compare(0, 5, "@own:"); }
+
+	/* 0.0.4: the game's own cover, covers/<file name>.png, .jpg or .jpeg ("" none) */
+	static std::string ownFile(const std::string &stem)
+	{
+		for (const char *ext : { ".png", ".jpg", ".jpeg", ".PNG", ".JPG" }) {
+			const std::string p = coversDir() + "/" + stem + ext;
+			if (exists(p)) {
+				return p;
+			}
+		}
+		return std::string();
+	}
+
+	/* 0.0.4: a source's cover moved to the game's own name (covers/<stem> and the file's
+	 * extension); the path it has now */
+	static std::string adopt(const std::string &stem, const std::string &kept)
+	{
+		if (stem.empty()) {
+			return kept;
+		}
+		const size_t dot = kept.rfind('.');
+		const std::string dst = coversDir() + "/" + stem + (dot == std::string::npos ? std::string(".png") : kept.substr(dot));
+		if (dst == kept) {
+			return kept;
+		}
+		if (std::rename(kept.c_str(), dst.c_str()) != 0) {
+			return kept;
+		}
+		pshakux_log("covers: %s kept as %s (the game's own name)", kept.c_str(), dst.c_str());
+		return dst;
+	}
 	static bool xbe(const std::string &name) { return !name.compare(0, 5, "@xbe:"); }
 
 	static std::string pathOf(const std::string &name, const char *ext)
@@ -787,6 +828,10 @@ Covers::State Covers::find(const std::string &name, std::string &path)
 	if (name.empty()) {
 		return State::None;
 	}
+	if (Impl::own(name)) {            // 0.0.4: never downloaded: there, or not
+		path = Impl::ownFile(name.substr(5));
+		return path.empty() ? State::Missing : State::Ready;
+	}
 	const std::string png = Impl::pathOf(name, ".png");
 	if (exists(png)) {
 		path = png;
@@ -814,18 +859,36 @@ Covers::State Covers::find(const std::string &name, std::string &path)
 
 Covers::State Covers::findAny(const std::vector<std::string> &names, std::string &path)
 {
+	/* 0.0.4: the game's own cover first (covers/<file name>: yours, or one moved there) */
+	std::string stem;
+	if (!names.empty() && Impl::own(names.front())) {
+		stem = names.front().substr(5);
+		path = Impl::ownFile(stem);
+		if (!path.empty()) {
+			return State::Ready;
+		}
+	}
 	/* 0.0.3: one already kept, whichever source it came from (the order of the sources changed: a
-	 * cover kept stays), before any is asked for */
+	 * cover kept stays), before any is asked for; 0.0.4: moved to the game's own name */
 	for (const std::string &n : names) {
+		if (Impl::own(n)) {
+			continue;
+		}
 		const std::string kept = Impl::pathOf(n, ".png");
 		if (exists(kept)) {
-			path = kept;
+			path = Impl::adopt(stem, kept);
 			return State::Ready;
 		}
 	}
 	State last = State::None;
 	for (const std::string &n : names) {
+		if (Impl::own(n)) {
+			continue;
+		}
 		last = find(n, path);
+		if (last == State::Ready) {
+			path = Impl::adopt(stem, path);
+		}
 		if (last != State::Missing) {
 			return last;                    // Ready, Queued (its answer first), or None (covers off)
 		}

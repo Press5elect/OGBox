@@ -117,8 +117,10 @@ network addresses are typed there by hand (`lan_peers=`, `kai_engine=`, `insigni
 **Covers and descriptions.** OGBox finds each game's cover on libretro's thumbnails first (by the
 disc's Redump name, or its title ID), then MobCat's box scans, and finally the picture inside the
 disc itself. A whole folder's covers download in one go, with a progress bar, and are kept in the
-data folder's `covers`. Game descriptions come from Wikipedia. You can turn downloads off in
-Settings > Game list.
+data folder's `covers`, named after the game's file (`Halo 2 (USA).iso` gets `Halo 2 (USA).png` or
+`.jpg`). Want a different cover? Put your own picture there under the game's file name: it wins
+over every download, and OGBox never deletes it. Game descriptions come from Wikipedia. You can
+turn downloads off in Settings > Game list.
 
 **Mods, patches and cheats.** A game's page lists what's available for it:
 - hakuX's mods (60 and 120 fps mods, game fixes) and OGBox's own;
@@ -243,8 +245,13 @@ Added
 - Settings > Anisotropic filtering (2x to 16x), Sharpening and Force 32-bit colour. All off by
   default: the picture stays the Xbox's own.
 
+Changed
+- Covers are kept under the game's file name, and a picture of your own with that name wins.
+- Test builds say "developer build" beside their version.
+
 Fixed
 - A black screen in the Xbox dashboard at a resolution scale of 5 or 6.
+- Covers filling in one by one after coming back from a game.
 
 ### 0.0.3
 

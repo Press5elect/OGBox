@@ -85,6 +85,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>   // (0.0.4; prelude.h has them: this file is in a namespace)
+#include <deque>
+#include <set>
 #include <map>
 #include <string>
 #include <vector>
@@ -872,6 +875,81 @@ public:
 	std::map<std::string, CoverTex> coverTex;
 	std::vector<std::pair<uint64_t, CoverTex>> coverRetired;   // destroyed some frames later
 	unsigned coverUploads{ 0 };                                 // this frame's
+	/* 0.0.4: the covers decoded on a thread of their own (a JPEG scan took the frame 20-40 ms on the
+	 * interface's thread, two a frame: back from a game, the home filled in cover by cover as if they
+	 * were downloading again); the frame only uploads what is decoded */
+	struct Decoded {
+		stbi_uc *px{ nullptr };
+		int w{ 0 }, h{ 0 };
+		bool failed{ false };
+	};
+	struct Decoder {
+		std::mutex mutex;
+		std::condition_variable cv;
+		std::deque<std::string> queue;          // paths
+		std::set<std::string> pending;
+		std::map<std::string, Decoded> done;    // by path
+		bool started{ false };
+
+		void request(const std::string &path)
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			if (done.count(path) || !pending.insert(path).second) {
+				return;
+			}
+			queue.push_back(path);
+			if (!started) {
+				started = true;
+				std::thread([this] { run(); }).detach();
+			}
+			cv.notify_one();
+		}
+		/* the decoded picture of path, taken (false: not yet) */
+		bool take(const std::string &path, Decoded &out)
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			auto it = done.find(path);
+			if (it == done.end()) {
+				return false;
+			}
+			out = it->second;
+			done.erase(it);
+			return true;
+		}
+		void run()
+		{
+			pshakux_thread_named("ogbox-coverdec");
+			for (;;) {
+				std::string path;
+				{
+					std::unique_lock<std::mutex> lock(mutex);
+					cv.wait(lock, [&] { return !queue.empty(); });
+					path = queue.back();          // the newest asked first: what is on screen now
+					queue.pop_back();
+				}
+				Decoded d;
+				int n = 0;
+				const std::string file = path.substr(0, path.find('\x01'));   // (a blur's key: path \x01 blur)
+				d.px = stbi_load(file.c_str(), &d.w, &d.h, &n, 4);
+				d.failed = !d.px || d.w <= 0 || d.h <= 0 || d.w > 2048 || d.h > 2048;
+				if (d.failed && d.px) {
+					stbi_image_free(d.px);
+					d.px = nullptr;
+				}
+				std::lock_guard<std::mutex> lock(mutex);
+				pending.erase(path);
+				done[path] = d;
+				while (done.size() > 96) {        // decoded but never drawn (scrolled past)
+					auto old = done.begin();
+					if (old->second.px) {
+						stbi_image_free(old->second.px);
+					}
+					done.erase(old);
+				}
+			}
+		}
+	};
+	Decoder coverDecoder;
 	// the selected disc's details, read on a thread of their own once the selection rests
 	struct Details {
 		std::mutex mutex;
@@ -1171,24 +1249,27 @@ public:
 	{
 		auto it = coverTex.find(key);
 		if (it == coverTex.end()) {
-			if (coverUploads >= 2) {
+			if (coverUploads >= 4) {
+				return nullptr;
+			}
+			/* 0.0.4: decoded on the decoder's thread; here only uploaded */
+			Decoded d;
+			if (!coverDecoder.take(path, d)) {
+				coverDecoder.request(path);
 				return nullptr;
 			}
 			coverUploads++;
 			CoverTex t;
-			int iw = 0, ih = 0, n = 0;
-			stbi_uc *pixels = stbi_load(path.c_str(), &iw, &ih, &n, 4);
-			if (!pixels || iw <= 0 || ih <= 0 || iw > 2048 || ih > 2048) {
-				if (pixels) {
-					stbi_image_free(pixels);
-				}
+			stbi_uc *pixels = d.px;
+			const int iw = d.w, ih = d.h;
+			if (d.failed) {
+				/* 0.0.4: kept (it may be a picture of your own: PSFlyCast never deletes one), not
+				 * tried again this run */
 				t.failed = true;
 				if (cover) {
-					pshakux_log("covers: %s cannot be read as a PNG: removed", path.c_str());
-					std::remove(path.c_str());
-				} else {
-					coverTex.emplace(key, std::move(t));   // (not tried again each frame)
+					pshakux_log("covers: %s cannot be read (a PNG or JPEG up to 2048 x 2048): not shown", path.c_str());
 				}
+				coverTex.emplace(key, std::move(t));
 				return nullptr;
 			}
 			t.tex.fromBuffer(pixels, static_cast<VkDeviceSize>(iw) * ih * 4, VK_FORMAT_R8G8B8A8_UNORM, static_cast<uint32_t>(iw),
@@ -1703,7 +1784,7 @@ public:
 			screen = Screen::Boot;
 			screenSince = now_seconds();
 			bootLines = {
-				std::string("> OGBox ") + pshakux_build_version() + " for PS5",
+				std::string("> OGBox ") + pshakux_build_label() + " for PS5",
 				"> settings: /data/ogbox/settings.txt; data: " + ogbox::storageRoot(),
 				"> mods: the title folder's mods/, chosen in /data/ogbox/mods.txt",
 				"> network shares: " + g_networkStatus,
@@ -3374,7 +3455,7 @@ public:
 		const char *left = "BOOTING THE XBOX";
 		ImGui::SetCursorScreenPos(ImVec2(barX, barY - ImGui::GetTextLineHeightWithSpacing() * 1.2f));
 		ImGui::TextColored(mx::label, "%s", left);
-		const std::string right = std::string("OGBox ") + pshakux_build_version();
+		const std::string right = std::string("OGBox ") + pshakux_build_label();
 		ImGui::SetCursorScreenPos(ImVec2(barX + barW - ImGui::CalcTextSize(right.c_str()).x,
 			barY - ImGui::GetTextLineHeightWithSpacing() * 1.2f));
 		ImGui::TextColored(mx::label, "%s", right.c_str());
@@ -3411,7 +3492,7 @@ public:
 		ImGui::SetCursorPos(ImVec2(x, H * 0.2f));
 		glowTitle("EXPERIMENTAL BUILD", 1.6f);
 		ImGui::SetCursorPosX(x);
-		ImGui::TextColored(mx::label, "OGBox %s for PS5", pshakux_build_version());
+		ImGui::TextColored(mx::label, "OGBox %s for PS5", pshakux_build_label());
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::PushTextWrapPos(x + colW);
@@ -3915,7 +3996,7 @@ public:
 			ImGui::SetNextWindowPos(ImVec2(pad, pad), ImGuiCond_Always);
 			ImGui::SetNextWindowBgAlpha(0.85f);
 			ImGui::Begin("##status", nullptr, flags);
-			ImGui::TextColored(mx::bright, "OGBox %s", pshakux_build_version());
+			ImGui::TextColored(mx::bright, "OGBox %s", pshakux_build_label());
 			if (!problem.empty()) {
 				ImGui::PushTextWrapPos(W * 0.6f);
 				ImGui::TextColored(mx::fail, "%s", problem.c_str());
@@ -4440,7 +4521,7 @@ public:
 		const PS5Update::Status st = PS5Update::GetStatus();
 		switch (st.state) {
 		case PS5Update::State::Checking: return "asking GitHub";
-		case PS5Update::State::UpToDate: return "this is the newest (" + std::string(pshakux_build_version()) + ")";
+		case PS5Update::State::UpToDate: return "this is the newest (" + std::string(pshakux_build_label()) + ")";
 		case PS5Update::State::Available: return st.tag + " is out";
 		case PS5Update::State::NoRelease: return "no release found";
 		case PS5Update::State::Downloading:
@@ -4450,7 +4531,7 @@ public:
 		case PS5Update::State::Ready: return "ready to install";
 		case PS5Update::State::Installed: return "installed";
 		case PS5Update::State::Failed: return "did not work";
-		default: return std::string("OGBox ") + pshakux_build_version();
+		default: return std::string("OGBox ") + pshakux_build_label();
 		}
 	}
 
@@ -4502,7 +4583,7 @@ public:
 			break;
 		case PS5Update::State::UpToDate:
 			if (updateByHand) {
-				showToast("This is the newest OGBox (" + std::string(pshakux_build_version()) + ").");
+				showToast("This is the newest OGBox (" + std::string(pshakux_build_label()) + ").");
 			}
 			updateByHand = false;
 			break;
@@ -5485,14 +5566,19 @@ public:
 			if (coverUploads >= 2) {
 				return {};
 			}
+			/* 0.0.4: decoded on the decoder's thread (its own request: the cover's picture is taken
+			 * by the one who asked first) */
+			Decoded d;
+			const std::string bkey = path + "\x01" "blur";
+			if (!coverDecoder.take(bkey, d)) {
+				coverDecoder.request(bkey);
+				return {};
+			}
 			coverUploads++;
 			BlurTex b;
-			int iw = 0, ih = 0, n = 0;
-			stbi_uc *px = stbi_load(path.c_str(), &iw, &ih, &n, 4);
-			if (!px || iw <= 0 || ih <= 0) {
-				if (px) {
-					stbi_image_free(px);
-				}
+			const int iw = d.w, ih = d.h;
+			stbi_uc *px = d.px;
+			if (d.failed) {
 				b.t.failed = true;
 			} else {
 				std::vector<uint8_t> tiny = ui::shrink(px, iw, ih, 12, 16);
@@ -5709,6 +5795,13 @@ public:
 			all.reserve(hc.games.size());
 			for (const int i : hc.games) {
 				all.push_back(coverNames(entries[static_cast<size_t>(i)]));
+			}
+			/* 0.0.4: the first covers kept on the drive decoded now, before they come on screen */
+			std::string path;
+			for (size_t g = 0; g < all.size() && g < 24; g++) {
+				if (ogbox::Covers::get().findAny(all[g], path) == ogbox::Covers::State::Ready) {
+					coverDecoder.request(path);
+				}
 			}
 			ogbox::Covers::get().want(std::move(all));
 		}
@@ -6091,7 +6184,7 @@ public:
 		}
 		v.footer.push_back({ "OPT", "Settings" });
 		v.footer.push_back({ "O", folder.empty() ? "Close OGBox" : "Back" });
-		v.version = std::string("OGBox ") + pshakux_build_version();
+		v.version = std::string("OGBox ") + pshakux_build_label();
 		if (!startPath.empty()) {
 			v.busy = "Starting " + (startPath == "none" ? std::string("the Xbox dashboard") : ogbox::shortName(baseName(startPath))) + "\xE2\x80\xA6";
 		}
@@ -6362,7 +6455,7 @@ public:
 				[this]() { checkForUpdate(); }, rows, acts, ui::Icon::Check);
 			break;
 		case SP_ABOUT:
-			actionRow("ver", "OGBox", pshakux_build_version(), "OGBox by Press5elect: hakuX for the PS5.", nullptr, rows, acts);
+			actionRow("ver", "OGBox", pshakux_build_label(), "OGBox by Press5elect: hakuX for the PS5.", nullptr, rows, acts);
 			groupRow("The controller", rows, acts);
 			actionRow("c1", "Cross, Circle, Square, Triangle", "A, B, X, Y", "", nullptr, rows, acts, ui::Icon::Pad);
 			actionRow("c2", "L1, R1", "white, black", "", nullptr, rows, acts);
@@ -6405,7 +6498,7 @@ public:
 		case SP_DATA: return ogbox::freeSpaceText(ogbox::storageRoot());
 		case SP_HDD: return "saves and caches";
 		case SP_UPDATES: return updateLine();
-		case SP_ABOUT: return pshakux_build_version();
+		case SP_ABOUT: return pshakux_build_label();
 		case SP_GAME_RESET: return std::to_string(prefs.overrides()) + " of its own";
 		default: return std::string();
 		}
@@ -6611,7 +6704,7 @@ public:
 			}
 			v.footer.push_back({ "O", "Sections" });
 		}
-		v.footerRight = std::string("OGBox ") + pshakux_build_version();
+		v.footerRight = std::string("OGBox ") + pshakux_build_label();
 		bd.strength = std::min(bd.strength, 0.6f);
 		ImDrawList *dl;
 		if (library) {

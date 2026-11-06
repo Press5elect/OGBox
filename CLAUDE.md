@@ -37,7 +37,9 @@ it is built, the rules the owner has set, and where the work stands.
 - `ps5/tools/check-imports.py` lists the console imports the build uses.
 - The version is in `ps5/version.txt`, and `contentVersion` in `ps5/sce_sys/param.json` must
   agree with it (X.Y.Z becomes XX.(Y*100+Z).000). `build-identity.sh` stops the build if they
-  differ. Bump both for a release.
+  differ. Bump both for a release. Build a release with `OGBOX_RELEASE=1` from a clean tree;
+  every other build is a developer build and shows "vX.Y.Z - developer build" (version.txt holds
+  the version being worked on, 0.0.4 now), and its updater offers vX.Y.Z's release once it is out.
 - Commits end with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
