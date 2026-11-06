@@ -160,6 +160,7 @@ native core's work tree (oldest first; author: subject):
   9b09663d38 Claude: apu: the DSP56300 JIT in the CMake build; NC_APU_RAW for the host
   45e1c2cfc8 Claude: apu: a DSP JIT that stopped on a panic hands its state to the interpreter
   c930bf36eb Claude: apu: full DSP whose JIT didn't start mixes as Fast does from the start
+  b370c67170 Claude: disc: folder tables kept in memory and read ahead; vk: VK_EXT_external_memory_host
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -6777,7 +6778,7 @@ index fb8d5a54f5395fb85bff2cbb182176427a35481f..ae46106014c94a759102934b7e59a1cf
      if (!g_ps.surf) {
          return false;
 diff --git a/hw/xbox/hle/vk/vkdev.c b/hw/xbox/hle/vk/vkdev.c
-index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd914b0a725 100644
+index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..374c227b45782a760a7c10b3835e2be0a8eac61d 100644
 --- a/hw/xbox/hle/vk/vkdev.c
 +++ b/hw/xbox/hle/vk/vkdev.c
 @@ -172,11 +172,16 @@ static void caps_override(HleCaps *c)
@@ -6921,7 +6922,19 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      /* (unused, enabled where present: on 1.3 only) */
      c->gpl = v13 && e_gpl && q_gpl.graphicsPipelineLibrary;
      c->eds3 = v13 && e_eds3 && q_eds3.extendedDynamicState3ColorBlendEnable &&
-@@ -526,8 +577,14 @@ int hle_vk_init(void)
+@@ -522,12 +573,26 @@ int hle_vk_init(void)
+                            : e_pcc && q_pcc.pipelineCreationCacheControl;
+     c->occl_precise = q.features.occlusionQueryPrecise;
+     c->swapchain = nix && has_ext(ext, ne, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
++    c->host_ptr = has_ext(ext, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) && !caps_off("host_ptr");
++    if (c->host_ptr) {
++        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
++            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
++        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
++        vkGetPhysicalDeviceProperties2(v->phys, &p2);
++        c->host_ptr_align = hp.minImportedHostPointerAlignment ? hp.minImportedHostPointerAlignment : 4096;
++    }
+     VkFormatProperties fp;
      vkGetPhysicalDeviceFormatProperties(v->phys, VK_FORMAT_R16G16_SSCALED, &fp);
      c->sscaled = fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
      caps_override(c);
@@ -6936,7 +6949,7 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      if (!c->bindless) {                 /* the draw sets' arrays, by the push block's index */
          need(c, q.features.shaderSampledImageArrayDynamicIndexing, "sampledImageDynamicIndexing");
      }
-@@ -556,6 +613,9 @@ int hle_vk_init(void)
+@@ -556,6 +621,9 @@ int hle_vk_init(void)
      VkPhysicalDeviceCustomBorderColorFeaturesEXT f_cbc = {
          .sType = q_cbc.sType, .customBorderColors = VK_TRUE,
          .customBorderColorWithoutFormat = q_cbc.customBorderColorWithoutFormat };
@@ -6946,7 +6959,7 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      VkPhysicalDeviceProvokingVertexFeaturesEXT f_pv = {
          .sType = q_pv.sType, .provokingVertexLast = VK_TRUE };
      VkPhysicalDeviceDepthClipEnableFeaturesEXT f_dce = {
-@@ -574,6 +634,8 @@ int hle_vk_init(void)
+@@ -574,6 +642,8 @@ int hle_vk_init(void)
          .sType = q_gpl.sType, .graphicsPipelineLibrary = VK_TRUE };
      VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR f_lr = {
          .sType = q_lr.sType, .dynamicRenderingLocalRead = VK_TRUE };
@@ -6955,7 +6968,7 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      VkPhysicalDeviceVulkan13Features f13 = {
          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
          .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE,
-@@ -634,6 +696,7 @@ int hle_vk_init(void)
+@@ -634,6 +704,7 @@ int hle_vk_init(void)
      if (u_vids) chain(&tail, &f_vids);
      if (u_eds2) chain(&tail, &f_eds2);
      if (c->cbc) chain(&tail, &f_cbc);
@@ -6963,15 +6976,18 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      if (u_pv) chain(&tail, &f_pv);
      if (u_dce) chain(&tail, &f_dce);
      if (u_4444) chain(&tail, &f_4444);
-@@ -641,6 +704,7 @@ int hle_vk_init(void)
+@@ -641,8 +712,9 @@ int hle_vk_init(void)
      if (c->eds3) chain(&tail, &f_eds3);
      if (c->gpl) chain(&tail, &f_gpl);
      if (c->fbfetch) chain(&tail, &f_lr);
 +    if (c->raster_order) chain(&tail, &f_roa);
  
-     const char *exts[32];
+-    const char *exts[32];
++    const char *exts[40];
      uint32_t nx = 0;
-@@ -665,6 +729,7 @@ int hle_vk_init(void)
+     if (!v13) {
+         if (!v12) {                     /* core in 1.2 */
+@@ -665,6 +737,7 @@ int hle_vk_init(void)
      if (u_vids) exts[nx++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
      if (u_eds2) exts[nx++] = VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME;
      if (c->cbc) exts[nx++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
@@ -6979,7 +6995,7 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      if (u_pv) exts[nx++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
      if (u_dce) exts[nx++] = VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME;
      if (u_4444) exts[nx++] = VK_EXT_4444_FORMATS_EXTENSION_NAME;
-@@ -678,6 +743,9 @@ int hle_vk_init(void)
+@@ -678,6 +751,9 @@ int hle_vk_init(void)
          exts[nx++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
          exts[nx++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
      }
@@ -6989,7 +7005,18 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      if (c->fbfetch) {
          exts[nx++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
          if (e_pd) {
-@@ -711,18 +779,19 @@ int hle_vk_init(void)
+@@ -687,6 +763,10 @@ int hle_vk_init(void)
+     if (c->swapchain) {
+         exts[nx++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+     }
++    if (c->host_ptr) {
++        exts[nx++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;    /* (core in 1.1: named all the same) */
++        exts[nx++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
++    }
+     float prio = 1.0f;
+     VkDeviceQueueCreateInfo qci = {
+         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+@@ -711,18 +791,19 @@ int hle_vk_init(void)
      v->get_ahb_props = c->ahb ? (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)
          vkGetDeviceProcAddr(v->dev, "vkGetAndroidHardwareBufferPropertiesANDROID") : NULL;
      hle_log("hakuX-hle-back", "vk: device \"%s\" api %u.%u.%u driver 0x%x floor=ok "
@@ -7018,7 +7045,7 @@ index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..235f13b31bf1ee5860d682b4bbb4ddd9
      return 0;
  }
 diff --git a/hw/xbox/hle/vk/vkdev.h b/hw/xbox/hle/vk/vkdev.h
-index 97bb49791376b04495efeaa080fed01f0d16072b..63aa8d6216f3c5e8d20375ad093e98a92e3ff8d6 100644
+index 97bb49791376b04495efeaa080fed01f0d16072b..9918ec65b47a7f2d4d405a35522e1a4d0456e41f 100644
 --- a/hw/xbox/hle/vk/vkdev.h
 +++ b/hw/xbox/hle/vk/vkdev.h
 @@ -51,9 +51,20 @@ typedef struct HleCaps {
@@ -7042,7 +7069,7 @@ index 97bb49791376b04495efeaa080fed01f0d16072b..63aa8d6216f3c5e8d20375ad093e98a9
      bool bindless;              /* descriptor indexing (the bindless set, its limits), else
                                     each draw's textures in a set of their own at fixed
                                     places (vk/draw.c fixed_bind: Mali's Bifrost, PowerVR's
-@@ -82,15 +93,21 @@ typedef struct HleCaps {
+@@ -82,15 +93,25 @@ typedef struct HleCaps {
                                     combiner stages that sample the bound colour target
                                     read it as an input attachment (vk/draw.c
                                     hle_draw_fb_stages) */
@@ -7060,6 +7087,10 @@ index 97bb49791376b04495efeaa080fed01f0d16072b..63aa8d6216f3c5e8d20375ad093e98a9
                                     cache only (vk/draw.c, asynchronous builds) */
      bool swapchain;             /* the Android surface and VK_KHR_swapchain: the window's
                                     presenter (vk/swapchain.c) */
++    bool host_ptr;              /* OGBox 0.0.4: VK_EXT_external_memory_host (the title's own
++                                   memory as a buffer: the presenter reads frames straight into
++                                   its upload buffer) */
++    VkDeviceSize host_ptr_align; /* its minImportedHostPointerAlignment */
      float max_lod_bias;         /* maxSamplerLodBias */
 +    float max_aniso;            /* maxSamplerAnisotropy */
 +    float max_line_width;       /* lineWidthRange[1] (1 without wide_lines) */
@@ -7877,7 +7908,7 @@ index fc4055973a837bf64aa851ac98f2502eb23b8c7e..aa80495b26cad98f84891ac701212caa
  bool nc_cheat_on(int index);
  unsigned nc_cheat_count(void);
 diff --git a/native/core/core.c b/native/core/core.c
-index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f895b4f5118 100644
+index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7f564294286b37fb033291336e9040786776d5cb 100644
 --- a/native/core/core.c
 +++ b/native/core/core.c
 @@ -2,13 +2,22 @@
@@ -7954,7 +7985,15 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
      /* a savestate's kernel objects are where its boot made them (KERN v3
       * moved the pool's first range) */
      nc_kernel_pool_for(g_loadstate[0] ? nc_kern_state_kprocess(g_loadstate) : 0);
-@@ -216,13 +260,25 @@ bool nc_core_boot(NcCore *c, int disc_fd)
+@@ -130,6 +174,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
+             close(disc_fd);
+             return boot_failed("The game's file isn't an Xbox disc image.");
+         }
++        nc_disc_cache_folders(&c->disc);  /* OGBox 0.0.4: the folders' tables in memory */
+         nc_mods_install(&c->disc);      /* the mods' files and XBE patches, the cheats */
+     } else if (!g_dashboard && !g_loadstate[0]) {
+         return boot_failed("The game's file can't be opened.");
+@@ -216,13 +261,25 @@ bool nc_core_boot(NcCore *c, int disc_fd)
      if (!c->cpu) {
          return boot_failed("The emulated CPU couldn't start.");
      }
@@ -7981,7 +8020,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
      if (!g_boot) {
          return boot_failed("The emulated CPU couldn't start.");
      }
-@@ -243,6 +299,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
+@@ -243,6 +300,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
              return false;
          }
          nc_kernel_loaded_fixups(&c->kernel);
@@ -7989,7 +8028,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
          nc_mods_after_load(&c->kernel, c->kernel.image_path);
          g_loaded = true;
      }
-@@ -296,15 +353,27 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
+@@ -296,15 +354,27 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
      nc_log("hakuX-native-frontier", "host fault: %s at guest %08llx, eip %08x (host pc %p)", what,
             (unsigned long long)va, eip, (void *)pc);
      nc_kernel_dump_recent(-1);
@@ -8018,7 +8057,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
  } g_mfs[16];
  
  static void mmio_fault_sample(uint32_t eip)
-@@ -319,6 +388,36 @@ static void mmio_fault_sample(uint32_t eip)
+@@ -319,6 +389,36 @@ static void mmio_fault_sample(uint32_t eip)
      if (k < 16) {
          g_mfs[k].eip = eip;
          g_mfs[k].n++;
@@ -8055,7 +8094,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
      }
  }
  
-@@ -368,7 +467,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -368,7 +468,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (sig == SIGILL) {
          return false;
      }
@@ -8064,7 +8103,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
      if (sig == SIGBUS && nc_cpu_unaligned_fault(c->cpu, info->si_code, ucontext)) {
          /* Doom 3 keeps a critical section at 0x00BFD88E: RtlEnterCriticalSection's
           * lock inc of its LockCount (0x00BFD89E) took the core down */
-@@ -409,6 +508,49 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -409,6 +509,49 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
              }
          }
      }
@@ -8114,7 +8153,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
      if (nc_hle_dirty_fault(info, ucontext)) {
          __atomic_fetch_add(&g_nc_faults_dirty, 1, __ATOMIC_RELAXED);
          return true;
-@@ -416,8 +558,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -416,8 +559,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (nc_mmio_fault(&c->vm, info, ucontext)) {
          __atomic_fetch_add(&g_nc_faults_mmio, 1, __ATOMIC_RELAXED);
          mmio_fault_sample(nc_cpu_guest_eip_at(c->cpu, pc));
@@ -8131,7 +8170,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
          return true;
      }
      /* A guest page the guest doesn't have: the title's page tables may map
-@@ -431,7 +580,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -431,7 +581,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
      if (wrapped != UINT64_MAX) {
          va = wrapped;
      }
@@ -8144,7 +8183,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..02193caf7da1b0ef2ece3a36f4352f89
          return fault_report(c, pc, (uint64_t)(uintptr_t)info->si_addr, "outside the guest");
      }
      if (nc_vm_phys(&c->vm, (uint32_t)va) != UINT32_MAX) {
-@@ -450,7 +604,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
+@@ -450,7 +605,12 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
          nc_log("hakuX-native-frontier", "guest fault at %08x (wrapped address), eip %08x", (uint32_t)va,
                 nc_frame_eip(f));
      }
@@ -12096,10 +12135,10 @@ index 1413a9f8aa5ed2cc88917ae96e2ebafef51abaf0..f53b7599da3b4a6067704ecb75f9cc0d
 +
  #endif
 diff --git a/native/core/xdvdfs.c b/native/core/xdvdfs.c
-index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b911670947bc0 100644
+index 4645e59f809a0019f3005499905c0e977873b5f6..3e64e3d9fde5ce4bf6e1fca51a08b0af8dd67bd5 100644
 --- a/native/core/xdvdfs.c
 +++ b/native/core/xdvdfs.c
-@@ -9,6 +9,8 @@
+@@ -9,12 +9,16 @@
   *   u8 attributes, u8 name length, name
   */
  #include "native/core/xdvdfs.h"
@@ -12108,7 +12147,15 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
  
  #include <ctype.h>
  #include <fcntl.h>
-@@ -37,17 +39,40 @@ static bool pread_all(int fd, void *buf, size_t len, uint64_t off)
++#include <pthread.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <sys/stat.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ static const char k_magic[] = "MICROSOFT*XBOX*MEDIA";
+@@ -37,17 +41,40 @@ static bool pread_all(int fd, void *buf, size_t len, uint64_t off)
      return true;
  }
  
@@ -12151,7 +12198,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
              d->part_off = off;
              d->root_sector = nc_rd32(vd + 20);
              d->root_size = nc_rd32(vd + 24);
-@@ -57,11 +82,17 @@ bool nc_disc_open(NcDisc *d, int fd)
+@@ -57,11 +84,206 @@ bool nc_disc_open(NcDisc *d, int fd)
          }
      }
      nc_log("hakuX-native", "disc: no XDVDFS volume found");
@@ -12160,8 +12207,197 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
      return false;
  }
  
++/* ---- the folders' tables (OGBox 0.0.4, nc_disc_cache_folders) ----
++ * A disc doesn't change: a table read once is kept, keyed by its sector, up to DIRS_MAX bytes in
++ * all. The helper thread reads every folder's table, breadth first from the root, then ends. */
++#define DIRS_BUCKETS 1024u
++#define DIRS_MAX (32u << 20)
++
++typedef struct DirTab {
++    struct DirTab *next;
++    uint32_t sector, size;
++    uint8_t bytes[];
++} DirTab;
++
++struct NcDirCache {
++    pthread_mutex_t lock;
++    DirTab *bucket[DIRS_BUCKETS];
++    size_t bytes;
++    unsigned tables;
++    pthread_t warm;
++    bool warming;
++    int stop;                   /* atomic: nc_disc_close */
++    const NcDisc *disc;
++};
++
++static const DirTab *dirs_find(struct NcDirCache *c, uint32_t sector, uint32_t size)
++{
++    for (const DirTab *t = c->bucket[sector % DIRS_BUCKETS]; t; t = t->next) {
++        if (t->sector == sector && t->size == size) {
++            return t;
++        }
++    }
++    return NULL;
++}
++
++/* A folder's table: the cache's (*own false) or read now (*own true: the caller frees it). */
++static uint8_t *dir_table(const NcDisc *d, uint32_t sector, uint32_t size, bool *own)
++{
++    struct NcDirCache *c = d->dirs;
++    *own = false;
++    if (c) {
++        pthread_mutex_lock(&c->lock);
++        const DirTab *t = dirs_find(c, sector, size);
++        pthread_mutex_unlock(&c->lock);
++        if (t) {
++            return (uint8_t *)t->bytes;    /* never freed while the disc is open */
++        }
++    }
++    uint8_t *buf = malloc(size);
++    if (!buf || !image_read(d, buf, size, d->part_off + (uint64_t)sector * NC_XDVDFS_SECTOR)) {
++        free(buf);
++        return NULL;
++    }
++    DirTab *t = c ? malloc(sizeof(*t) + size) : NULL;
++    if (t) {
++        t->sector = sector;
++        t->size = size;
++        memcpy(t->bytes, buf, size);
++        pthread_mutex_lock(&c->lock);
++        const DirTab *had = dirs_find(c, sector, size);
++        const bool keep = !had && c->bytes + size <= DIRS_MAX;
++        if (keep) {
++            t->next = c->bucket[sector % DIRS_BUCKETS];
++            c->bucket[sector % DIRS_BUCKETS] = t;
++            c->bytes += size;
++            c->tables++;
++        }
++        pthread_mutex_unlock(&c->lock);
++        if (keep || had) {
++            if (!keep) {
++                free(t);                   /* another thread's came first */
++            }
++            free(buf);
++            return (uint8_t *)(keep ? t->bytes : had->bytes);
++        }
++        free(t);                           /* the cache is full */
++    }
++    *own = true;
++    return buf;
++}
++
++typedef struct WarmQueue {
++    NcDiscFile *q;
++    unsigned head, n, cap;
++} WarmQueue;
++
++static bool warm_entry(void *ctx, const uint8_t *e, uint32_t off)
++{
++    WarmQueue *w = ctx;
++    (void)off;
++    const uint32_t sector = nc_rd32(e + 4), size = nc_rd32(e + 8);
++    if (!(e[12] & 0x10) || !size || size > (4u << 20)) {
++        return true;
++    }
++    if (w->n == w->cap) {
++        NcDiscFile *grown = realloc(w->q, (w->cap ? w->cap * 2 : 256) * sizeof(*grown));
++        if (!grown) {
++            return false;
++        }
++        w->q = grown;
++        w->cap = w->cap ? w->cap * 2 : 256;
++    }
++    w->q[w->n++] = (NcDiscFile){sector, size, e[12]};
++    return true;
++}
++
++static uint64_t dirs_now_ms(void)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
++}
++
++static void *dirs_warm(void *arg)
++{
++    struct NcDirCache *c = arg;
++    const NcDisc *d = c->disc;
++    WarmQueue w = {0};
++    const uint64_t t0 = dirs_now_ms();
++    warm_entry(&w, (const uint8_t[14]){0, 0, 0, 0, (uint8_t)d->root_sector, (uint8_t)(d->root_sector >> 8),
++                                       (uint8_t)(d->root_sector >> 16), (uint8_t)(d->root_sector >> 24),
++                                       (uint8_t)d->root_size, (uint8_t)(d->root_size >> 8),
++                                       (uint8_t)(d->root_size >> 16), (uint8_t)(d->root_size >> 24), 0x10, 0},
++               0);
++    unsigned visits = 0;
++    bool full = false;
++    while (w.head < w.n && !__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE) && visits < 65536) {
++        const NcDiscFile f = w.q[w.head++];
++        visits++;
++        bool own;
++        uint8_t *tab = dir_table(d, f.sector, f.size, &own);
++        if (!tab) {
++            continue;
++        }
++        nc_xdvdfs_walk(tab, f.size, warm_entry, &w);
++        if (own) {
++            free(tab);
++            full = true;                   /* not kept: the cache is full */
++            break;
++        }
++    }
++    pthread_mutex_lock(&c->lock);
++    const unsigned tables = c->tables;
++    const size_t bytes = c->bytes;
++    pthread_mutex_unlock(&c->lock);
++    nc_log("hakuX-native", "disc: %u folders' tables in memory (%zu KiB), read in %llu ms%s", tables, bytes >> 10,
++           (unsigned long long)(dirs_now_ms() - t0), full ? " (the cache is full: the rest read when opened)" : "");
++    free(w.q);
++    return NULL;
++}
++
++void nc_disc_cache_folders(NcDisc *d)
++{
++    if (d->dirs || (d->fd < 0 && !d->chd && !d->pack)) {
++        return;
++    }
++    struct NcDirCache *c = calloc(1, sizeof(*c));
++    if (!c) {
++        return;
++    }
++    pthread_mutex_init(&c->lock, NULL);
++    c->disc = d;
++    d->dirs = c;
++    c->warming = pthread_create(&c->warm, NULL, dirs_warm, c) == 0;
++    if (c->warming) {
++        pthread_setname_np(c->warm, "disc-folders");
++    }
++}
++
++static void dirs_free(NcDisc *d)
++{
++    struct NcDirCache *c = d->dirs;
++    if (!c) {
++        return;
++    }
++    __atomic_store_n(&c->stop, 1, __ATOMIC_RELEASE);
++    if (c->warming) {
++        pthread_join(c->warm, NULL);
++    }
++    for (unsigned i = 0; i < DIRS_BUCKETS; i++) {
++        for (DirTab *t = c->bucket[i], *n; t; t = n) {
++            n = t->next;
++            free(t);
++        }
++    }
++    pthread_mutex_destroy(&c->lock);
++    free(c);
++    d->dirs = NULL;
++}
++
  void nc_disc_close(NcDisc *d)
  {
++    dirs_free(d);
 +    nc_chd_close(d->chd);
 +    d->chd = NULL;
 +    nc_pack_close(d->pack);
@@ -12169,7 +12405,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
      if (d->fd >= 0) {
          close(d->fd);
      }
-@@ -81,27 +112,82 @@ static bool name_eq(const uint8_t *a, size_t alen, const char *b, size_t blen)
+@@ -81,27 +303,82 @@ static bool name_eq(const uint8_t *a, size_t alen, const char *b, size_t blen)
      return true;
  }
  
@@ -12269,19 +12505,29 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
  }
  
  /* the disc's own files */
-@@ -127,9 +213,8 @@ static bool disc_find(const NcDisc *d, const char *path, NcDiscFile *out)
+@@ -123,14 +400,16 @@ static bool disc_find(const NcDisc *d, const char *path, NcDiscFile *out)
+         if (!(cur.attr & 0x10) || !cur.size) {
+             return false;
+         }
+-        uint8_t *dir = malloc(cur.size);
++        bool own;
++        uint8_t *dir = dir_table(d, cur.sector, cur.size, &own);
          if (!dir) {
              return false;
          }
 -        bool ok = pread_all(d->fd, dir, cur.size,
 -                            d->part_off + (uint64_t)cur.sector * NC_XDVDFS_SECTOR) &&
 -                  dir_search(dir, cur.size, 0, p, (size_t)(end - p), &cur, 0);
-+        bool ok = image_read(d, dir, cur.size, d->part_off + (uint64_t)cur.sector * NC_XDVDFS_SECTOR) &&
-+                  dir_search(dir, cur.size, p, (size_t)(end - p), &cur);
-         free(dir);
+-        free(dir);
++        const uint32_t size = cur.size;
++        bool ok = dir_search(dir, size, p, (size_t)(end - p), &cur);
++        if (own) {
++            free(dir);
++        }
          if (!ok) {
              return false;
-@@ -402,7 +487,7 @@ bool nc_disc_find_orig(const NcDisc *d, const char *path, NcDiscFile *out)
+         }
+@@ -402,7 +681,7 @@ bool nc_disc_find_orig(const NcDisc *d, const char *path, NcDiscFile *out)
  bool nc_disc_read_orig(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
  {
      return f->sector < NC_DISC_OVERLAY && off + len <= f->size &&
@@ -12290,7 +12536,7 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
  }
  
  bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
-@@ -412,7 +497,7 @@ bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void
+@@ -412,12 +691,25 @@ bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void
      }
      return f->sector >= NC_DISC_OVERLAY
                 ? ov_read(d, f, off, buf, len)
@@ -12299,8 +12545,27 @@ index 4645e59f809a0019f3005499905c0e977873b5f6..46f3a311b6fbeecaed159469f27b9116
  }
  
  bool nc_disc_read(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
+ {
+-    const bool ok = nc_disc_read_file(d, f, off, buf, len);
++    bool ok;
++    if (d->dirs && (f->attr & 0x10) && f->sector < NC_DISC_OVERLAY && off + len <= f->size) {
++        bool own;    /* a folder's table (listings): the cache's */
++        uint8_t *tab = dir_table(d, f->sector, f->size, &own);
++        ok = tab != NULL;
++        if (ok) {
++            memcpy(buf, tab + off, len);
++        }
++        if (own) {
++            free(tab);
++        }
++    } else {
++        ok = nc_disc_read_file(d, f, off, buf, len);
++    }
+     if (ok && d->ov) {
+         for (unsigned i = 0; i < d->ov->np; i++) {
+             const OvPatch *p = &d->ov->p[i];
 diff --git a/native/core/xdvdfs.h b/native/core/xdvdfs.h
-index 1471cbb03349cdeb9dd47c708643c07177eb8348..99e819524b06c7e3a83b012c29035e0d957c711d 100644
+index 1471cbb03349cdeb9dd47c708643c07177eb8348..6af3538d7101e05cf21ec03ad9f4d72e6a933b2f 100644
 --- a/native/core/xdvdfs.h
 +++ b/native/core/xdvdfs.h
 @@ -2,7 +2,8 @@
@@ -12313,12 +12578,13 @@ index 1471cbb03349cdeb9dd47c708643c07177eb8348..99e819524b06c7e3a83b012c29035e0d
   */
  #ifndef NATIVE_CORE_XDVDFS_H
  #define NATIVE_CORE_XDVDFS_H
-@@ -21,9 +22,13 @@ extern "C" {
+@@ -21,13 +22,19 @@ extern "C" {
  #define NC_DISC_OVERLAY 0xF0000000u
  
  typedef struct NcDiscOverlay NcDiscOverlay;
 +struct NcChd;
 +struct NcPack;
++struct NcDirCache;
  
  typedef struct NcDisc {
      int fd;
@@ -12327,7 +12593,12 @@ index 1471cbb03349cdeb9dd47c708643c07177eb8348..99e819524b06c7e3a83b012c29035e0d
      uint64_t part_off;     /* byte offset of the game partition in the image */
      uint32_t root_sector;
      uint32_t root_size;
-@@ -36,6 +41,8 @@ typedef struct NcDiscFile {
+     NcDiscOverlay *ov;     /* NULL: the disc as it is */
++    struct NcDirCache *dirs; /* OGBox 0.0.4: the folders' tables in memory (nc_disc_cache_folders), or NULL */
+ } NcDisc;
+ 
+ typedef struct NcDiscFile {
+@@ -36,13 +43,29 @@ typedef struct NcDiscFile {
      uint8_t attr;          /* 0x10: directory */
  } NcDiscFile;
  
@@ -12336,7 +12607,14 @@ index 1471cbb03349cdeb9dd47c708643c07177eb8348..99e819524b06c7e3a83b012c29035e0d
  bool nc_disc_open(NcDisc *d, int fd);
  void nc_disc_close(NcDisc *d);
  
-@@ -43,6 +50,13 @@ void nc_disc_close(NcDisc *d);
++/* OGBox 0.0.4: the disc's folder tables kept in memory once read, and all of them read ahead on a
++ * helper thread. A file's open looked its path up on the disc, folder by folder, on the emulated
++ * CPU's thread: from a share the read waited behind the disc reader's 1.5 MiB reads (30-65 ms an
++ * open, interrupts held off meanwhile: a game loading while its intro movie plays starved the
++ * movie's sound, and the movie, timed by it, stalled). The game's disc only (the core's). */
++void nc_disc_cache_folders(NcDisc *d);
++
+ /* Finds a path such as "\\default.xbe" or "media/x.bin" (either slash,
   * case-insensitive). */
  bool nc_disc_find(const NcDisc *d, const char *path, NcDiscFile *out);
  

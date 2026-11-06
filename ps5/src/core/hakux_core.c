@@ -771,6 +771,17 @@ void pshx_core_display_pickup(void)
     nc_dev_nv2a_display_pickup(display_now_ns());
 }
 
+bool pshx_core_take_frame_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                               uint32_t max_h, uint32_t *w, uint32_t *h)
+{
+    return pshx_present_take_into(seen, dst, dst_bytes, pitch, max_w, max_h, w, h);
+}
+
+void pshx_core_frame_forget(void *dst)
+{
+    pshx_present_forget(dst);
+}
+
 void pshx_core_frame_size(uint32_t *w, uint32_t *h)
 {
     pshx_present_size(w, h);

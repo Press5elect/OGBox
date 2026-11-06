@@ -18,6 +18,7 @@
 #define PSHAKUX_PRESENT_HOST_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -34,6 +35,15 @@ bool pshx_present_ready(void);
  * goes on meanwhile (the slot read is held until the copy is done). */
 bool pshx_present_take(uint64_t *seen, void *dst, uint32_t pitch, uint32_t max_w, uint32_t max_h, uint32_t *w,
                        uint32_t *h);
+
+/* OGBox 0.0.4: as pshx_present_take, dst being dst_bytes of memory mapped from the title's own
+ * Vulkan device (its upload buffer): when the HLE GPU's device can take it as its own
+ * (VK_EXT_external_memory_host), the frame is copied straight into it, with no copy by the CPU.
+ * Rows packed (pitch = w * 4) for that; otherwise, and with dst_bytes 0, as pshx_present_take. */
+bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                            uint32_t max_h, uint32_t *w, uint32_t *h);
+/* dst is going (the title frees its upload buffer): the HLE GPU's device lets go of it first. */
+void pshx_present_forget(void *dst);
 
 /* The front frame's size without taking it (0 x 0: none yet). */
 void pshx_present_size(uint32_t *w, uint32_t *h);

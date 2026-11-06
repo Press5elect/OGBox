@@ -7,56 +7,54 @@
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * On the console an anonymous map asked for read, write and execute succeeds and isn't
- * executable (test5: the first call into the JIT's code faulted), and a shared-memory view mapped
- * with no address lands in the Vulkan driver's GPU window, where execute isn't granted (test7: the
- * view's protection read back as read-write). The platform layer's executable memory is what the
- * console runs a JIT from (ps5platform/exec.h, measured in its docs/PROBE.md): direct memory
- * mapped read-write, given execute with sceKernelMprotect, placed outside the GPU window. Each of
- * the JIT's chunks (1 MiB and up) is one such region, read, write and execute at once (the PS5
- * makes read+execute pages execute-only, and Cranelift's code reads constants placed after it).
- * The protection is still read back: without execute the region goes back and the JIT isn't used
- * (dsp56300_create returns NULL: the interpreter), instead of the first call faulting.
+ * executable (test5: the first call into the JIT's code faulted). The platform layer's executable
+ * memory is what the console runs a JIT from (ps5platform/exec.h, measured in its docs/PROBE.md,
+ * and LRPS2's recompiler's code area): direct memory mapped read-write, given execute with
+ * sceKernelMprotect, placed outside the GPU window. Each of the JIT's chunks (1 MiB and up) is one
+ * such region, read, write and execute at once (the PS5 makes read+execute pages execute-only, and
+ * Cranelift's code reads constants placed after it).
+ *
+ * test8: sceKernelQueryMemoryProtection reads such a region back as read-write (3) all the same,
+ * so its answer doesn't decide (test7's and test8's JIT never started on it). Instead the first
+ * region runs a few bytes of code before the JIT gets it, and the boot log says so (a fault there
+ * stops at a line that names it, not somewhere in the sound).
  */
 #include "native/dev/apu/apu_base.h"
 
 #include <ps5platform/exec.h>
-#include <ps5platform/kernel.h>
 
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_said;
 
+/* mov eax, 0x0D5F5600; ret */
+static const uint8_t k_probe[] = {0xB8, 0x00, 0x56, 0x5F, 0x0D, 0xC3};
+
 void *dsp56300_host_map_rwx(size_t len)
 {
     void *p = ps5_exec_allocate(len, 0);
-    int why = p ? 0 : -1;
-    uint32_t prot = 0;
-    if (p) {
-        void *start = NULL, *end = NULL;
-        const int32_t q = sceKernelQueryMemoryProtection(p, &start, &end, &prot);
-        /* the query can fail on memory it doesn't track; only a definite answer without execute
-         * refuses the region */
-        if (q == 0 && (prot & 0x4) == 0) {
-            ps5_exec_release(p);
-            p = NULL;
-            why = -2;
-        }
-    }
     pthread_mutex_lock(&g_lock);
-    const bool say = !g_said || !p;
+    const bool first = !g_said;
     g_said = true;
     pthread_mutex_unlock(&g_lock);
-    if (say) {
-        if (p) {
-            nc_log("hakuX-apu", "dsp jit: code memory: %zu KiB of direct memory at %p (read, write, execute)",
-                   len >> 10, p);
-        } else if (why == -2) {
-            nc_log("hakuX-apu", "dsp jit: the region at protection %x isn't executable: the DSP interpreter runs",
-                   prot);
-        } else {
-            nc_log("hakuX-apu", "dsp jit: no code memory (%zu KiB): the DSP interpreter runs", len >> 10);
+    if (!p) {
+        nc_log("hakuX-apu", "dsp jit: no code memory (%zu KiB): the DSP interpreter runs", len >> 10);
+        return NULL;
+    }
+    if (first) {
+        nc_log("hakuX-apu", "dsp jit: code memory: %zu KiB of direct memory at %p (read, write, execute); "
+               "a probe runs from it", len >> 10, p);
+        nc_log_flush();
+        memcpy(p, k_probe, sizeof(k_probe));
+        const uint32_t r = ((uint32_t (*)(void))p)();
+        nc_log("hakuX-apu", "dsp jit: the probe ran (%08x)", r);
+        if (r != 0x0D5F5600u) {
+            ps5_exec_release(p);
+            return NULL;
         }
     }
     return p;

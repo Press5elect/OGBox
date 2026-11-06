@@ -2024,6 +2024,7 @@ public:
 	void destroyStaging(Staging &s)
 	{
 		if (s.mapped) {
+			pshx_core_frame_forget(s.mapped);   // 0.0.4: the HLE GPU's device lets go of it first
 			vkUnmapMemory(device, s.memory);
 		}
 		vkDestroyBuffer(device, s.buffer, nullptr);
@@ -2045,6 +2046,7 @@ public:
 
 	void ensureStaging(Staging &s, VkDeviceSize size)
 	{
+		size = (size + 0xFFFF) & ~VkDeviceSize(0xFFFF);   // 0.0.4: whole 64 KiB pages (the HLE GPU writes them)
 		if (s.size >= size) {
 			return;
 		}
@@ -2513,7 +2515,8 @@ public:
 		ensureStaging(s, VkDeviceSize(w) * h * 4);
 		uint32_t fw = 0, fh = 0;
 		pshx_core_display_pickup();   // 0.0.4: the guest's vblank keeps clear of it
-		if (!pshx_core_take_frame(&frameSeen, s.mapped, w * 4, w, h, &fw, &fh)) {
+		// 0.0.4: the HLE GPU copies the frame straight into the staging buffer where it can
+		if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
 			return;
 		}
 		ensurePicture(fw, fh);
