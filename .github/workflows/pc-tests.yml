@@ -1,6 +1,7 @@
 # The tests that run on a PC (tests/run-pc-tests.sh): the patch, image and network share readers
 # and the updater under the address and undefined-behaviour sanitizers, and the menus drawn to
-# PNGs (kept as the run's artifact). The title itself is built on the build machine.
+# PNGs (kept as the run's artifact), and the front end type-checked. The title itself is built on the
+# build machine.
 name: PC tests
 
 on:

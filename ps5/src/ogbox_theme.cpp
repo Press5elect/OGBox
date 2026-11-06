@@ -6,8 +6,8 @@
  *
  * OGBox 0.1.26: the menus' look, black and green, in the overlay's two hooks (base/VulkanUIOverlay.h;
  * ps5/src/example_ps5.cpp has the weak ones that keep upstream's): the colours, and Share Tech Mono
- * (assets.json) for the type. The front end's own drawing (the code rain, the screens) is in
- * src/ogbox_main.cpp.
+ * (assets.json) for the type. The screens themselves are drawn by src/ogbox_ui*.cpp (their look) from
+ * views src/ogbox_main.cpp fills.
  */
 #include <string>
 

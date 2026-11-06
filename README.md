@@ -55,7 +55,10 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
    later in Settings > Data folder, and OGBox moves everything for you.
 4. **Pick a game.** Your games show as covers, or as a list if you prefer (Settings > Game list).
    - **L1 / R1** switch between the **Internal**, **USB** and **Network** tabs.
-   - The **D-pad** moves, **CROSS** opens a folder or starts a game, **CIRCLE** goes back.
+   - The **D-pad** moves along your games. **UP** goes to the strip above them: the folders, the
+     Xbox dashboard and adding a network share. **DOWN** comes back to the games.
+   - **CROSS** opens a folder or starts a game, **SQUARE** starts it from the beginning, **CIRCLE**
+     goes back.
    - **L2 / R2** jump a letter back or forward.
    - **TRIANGLE** opens a game's page: its cover, description, save states, settings and mods.
    - **OPTIONS** opens Settings.

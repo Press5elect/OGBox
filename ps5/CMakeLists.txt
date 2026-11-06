@@ -139,6 +139,9 @@ add_library(samples OBJECT
 	src/ogbox_saves.cpp
 	src/ogbox_theme.cpp
 	src/ogbox_ui.cpp
+	src/ogbox_ui_home.cpp
+	src/ogbox_ui_settings.cpp
+	src/ogbox_ui_screens.cpp
 	src/ogbox_shares.cpp
 	src/platform.c)
 target_compile_definitions(samples PRIVATE

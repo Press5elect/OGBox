@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # OGBox by Press5elect, GPL-3.0-or-later. Every test that runs on a PC, one after another; each
-# builds into build/<name>-tests. The updater's needs libzip and RapidJSON in .deps/src
+# builds into build/<name>-tests. The front end (ogbox_main.cpp) is type-checked: it only builds for
+# the console. The updater's needs libzip and RapidJSON in .deps/src
 # (ps5/tools/build-deps.sh, or --fetch to fetch only those two at build-deps.sh's revisions).
 #   tests/run-pc-tests.sh [--fetch]
 set -euo pipefail
@@ -28,6 +29,7 @@ run xpr tests/xpr/run-xpr-tests.sh build/xpr-tests
 run shares tests/shares/run-shares-tests.sh build/shares-tests
 run update tests/update/run-update-tests.sh build/update-tests
 run ui tests/ui/run-ui-tests.sh build/ui-tests
+run frontend tests/ui/check-frontend.sh
 if ((${#failed[@]})); then
 	echo "failed: ${failed[*]}"
 	exit 1
