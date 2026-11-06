@@ -165,6 +165,7 @@ native core's work tree (oldest first; author: subject):
   d648f2679e Claude: apu: the EP runs the cycles its 8 frames have on the chip, not twice them
   75dc745c36 Claude: apu: the EP's run back at twice its chip cycles (the chip's own left no sound)
   f2429e134a Claude: apu: an EP run that only waits for its next frame stops there
+  bd48d2d7fc Claude: apu: an EP run ends once the EP has put out its frame
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18902,7 +18903,7 @@ index c7dabcc99c76e7235b248b93739a9a408f0ebad4..d8af8fd82ffc04726da9134f824b9485
  
      }
 diff --git a/native/dev/apu/dsp/dsp_state.h b/native/dev/apu/dsp/dsp_state.h
-index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..1e4ec1ba6a7cd66907648dd6e0321dbf98a22b21 100644
+index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..afc6492d66a2b30d2c5c0e6d852eeb0779abb01b 100644
 --- a/native/dev/apu/dsp/dsp_state.h
 +++ b/native/dev/apu/dsp/dsp_state.h
 @@ -27,6 +27,7 @@
@@ -18913,7 +18914,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..1e4ec1ba6a7cd66907648dd6e0321dbf
  
  struct DSPState {
      dsp_core_t core;
-@@ -36,6 +37,21 @@ struct DSPState {
+@@ -36,6 +37,22 @@ struct DSPState {
      uint32_t interrupts;
  
      bool is_gp;
@@ -18932,11 +18933,12 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..1e4ec1ba6a7cd66907648dd6e0321dbf
 +    uint64_t spin_skipped;
 +#endif
 +    uint32_t periph_writes;     /* OGBox 0.0.4: writes to the peripherals (dsp.c) */
++    bool frame_out;             /* OGBox 0.0.4: (the EP) its output frame written in this run */
  };
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a168225d14 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..e8feaf0257818a8f8bc868cc8322dbec2e5f5e43 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
 @@ -20,17 +20,19 @@
@@ -18990,7 +18992,15 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
          assert(index < EP_OUTPUT_FIFO_COUNT);
          base = GET_MASK(d->regs[NV_PAPU_EPOFBASE0 + 0x10 * index],
                          NV_PAPU_GPOFBASE0_VALUE);
-@@ -333,7 +335,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -242,6 +244,7 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
+     //     base, end, cur, len);
+ 
+     if (dir && index == 0) {
++        d->ep.dsp->frame_out = true;
+         bool did_sink = ep_sink_samples(d, ptr, len);
+         if (did_sink) {
+             /* Since we are sinking, push silence out */
+@@ -333,7 +336,7 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -18999,7 +19009,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -422,7 +424,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -422,7 +425,7 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  {
      MCPXAPUState *d = opaque;
  
@@ -19008,7 +19018,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +466,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +467,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
@@ -19026,7 +19036,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,16 +497,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +498,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -19045,7 +19055,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +514,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +515,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19059,7 +19069,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +534,48 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +535,67 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19074,7 +19084,8 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
 -            d->ep.dsp->core.cycle_count = 0;
 +            DSPState *ep = d->ep.dsp;
 +            dsp_start_frame(ep);
-+            bool waits = false;
++            bool waits = false, put_out = false;
++            ep->frame_out = false;
 +#if NC_HAVE_DSP_JIT
 +            if (ep->jit) {
 +                dsp_jit_wait_reset(ep);
@@ -19088,9 +19099,27 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
 +                /* OGBox 0.0.4: a program that only waits for its next frame (test10: the EP never
 +                 * went idle, ~950 us of host time a GP frame in its allowance) stops waiting here */
 +                waits = ep->jit && ep->core.cycle_count < 8 * DSP_FRAME_LIMIT && dsp_jit_waiting(ep);
++                /* OGBox 0.0.4: the run ends once the EP has put out its frame (FIFO 0, one a run:
++                 * 1024 bytes, 8 GP frames' stereo). Its program never went idle (test10-13: the
++                 * allowance reached every run, with its registers moving), so it went on with the
++                 * next block's work at once, up to twice its chip cycles of host time (~950 us a GP
++                 * frame on the PS5's JIT, beyond the frame's 666). Stopped here, it picks up from
++                 * the same place at its next frame: the same program, in step with the frames
++                 * instead of ahead of them. A run that puts out nothing goes on to the allowance. */
++                put_out = ep->jit && ep->frame_out;
 +#endif
-+            } while (!waits && !ep->core.is_idle && d->ep.realtime &&
++            } while (!waits && !put_out && !ep->core.is_idle && d->ep.realtime &&
 +                     ep->core.cycle_count < 8 * DSP_FRAME_LIMIT);
++#if NC_HAVE_DSP_JIT
++            if (put_out) {
++                static unsigned said;
++                if (said < 2) {
++                    said++;
++                    nc_log("hakuX-apu", "EP DSP put out its frame %u cycles into its run (allowance %u): the run "
++                           "ends there", ep->core.cycle_count, 8u * DSP_FRAME_LIMIT);
++                }
++            }
++#endif
 +#if NC_HAVE_DSP_JIT
 +            if (waits) {
 +                static bool said;
@@ -19103,7 +19132,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
 +                }
 +            }
 +#endif
-+            if (d->ep.realtime && !ep->core.is_idle && !waits) {
++            if (d->ep.realtime && !ep->core.is_idle && !waits && !put_out) {
 +                frame_limit(ep);
 +            }
          }
@@ -19113,7 +19142,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6410fe73a24f96e6d76c4c7d63ad89a1
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +612,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +632,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
