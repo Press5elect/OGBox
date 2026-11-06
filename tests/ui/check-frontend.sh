@@ -15,4 +15,9 @@ printf '#include "prelude.h"\nnamespace sample_ogbox {\n#include "%s"\n}\n' "$ro
 	-I"$root/external" -I"$root/external/glm" -I"$root/external/imgui" -I"$root/external/tinygltf" -I"$root/external/stb" \
 	-I"$root/external/ktx/include" -I"$root/external/ktx/other_include" -I"$root/base" -I"$root/ps5/third_party/volk" \
 	-I"$root/ps5/src" -I"$root/ps5/src/platform" "$work/wrap.cpp"
+# the library (covers, descriptions), the settings and the controller's mapping, each on its own
+for f in ogbox_library.cpp ogbox_settings.cpp ogbox_pad.cpp; do
+	"${CXX_CHECK:-clang++}" -std=c++20 -fsyntax-only -Wall -Wno-unused-function -I"$root/external" -I"$root/external/stb" -I"$root/external/tinygltf" \
+		-I"$root/ps5/src" -I"$root/ps5/src/platform" "$root/ps5/src/$f"
+done
 echo "frontend: type-checks"

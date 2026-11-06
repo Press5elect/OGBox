@@ -483,6 +483,10 @@ float keycap(ImDrawList *dl, ImVec2 p, float h, const std::string &name, ImU32 c
 		word = "\xE2\x86\x90 \xE2\x86\x92";
 	} else if (name == "UD") {
 		word = "\xE2\x86\x91 \xE2\x86\x93";
+	} else if (name == "U") {
+		word = "\xE2\x86\x91";
+	} else if (name == "D") {
+		word = "\xE2\x86\x93";
 	}
 	const float fs = h * 0.44f;
 	const float w = face ? h : std::max(h, measure(F::Label, fs, word.c_str()).x + h * 0.56f);

@@ -266,6 +266,10 @@ int main(int argc, char **argv)
 	home.title = names[2];
 	home.chips = { { "Plays well", 1 }, { "NTSC", 0 }, { "Played 2 h ago", 0 } };
 	home.meta = "Left off 2 hours ago, in the middle of chapter 3. Save states: 4.";
+	home.about = "Starfall Tactics is a made-up turn-based strategy game for the tests. A fleet of salvaged ships crosses a broken "
+		"star system, trading fuel for passage with the stations that survived, and every battle is fought on a grid that "
+		"drifts with the system's two suns. Its campaign branches on which stations the player spares.";
+	home.aboutSource = "From Wikipedia, \"Starfall Tactics\" \xC2\xB7 CC BY-SA 4.0";
 	home.primary = "Continue";
 	home.secondary = "Start from the beginning";
 	home.cardsTitle = "Games";
@@ -499,6 +503,7 @@ int main(int argc, char **argv)
 	hud.showStatus = true;
 	hud.statusTitle = "OGBox 0.0.4";
 	hud.statusLines = { { "Disc", "Starfall Tactics.iso" }, { "Core", "booting" } };
+	hud.note = "Loading the kernel's patches for this release; the first start of a game builds its shaders and takes longer.";
 	hud.waiting = true;
 	hud.statusHints = { { "OPT", "Quick menu: save, load, quit" } };
 
@@ -547,6 +552,31 @@ int main(int argc, char **argv)
 		{ "network", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
 			ui::drawSettings(dl, S, net);
+		} },
+		{ "controller", [&](ImDrawList *dl, ImVec2 S) {
+			ui::SettingsView v = set;
+			v.navSel = 1;
+			v.nav.insert(v.nav.begin() + 1, ui::SetNav{ "Controller", "2 changed" });
+			v.pageTitle = "Controller";
+			v.rows.clear();
+			ui::SetRow r;
+			r.kind = ui::SetRow::Kind::Group; r.key = "gb"; r.name = "Buttons"; v.rows.push_back(r);
+			const char *names[][2] = { { "A", "Cross" }, { "B", "Circle" }, { "X", "Square" }, { "Y", "Triangle" }, { "Black", "R1" },
+				{ "White", "L1" }, { "Left trigger", "L2" }, { "Right trigger", "R2" }, { "Start", "Automatic" } };
+			for (const auto &n : names) {
+				r = {}; r.key = n[0]; r.name = n[0]; r.value = n[1]; r.choices = { n[1] }; r.choice = 0;
+				r.changed = std::string(n[0]) == "A";
+				if (r.changed) { r.choices = { "Square" }; }
+				v.rows.push_back(r);
+			}
+			r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gs"; r.name = "Sticks and triggers"; v.rows.push_back(r);
+			r = {}; r.key = "sticks"; r.name = "Sticks"; r.choices = { "As they are", "Swapped" }; v.rows.push_back(r);
+			r = {}; r.key = "dl"; r.name = "Left stick deadzone"; r.choices = { "15%" }; r.changed = true; v.rows.push_back(r);
+			v.rowSel = 1;
+			v.rows[1].desc = "The DualSense button that is the Xbox's. A trigger on one of the Xbox's pressure-sensitive buttons gives how "
+				"far it is pressed.";
+			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
+			ui::drawSettings(dl, S, v);
 		} },
 		{ "keyboard", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });

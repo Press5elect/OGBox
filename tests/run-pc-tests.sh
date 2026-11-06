@@ -26,6 +26,7 @@ run() {
 }
 run patches tests/patches/run-patches-tests.sh build/patches-tests
 run xpr tests/xpr/run-xpr-tests.sh build/xpr-tests
+run pad tests/pad/run-pad-tests.sh build/pad-tests
 run shares tests/shares/run-shares-tests.sh build/shares-tests
 run update tests/update/run-update-tests.sh build/update-tests
 run ui tests/ui/run-ui-tests.sh build/ui-tests

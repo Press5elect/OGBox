@@ -308,6 +308,15 @@ void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
 		if (!v.title.empty()) {
 			drawHero(dl, v, L, px(262.0f) + px(14.0f) * (1.0f - a), px(900.0f), a, px(64.0f), 2, gamesOn);
 		}
+		/* its description in the room at the right, over the light */
+		if (!v.about.empty()) {
+			const float x = px(1090.0f), w = S.x - L - x, y = px(276.0f) + px(14.0f) * (1.0f - a);
+			label(dl, px(13.0f), ImVec2(x, y), alpha(p.textFaint, a), "About");
+			const float h = paragraph(dl, F::Body, px(18.0f), ImVec2(x, y + px(30.0f)), alpha(p.textDim, a), v.about, w, 9, 1.45f);
+			if (!v.aboutSource.empty()) {
+				textFit(dl, F::Small, px(13.5f), ImVec2(x, y + px(30.0f) + h + px(12.0f)), alpha(p.textFaint, a), v.aboutSource, w);
+			}
+		}
 	}
 
 	// ---- the shelf: the chosen game first and larger, the row sliding under it
@@ -499,6 +508,19 @@ void drawHomeList(ImDrawList *dl, ImVec2 S, const HomeView &v)
 		detail::drawCover(dl, g, v.cover ? v.cover(static_cast<size_t>(sel)) : Tex{}, c0, c1, 1.0f, a, true);
 		const float x = c1.x + px(40.0f);
 		drawHero(dl, v, x, top, dx1 - x, a, px(44.0f), 4, on);
+		/* its description under the cover, as wide as the column */
+		if (!v.about.empty()) {
+			const float y = c1.y + px(30.0f);
+			const float lh = px(17.5f) * 1.45f;
+			const int lines = std::max(0, static_cast<int>((bottom - y - px(60.0f)) / lh));
+			if (lines > 0) {
+				label(dl, px(13.0f), ImVec2(dx0, y), alpha(p.textFaint, a), "About");
+				const float h = paragraph(dl, F::Body, px(17.5f), ImVec2(dx0, y + px(28.0f)), alpha(p.textDim, a), v.about, dx1 - dx0, lines, 1.45f);
+				if (!v.aboutSource.empty()) {
+					textFit(dl, F::Small, px(13.5f), ImVec2(dx0, y + px(28.0f) + h + px(10.0f)), alpha(p.textFaint, a), v.aboutSource, dx1 - dx0);
+				}
+			}
+		}
 	}
 	if (v.jumpLetter && v.jumpAlpha > 0.0f) {
 		detail::jumpLetter(dl, ImVec2(x0 + w * 0.5f, top + viewH * 0.5f), v.jumpLetter, v.jumpAlpha);

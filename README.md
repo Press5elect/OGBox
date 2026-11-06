@@ -77,6 +77,11 @@ players. If you'd rather have OPTIONS as Start, Settings > Interface > **Quick m
 the quick menu on a half-second hold instead. Each signed-in user's controller is a player (1 to 4),
 and the menus show each face button in its Xbox colour (A green, B red, X blue, Y yellow).
 
+**Settings > Controller** changes any of it: which DualSense button is each Xbox button, trigger,
+D-pad direction, Start and Back, the sticks (swapped, or up and down turned over), and deadzones
+for each stick and the triggers, for a worn stick that drifts. A game can have its own (its page >
+Settings, or the quick menu), and a change applies at once, even in a game.
+
 ### Updates
 
 OGBox checks GitHub for a newer release each time it starts (you can turn that off in

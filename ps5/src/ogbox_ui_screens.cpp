@@ -254,11 +254,12 @@ void drawHud(ImDrawList *dl, ImVec2 S, const HudView &v)
 			inner = std::max(inner, px(90.0f) + measure(F::Body, px(18.0f), l.second.c_str()).x);
 		}
 		const float w = std::min(S.x * 0.5f, inner + pad * 2.0f);
+		const float noteH = v.note.empty() ? 0.0f : paragraph(nullptr, F::Body, px(17.0f), ImVec2(0, 0), 0, v.note, w - pad * 2.0f, 6) + px(10.0f);
 		float h = pad * 2.0f + px(34.0f);
 		const float lineH = px(30.0f);
 		h += lineH * static_cast<float>(v.statusLines.size());
 		const float probH = v.problem.empty() ? 0.0f : paragraph(nullptr, F::Body, px(18.0f), ImVec2(0, 0), 0, v.problem, w - pad * 2.0f, 6) + px(12.0f);
-		h += probH + (v.waiting ? lineH : 0.0f) + (v.statusHints.empty() ? 0.0f : px(48.0f));
+		h += probH + noteH + (v.waiting ? lineH : 0.0f) + (v.statusHints.empty() ? 0.0f : px(48.0f));
 		const ImVec2 p0(m, m), p1(m + w, m + h);
 		panel(dl, p0, p1, px(grid::rLarge), IM_COL32(0, 0, 0, 200), IM_COL32(255, 255, 255, 26));
 		float y = p0.y + pad;
@@ -267,10 +268,15 @@ void drawHud(ImDrawList *dl, ImVec2 S, const HudView &v)
 		if (!v.problem.empty()) {
 			y += paragraph(dl, F::Body, px(18.0f), ImVec2(p0.x + pad, y), p.fail, v.problem, w - pad * 2.0f, 6) + px(12.0f);
 		}
-		for (const auto &l : v.statusLines) {
+		for (size_t i = 0; i < v.statusLines.size(); i++) {
+			const auto &l = v.statusLines[i];
 			label(dl, px(12.5f), ImVec2(p0.x + pad, y + px(5.0f)), p.textFaint, l.first);
-			textFit(dl, F::Body, px(18.0f), ImVec2(p0.x + pad + px(90.0f), y), p.textDim, l.second, w - pad * 2.0f - px(90.0f));
+			textFit(dl, F::Body, px(18.0f), ImVec2(p0.x + pad + px(90.0f), y), static_cast<int>(i) == v.badLine ? p.fail : p.textDim, l.second,
+				w - pad * 2.0f - px(90.0f));
 			y += lineH;
+		}
+		if (!v.note.empty()) {
+			y += paragraph(dl, F::Body, px(17.0f), ImVec2(p0.x + pad, y + px(2.0f)), p.textDim, v.note, w - pad * 2.0f, 6) + px(10.0f);
 		}
 		if (v.waiting) {
 			spinner(dl, ImVec2(p0.x + pad + px(10.0f), y + px(11.0f)), px(9.0f), p.accent);

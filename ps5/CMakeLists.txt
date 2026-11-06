@@ -143,6 +143,7 @@ add_library(samples OBJECT
 	src/ogbox_ui_settings.cpp
 	src/ogbox_ui_screens.cpp
 	src/ogbox_shares.cpp
+	src/ogbox_pad.cpp
 	src/platform.c)
 target_compile_definitions(samples PRIVATE
 	VK_EXAMPLE_PS5

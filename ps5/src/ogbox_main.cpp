@@ -114,6 +114,7 @@
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
 #include "ogbox_ui.h"
+#include "ogbox_pad.h"
 #include "VulkanTexture.h"
 #include "third_party/smaa/AreaTex.h"     // SMAA (MIT): its area and search textures
 #include "third_party/smaa/SearchTex.h"
@@ -286,43 +287,6 @@ bool readArguments(BootConfig &config)
 		config.source = "the title's arguments";
 	}
 	return boot;
-}
-
-/* A stick's raw reading (0..255, 128 at rest, y down) as the Xbox controller's (y up). */
-int16_t stickAxis(uint8_t value, bool invert)
-{
-	int v = (static_cast<int>(value) - 128) * 256;
-	if (invert) {
-		v = -v;
-	}
-	return static_cast<int16_t>(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
-}
-
-void toXboxPad(const struct pad_reading &r, PshxPad &x)
-{
-	x = PshxPad{};
-	const uint32_t b = r.buttons;
-	const auto analog = [&](int index, uint32_t button) { x.analog[index] = (b & button) ? 0xFF : 0; };
-	analog(PSHX_A, PAD_CROSS);
-	analog(PSHX_B, PAD_CIRCLE);
-	analog(PSHX_X, PAD_SQUARE);
-	analog(PSHX_Y, PAD_TRIANGLE);
-	analog(PSHX_BLACK, PAD_R1);
-	analog(PSHX_WHITE, PAD_L1);
-	x.analog[PSHX_LT] = r.l2;
-	x.analog[PSHX_RT] = r.r2;
-	if (b & PAD_UP) x.buttons |= PSHX_PAD_UP;
-	if (b & PAD_DOWN) x.buttons |= PSHX_PAD_DOWN;
-	if (b & PAD_LEFT) x.buttons |= PSHX_PAD_LEFT;
-	if (b & PAD_RIGHT) x.buttons |= PSHX_PAD_RIGHT;
-	if (b & PAD_OPTIONS) x.buttons |= PSHX_PAD_START;
-	if (b & PAD_TOUCH_PAD) x.buttons |= PSHX_PAD_BACK;
-	if (b & PAD_L3) x.buttons |= PSHX_PAD_LTHUMB;
-	if (b & PAD_R3) x.buttons |= PSHX_PAD_RTHUMB;
-	x.lx = stickAxis(r.left_x, false);
-	x.ly = stickAxis(r.left_y, true);
-	x.rx = stickAxis(r.right_x, false);
-	x.ry = stickAxis(r.right_y, true);
 }
 
 const char *stateName(int state)
@@ -995,6 +959,8 @@ public:
 	} qm;
 	bool touchBack[PAD_PLAYERS]{};            // a touch pad click began on its left half (Back)
 	bool touchWas[PAD_PLAYERS]{};
+	ogbox::PadMap padMap;                     // Settings > Controller, the game's own on top
+	ogbox::TapLatch tapLatch[PAD_PLAYERS];    // a tap shorter than a frame still reaches the game
 	std::string toast;
 	double toastUntil{ 0.0 };
 	// a small list of choices over a screen (a confirmation, a place, an action)
@@ -1830,6 +1796,7 @@ public:
 		ssaaOn = prefs.value("fxaa") == "ssaa";
 		sgsrOn = prefs.value("upscale") == "sgsr";
 		showFps = prefs.on("show_fps");
+		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
 		if (ssaaOn) {
@@ -2621,36 +2588,63 @@ public:
 			if (count <= 0) {
 				continue;
 			}
-			// the newest reading the shell did not have
-			for (int i = count - 1; i >= 0; i--) {
+			/* the newest reading the shell did not have, and every button any of the frame's readings
+			 * had: a tap that went down and up between two frames is held for the game (TapLatch) */
+			int newest = -1;
+			uint32_t any = 0;
+			for (int i = 0; i < count; i++) {
 				if (readings[i].connected && !(readings[i].buttons & PAD_INTERCEPTED)) {
-					PshxPad x;
-					toXboxPad(readings[i], x);
-					x.buttons &= static_cast<uint16_t>(~(PSHX_PAD_START | PSHX_PAD_BACK));
-					/* the touch pad's click: which half is decided when it goes down. OPTIONS mode:
-					 * left half Back, right half Start; OPTIONS held mode: the whole pad Back */
-					const bool touch = (readings[i].buttons & PAD_TOUCH_PAD) != 0;
-					bool &isBack = touchBack[player];
-					if (touch && !touchWas[player]) {
-						isBack = holdMode || readings[i].touch_x < 0 || readings[i].touch_x < 960;
-					}
-					touchWas[player] = touch;
-					if (touch) {
-						x.buttons |= isBack ? PSHX_PAD_BACK : PSHX_PAD_START;
-					}
-					/* OPTIONS: the quick menu's for player 1; the others' Start */
-					if ((readings[i].buttons & PAD_OPTIONS) && player != 0) {
-						x.buttons |= PSHX_PAD_START;
-					}
-					if (player == 0 && now_seconds() < qm.startPulseUntil) {
-						x.buttons |= PSHX_PAD_START;   // a short OPTIONS press in the held mode
-					}
-					if (menu) {
-						x = PshxPad{};
-					}
-					pshx_core_set_pad(static_cast<unsigned>(player), &x);
-					break;
+					any |= readings[i].buttons;
+					newest = i;
 				}
+			}
+			if (newest >= 0) {
+				const struct pad_reading &r = readings[newest];
+				const uint32_t buttons = tapLatch[player].update(any, r.buttons, now_seconds());
+				/* the touch pad's click: which half is decided when it goes down (the first reading
+				 * with it down this frame, or the newest) */
+				const bool touch = (buttons & PAD_TOUCH_PAD) != 0;
+				if (touch && !touchWas[player]) {
+					int16_t tx = r.touch_x;
+					for (int i = 0; i < count; i++) {
+						if ((readings[i].buttons & PAD_TOUCH_PAD) && readings[i].touch_x >= 0) {
+							tx = readings[i].touch_x;
+							break;
+						}
+					}
+					touchBack[player] = tx < 960;
+				}
+				touchWas[player] = touch;
+				ogbox::PadFrame f;
+				f.buttons = buttons;
+				if (touch) {
+					f.buttons |= touchBack[player] ? ogbox::src::touchLeft : ogbox::src::touchRight;
+				}
+				f.lx = r.left_x;
+				f.ly = r.left_y;
+				f.rx = r.right_x;
+				f.ry = r.right_y;
+				f.l2 = r.l2;
+				f.r2 = r.r2;
+				PshxPad x;
+				ogbox::mapPad(padMap, f, x);
+				/* Start and Back left automatic: OPTIONS mode: the touch pad's left half Back, its right
+				 * half Start; OPTIONS held mode: the whole pad Back. OPTIONS: the quick menu's for
+				 * player 1, the others' Start. */
+				const bool autoStart = padMap.source[static_cast<int>(ogbox::XboxControl::Start)] == ogbox::src::automatic;
+				const bool autoBack = padMap.source[static_cast<int>(ogbox::XboxControl::Back)] == ogbox::src::automatic;
+				const bool back = holdMode || touchBack[player];
+				if (touch && back && autoBack) {
+					x.buttons |= PSHX_PAD_BACK;
+				}
+				if (autoStart && ((touch && !back) || ((buttons & PAD_OPTIONS) && player != 0) ||
+						(player == 0 && now_seconds() < qm.startPulseUntil))) {
+					x.buttons |= PSHX_PAD_START;   // (the last: a short OPTIONS press in the held mode)
+				}
+				if (menu) {
+					x = PshxPad{};
+				}
+				pshx_core_set_pad(static_cast<unsigned>(player), &x);
 			}
 			float large = 0.0f, small = 0.0f;
 			pshx_core_rumble(static_cast<unsigned>(player), &large, &small);
@@ -2837,8 +2831,12 @@ public:
 	void modsModel(std::vector<ui::ListRow> &rows, std::vector<ModsRow> &acts)
 	{
 		using R = ui::ListRow;
+		/* each row's key is its own (a mod's id, a trainer's file): the cursor follows it when the rows
+		 * above it change (a trainer chosen: its options in, the last one's out) */
 		const auto add = [&](R r, ModsRow a) {
-			r.key = std::to_string(rows.size()) + r.key;
+			if (r.key.empty()) {
+				r.key = "s" + std::to_string(rows.size());
+			}
 			rows.push_back(std::move(r));
 			acts.push_back(std::move(a));
 		};
@@ -2851,6 +2849,7 @@ public:
 		};
 		if (modList.empty()) {
 			R r;
+			r.key = "mempty";
 			r.title = "No mods, patches or cheats for this game";
 			r.sub = "hakuX's, in the title folder's mods/" + modsKey + "/";
 			r.icon = ui::Icon::Info;
@@ -2877,7 +2876,7 @@ public:
 			 * off: it's left out at the start anyway). 0.0.3: a game fix is on whatever is chosen. */
 			const bool other = m.fit == OGBOX_FIT_NO, unchecked = m.fit == OGBOX_FIT_UNCHECKED;
 			R r;
-			r.key = "m" + std::string(m.id);
+			r.key = "m" + std::to_string(kindOf(m)) + ":" + m.id;
 			r.title = m.name;
 			r.sub = m.patch ? std::string("by ") + m.author : std::string();
 			r.right = other ? std::string(m.on ? "another release: left out" : "another release")
@@ -3051,13 +3050,24 @@ public:
 		}
 	}
 
+	/* The Mods screen's first row that does something (else its first). */
+	static int modsFirst(const std::vector<ui::ListRow> &rows, const std::vector<ModsRow> &acts)
+	{
+		for (size_t i = 0; i < rows.size(); i++) {
+			if (rows[i].kind == ui::ListRow::Kind::Item && acts[i].press) {
+				return static_cast<int>(i);
+			}
+		}
+		return ui::listStep(rows, -1, 1);
+	}
+
 	void modsInput(uint32_t p)
 	{
 		std::vector<ui::ListRow> rows;
 		std::vector<ModsRow> acts;
 		modsModel(rows, acts);
 		if (modsSel < 0 || modsSel >= static_cast<int>(rows.size()) || rows[static_cast<size_t>(modsSel)].kind != ui::ListRow::Kind::Item) {
-			modsSel = ui::listStep(rows, -1, 1);
+			modsSel = modsFirst(rows, acts);
 		}
 		if (p & PAD_UP) {
 			modsSel = ui::listStep(rows, modsSel, -1);
@@ -3066,7 +3076,17 @@ public:
 			modsSel = ui::listStep(rows, modsSel, 1);
 		}
 		if ((p & PAD_CROSS) && modsSel >= 0 && acts[static_cast<size_t>(modsSel)].press) {
+			const std::string key = rows[static_cast<size_t>(modsSel)].key;
 			acts[static_cast<size_t>(modsSel)].press();
+			// the rows again (a trainer's options in or out): the cursor stays on the row pressed
+			rows.clear();
+			acts.clear();
+			modsModel(rows, acts);
+			for (size_t i = 0; i < rows.size(); i++) {
+				if (rows[i].key == key) {
+					modsSel = static_cast<int>(i);
+				}
+			}
 		}
 		if (p & PAD_CIRCLE) {
 			if (!library) {
@@ -3091,7 +3111,7 @@ public:
 		std::vector<ModsRow> acts;
 		modsModel(v.rows, acts);
 		if (modsSel < 0 || modsSel >= static_cast<int>(v.rows.size()) || v.rows[static_cast<size_t>(modsSel)].kind != ui::ListRow::Kind::Item) {
-			modsSel = ui::listStep(v.rows, -1, 1);
+			modsSel = modsFirst(v.rows, acts);
 		}
 		v.sel = modsSel;
 		if (modsSel >= 0) {
@@ -3512,9 +3532,10 @@ public:
 			if (problem.empty()) {
 				v.statusLines.push_back({ "Disc", boot.image == "none" ? std::string("none: the Xbox dashboard") : baseName(boot.image) });
 				v.statusLines.push_back({ "Core", stateName(state) });
-				if (pshx_core_message()[0]) {
-					v.statusLines.push_back({ "Note", pshx_core_message() });
+				if (state == PSHX_CORE_FAILED) {
+					v.badLine = 1;
 				}
+				v.note = pshx_core_message();
 				v.waiting = state == PSHX_CORE_BOOTING || (state == PSHX_CORE_RUNNING && !havePicture);
 			}
 			v.statusHints = { { "OPT", "Quick menu: save, load, quit" } };
@@ -4394,7 +4415,11 @@ public:
 			v.slot.text = st.used ? "Saved " + ogbox::dateText(st.mtime) : std::string(qm.sel == QR_SAVE ? "Saving here keeps where you are now." : "");
 		}
 		v.busy = qm.busy;
-		v.footer = { { "X", "Choose" }, { "LR", "Slot" }, { "O", "Resume" } };
+		v.footer = { { "X", "Choose" } };
+		if (qm.sel == QR_SAVE || qm.sel == QR_LOAD || qm.sel == QR_SLOT) {
+			v.footer.push_back({ "LR", "Slot" });
+		}
+		v.footer.push_back({ "O", "Resume" });
 		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - qm.openedAt) / 0.18));
 		ImDrawList *dl = beginUiScreen("##quick", Ground::None);
 		ui::drawQuickMenu(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v, appear);
@@ -4800,7 +4825,10 @@ public:
 				r.title = t.name;
 				r.sub = std::to_string(t.saves.size()) + (t.saves.size() == 1 ? " save \xC2\xB7 " : " saves \xC2\xB7 ") + ogbox::bytesText(t.bytes) +
 					" \xC2\xB7 " + t.idText;
-				r.thumb = uiCover(ogbox::coverSources(std::string(), std::string(), t.titleId, 1));
+				const int at = static_cast<int>(v.rows.size()) - 4;   // its place among the games
+				if (std::abs(at - (hdd.selT - HA_COUNT)) <= 12) {
+					r.thumb = uiCover(ogbox::coverSources(std::string(), std::string(), t.titleId, 1));
+				}
 				r.thumbSlot = true;
 				v.rows.push_back(r);
 			}
@@ -4832,7 +4860,8 @@ public:
 		} else if (t) {
 			v.title2 = "Saves of " + t->name;
 			if (t->saves.empty()) {
-				v.aside.text = "None: only its own data. TRIANGLE deletes it.";
+				v.aside.text = "No saves: only its own data (TDATA: " + ogbox::bytesText(t->dataBytes) + "). TRIANGLE opens what can be "
+					"done with it.";
 			}
 			for (const ogbox::HddSave &sv : t->saves) {
 				R r;
@@ -5223,6 +5252,13 @@ public:
 				}
 			}
 			ogbox::Covers::get().want(std::move(all));
+			/* 0.0.5: their descriptions too, after the covers' first round trips */
+			std::vector<std::string> names;
+			names.reserve(hc.games.size());
+			for (const int i : hc.games) {
+				names.push_back(ogbox::shortName(entries[static_cast<size_t>(i)].name));
+			}
+			ogbox::About::get().want(std::move(names));
 		}
 	}
 
@@ -5487,6 +5523,13 @@ public:
 			if (left.used) {
 				v.secondary = "Start from the beginning";
 			}
+			{   /* 0.0.5: its description (Wikipedia's), as the game page shows it */
+				std::string text, article;
+				if (prefs.global("list_covers") != "0" && ogbox::About::get().find(ogbox::shortName(shown->name), text, article)) {
+					v.about = text;
+					v.aboutSource = "From Wikipedia" + (article.empty() ? std::string() : ", \"" + article + "\"") + " \xC2\xB7 CC BY-SA 4.0";
+				}
+			}
 			ImU32 tint = 0;
 			const ui::Tex blur = uiBlur(coverNames(*shown, done && info.ok ? &info : nullptr), &tint);
 			bd.key = shown->path;
@@ -5576,7 +5619,7 @@ public:
 		} else {
 			v.footer = { { "LR", "Choose" }, { "X", "Open" } };
 			if (!games.empty()) {
-				v.footer.push_back({ "UD", "Games" });
+				v.footer.push_back({ "D", "Games" });
 			}
 		}
 		v.footer.push_back({ "OPT", "Settings" });
@@ -5595,20 +5638,22 @@ public:
 	// ---- the settings -----------------------------------------------------------------------------
 
 	enum SetPage { SP_PICTURE, SP_XBOX, SP_ADVANCED, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_DATA, SP_HDD, SP_UPDATES, SP_ABOUT,
-		SP_GAME_RESET };
+		SP_GAME_RESET, SP_CONTROLLER };
 
 	std::vector<int> setPages() const
 	{
 		if (forGame) {
-			return { SP_PICTURE, SP_XBOX, SP_ADVANCED, SP_GAME_RESET };
+			return { SP_PICTURE, SP_CONTROLLER, SP_XBOX, SP_ADVANCED, SP_GAME_RESET };
 		}
-		return { SP_PICTURE, SP_XBOX, SP_ADVANCED, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_DATA, SP_HDD, SP_UPDATES, SP_ABOUT };
+		return { SP_PICTURE, SP_CONTROLLER, SP_XBOX, SP_ADVANCED, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_DATA, SP_HDD, SP_UPDATES,
+			SP_ABOUT };
 	}
 
 	static const char *setPageName(int page)
 	{
 		switch (page) {
 		case SP_PICTURE: return "Picture and sound";
+		case SP_CONTROLLER: return "Controller";
 		case SP_XBOX: return "The Xbox";
 		case SP_ADVANCED: return "Advanced";
 		case SP_NETWORK: return "Network";
@@ -5640,7 +5685,7 @@ public:
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {
 				bool placed = false;
-				for (int p2 : { SP_PICTURE, SP_XBOX, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_UPDATES }) {
+				for (int p2 : { SP_PICTURE, SP_CONTROLLER, SP_XBOX, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_UPDATES }) {
 					for (const auto &grp : setGroups(p2)) {
 						placed = placed || std::find(grp.second.begin(), grp.second.end(), o.key) != grp.second.end();
 					}
@@ -5667,11 +5712,22 @@ public:
 				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
 			return { { "", { "theme", "rain", "quick_menu" } } };
+		case SP_CONTROLLER:
+			return { { "Buttons", { "pad_a", "pad_b", "pad_x", "pad_y", "pad_black", "pad_white", "pad_lt", "pad_rt", "pad_start",
+						"pad_back", "pad_lthumb", "pad_rthumb" } },
+				{ "D-pad", { "pad_up", "pad_down", "pad_left", "pad_right" } },
+				{ "Sticks and triggers", { "pad_sticks", "pad_invert_ly", "pad_invert_ry", "pad_dead_l", "pad_dead_r", "pad_dead_t" } } };
 		case SP_UPDATES:
 			return { { "", { "update_check" } } };
 		default:
 			return {};
 		}
+	}
+
+	/* Settings > Controller as the run uses it (the game's own on top), at once. */
+	void loadPadMap()
+	{
+		padMap = ogbox::padMapFrom([this](const char *key) { return prefs.value(key); });
 	}
 
 	/* A value set from the settings, with what follows from it at once. */
@@ -5681,6 +5737,9 @@ public:
 		if (forGame) {
 			const std::string own = prefs.override_(key);
 			prefs.setOverride(key, next == prefs.global(key) && own.empty() ? std::string() : next);
+			if (o.section == ogbox::Section::Controller) {
+				loadPadMap();
+			}
 			return;
 		}
 		prefs.setGlobal(key, next);
@@ -5690,6 +5749,8 @@ public:
 			themeCode = next == "code";
 		} else if (key == "show_fps") {
 			showFps = next == "1";
+		} else if (o.section == ogbox::Section::Controller) {
+			loadPadMap();
 		}
 		if (o.section == ogbox::Section::Library) {
 			placesRead = -100.0;
@@ -5855,7 +5916,7 @@ public:
 			break;
 		case SP_ABOUT:
 			actionRow("ver", "OGBox", pshakux_build_label(), "OGBox by Press5elect: hakuX for the PS5.", nullptr, rows, acts);
-			groupRow("The controller", rows, acts);
+			groupRow("The controller (Settings > Controller changes it)", rows, acts);
 			actionRow("c1", "Cross, Circle, Square, Triangle", "A, B, X, Y", "", nullptr, rows, acts, ui::Icon::Pad);
 			actionRow("c2", "L1, R1", "white, black", "", nullptr, rows, acts);
 			actionRow("c3", "L2, R2", "the triggers", "", nullptr, rows, acts);
@@ -5885,6 +5946,16 @@ public:
 		switch (page) {
 		case SP_PICTURE: return lab("render_scale") + " \xC2\xB7 " + lab("aspect");
 		case SP_XBOX: return lab("language") + " \xC2\xB7 " + lab("av_pack");
+		case SP_CONTROLLER: {
+			int changed = 0;
+			for (const ogbox::Option &o : ogbox::options()) {
+				if (o.section == ogbox::Section::Controller) {
+					const std::string v = forGame ? prefs.override_(o.key) : prefs.global(o.key);
+					changed += forGame ? !v.empty() : v != o.def;
+				}
+			}
+			return changed ? std::to_string(changed) + " changed" : std::string("as on an Xbox");
+		}
 		case SP_ADVANCED: *warn = true; return "can break games";
 		case SP_NETWORK: {
 			const std::string net = prefs.global("network");
@@ -6750,7 +6821,7 @@ public:
 		v.footer = gp.states ? std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Load" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Open" }, { "O", "Back" } };
 		if (!gp.states && !slots.empty()) {
-			v.footer.insert(v.footer.begin() + 2, { "UD", "Save states" });
+			v.footer.insert(v.footer.begin() + 2, { "D", "Save states" });
 		}
 		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - gp.since) / 0.25));
 		ImDrawList *dl = beginUiScreen("##gamepage");

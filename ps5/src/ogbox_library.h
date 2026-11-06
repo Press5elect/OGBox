@@ -106,6 +106,9 @@ public:
 	 * asked for (when on) and false. */
 	bool find(const std::string &name, std::string &text, std::string &article);
 	void enable(bool on);
+	/* 0.0.5: a folder's games' names: their descriptions fetched in the background, one after another,
+	 * after any asked for by find (what is on screen first). A new list replaces the last. */
+	void want(std::vector<std::string> names);
 
 private:
 	About();

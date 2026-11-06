@@ -108,7 +108,7 @@ Tex glow();
 // ---- pieces -----------------------------------------------------------------------------------
 
 /* The DualSense's buttons: X O S T (cross, circle, square, triangle), L1 R1 L2 R2 OPT TP, LR (left
- * and right), UD. Drawn as an outlined key; its width. */
+ * and right), UD, U, D. Drawn as an outlined key; its width. */
 float keycap(ImDrawList *dl, ImVec2 p, float h, const std::string &name, ImU32 col, ImU32 fill = 0, bool measureOnly = false);
 struct Hint {
 	std::string key, text;
@@ -277,6 +277,7 @@ struct HomeView {
 	std::string title;
 	std::vector<std::pair<std::string, int>> chips;   // words and a kind (0 plain, 1 good, 2 warn)
 	std::string meta;             // a line or two
+	std::string about, aboutSource;   // its description and where it is from ("" none yet)
 	std::string primary, secondary;   // the buttons ("Continue", "Start from the beginning")
 	std::string primaryKey{ "X" }, secondaryKey{ "S" };
 	// the strip over the games: where this is, and the folders, the dashboard, an action
@@ -469,6 +470,8 @@ struct HudView {
 	bool showStatus{ false };     // the panel at the top left (no picture yet, or trouble)
 	std::string statusTitle;
 	std::vector<std::pair<std::string, std::string>> statusLines;   // label, value
+	int badLine{ -1 };            // the line whose value is in the failure colour
+	std::string note;             // the core's words, wrapped under the lines
 	std::string problem;
 	bool waiting{ false };        // a spinner: the first frame to come
 	std::vector<Hint> statusHints;
