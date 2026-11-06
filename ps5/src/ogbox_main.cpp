@@ -190,7 +190,11 @@ bool readBootConfig(BootConfig &config)
 			if (line.empty() || line[0] == '#') {
 				continue;
 			}
-			if (!haveImage) {
+			/* 0.0.4: an env, prop or hdd= line, or autoboot, is never the disc image, even first (a
+			 * boot.txt of two env lines lost the first as "the image") */
+			const bool keyword = line.rfind("env ", 0) == 0 || line.rfind("prop ", 0) == 0 ||
+			                     line.rfind("hdd=", 0) == 0 || line == "autoboot";
+			if (!haveImage && !keyword) {
 				config.bootTxtImage = resolvePath(line);
 				haveImage = true;
 				continue;
