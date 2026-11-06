@@ -5,8 +5,8 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**Latest release: [v0.0.3](https://github.com/Press5elect/OGBox/releases/tag/v0.0.3).** Download
-`OGBox-v0.0.3.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v0.0.4](https://github.com/Press5elect/OGBox/releases/tag/v0.0.4).** Download
+`OGBox-v0.0.4.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -22,7 +22,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **highly experimental** software. 0.0.3 is the third public release, after a long run of
+This is **highly experimental** software. 0.0.4 is the fourth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Many others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and freezes happen, and OGBox reminds
 you of that every time it starts.
@@ -97,7 +97,7 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   exact depth, and cropping the overscan.
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
   compiling shaders in the background, and building cached shaders at start.
-- **Audio:** Fast or Full sound processing, and the resampler.
+- **Audio:** the resampler. Sound is mixed the fast way, as xemu does by default.
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
   when such a patch is on), drive timing and the clock.
 - **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
@@ -239,22 +239,30 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
-### Unreleased (0.0.4 test builds)
+### 0.0.4
 
 Added
 - Settings > Anisotropic filtering (2x to 16x), Sharpening and Force 32-bit colour. All off by
   default: the picture stays the Xbox's own.
-- Audio processing > Full DSP translates the Xbox's audio programs to the console's own code (a
-  DSP56300 recompiler) instead of interpreting them.
 
 Changed
+- The emulated console's refresh follows the PS5's display, so a finished frame no longer lands
+  on the moment the screen takes one.
+- Frames go from the emulated GPU straight into the picture, with no copy by the processor.
+- The sound's thread has a processor core of its own.
+- Sound is always mixed the fast way, as in xemu's default. Full DSP processing is experimental
+  in xemu too (some games' sound programs never finish a frame), so its option is hidden.
 - Covers are kept under the game's file name, and a picture of your own with that name wins.
 - Test builds say "developer build" beside their version.
 
 Fixed
+- Frames shown twice or skipped in games running at 60 fps, most at high resolution scales.
+- Movies stuttering while a game loads behind them (opening a file read the disc's folders from
+  the network share each time).
 - A black screen in the Xbox dashboard at a resolution scale of 5 or 6.
+- OGBox not closing after the Xbox dashboard.
 - Covers filling in one by one after coming back from a game.
-- Games freezing, and movies stuttering, with Audio processing set to Full DSP.
+- An `env` line first in `boot.txt` being taken for the disc image.
 
 ### 0.0.3
 

@@ -590,7 +590,13 @@ std::vector<std::string> Settings::coreArgs() const
 	// 0.1.59: the APU (native/dev/apu/apu.c config_init)
 	// 0.0.4: said either way: hakuX's own default is full DSP wherever its DSP JIT is built in (it is
 	// now), so leaving it out for Fast ran full DSP all the same
-	a.push_back(value("audio_dsp") == "full" ? "NC_APU_DSP=1" : "NC_APU_DSP=0");
+	// 0.0.4: Fast only. Full DSP's option is hidden (experimental, as in xemu: some games' EP programs
+	// never finish a frame, xemu issue #2901) and a setting saved as "full" before is not applied;
+	// the code stays (env NC_APU_DSP=1 in boot.txt still turns it on, for testing: then this says
+	// nothing)
+	if (!std::getenv("NC_APU_DSP")) {
+		a.push_back("NC_APU_DSP=0");
+	}
 	if (value("audio_resampler") == "linear") {
 		a.push_back("NC_APU_RESAMPLER=linear");
 	}

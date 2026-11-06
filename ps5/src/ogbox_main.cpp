@@ -6239,7 +6239,7 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "aniso", "sharpen", "force32", "dither", "crop_overscan", "audio_dsp", "show_fps" } } };
+			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "aniso", "sharpen", "force32", "dither", "crop_overscan", "show_fps" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
@@ -6261,7 +6261,9 @@ public:
 					placed = placed || std::find(grp.second.begin(), grp.second.end(), o.key) != grp.second.end();
 				}
 				const std::string k = o.key;
-				if (!placed && k != "list_layout" && k != "list_details") {
+				// 0.0.4: "audio_dsp" (full DSP) is hidden: experimental, as in xemu (some games' EP
+				// programs never finish a frame); the code stays, Fast is what runs
+				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp") {
 					other.push_back(k);
 				}
 			}

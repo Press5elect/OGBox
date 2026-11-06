@@ -172,6 +172,7 @@ native core's work tree (oldest first; author: subject):
   61339c3b5d Claude: apu: full DSP gives way to Fast when the EP puts out nothing in 32 runs
   3b19aef07f Claude: apu: full DSP runs the GP and the EP until they halt, as xemu does
   663a4ff00a Claude: apu: hakuX-lr's frame limit back
+  838ebe1857 Claude: apu: Fast by default, as xemu
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -17989,7 +17990,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ec29a3b47b3d525fb00ec4cb8324636ab0721573 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..47736bde3a51f4a2321e8eb28e8c2385a9e6d8c3 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18030,7 +18031,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..ec29a3b47b3d525fb00ec4cb8324636a
  uint32_t g_apu_ram_size;
  ApuConfig g_apu_config = {
 -    .use_dsp = false,
-+    .use_dsp = NC_HAVE_DSP_JIT,
++    .use_dsp = false,     /* OGBox 0.0.4: Fast, as xemu's default (full DSP: NC_APU_DSP=1, experimental) */
      .hrtf = true,
      .volume_limit = 1.0f,
      .num_workers = 0,
