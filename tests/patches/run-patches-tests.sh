@@ -14,4 +14,4 @@ flags=(-std=gnu11 -g -O1 -Wall -Wextra -Werror -fsanitize=address,undefined -fno
 	-fno-omit-frame-pointer -ffunction-sections -fdata-sections -I "$root/ps5/src" -I "$here/stub")
 "$cc" "${flags[@]}" "$here/patches_test.c" "$root/ps5/src/core/ogbox_patches.c" -Wl,--gc-sections \
 	-o "$work/patches_test"
-"$work/patches_test"
+"$work/patches_test" "$root/ps5/gamedata/files"

@@ -99,7 +99,9 @@ static bool buf_copy(OgboxBuf *dst, const OgboxBuf *src)
     if (!buf_reserve(dst, src->size ? src->size : 1)) {
         return false;
     }
-    memcpy(dst->data, src->data, src->size);
+    if (src->size) {
+        memcpy(dst->data, src->data, src->size);
+    }
     dst->size = src->size;
     return true;
 }
@@ -183,8 +185,9 @@ bool ogbox_apply_ips(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
                 say(why, why_len, "%s at %llu", "a record past the IPS file's end", (unsigned long long)at);
                 return false;
             }
-            if (off + len > out.size) {
-                buf_resize(&out, off + len);
+            if (off + len > out.size && !buf_resize(&out, off + len)) {
+                free(out.data);
+                return false;
             }
             memcpy(out.data + off, p + at, len);
             at += len;
@@ -201,8 +204,9 @@ bool ogbox_apply_ips(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
                 free(out.data);
                 return false;
             }
-            if (off + len > out.size) {
-                buf_resize(&out, off + len);
+            if (off + len > out.size && !buf_resize(&out, off + len)) {
+                free(out.data);
+                return false;
             }
             memset(out.data + off, v, len);
         }
@@ -402,7 +406,7 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
             size_t dn = 0;
             const unsigned long long off = strtoull(f[1], NULL, 16);
             uint8_t *data = unhex(f[2], &dn);
-            ok = data && off + dn <= work.size;
+            ok = data && off <= work.size && dn <= work.size - off;
             if (ok) {
                 memcpy(work.data + off, data, dn);
             } else if (why && why_len) {

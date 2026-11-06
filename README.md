@@ -176,7 +176,8 @@ PS5_CLANG=/usr/lib/llvm-20/bin/clang bash ps5/tools/build.sh       # dist/PPSA99
 PS5_CLANG=/usr/lib/llvm-20/bin/clang HAKUX_SRC=<a hakuX tree> bash ps5/tools/build.sh
                                                     # hakuX from a work tree instead
 python3 ps5/tools/stage-notices.py --check dist/PPSA99251   # the release check
-tests/update/run-update-tests.sh <work folder>              # the updater on the PC
+tests/run-pc-tests.sh --fetch                       # every PC test (patches, images, shares,
+                                                    # updater, menus); CI runs it on each push
 ps5/tools/deploy.sh                                 # upload over the console's FTP server
 ```
 

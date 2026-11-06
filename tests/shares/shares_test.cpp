@@ -28,5 +28,18 @@ int main()
 	Share m = back.shares[3];
 	assert(mountShare(m, back, {}));
 	assert(m.mount == "/smb/Syn_ology");
+	// percent escapes cut short or not hex stay as they are
+	assert(percentDecode("a%4") == "a%4" && percentDecode("%") == "%" && percentDecode("%zz%41") == "%zzA");
+	assert(percentDecode(percentEncode("x:y z@\xff/%")) == "x:y z@\xff/%");
+	// lines that are not shares, a path that is only a host, a BOM, a line longer than the reader's buffer
+	o = std::fopen(f, "w");
+	std::fputs("\xef\xbb\xbfuser =\n=\npath =\npath\npath = smb://\npath = \\\\pc\n#@ name\npath = @@\n", o);
+	std::fputs(("path = h/" + std::string(5000, 'x') + "\n").c_str(), o);
+	std::fclose(o);
+	ShareFile odd;
+	assert(readShares(f, odd));
+	assert(odd.user == "guest" && odd.shares.size() >= 3);
+	assert(odd.shares[1].host == "pc" && odd.shares[1].name == "pc");
+	std::remove(f);
 	std::puts("shares: ok");
 }
