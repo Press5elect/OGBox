@@ -1,162 +1,173 @@
 # OGBox
 
-**An unofficial port of [hakuX](https://github.com/rfandango/hakuX), an original Xbox (2001)
-emulator, to the PlayStation 5, as a homebrew title (`PPSA99251`) for a jailbroken console.**
-OGBox by Press5elect. It was called PSHakuX up to 0.1.5.
+**The original Xbox, on your PS5.** OGBox is an unofficial port of
+[hakuX](https://github.com/rfandango/hakuX), an emulator for Microsoft's 2001 console, made into
+a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
+and it was called PSHakuX up to version 0.1.5.
 
-**Latest release: [v0.0.3](https://github.com/Press5elect/OGBox/releases/tag/v0.0.3)** (highly
-experimental). Download `OGBox-v0.0.3.zip` there; 0.0.2 offers it at its next start (Settings >
-Updates), and later versions install themselves the same way.
+**Latest release: [v0.0.3](https://github.com/Press5elect/OGBox/releases/tag/v0.0.3).** Download
+`OGBox-v0.0.3.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+to: OGBox offers the update itself the next time it starts.
 
-OGBox is built on hakuX (rfandango and contributors, GPL-3.0-or-later) and on the parts of hakuX
-that come from xemu (the MCPX APU, LGPL-2.1-or-later and GPL-2.0-or-later). It is not hakuX's or
-xemu's work and neither project supports it.
-
-> **Unofficial.** This is not the hakuX project's build and it is not supported by hakuX.
-> Please do not report OGBox's problems to hakuX: open them here.
+> **It's free, and it lives here only.** OGBox costs nothing and is only published on this
+> GitHub page. If someone is asking you to pay for it, or offering it from somewhere else, that
+> isn't this project.
 >
-> **Free, and on GitHub only.** OGBox costs nothing. A copy anyone asks money for, or one from
-> somewhere else, is not this release.
+> **No piracy, ever.** There are no games, Xbox BIOS, boot ROM, EEPROM, firmware or keys in this
+> repository or in any release, and there never will be. Play backups of games you own, made
+> yourself.
 >
-> **No piracy.** No games, Xbox BIOS, boot ROM, EEPROM, firmware or keys are in this repository
-> or in any release, and none will be. Use only backups of games you own, made yourself.
+> **Please report problems here, not to hakuX.** OGBox is built on hakuX (by rfandango and
+> contributors) and on xemu's sound chip emulation, but neither project makes or supports it.
 
-## Where it is
+## What to expect
 
-**Highly experimental.** 0.0.3 is the third public release (0.0.1 the first, after the bring-up
-builds 0.1.1 to 0.1.59). Some games boot and play; many don't start, or stop, slow down, lose graphics or sound
-partway. Expect crashes and freezes: OGBox says so every time it starts.
+This is **highly experimental** software. 0.0.3 is the third public release, after a long run of
+bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Many others won't start, stop
+partway, slow down, or lose their graphics or sound. Crashes and freezes happen, and OGBox reminds
+you of that every time it starts.
 
-The title builds and links hakuX's native core with its **native CPU backend**: the Xbox's x86
-code runs on the console's own processor in compatibility mode (`native/cpu/cpu_native.c`, in
-`ps5/patches/hakux/ps5.patch`), with kernel calls through a far-call gate, its
-HLE GPU on the console's RADV, its APU on the console's sound output, OGBox's front end and the
-console's platform code. `ogbox-boot.log` in the title folder says what a run did (the run
-before is kept as `ogbox-boot.previous.log`): include it when you report a problem.
+If you're curious how it works: the Xbox's own x86 code runs directly on the PS5's processor, in
+its compatibility mode, instead of being translated. Calls into the Xbox kernel go through a gate
+to the emulator's own kernel, the graphics are redrawn through the PS5's Vulkan driver (RADV), and the
+sound comes out of the PS5's normal audio output.
 
-## Using it
+When something goes wrong, the file `ogbox-boot.log` in the title folder says what happened (the
+run before it is kept as `ogbox-boot.previous.log`). Please attach both when you open an issue.
 
-1. Copy the `PPSA99251` folder to `/data/homebrew/` on the console.
-2. Put your Xbox disc images (XISOs, `.iso` or `.xiso`, or CHDs made with `chdman createdvd`) on the console (`/data/...`), a USB
-   drive, extended storage or a network share. For a share, add a `path =` line for it to
-   `/data/ogbox/network.cfg` (written with examples on the first start): `192.168.1.10/Games/Xbox`
-   for SMB, with `user =` and `password =` lines if the share needs them, or
-   `nfs://192.168.1.20/volume1/games/xbox` for NFS. With the payload loader (elfldr, port 9021)
-   running, OGBox leaves its sandbox at start, so USB drives and extended storage are visible.
-   A file named `elevation-off.txt` in the title folder keeps it inside the sandbox.
-3. Start OGBox from the home screen. A notice says first that this is an experimental build
-   (CROSS goes on). The first time, it then asks where to keep its data (the Xbox
-   hard disk, the caches, the covers, the screenshots): the console's storage, a folder of your
-   own on it, a USB drive or extended storage. Settings > Data folder changes it later and moves
-   the data. Then pick a game from the list: three tabs, **Internal**, **USB** and **Network**
-   (L1 / R1 between them; each keeps its folder), the tab's places on the left, the folder in the
-   middle, the selected disc on the right (its name, title ID, mods and settings). D-pad to move,
-   CROSS to open a folder or start a game, CIRCLE to go back (at a tab's places it asks before
-   closing OGBox), L2 / R2 to jump a letter back or on, TRIANGLE on a disc for its **game page**,
-   OPTIONS for the settings.
-4. In a game, **OPTIONS** opens the **quick menu**: the game pauses and a panel comes in from the
-   right with Resume, Save state and Load state (10 slots, each with a picture of the moment),
-   Where you left off, the game's settings and mods, Restart and Quit. Quit asks whether to save
-   where you are first; starting the game again then asks whether to go on from there. No button combination is
-   needed any more to leave a game.
+## Getting started
 
-**Updates**: OGBox asks GitHub for a newer release each time it starts (Settings > Interface >
-Look for updates at start), or when you pick **Updates** in Settings. A newer one is offered with
-what is new in it; nothing is downloaded without asking. It is downloaded into the title folder,
-checked against GitHub's SHA-256 of the file, unpacked, and only OGBox's own files are replaced
-(your settings, the Xbox hard disk, states, `boot.txt` and games stay); then OGBox closes, to be
-started again. An update a power cut stops is undone at the next start.
+1. **Install it.** Copy the `PPSA99251` folder from the ZIP to `/data/homebrew/` on the console.
+2. **Bring your games.** OGBox reads disc images as `.iso` or `.xiso`, compressed `.cci`, images
+   split in parts (`game.1.iso`, `game.2.iso`), and CHDs made with `chdman createdvd`. Put them
+   wherever suits you:
+   - on the console's storage, under `/data/`;
+   - on a USB drive or extended storage;
+   - on a computer or NAS on your network. In OGBox, open the **Network** tab and pick
+     **Add a network share**. It can find SMB servers on your network for you, and NFS works too.
 
-**The game page** (TRIANGLE on a disc in the list) is a fixed panel in the middle of the screen:
-the cover, the disc's details and Play, Load state (the game's states with their pictures and
-dates), Game settings, Mods, patches, cheats and Saves (the game's saves on the hard disk).
+   With the payload loader (elfldr, port 9021) running, OGBox leaves the PS5's sandbox when it
+   starts, so USB drives and extended storage show up. To keep it sandboxed, put an empty file
+   named `elevation-off.txt` in the title folder.
+3. **Start it** from the PS5 home screen. Press CROSS past the experimental notice. The first time,
+   OGBox asks where to keep its data (the emulated Xbox hard disk, caches, covers and screenshots):
+   the console's storage, a folder of your own, a USB drive or extended storage. You can change it
+   later in Settings > Data folder, and OGBox moves everything for you.
+4. **Pick a game.** Your games show as covers, or as a list if you prefer (Settings > Game list).
+   - **L1 / R1** switch between the **Internal**, **USB** and **Network** tabs.
+   - The **D-pad** moves, **CROSS** opens a folder or starts a game, **CIRCLE** goes back.
+   - **L2 / R2** jump a letter back or forward.
+   - **TRIANGLE** opens a game's page: its cover, description, save states, settings and mods.
+   - **OPTIONS** opens Settings.
+   - A USB keyboard works too.
+5. **Play.** Press **OPTIONS** in a game for the **quick menu**. The game pauses and a panel slides
+   in with Resume, Save state and Load state (10 slots, each with a picture of the moment), Where
+   you left off, the game's settings and mods, Restart and Quit. Quit offers to save where you are,
+   and the game offers to carry on from there next time.
 
-**Hard disk** (on the left, and in Settings) is the emulated Xbox hard disk's manager: every game
-with saves on it, newest played first, and each game's saves by name, date and size. A save can be
-copied out, moved out or deleted; a game's saves can be copied out together, or its saves and its
-own data (TDATA) deleted. **Bring saves in** brings saves back from the data folder's
-`backups/saves` or a USB drive's `OGBox/saves` (folders `<title ID>/<save>`, or
-`UDATA/<title ID>/<save>` as other tools copy them out), asking before it replaces one the hard disk
-has. **Empty the cache drives** clears X:, Y: and Z:, which games fill again as they need.
+### The controller
 
-**Settings** (OPTIONS, or Settings on the left) has hakuX's every setting and OGBox's own, in
-eight sections: **Graphics** (resolution scale, anti-aliasing: FXAA, SMAA or SSAA, aspect ratio,
-the upscaling filter, exact depth, crop overscan), **Performance** (GPU on separate cores, frame pacing,
-uncapped frame rate, compiling shaders in the background, building cached shaders at start),
-**Audio** (Fast or Full DSP processing, the resampler), **Console** (language, memory: 64 MB, or
-the 128 MB RAM upgrade some patches need, which Auto picks when such a patch is on; drive timing,
-the clock), **Video modes** (screen format, 480p, 720p, 1080i, PAL 60, the video cable),
-**Network** (off, LAN, XLink Kai, Insignia), **Game list** (the places shown on the left, USB
-drives hidden by default; covers, a list or a grid of covers, file or short names, by name or
-last played first, disc sizes, the details panel) and **Interface** (the theme: Code or Emerald,
-the code rain, looking for updates at start, the FPS counter, the quick menu button). The box below the list says what the
-focused section or setting does, and the setting's default. The picture's enhancements
-(higher resolution scales, anti-aliasing, crop overscan) are off until you turn them on. CROSS picks the next choice, SQUARE the
-one before. A disc's **Game settings** (on the right) override any of the Graphics, Performance,
-Audio, Console and Video modes ones for that game alone (TRIANGLE: back to the app's). They are
-kept in `/data/ogbox/settings.txt` and `/data/ogbox/games/<title ID>.<version>.txt`; the
-network's addresses are written there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
+Your DualSense is an Xbox controller: CROSS is A, CIRCLE is B, SQUARE is X, TRIANGLE is Y, R1 is
+Black and L1 is White, and L2 / R2 are the triggers. Click the left half of the touch pad for
+Back and the right half for Start. OPTIONS is the quick menu for player 1 and Start for the other
+players. If you'd rather have OPTIONS as Start, Settings > Interface > **Quick menu button** puts
+the quick menu on a half-second hold instead. Each signed-in user's controller is a player (1 to 4),
+and the menus show each face button in its Xbox colour (A green, B red, X blue, Y yellow).
 
-**Mods, patches, cheats** (on the right) lists hakuX's mods for the disc (60 and 120 fps mods,
-game fixes; the `mods` folder is hakuX's own, with OGBox's own from `ps5/mods` beside them), the XBE patches OGBox ships for it (widescreen,
-60 fps, 480i/480p and other fixes from Jay's PatchHub and GitHub collection, icup321's
-XboxGraphicalPatches and OgXHD, merged where they are the same patch, in `gamedata/patches.db`;
-all off by default; no resolution patches: Resolution scale does that) and its cheats: CROSS turns one on or off, from the
-game's next start (`/data/ogbox/mods.txt`). Each is checked against the disc first: a mod's
-`old -> new` bytes, a patch tried on the disc's XBE (its CRC-32, the bytes it looks for, its
-region), cheats against a `crc:` line in `cheats.txt` (`ps5/mods/README.md`). One made for another
-release of the game is greyed out and can't be turned on; one turned on before is left out whole at
-the start, and the boot log says why. One with nothing to check is marked "release not checked".
+### Updates
 
-**Trainers** (on the Mods screen, under TRAINERS): the Xbox's `.etm` and `.xbtf` trainers, as
-Evolution-X and XBMC4Xbox ran them. OGBox ships none: copy them into the data folder's `trainers`
-(made at the first start; subfolders are fine), `/data/ogbox/trainers` or a USB drive's
-`OGBox/trainers`. They are read once into an index (the cache's `trainers.idx`), and each game
-lists those made for its title ID, the same trainer in several files once, those made for another
-release of the game (another XBE date) greyed out: they can't be chosen, and one chosen before
-doesn't run. Choose one (one a game), then its options: they are set as the game
-starts. Options marked IGK are turned on and off in the game with the pad as well, as on the Xbox;
-trainers show that with the console's LED, which OGBox draws top right when it changes, and a
-trainer's LCD text comes up at the top of the screen.
+OGBox checks GitHub for a newer release each time it starts (you can turn that off in
+Settings > Interface), or when you choose **Updates** in Settings. It tells you what's new and
+downloads nothing without asking. The download is checked against GitHub's SHA-256, then only
+OGBox's own files are replaced. Your settings, the Xbox hard disk, save states, `boot.txt` and
+games are left alone. OGBox then closes, ready to be started again, and if a power cut interrupts
+an update, it's undone at the next start.
 
-**Covers**: the list shows each disc's cover from libretro's thumbnails, found by the disc's
-Redump name (OGBox ships Redump's Xbox database, `gamedata/games.db`); a disc named as Redump
-names it (`Halo 2 (USA) (En,Fr,De).iso`) always matches, others by their title ID. The covers
-are downloaded once into the data folder's `covers` (Game list > Covers turns that off). libretro has
-no game descriptions for the Xbox, so the details panel shows Redump's name, region, languages
-and serial. **Xbox dashboard** (on the left) starts the dashboard from the
-emulated hard disk; OGBox doesn't include one, and the row shows only when the hard disk has
-`xboxdash.xbe` on its C: drive (`hdd/Partition2`; Settings > Game list says so when it hasn't).
-A game that starts another of its XBEs keeps its last frame on screen while it does, instead of
-the boot screen.
+## Settings
 
-`boot.txt` (copy `boot.example.txt`) holds hakuX's options (`scale=2`, `uncap`, ...) for every
-game, over the settings. Its first line may name a disc image; with an `autoboot` line that
-image boots straight away, without the list.
+Everything hakuX can change, and OGBox's own options, sorted into sections. The box under the list
+explains whatever you've highlighted, and shows its default. CROSS picks the next choice, SQUARE the
+one before.
 
-The controller is an Xbox controller: cross A, circle B, square X, triangle Y, R1 black,
-L1 white, L2/R2 the triggers, a click on the touch pad's left half back and on its right half
-start (OPTIONS is the quick menu's; for the other players OPTIONS is start). Settings > Interface >
-**Quick menu button** can make OPTIONS start again, with the quick menu on holding it for half a
-second (the whole touch pad is then back). The menus draw the DualSense's
-buttons, each face button in its Xbox button's colour (A green, B red, X blue, Y yellow). Each
-signed-in user's controller is a player (1-4). The emulated hard disk lives in the data
-folder's `hdd`, the save states in its `states`, the shader caches in its `cache` (`/data/ogbox`
-unless you chose another),
-outside the title folder, so an update is just replacing the folder.
-(Up to 0.1.5 the folder was `/data/pshakux`: the first start of 0.1.6 renames it to
-`/data/ogbox` when there is no `/data/ogbox` yet, and the boot log says so.)
-hakuX's core cannot yet stop one game and boot another in the same process, so a new boot is a
-relaunch of the title with arguments (`--boot <image>`, `--loadstate <file>`, `--relaunch`,
-`--hdd <folder>`, `--option <opt>`); a game's own reboot into another XBE relaunches it that way.
-`ogbox-boot.log` in the title folder says what happened (the run before is kept as
-`ogbox-boot.previous.log`).
+**The defaults are the Xbox's own picture and sound.** Anything that changes the look (higher
+resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
 
-## Building
+- **Graphics:** resolution scale (up to 6x), anti-aliasing (FXAA, SMAA or SSAA), aspect ratio, the
+  upscaling filter, anisotropic filtering, sharpening, forced 32-bit colour, 16-bit dithering,
+  exact depth, and cropping the overscan.
+- **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
+  compiling shaders in the background, and building cached shaders at start.
+- **Audio:** Fast or Full sound processing, and the resampler.
+- **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
+  when such a patch is on), drive timing and the clock.
+- **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
+- **Network:** off, LAN, XLink Kai or Insignia.
+- **Game list:** which places show, covers, layout (list or a grid of covers), names, sort order,
+  and disc sizes.
+- **Interface:** the theme (Dark, or Code with its falling green code), the FPS counter, checking
+  for updates at start, and the quick menu button.
 
-It builds on my PS5 stack, checked out beside this repository: `PS5_Vulkan` (the RADV archive,
-the link recipe, the native tool, `libc.prx`), `PS5_PayloadSDK` (the SDK fork, pinned) and,
-to make the RADV archive again, `PS5_Mesa`.
+Any game can have its own Graphics, Performance, Audio, Console and Video settings: open its page
+and choose **Game settings** (TRIANGLE puts one back to the app's). Settings are kept in
+`/data/ogbox/settings.txt`, and each game's in `/data/ogbox/games/<title ID>.<version>.txt`. The
+network addresses are typed there by hand (`lan_peers=`, `kai_engine=`, `insignia_dns=`).
+
+## More to explore
+
+**Covers and descriptions.** OGBox finds each game's cover on libretro's thumbnails first (by the
+disc's Redump name, or its title ID), then MobCat's box scans, and finally the picture inside the
+disc itself. A whole folder's covers download in one go, with a progress bar, and are kept in the
+data folder's `covers`. Game descriptions come from Wikipedia. You can turn downloads off in
+Settings > Game list.
+
+**Mods, patches and cheats.** A game's page lists what's available for it:
+- hakuX's mods (60 and 120 fps mods, game fixes) and OGBox's own;
+- XBE patches for widescreen, 60 fps and video modes, gathered from Jay's PatchHub and GitHub
+  collection, icup321's XboxGraphicalPatches and OgXHD, all off by default;
+- cheats.
+
+Everything is checked against your exact release of the game first. One made for a different
+release is greyed out, so it can't be turned on by mistake. **Game fixes** are mods a game needs
+to run properly: they're always on and shown greyed out, so you can see what's applied.
+`ps5/mods/README.md` explains how to write your own.
+
+**Trainers.** OGBox runs the Xbox's `.etm` and `.xbtf` trainers, the way Evolution-X and
+XBMC4Xbox did. It doesn't come with any: copy yours into the data folder's `trainers` folder,
+`/data/ogbox/trainers`, or a USB drive's `OGBox/trainers`. Each game lists the trainers made for
+it; ones made for another release are greyed out. Pick one, set its options, and they apply as the
+game starts. Options marked IGK can also be switched in the game with the controller, just like on
+the Xbox.
+
+**The Xbox hard disk.** The hard disk manager (on the left, and in Settings) lists every game with
+saves, newest first, and each save by name, date and size. You can copy saves out, move them,
+delete them, or bring them back in from the data folder's `backups/saves` or a USB drive's
+`OGBox/saves`. **Empty the cache drives** clears X:, Y: and Z:, which games simply fill again.
+
+**The Xbox dashboard.** OGBox doesn't include it, but if your emulated hard disk has `xboxdash.xbe`
+on its C: drive (`hdd/Partition2` in the data folder), an **Xbox dashboard** entry appears on the
+left.
+
+**`boot.txt`** (copy `boot.example.txt`) holds hakuX options (`scale=2`, `uncap`, ...) for every
+game, on top of the settings. If its first line names a disc image and it has an `autoboot` line,
+that game starts straight away, skipping the list.
+
+**Where your data lives.** The Xbox hard disk is in the data folder's `hdd`, save states in
+`states` and shader caches in `cache` (the data folder is `/data/ogbox` unless you chose another).
+All of it sits outside the title folder, so updating is just replacing that folder. If you're
+coming from 0.1.5 or older, the first start renames the old `/data/pshakux` for you.
+
+One quirk: hakuX can't yet stop a game and start another in the same run, so starting a new game
+or loading a state restarts the title with arguments (`--boot <image>`, `--loadstate <file>`,
+`--relaunch`, `--hdd <folder>`, `--option <opt>`). A game that switches to another of its own XBEs
+restarts the same way, keeping its last frame on screen meanwhile.
+
+## Building it yourself
+
+You'll need **LLVM 20's clang** (clang 18 can't link RADV's weak imports) and my PS5 stack checked
+out next to this repository:
+- `PS5_Vulkan`: the RADV archive, the link recipe, the native tool and `libc.prx`;
+- `PS5_PayloadSDK`: the SDK fork, pinned;
+- `PS5_Mesa`, only if you want to rebuild the RADV archive.
 
 ```bash
 PS5_CLANG=/usr/lib/llvm-20/bin/clang bash ps5/tools/build.sh       # dist/PPSA99251/
@@ -167,16 +178,15 @@ tests/update/run-update-tests.sh <work folder>              # the updater on the
 ps5/tools/deploy.sh                                 # upload over the console's FTP server
 ```
 
-LLVM 20's clang is needed: with clang 18, RADV's weak imports do not link.
+hakuX's source isn't kept here. `ps5/tools/fetch-hakux.sh` fetches it at the pinned revision into
+`vendor/hakuX`, and `ps5/tools/prepare-hakux.sh` copies it (or the tree `HAKUX_SRC` names) into
+`build/hakux-src` and applies `ps5/patches/hakux/ps5.patch` on top. That one patch is every change
+OGBox makes to hakuX: the native CPU backend, save states, trainers, CHD images, the PS5
+adaptations, and the work merged from hakuX-lr. Its header lists the commits it was made from,
+with their authors. So this repository at a release's tag, plus hakuX at the pin, is that
+release's complete source.
 
-hakuX's source is not kept here. `ps5/tools/fetch-hakux.sh` fetches it at the pinned revision into
-`vendor/hakuX`, untouched; `ps5/tools/prepare-hakux.sh` copies it, or the tree `HAKUX_SRC` names,
-into `build/hakux-src` and lays `ps5/patches/hakux/ps5.patch` over the copy (a patch a work tree
-already has, or changed, is left out and said). That one patch is every change OGBox makes to
-hakuX (the native CPU backend, savestates, trainers, CHD images, the PS5's host adaptations and
-hakuX-lr's work, merged); its head lists the commits it was made from, with their authors. So this
-repository at a release's tag, with hakuX at the pin, is the whole source of that release. What the console needs instead of hakuX's
-Android parts is in `ps5/hakux/`, not in hakuX:
+What the PS5 needs in place of hakuX's Android parts lives in `ps5/hakux/`:
 
 | hakuX on Android | OGBox on the PS5 |
 | --- | --- |
@@ -185,10 +195,9 @@ Android parts is in `ps5/hakux/`, not in hakuX:
 | the activity's window and its swapchain (`hw/xbox/hle/vk/swapchain.c`) | a host-owned image: the front frame handed to the title, which draws it on its own display (`ps5/hakux/hle/present_host.c`) |
 | AHardwareBuffer guest RAM (zero copy) | hakuX's own copy fallback |
 | system properties, prctl, eventfd, gettid, memfd | `ps5/hakux/compat` (properties from `boot.txt` and `props.txt`; memfd through the platform layer) |
-| SDL3, JNI, the app (`native/app`) | the bring-up front end, `ps5/src/ogbox_main.cpp`, on the Core seam (`ps5/src/core/ogbox_core.h`) |
+| SDL3, JNI, the app (`native/app`) | OGBox's front end, `ps5/src/ogbox_main.cpp`, on the Core seam (`ps5/src/core/ogbox_core.h`) |
 
-The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_core.h`):
-the full front end comes later on the same calls.
+The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_core.h`).
 
 ## Credits
 
