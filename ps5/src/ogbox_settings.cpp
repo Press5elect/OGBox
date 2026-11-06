@@ -120,10 +120,10 @@ std::vector<Option> makeOptions()
 		true });
 	// ---- Audio (0.1.59's APU, hakuX-lr's: its DSP programs run, or the fast mix; the voices' resampler)
 	o.push_back({ "audio_dsp", Section::Audio, "Audio processing",
-		"Fast: the game's voices mixed directly, as hakuX does. Full DSP: the Xbox's own audio programs run (effects, "
-		"reverb, the mix as the console makes it): accurate, heavier. Its programs are translated to the console's own code "
-		"(a DSP56300 recompiler); where it still can't keep up in real time, a game switches to Fast by itself after a "
-		"few seconds (the boot log says so).",
+		"Fast: the game's voices mixed directly, as hakuX does and as xemu does by default. Full DSP: the Xbox's own audio "
+		"programs run (effects, reverb), translated to the console's own code (xemu's DSP56300 recompiler); experimental, "
+		"as in xemu: some games' programs never finish a frame (surround sound especially), and a game that falls behind "
+		"or goes silent switches to Fast by itself (the boot log says so).",
 		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"How each voice is brought to the output rate. Sinc: clean highs. Linear: lighter, a little dull.",
@@ -588,9 +588,9 @@ std::vector<std::string> Settings::coreArgs() const
 		}
 	}
 	// 0.1.59: the APU (native/dev/apu/apu.c config_init)
-	if (value("audio_dsp") == "full") {
-		a.push_back("NC_APU_DSP=1");
-	}
+	// 0.0.4: said either way: hakuX's own default is full DSP wherever its DSP JIT is built in (it is
+	// now), so leaving it out for Fast ran full DSP all the same
+	a.push_back(value("audio_dsp") == "full" ? "NC_APU_DSP=1" : "NC_APU_DSP=0");
 	if (value("audio_resampler") == "linear") {
 		a.push_back("NC_APU_RESAMPLER=linear");
 	}

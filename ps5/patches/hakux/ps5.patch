@@ -171,6 +171,7 @@ native core's work tree (oldest first; author: subject):
   a1cefd6dac Claude: apu: the EP profile dumps its code, registers, memory and DMA once
   61339c3b5d Claude: apu: full DSP gives way to Fast when the EP puts out nothing in 32 runs
   3b19aef07f Claude: apu: full DSP runs the GP and the EP until they halt, as xemu does
+  663a4ff00a Claude: apu: hakuX-lr's frame limit back
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18932,7 +18933,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e4429155e 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..6ac89ad79260c9b0eb4ef75bd72e3b63151de747 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
 @@ -20,17 +20,167 @@
@@ -19007,7 +19008,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
 +    g_epp.hits[pc % DSP_PRAM_SIZE]++;
 +    g_epp.samples++;
 +}
- 
++
 +static void ep_profile_report(DSPState *ep)
 +{
 +    if (g_epp.on < 0) {
@@ -19096,7 +19097,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
 +    memset(g_epp.hits, 0, sizeof(g_epp.hits));
 +    g_epp.samples = g_epp.runs = g_epp.outs = g_epp.limited = 0;
 +}
-+
+ 
 +void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
 +{
 +    /* Set on the state every time, not cached in a static: the libretro core
@@ -19158,18 +19159,15 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +616,24 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +616,21 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
-+/* OGBox 0.0.4: with full DSP a frame runs the GP's program (and every 8th the EP's) until it halts,
-+ * as xemu does (hw/xbox/mcpx/apu/dsp/gp_ep.c: "while (!halt_requested && realtime)", no limit).
-+ * hakuX-lr stopped each at twice its frame's cycles: NFS Carbon's EP put out its first frame and
-+ * went on past that limit (test14: 46,001 cycles in, then not halted within 1.7 million); cut
-+ * there, its next frame's start came while it was still in the last one, and it looped at P:05b9
-+ * from then on with no sound, in the JIT and the interpreter alike (test17). The limit is now 64
-+ * frames' cycles, a guard against a program that never halts, not a frame's allowance. */
-+#define DSP_FRAME_LIMIT (64 * GP_FRAME_CYCLES)
++/* hakuX-lr's limit: a frame's GP run stops at twice its cycles, the EP's every 8th frame at
++ * twice 8 frames'. xemu has none ("while (!halt_requested && realtime)") and hangs where a
++ * program never halts (xemu issue #2901, surround with the EP in real time); NFS Carbon's EP
++ * didn't halt within 64 frames' cycles either (test19), so the limit stays. */
++#define DSP_FRAME_LIMIT (2 * GP_FRAME_CYCLES)
 +
 +static void frame_limit(DSPState *dsp)
 +{
@@ -19183,7 +19181,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,16 +654,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +651,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -19202,7 +19200,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +671,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +668,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19216,7 +19214,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +691,29 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +688,29 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19249,7 +19247,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..8e9ace5b3b7b5a36d02b7a54f81ef12e
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +750,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +747,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
