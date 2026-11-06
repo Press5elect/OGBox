@@ -162,6 +162,7 @@ native core's work tree (oldest first; author: subject):
   c930bf36eb Claude: apu: full DSP whose JIT didn't start mixes as Fast does from the start
   b370c67170 Claude: disc: folder tables kept in memory and read ahead; vk: VK_EXT_external_memory_host
   e470c88379 Claude: apu: full DSP short of real time falls back to Fast within a second
+  d648f2679e Claude: apu: the EP runs the cycles its 8 frames have on the chip, not twice them
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18919,7 +18920,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098537ad7c6 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..b92ab880f6a387528d06da8ae2ef997eebf7c5dc 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
 @@ -20,17 +20,19 @@
@@ -18991,11 +18992,17 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
  
      assert(size == 4);
      assert(addr % 4 == 0);
-@@ -464,6 +466,17 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -464,6 +466,23 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  }
  
  #define GP_FRAME_CYCLES (160000000 / 1500)
 +#define DSP_FRAME_LIMIT (2 * GP_FRAME_CYCLES)
++/* OGBox 0.0.4: the EP's run every 8 GP frames: the cycles the chip has in that time, not twice
++ * them. Its program didn't go idle within the doubled allowance (the frame limit reached), and
++ * running all of it took ~990 us of host time a GP frame on the PS5's JIT (test10): with the GP's
++ * ~110, more than the frame's 666, so full DSP fell behind real time. The real chip stops where
++ * its time runs out; the program goes on from there at its next frame. */
++#define EP_RUN_LIMIT (8 * GP_FRAME_CYCLES)
 +
 +static void frame_limit(DSPState *dsp)
 +{
@@ -19009,7 +19016,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
  
  void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
-@@ -484,16 +497,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -484,16 +503,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
              }
          }
      }
@@ -19028,7 +19035,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
          /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
           * hardware frame of cycles (160 MHz / 1500 Hz) */
          bool boost = !d->gp.realtime &&
-@@ -501,9 +514,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -501,9 +520,12 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                           apu_host_us();
          do {
              dsp_run(d->gp.dsp, 1000);
@@ -19042,7 +19049,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
  
          if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
              (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
-@@ -518,18 +534,24 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
+@@ -518,18 +540,24 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
          }
      }
  
@@ -19059,7 +19066,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
                  dsp_run(d->ep.dsp, 1000);
 -            } while (!d->ep.dsp->core.is_idle && d->ep.realtime);
 +            } while (!d->ep.dsp->core.is_idle && d->ep.realtime &&
-+                     d->ep.dsp->core.cycle_count < 8 * DSP_FRAME_LIMIT);
++                     d->ep.dsp->core.cycle_count < EP_RUN_LIMIT);
 +            if (d->ep.realtime && !d->ep.dsp->core.is_idle) {
 +                frame_limit(d->ep.dsp);
 +            }
@@ -19070,7 +19077,7 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..5d40e8d11d03c5b233bbaf59d36ed098
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +588,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +594,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);

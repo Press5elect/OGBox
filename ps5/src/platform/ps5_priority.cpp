@@ -129,8 +129,12 @@ uint64_t VcpuMask()
 }
 constexpr uint64_t kDecoderMask = 0xCu;
 constexpr uint64_t kRenderMask = 0x30u;
-constexpr uint64_t kOthersMask = 0x1FFCu;
-constexpr uint64_t kOthersPinnedMask = 0x1FC0u;
+/* OGBox 0.0.4: the APU's frame thread (the sound chip's GP and EP programs, in the DSP JIT, up to
+ * ~600 us of each 666 us frame with full DSP) on core 3 (processors 6-7) alone, so no helper
+ * thread delays it; everything else moves off it. env OGBOX_THREAD_LAYOUT=0 leaves it as it was. */
+constexpr uint64_t kApuMask = 0xC0u;
+constexpr uint64_t kOthersMask = 0x1F3Cu;
+constexpr uint64_t kOthersPinnedMask = 0x1F00u;
 
 /* OGBox 0.0.1: the GPU's threads on cores of their own is the setting "GPU on separate cores"
  * (on by default: in the runs since 0.1.59, with the guest CPU on core 0 and the rest moved off
@@ -152,6 +156,8 @@ uint64_t MaskFor(bool vcpu, const char* name)
 {
 	if (vcpu)
 		return VcpuMask();
+	if (name && std::strcmp(name, "apu.frame") == 0)
+		return kApuMask;
 	if (!GpuPinWanted())
 		return kOthersMask;
 	if (name && std::strcmp(name, "hle-pb") == 0)
