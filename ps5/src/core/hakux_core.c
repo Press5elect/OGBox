@@ -32,6 +32,7 @@
 #include "native/core/irq.h"
 #include "native/core/options.h"
 #include "native/core/trainer.h"
+#include "native/dev/dev.h"
 #include "native/dev/usb.h"
 #include "native/hle/hle_native.h"
 #include "hw/xbox/hle/pb/pbdraw.h"
@@ -48,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 static NcCore g_core;
@@ -750,6 +752,23 @@ bool pshx_core_take_frame(uint64_t *seen, void *dst, uint32_t pitch, uint32_t ma
                           uint32_t *h)
 {
     return pshx_present_take(seen, dst, pitch, max_w, max_h, w, h);
+}
+
+static uint64_t display_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);   /* nv2a.c's clock */
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+void pshx_core_display_vsync(void)
+{
+    nc_dev_nv2a_display_vsync(display_now_ns());
+}
+
+void pshx_core_display_pickup(void)
+{
+    nc_dev_nv2a_display_pickup(display_now_ns());
 }
 
 void pshx_core_frame_size(uint32_t *w, uint32_t *h)

@@ -89,6 +89,13 @@ void pshx_core_rumble(unsigned player, float *large, float *small);
  * first, copied into dst (pitch bytes a row, at most max_w x max_h). false: none new. */
 bool pshx_core_take_frame(uint64_t *seen, void *dst, uint32_t pitch, uint32_t max_w, uint32_t max_h, uint32_t *w,
                           uint32_t *h);
+/* OGBox 0.0.4: the display's timing, for the emulated vblank (hakuX's nv2a.c locks it to the panel,
+ * as its Android front end's Choreographer does). display_vsync: the presenter's loop was let go by
+ * the display (its swapchain image acquired, FIFO: once a refresh); display_pickup: it looks for a
+ * new frame. The guest's vblank then comes half a refresh from the pickups, instead of running free
+ * beside the panel and now and then landing on a pickup (a frame shown twice, the next never). */
+void pshx_core_display_vsync(void);
+void pshx_core_display_pickup(void);
 /* The size the next frame has (the HLE GPU's display; 0 x 0 before the first). */
 void pshx_core_frame_size(uint32_t *w, uint32_t *h);
 /* The console's video setting is widescreen: a 4:3-sized frame is shown as 16:9 (anamorphic). */

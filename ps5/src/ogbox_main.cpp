@@ -2512,6 +2512,7 @@ public:
 		Staging &s = staging[currentBuffer];
 		ensureStaging(s, VkDeviceSize(w) * h * 4);
 		uint32_t fw = 0, fh = 0;
+		pshx_core_display_pickup();   // 0.0.4: the guest's vblank keeps clear of it
 		if (!pshx_core_take_frame(&frameSeen, s.mapped, w * 4, w, h, &fw, &fh)) {
 			return;
 		}
@@ -3116,6 +3117,7 @@ public:
 		// template's settings window.
 		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
 		VulkanExampleBase::prepareFrame();
+		pshx_core_display_vsync();    // 0.0.4: the display let the loop go (FIFO: once a refresh)
 		fetchPicture();
 		probeStall(state);
 		if (shotWanted && upload && havePicture) {

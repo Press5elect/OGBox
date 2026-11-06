@@ -159,6 +159,7 @@ native core's work tree (oldest first; author: subject):
   096e7d9c31 Claude: apu: guest accesses ahead of the frame thread; full DSP falls back to Fast when too slow
   9b09663d38 Claude: apu: the DSP56300 JIT in the CMake build; NC_APU_RAW for the host
   45e1c2cfc8 Claude: apu: a DSP JIT that stopped on a panic hands its state to the interpreter
+  c930bf36eb Claude: apu: full DSP whose JIT didn't start mixes as Fast does from the start
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18617,7 +18618,7 @@ index 899ac0740c1c73a810c1f0b96784cb3b95d0ab68..d7114ef35c38029560faff208a3d5536
  
  #endif /* DSP_STATE_H */
 diff --git a/native/dev/apu/dsp/gp_ep.c b/native/dev/apu/dsp/gp_ep.c
-index 0d749c07b2447c1d9e9bcff534612db710e91ea6..78ed8e4db4b8fec861cee1098840e1406171adb0 100644
+index 0d749c07b2447c1d9e9bcff534612db710e91ea6..61591f371b681bdda93c1009eef854ec332dd4ef 100644
 --- a/native/dev/apu/dsp/gp_ep.c
 +++ b/native/dev/apu/dsp/gp_ep.c
 @@ -20,17 +20,16 @@
@@ -18755,10 +18756,20 @@ index 0d749c07b2447c1d9e9bcff534612db710e91ea6..78ed8e4db4b8fec861cee1098840e140
  }
  
  void mcpx_apu_dsp_init(MCPXAPUState *d)
-@@ -566,4 +581,8 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
+@@ -566,4 +581,18 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
       * use the full audio pipeline or not.
       */
      mcpx_apu_update_dsp_preference(d);
++#if NC_HAVE_DSP_JIT
++    /* OGBox 0.0.4: full DSP was asked for with the JIT, and the JIT couldn't start (no executable
++     * memory, or it failed): the interpreter is about a third of real time on the PS5, and
++     * finding that out over three seconds (apu.c's dsp_speed_watch) put the switch to Fast in
++     * the middle of the first movie. Mix as Fast does from the start instead. */
++    if (g_apu_config.use_dsp && g_apu_config.use_dsp_jit && (!d->gp.dsp->jit || !d->ep.dsp->jit)) {
++        g_apu_config.use_dsp = false;
++        nc_log("hakuX-apu", "full DSP: the DSP JIT didn't start: this run mixes as Fast does (Settings > Audio)");
++    }
++#endif
 +    nc_log("hakuX-apu", "processing: %s (GP %s, EP %s)",
 +           g_apu_config.use_dsp ? "full DSP" : "fast dry mix",
 +           dsp_engine_name(d->gp.dsp), dsp_engine_name(d->ep.dsp));

@@ -7,100 +7,67 @@
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
  * On the console an anonymous map asked for read, write and execute succeeds and isn't
- * executable: test5's first call into the JIT's code faulted (an instruction fetch, a protection
- * fault). The memory the Xbox's own code runs from is: the platform layer's shared memory on
- * direct memory, execute granted by a protection change after the map (ps5platform/shm.h). Each
- * of the JIT's chunks (1 MiB and up) is one such object with one view, read, write and execute
- * (the PS5 makes read+execute pages execute-only, and Cranelift's code reads constants placed
- * after it). The view's protection is read back (sceKernelQueryMemoryProtection): without
- * execute, the memory goes back and the JIT isn't used (dsp56300_create returns NULL: the
- * interpreter), instead of the first call faulting.
+ * executable (test5: the first call into the JIT's code faulted), and a shared-memory view mapped
+ * with no address lands in the Vulkan driver's GPU window, where execute isn't granted (test7: the
+ * view's protection read back as read-write). The platform layer's executable memory is what the
+ * console runs a JIT from (ps5platform/exec.h, measured in its docs/PROBE.md): direct memory
+ * mapped read-write, given execute with sceKernelMprotect, placed outside the GPU window. Each of
+ * the JIT's chunks (1 MiB and up) is one such region, read, write and execute at once (the PS5
+ * makes read+execute pages execute-only, and Cranelift's code reads constants placed after it).
+ * The protection is still read back: without execute the region goes back and the JIT isn't used
+ * (dsp56300_create returns NULL: the interpreter), instead of the first call faulting.
  */
 #include "native/dev/apu/apu_base.h"
 
+#include <ps5platform/exec.h>
 #include <ps5platform/kernel.h>
-#include <ps5platform/shm.h>
 
 #include <pthread.h>
 #include <stddef.h>
 
-#define SLOTS 64
-
-static struct {
-    void *view;
-    size_t bytes;
-    struct ps5_shm shm;
-} g_chunk[SLOTS];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_said;
 
 void *dsp56300_host_map_rwx(size_t len)
 {
-    struct ps5_shm shm;
-    int r = ps5_shm_create(len, &shm);
-    void *view = NULL;
-    if (r == 0) {
-        r = ps5_shm_map(&shm, 0, len, NULL, PS5_SHM_READ | PS5_SHM_WRITE | PS5_SHM_EXEC, 0, &view);
-        if (r == 0) {
-            void *start = NULL, *end = NULL;
-            uint32_t prot = 0;
-            const int32_t q = sceKernelQueryMemoryProtection(view, &start, &end, &prot);
-            if (q != 0 || (prot & 0x7) != 0x7) {
-                nc_log("hakuX-apu", "dsp jit: the view at %p has protection %x (0x%08x), not read, write and "
-                       "execute", view, prot, (unsigned)q);
-                ps5_shm_unmap(view, len, 0);
-                r = -2;
-            }
-        }
-        if (r != 0) {
-            ps5_shm_destroy(&shm);
+    void *p = ps5_exec_allocate(len, 0);
+    int why = p ? 0 : -1;
+    uint32_t prot = 0;
+    if (p) {
+        void *start = NULL, *end = NULL;
+        const int32_t q = sceKernelQueryMemoryProtection(p, &start, &end, &prot);
+        /* the query can fail on memory it doesn't track; only a definite answer without execute
+         * refuses the region */
+        if (q == 0 && (prot & 0x4) == 0) {
+            ps5_exec_release(p);
+            p = NULL;
+            why = -2;
         }
     }
     pthread_mutex_lock(&g_lock);
-    int slot = -1;
-    for (int i = 0; r == 0 && i < SLOTS; i++) {
-        if (!g_chunk[i].view) {
-            slot = i;
-            break;
-        }
-    }
-    if (r == 0 && slot < 0) {
-        ps5_shm_unmap(view, len, 0);
-        ps5_shm_destroy(&shm);
-        r = -1;
-    }
-    if (r == 0) {
-        g_chunk[slot].view = view;
-        g_chunk[slot].bytes = len;
-        g_chunk[slot].shm = shm;
-    }
-    const bool say = !g_said || r != 0;
+    const bool say = !g_said || !p;
     g_said = true;
     pthread_mutex_unlock(&g_lock);
     if (say) {
-        if (r == 0) {
+        if (p) {
             nc_log("hakuX-apu", "dsp jit: code memory: %zu KiB of direct memory at %p (read, write, execute)",
-                   len >> 10, view);
+                   len >> 10, p);
+        } else if (why == -2) {
+            nc_log("hakuX-apu", "dsp jit: the region at protection %x isn't executable: the DSP interpreter runs",
+                   prot);
         } else {
-            nc_log("hakuX-apu", "dsp jit: no code memory (%zu KiB: 0x%08x): the DSP interpreter runs", len >> 10,
-                   (unsigned)r);
+            nc_log("hakuX-apu", "dsp jit: no code memory (%zu KiB): the DSP interpreter runs", len >> 10);
         }
     }
-    return r == 0 ? view : NULL;
+    return p;
 }
 
 void dsp56300_host_unmap_rwx(void *p, size_t len)
 {
-    pthread_mutex_lock(&g_lock);
-    for (int i = 0; i < SLOTS; i++) {
-        if (g_chunk[i].view == p) {
-            ps5_shm_unmap(p, len, 0);
-            ps5_shm_destroy(&g_chunk[i].shm);
-            g_chunk[i].view = NULL;
-            break;
-        }
+    (void)len;
+    if (p) {
+        ps5_exec_release(p);
     }
-    pthread_mutex_unlock(&g_lock);
 }
 
 /* A panic in the JIT (caught by the crate: native/dev/apu/dsp/jit.c goes on with the interpreter),
