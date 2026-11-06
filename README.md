@@ -5,8 +5,8 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**Latest release: [v0.0.4](https://github.com/Press5elect/OGBox/releases/tag/v0.0.4).** Download
-`OGBox-v0.0.4.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v0.0.5](https://github.com/Press5elect/OGBox/releases/tag/v0.0.5).** Download
+`OGBox-v0.0.5.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -22,7 +22,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **highly experimental** software. 0.0.4 is the fourth public release, after a long run of
+This is **highly experimental** software. 0.0.5 is the fifth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Many others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and freezes happen, and OGBox reminds
 you of that every time it starts.
@@ -247,6 +247,29 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.5
+
+Added
+- Settings > Controller: which DualSense button is each Xbox button, trigger, D-pad direction,
+  Start, Back and stick click; swapped sticks, inverted up and down, and deadzones for each stick
+  and the triggers. A game can have its own, and changes apply at once, in a game too.
+- Game descriptions on Home, in both layouts.
+
+Changed
+- One look for every menu: a cooler dark background, the Xbox green as the only accent and one
+  highlight. Home has a strip for the folders, the dashboard and the actions above the games, the
+  chosen game shown large and a row of covers below.
+- The quick menu, the mods screen, the data folder, the hard disk, the notice, the boot screen
+  and the in-game status are rebuilt in that look.
+- Covers download three at a time; a folder's descriptions are fetched in the background.
+
+Fixed
+- Quick taps on the controller that never reached the game: a press is now held for at least
+  50 ms.
+- Reading damaged or malicious BPS and IPS patches, patch records and title images could read or
+  write outside their buffers.
+- The game page's actions running under the footer when a game had all six.
 
 ### 0.0.4
 
