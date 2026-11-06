@@ -5,3 +5,6 @@ klog/
 imgui.ini
 vendor/
 __pycache__/
+
+# notes for Claude Code: kept on the build machine only
+CLAUDE.md
