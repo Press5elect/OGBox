@@ -20,6 +20,7 @@
 
 #include "platform/ps5_bootlog.h"
 #include "core/ogbox_patches.h"
+#include "ogbox_pad.h"
 
 namespace ogbox {
 
@@ -271,6 +272,58 @@ std::vector<Option> makeOptions()
 		qm.now = true;
 		o.push_back(qm);
 	}
+	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
+	{
+		for (int i = 0; i < static_cast<int>(XboxControl::Count); i++) {
+			const XboxControl c = static_cast<XboxControl>(i);
+			const bool startBack = c == XboxControl::Start || c == XboxControl::Back;
+			std::vector<Choice> choices;
+			for (const PadSource &s : padSources()) {
+				if (s.bits != src::automatic || startBack) {
+					choices.push_back({ s.value, s.label });
+				}
+			}
+			const PadMap def;
+			const char *defValue = "none";
+			for (const PadSource &s : padSources()) {
+				if (s.bits == def.source[i]) {
+					defValue = s.value;
+					break;
+				}
+			}
+			Option p{ padKey(c), Section::Controller, padLabel(c),
+				startBack ? "The DualSense button that is the Xbox's. Automatic: the touch pad's right half is Start and its left "
+					"half Back (with Settings > Interface > Quick menu button on \"OPTIONS held\", the whole touch pad is Back and "
+					"a short OPTIONS press is Start); for players 2 to 4 OPTIONS is Start too. Player 1's OPTIONS always opens "
+					"the quick menu."
+					: "The DualSense button that is the Xbox's. A trigger on one of the Xbox's pressure-sensitive buttons (A, B, X, "
+					"Y, Black, White, the triggers) gives how far it is pressed.",
+				std::move(choices), defValue, true };
+			p.now = true;
+			o.push_back(p);
+		}
+		const std::vector<Choice> dead = { { "0", "Off" }, { "5", "5%" }, { "10", "10%" }, { "15", "15%" }, { "20", "20%" },
+			{ "25", "25%" }, { "30", "30%" }, { "35", "35%" }, { "40", "40%" } };
+		const auto add = [&](const char *key, const char *label, const char *description, std::vector<Choice> choices,
+			const char *def) {
+			Option p{ key, Section::Controller, label, description, std::move(choices), def, true };
+			p.now = true;
+			o.push_back(p);
+		};
+		add("pad_sticks", "Sticks", "Which stick is the Xbox's left one: as on the DualSense, or swapped.",
+			{ { "normal", "As they are" }, { "swapped", "Swapped" } }, "normal");
+		add("pad_invert_ly", "Left stick: up is down", "Turns the left stick's up and down over, for games that look the other way.",
+			kOnOff, "0");
+		add("pad_invert_ry", "Right stick: up is down", "Turns the right stick's up and down over, for games that look the other way.",
+			kOnOff, "0");
+		add("pad_dead_l", "Left stick deadzone", "How far the left stick moves before the game sees it, so a worn stick that drifts "
+			"stays still; the rest of its reach still gives the full range. Most Xbox games have a deadzone of their own: raise this "
+			"only if a game drifts.", dead, "0");
+		add("pad_dead_r", "Right stick deadzone", "How far the right stick moves before the game sees it (a drifting camera); the "
+			"rest of its reach still gives the full range.", dead, "0");
+		add("pad_dead_t", "Trigger deadzone", "How far L2 and R2 go before the game sees them: for a game that reads a light touch "
+			"as a press.", dead, "0");
+	}
 	return o;
 }
 
@@ -343,6 +396,7 @@ const char *sectionName(Section s)
 	case Section::Network: return "Network";
 	case Section::Library: return "Game list";
 	case Section::Interface: return "Interface";
+	case Section::Controller: return "Controller";
 	default: return "";
 	}
 }
@@ -358,6 +412,7 @@ const char *sectionHelp(Section s)
 	case Section::Network: return "Xbox Live through Insignia, or system link with consoles on your network or over XLink Kai.";
 	case Section::Library: return "Which places the game list shows, and how it looks. Changes apply at once.";
 	case Section::Interface: return "OGBox's menus: the theme, updates, the FPS counter and the quick menu button.";
+	case Section::Controller: return "Which DualSense button is each of the Xbox's, the sticks and their deadzones. A game can have its own.";
 	default: return "";
 	}
 }

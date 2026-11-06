@@ -1,0 +1,32 @@
+# The tests that run on a PC (tests/run-pc-tests.sh): the patch, image and network share readers
+# and the updater under the address and undefined-behaviour sanitizers, and the menus drawn to
+# PNGs (kept as the run's artifact), and the front end type-checked. The title itself is built on the
+# build machine.
+name: PC tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build zlib1g-dev python3-pil
+      - name: Run the tests
+        env:
+          CC: gcc
+          CXX: g++
+        run: tests/run-pc-tests.sh --fetch
+      - name: Keep the menu screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-tests
+          path: build/ui-tests/*.png
+          if-no-files-found: ignore

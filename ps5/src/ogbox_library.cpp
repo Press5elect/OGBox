@@ -540,7 +540,10 @@ struct Covers::Impl {
 	bool started{ false };
 	unsigned downloaded{ 0 }, missing{ 0 }, failed{ 0 }, scans{ 0 }, images{ 0 };
 	unsigned batchDone{ 0 }, batchTotal{ 0 };
-	bool busy{ false };
+	unsigned inflight{ 0 };               // downloads under way (kWorkers at most)
+	unsigned gen{ 0 };                    // a change the workers look at: a list wanted, one done
+	static constexpr unsigned kWorkers = 3;
+	static constexpr size_t kAhead = 8;   // the folder's games whose next source is asked at once
 	/* 0.0.3: a folder's games, fetched in order (Covers::want): the next one not yet settled */
 	std::vector<std::vector<std::string>> wanted;
 	size_t wantPos{ 0 };
@@ -651,7 +654,7 @@ struct Covers::Impl {
 	}
 
 	/* the disc's default.xbe's title image, as a PNG: 200, or 404 when it has none */
-	int fetchXbe(const std::string &name)
+	int fetchXbe(const std::string &name, size_t &bytes)
 	{
 		const size_t bar = name.find('|');
 		if (bar == std::string::npos) {
@@ -675,61 +678,80 @@ struct Covers::Impl {
 		}
 		if (written) {
 			struct stat st;
-			bytes_xbe = stat(dst.c_str(), &st) == 0 ? static_cast<size_t>(st.st_size) : 0;
+			bytes = stat(dst.c_str(), &st) == 0 ? static_cast<size_t>(st.st_size) : 0;
 		}
 		return written ? 200 : 500;
 	}
-	size_t bytes_xbe{ 0 };
+
+	/* The folder's games (Covers::want) whose cover isn't settled: the next source of the first
+	 * kAhead of them asked for (findAny queues it), so several are fetched at once; the games
+	 * settled at the front are passed. Again while that moves on. */
+	void pump()
+	{
+		for (int round = 0; round < 64; round++) {
+			size_t base;
+			std::vector<std::vector<std::string>> look;
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				if (!on.load() || wantPos >= wanted.size() || static_cast<double>(std::time(nullptr)) < offlineUntil ||
+					queue.size() >= kWorkers) {
+					return;
+				}
+				base = wantPos;
+				const size_t end = std::min(wanted.size(), base + kAhead);
+				look.assign(wanted.begin() + static_cast<std::ptrdiff_t>(base), wanted.begin() + static_cast<std::ptrdiff_t>(end));
+			}
+			size_t settled = 0;
+			bool front = true;
+			for (const auto &names : look) {
+				std::string path;
+				const State st = owner->findAny(names, path);
+				if (st == State::None) {
+					return;   // covers off
+				}
+				if (st != State::Queued && front) {
+					settled++;
+				} else {
+					front = false;
+				}
+			}
+			std::lock_guard<std::mutex> lock(mutex);
+			if (wantPos != base || settled == 0) {
+				return;
+			}
+			wantPos += settled;
+		}
+	}
 
 	void run()
 	{
 		pshakux_thread_named("ogbox-covers");
+		unsigned seen = ~0u;
 		for (;;) {
+			pump();
 			std::string name;
-			/* 0.0.3: nothing asked for: the folder's next game whose cover isn't settled asks for
-			 * its next source (findAny queues one), until the folder's games are all settled */
-			for (;;) {
-				size_t pos;
-				std::vector<std::string> names;
-				{
-					std::lock_guard<std::mutex> lock(mutex);
-					if (!queue.empty() || !on.load() || wantPos >= wanted.size() ||
-						static_cast<double>(std::time(nullptr)) < offlineUntil) {
-						break;
-					}
-					pos = wantPos;
-					names = wanted[pos];
-				}
-				std::string path;
-				const State st = owner->findAny(names, path);
-				std::lock_guard<std::mutex> lock(mutex);
-				if (st != State::Queued && pos == wantPos) {
-					wantPos++;   // settled: a cover, none, or covers off
-				}
-				if (st == State::Queued || st == State::None) {
-					break;
-				}
-			}
 			{
 				std::unique_lock<std::mutex> lock(mutex);
-				if (queue.empty()) {
-					busy = false;
+				if (queue.empty() && inflight == 0) {
 					batchDone = batchTotal = 0;   // the bar's next batch from nothing
 				}
-				cv.wait_for(lock, std::chrono::seconds(30),
-					[&] { return (!queue.empty() || wantPos < wanted.size()) && on.load(); });
+				/* a source to fetch, or a change that may have made one (a list wanted, a download
+				 * done: the folder's next games); at worst every 30 s (the network's rest over) */
+				cv.wait_for(lock, std::chrono::seconds(30), [&] { return on.load() && (!queue.empty() || gen != seen); });
+				seen = gen;
 				if (queue.empty()) {
-					continue;     // the folder's next game (or the network's rest is over)
+					continue;
 				}
 				name = queue.front();
 				queue.pop_front();
-				busy = true;
+				inflight++;
 			}
 			const double now = static_cast<double>(std::time(nullptr));
 			if (!xbe(name) && now < offlineUntil) {
 				std::lock_guard<std::mutex> lock(mutex);
 				asked.erase(name);      // asked again later
 				batchDone++;
+				inflight--;
 				continue;
 			}
 			int status = 0;
@@ -741,8 +763,7 @@ struct Covers::Impl {
 					status = 0;
 				}
 			} else if (xbe(name)) {
-				status = fetchXbe(name);
-				bytes = bytes_xbe;
+				status = fetchXbe(name, bytes);
 			} else {
 				std::string location, host = kHost;
 				std::string path = kSystem + urlEncode(libretroName(name)) + ".png";
@@ -768,6 +789,9 @@ struct Covers::Impl {
 			}
 			std::lock_guard<std::mutex> lock(mutex);
 			batchDone++;
+			inflight--;
+			gen++;
+			cv.notify_all();          // the others: the folder's next games
 			const char *from = mobcat(name) ? "MobCat" : xbe(name) ? "the disc's title image" : "libretro";
 			if (status == 200) {
 				(mobcat(name) ? scans : xbe(name) ? images : downloaded)++;
@@ -808,6 +832,7 @@ void Covers::want(std::vector<std::vector<std::string>> games)
 	std::lock_guard<std::mutex> lock(impl->mutex);
 	impl->wanted = std::move(games);
 	impl->wantPos = 0;
+	impl->gen++;
 	impl->cv.notify_all();
 }
 
@@ -818,8 +843,13 @@ void Covers::enable(bool on)
 	if (on && !impl->started) {
 		impl->started = true;
 		mkdir(coversDir().c_str(), 0777);
-		std::thread([this] { impl->run(); }).detach();
+		/* 0.0.5: three at a time (one by one, a folder of 140 games took minutes: each cover is a
+		 * round trip or two, MobCat's scans a megabyte or two) */
+		for (unsigned i = 0; i < Impl::kWorkers; i++) {
+			std::thread([this] { impl->run(); }).detach();
+		}
 	}
+	impl->gen++;
 	impl->cv.notify_all();
 }
 
@@ -915,7 +945,7 @@ void Covers::progress(unsigned &done, unsigned &total) const
 		return;
 	}
 	done = impl->batchDone;
-	total = impl->busy || !impl->queue.empty() ? impl->batchTotal : 0;
+	total = impl->inflight || !impl->queue.empty() ? impl->batchTotal : 0;
 }
 
 // ---- 0.0.3: the descriptions -------------------------------------------------------------------
@@ -928,10 +958,22 @@ struct About::Impl {
 	std::atomic<bool> on{ false };
 	bool started{ false };
 	double offlineUntil{ 0.0 };
+	std::vector<std::string> wanted;      // 0.0.5: a folder's games, fetched after what find asks
+	size_t wantPos{ 0 };
+	/* 0.0.5: the descriptions read, by name (the home asks for the chosen one's every frame) */
+	std::map<std::string, std::pair<std::string, std::string>> read;
 
 	static std::string pathOf(const std::string &name, const char *ext)
 	{
 		return coversDir() + "/about-" + libretroName(name) + ext;
+	}
+
+	/* kept: its description, or that it has none (asked again after 30 days) */
+	static bool settled(const std::string &name)
+	{
+		double when = 0.0;
+		return exists(pathOf(name, ".txt")) ||
+			(exists(pathOf(name, ".none"), &when) && static_cast<double>(std::time(nullptr)) - when < 30 * 86400.0);
 	}
 
 	/* the article: "", or its key and title; status -1 the network */
@@ -963,11 +1005,27 @@ struct About::Impl {
 		pshakux_thread_named("ogbox-about");
 		for (;;) {
 			std::string name;
+			bool prefetch = false;
 			{
 				std::unique_lock<std::mutex> lock(mutex);
-				cv.wait(lock, [&] { return !queue.empty() && on.load(); });
-				name = queue.front();
-				queue.pop_front();
+				cv.wait(lock, [&] { return on.load() && (!queue.empty() || wantPos < wanted.size()); });
+				if (!queue.empty()) {
+					name = queue.front();
+					queue.pop_front();
+				} else {
+					name = wanted[wantPos++];
+					prefetch = true;
+					if (!asked.insert(name).second) {
+						continue;   // (asked already)
+					}
+				}
+			}
+			if (prefetch && settled(name)) {
+				continue;
+			}
+			if (prefetch) {
+				/* the folder's: one every half second at most, Wikipedia's API asked politely */
+				std::this_thread::sleep_for(std::chrono::milliseconds(500));
 			}
 			const double now = static_cast<double>(std::time(nullptr));
 			if (now < offlineUntil) {
@@ -1027,10 +1085,27 @@ void About::enable(bool on)
 	impl->cv.notify_all();
 }
 
+void About::want(std::vector<std::string> names)
+{
+	std::lock_guard<std::mutex> lock(impl->mutex);
+	impl->wanted = std::move(names);
+	impl->wantPos = 0;
+	impl->cv.notify_all();
+}
+
 bool About::find(const std::string &name, std::string &text, std::string &article)
 {
 	if (name.empty()) {
 		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(impl->mutex);
+		const auto it = impl->read.find(name);
+		if (it != impl->read.end()) {
+			article = it->second.first;
+			text = it->second.second;
+			return true;
+		}
 	}
 	const std::string path = Impl::pathOf(name, ".txt");
 	if (FILE *f = std::fopen(path.c_str(), "r")) {
@@ -1044,6 +1119,13 @@ bool About::find(const std::string &name, std::string &text, std::string &articl
 		const size_t nl = all.find('\n');
 		article = nl == std::string::npos ? std::string() : all.substr(0, nl);
 		text = nl == std::string::npos ? all : all.substr(nl + 1);
+		if (!text.empty()) {
+			std::lock_guard<std::mutex> lock(impl->mutex);
+			if (impl->read.size() > 256) {
+				impl->read.clear();
+			}
+			impl->read[name] = { article, text };
+		}
 		return !text.empty();
 	}
 	double when = 0.0;

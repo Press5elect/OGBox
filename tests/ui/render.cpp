@@ -257,7 +257,7 @@ int main(int argc, char **argv)
 	home.tabs = { "Games", "USB", "Network" };
 	home.status = { { "Insignia", ui::P().ok }, { "21:42", 0 } };
 	home.coverProgress = 0.37f;   // 0.0.3: the covers downloading
-	home.coverText = "Covers 52 of 140 \xC2\xB7 37%";
+	home.coverText = "Covers 52 of 140";
 	home.games = games;
 	home.cover = [&](size_t i) { return covers[i]; };
 	home.blur = [&](size_t i) { return blurs[i]; };
@@ -266,14 +266,18 @@ int main(int argc, char **argv)
 	home.title = names[2];
 	home.chips = { { "Plays well", 1 }, { "NTSC", 0 }, { "Played 2 h ago", 0 } };
 	home.meta = "Left off 2 hours ago, in the middle of chapter 3. Save states: 4.";
+	home.about = "Starfall Tactics is a made-up turn-based strategy game for the tests. A fleet of salvaged ships crosses a broken "
+		"star system, trading fuel for passage with the stations that survived, and every battle is fought on a grid that "
+		"drifts with the system's two suns. Its campaign branches on which stations the player spares.";
+	home.aboutSource = "From Wikipedia, \"Starfall Tactics\" \xC2\xB7 CC BY-SA 4.0";
 	home.primary = "Continue";
 	home.secondary = "Start from the beginning";
-	home.cardsTitle = "Folders";
+	home.cardsTitle = "Games";
 	home.cardsSub = "/data/ogbox/games";
-	home.cards = { { "Classics", "14 games", ui::Icon::Folder }, { "Racing", "6 games", ui::Icon::Folder },
-		{ "Xbox dashboard", "the console's own menu", ui::Icon::Dash, false, true }, { "Up", "/data/ogbox", ui::Icon::Up },
-		{ "Add a network share", "", ui::Icon::Plus, true } };
-	home.footer = { { "X", "Play" }, { "T", "Game page" }, { "OPT", "Settings" }, { "L2 R2", "A-Z" } };
+	home.cards = { { "Up", "ogbox", ui::Icon::Up }, { "Classics", "", ui::Icon::Folder }, { "Racing", "", ui::Icon::Folder },
+		{ "Xbox dashboard", "", ui::Icon::Dash, false, true }, { "Add a network share", "", ui::Icon::Plus, true } };
+	home.footer = { { "X", "Continue" }, { "S", "From the start" }, { "T", "Game page" }, { "L2 R2", "A to Z" }, { "OPT", "Settings" },
+		{ "O", "Back" } };
 	home.version = "OGBox 0.0.3";
 
 	ui::SettingsView set;
@@ -367,15 +371,141 @@ int main(int argc, char **argv)
 		gp.states.push_back(s);
 	}
 	gp.states.push_back({ "Empty slot", {}, true });
-	gp.actions = { { "Continue", "where I left off" }, { "Start from the beginning", "" }, { "Settings for this game", "3 changed" },
-		{ "Remove from recently played", "" } };
-	gp.footer = { { "X", "Choose" }, { "O", "Back" } };
+	gp.facts = { { "Last played", "2 hours ago" }, { "Title ID", "4D530064.01" }, { "Serial", "MS-064" }, { "File", "Starfall Tactics.iso" } };
+	gp.actions = { { "Continue", "Where you left off, 2 hours ago", ui::Icon::Play }, { "From the start", "", ui::Icon::Restart },
+		{ "Save states", "4 saved", ui::Icon::Load }, { "Settings", "3 of its own", ui::Icon::Gear },
+		{ "Mods", "12 for it, 2 on", ui::Icon::Puzzle }, { "Saves", "copy, bring in, delete", ui::Icon::Save } };
+	gp.footer = { { "LR", "Choose" }, { "X", "Open" }, { "O", "Back" } };
 
 	ui::PopupView pop;
 	pop.title = "Where you left off";
 	pop.text = "This game has a save state from when you last left it, 2 hours ago.";
 	pop.items = { "Continue", "Start from the beginning", "Cancel" };
 	pop.sel = 0;
+
+	const ui::Head setHead{ logo, "Mods, patches and cheats", "Starfall Tactics \xC2\xB7 4D530064.01", {} };
+	ui::ListScreenView mods;
+	mods.head = setHead;
+	{
+		using R = ui::ListRow;
+		R r;
+		r.kind = R::Kind::Section; r.key = "s1"; r.title = "Patches \xC2\xB7 applied to a copy of the XBE"; mods.rows.push_back(r);
+		r = {}; r.kind = R::Kind::Section; r.key = "s1a"; r.title = "Widescreen (16:9)"; r.indent = 0; mods.rows.push_back(r);
+		r = {}; r.key = "p1"; r.title = "16:9 widescreen"; r.sub = "by Mobcat \xC2\xB7 from patches.db"; r.toggle = 1; mods.rows.push_back(r);
+		r = {}; r.key = "p2"; r.title = "60 FPS"; r.sub = "by Jay \xC2\xB7 made for another release"; r.toggle = 0; r.dim = true;
+		r.right = "another release"; mods.rows.push_back(r);
+		r = {}; r.kind = R::Kind::Section; r.key = "s2"; r.title = "Cheats"; mods.rows.push_back(r);
+		r = {}; r.key = "c1"; r.title = "Infinite health"; r.toggle = 0; mods.rows.push_back(r);
+		r = {}; r.key = "c2"; r.title = "All levels open"; r.toggle = 1; r.right = "once"; mods.rows.push_back(r);
+		r = {}; r.kind = R::Kind::Section; r.key = "s3"; r.title = "Trainers \xC2\xB7 one at a time"; mods.rows.push_back(r);
+		r = {}; r.key = "t0"; r.title = "No trainer"; r.toggle = 0; mods.rows.push_back(r);
+		r = {}; r.key = "t1"; r.title = "Starfall Tactics +6"; r.right = "6 options"; r.toggle = 1; mods.rows.push_back(r);
+		r = {}; r.key = "o1"; r.title = "Infinite ammo"; r.toggle = 1; r.indent = 1; mods.rows.push_back(r);
+		r = {}; r.key = "o2"; r.title = "Slow motion"; r.right = "in-game keys"; r.toggle = 0; r.indent = 1; mods.rows.push_back(r);
+	}
+	mods.sel = 2;
+	mods.aside.title = "16:9 widescreen";
+	mods.aside.text = "Draws the game in 16:9 with the right shape. By Mobcat, from patches.db. Applied at the game's next start; "
+		"a patch whose bytes are not in this disc's XBE is left out (the boot log says so).";
+	mods.aside.note = "/data/ogbox/mods.txt \xC2\xB7 default.xbe CRC-32 1A2B3C4D";
+	mods.footer = { { "UD", "Choose" }, { "X", "On / off" }, { "O", "Back" } };
+
+	ui::ListScreenView storage;
+	storage.head = { logo, "Data folder", "where OGBox keeps the Xbox hard disk, caches, covers", {} };
+	storage.intro = "Now: /data/ogbox (412 GB free). Choose another place and OGBox moves your Xbox hard disk, caches, covers and "
+		"screenshots there.";
+	{
+		using R = ui::ListRow;
+		R r;
+		r.key = "a"; r.title = "This console"; r.sub = "/data/ogbox \xC2\xB7 412 GB free"; r.icon = ui::Icon::Console; r.current = true;
+		storage.rows.push_back(r);
+		r = {}; r.key = "b"; r.title = "USB drive 0"; r.sub = "/mnt/usb0/OGBox \xC2\xB7 1.8 TB free"; r.icon = ui::Icon::Usb; r.right = "recommended";
+		r.accent = true; storage.rows.push_back(r);
+		r = {}; r.key = "c"; r.title = "Another folder\xE2\x80\xA6"; r.sub = "internal storage, USB, extended storage"; r.icon = ui::Icon::Folder;
+		storage.rows.push_back(r);
+	}
+	storage.sel = 1;
+	storage.aside.title = "What goes there";
+	storage.aside.facts = { { "hdd", "The Xbox's hard disk: saves, the dashboard if you add one" },
+		{ "cache", "Shaders built for your games, patched XBEs" }, { "covers, shots", "The game list's covers, your screenshots" } };
+	storage.aside.note = "A USB drive must stay plugged in while you play. exFAT is best; FAT32 can't hold files over 4 GB.";
+	storage.footer = { { "X", "Choose" }, { "O", "Back" } };
+
+	ui::ListScreenView hdd;
+	hdd.head = { logo, "Xbox hard disk", "E: 1.2 GB used", {} };
+	hdd.twoLists = true;
+	{
+		using R = ui::ListRow;
+		R r;
+		r.key = "i"; r.title = "Bring saves in\xE2\x80\xA6"; r.icon = ui::Icon::Load; hdd.rows.push_back(r);
+		r = {}; r.key = "e"; r.title = "Copy every save out\xE2\x80\xA6"; r.icon = ui::Icon::Save; hdd.rows.push_back(r);
+		r = {}; r.key = "c"; r.title = "Empty the cache drives"; r.right = "312 MB"; r.icon = ui::Icon::Trash; hdd.rows.push_back(r);
+		r = {}; r.kind = R::Kind::Section; r.key = "g"; r.title = "Games"; hdd.rows.push_back(r);
+		for (int i = 0; i < 4; i++) {
+			r = {}; r.key = "t" + std::to_string(i); r.title = names[i]; r.sub = std::to_string(i + 1) + " saves \xC2\xB7 " + std::to_string(120 * (i + 1)) + " KB";
+			r.thumb = covers[i]; r.thumbSlot = true; hdd.rows.push_back(r);
+		}
+	}
+	hdd.sel = 6;
+	hdd.title2 = "Saves of Starfall Tactics";
+	{
+		using R = ui::ListRow;
+		R r;
+		for (int i = 0; i < 3; i++) {
+			r = {}; r.key = "s" + std::to_string(i); r.title = i == 0 ? "Chapter 3 \xE2\x80\x94 The Tide" : i == 1 ? "Chapter 2" : "Autosave";
+			r.sub = std::to_string(i + 1) + " days ago \xC2\xB7 64 KB"; hdd.rows2.push_back(r);
+		}
+	}
+	hdd.sel2 = 0;
+	hdd.footer = { { "X", "Choose" }, { "T", "Copy, delete" }, { "O", "Back" } };
+
+	ui::QuickView qv;
+	qv.cover = covers[2];
+	qv.title = names[2];
+	qv.sub = "4D530064.01";
+	{
+		using R = ui::ListRow;
+		R r;
+		r.key = "resume"; r.title = "Resume"; r.icon = ui::Icon::Play; qv.rows.push_back(r);
+		r = {}; r.key = "save"; r.title = "Save state"; r.right = "\xE2\x86\x90 slot 3 \xE2\x86\x92"; r.icon = ui::Icon::Save; qv.rows.push_back(r);
+		r = {}; r.key = "load"; r.title = "Load state"; r.right = "slot 3"; r.icon = ui::Icon::Load; qv.rows.push_back(r);
+		r = {}; r.key = "left"; r.title = "Where you left off"; r.right = "2 hours ago"; r.icon = ui::Icon::Back; qv.rows.push_back(r);
+		r = {}; r.key = "set"; r.title = "Game settings"; r.right = "next start"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
+		r = {}; r.key = "mods"; r.title = "Mods, patches, cheats"; r.right = "next start"; r.icon = ui::Icon::Puzzle; qv.rows.push_back(r);
+		r = {}; r.key = "log"; r.title = "Log what the GPU draws"; r.icon = ui::Icon::Info; qv.rows.push_back(r);
+		r = {}; r.key = "restart"; r.title = "Restart the game"; r.icon = ui::Icon::Restart; qv.rows.push_back(r);
+		r = {}; r.key = "quit"; r.title = "Quit the game"; r.icon = ui::Icon::Power; r.danger = true; qv.rows.push_back(r);
+	}
+	qv.sel = 1;
+	qv.showSlot = true;
+	qv.slot.picture = fakeCover(300, 320, 180);
+	qv.slot.title = "Slot 3";
+	qv.slot.text = "Saved yesterday, 21:14";
+	qv.footer = { { "X", "Choose" }, { "LR", "Slot" }, { "O", "Resume" } };
+
+	ui::NoticeView notice;
+	notice.kicker = "Experimental build";
+	notice.title = "Expect crashes and freezes";
+	notice.subtitle = "OGBox 0.0.4 for PS5";
+	notice.lead = "This is a highly experimental build of an original Xbox emulator.";
+	notice.paragraphs = { "Many games don't start yet, and the ones that do can stop, slow down, or show missing graphics or sound "
+		"problems at any point. Save in game often, and keep a copy of anything you care about.",
+		"If something goes wrong, ogbox-boot.log in OGBox's title folder says what happened: please include it when you report a problem." };
+	notice.fine = "OGBox comes with no games, BIOS or keys. Use it only with backups of games you own.";
+	notice.canContinue = true;
+
+	ui::HudView hud;
+	hud.showFps = true;
+	hud.fps = 59.8f;
+	hud.showLed = true;
+	hud.ledColour = IM_COL32(77, 255, 64, 255);
+	hud.ledText = "green";
+	hud.showStatus = true;
+	hud.statusTitle = "OGBox 0.0.4";
+	hud.statusLines = { { "Disc", "Starfall Tactics.iso" }, { "Core", "booting" } };
+	hud.note = "Loading the kernel's patches for this release; the first start of a game builds its shaders and takes longer.";
+	hud.waiting = true;
+	hud.statusHints = { { "OPT", "Quick menu: save, load, quit" } };
 
 	const std::vector<Frame> frames = {
 		{ "home", [&](ImDrawList *dl, ImVec2 S) {
@@ -394,10 +524,10 @@ int main(int argc, char **argv)
 			ui::backdrop(dl, S, { games[1].tint, {}, games[1].id });
 			ui::drawHome(dl, S, v);
 		} },
-		{ "home-cards", [&](ImDrawList *dl, ImVec2 S) {
+		{ "home-strip", [&](ImDrawList *dl, ImVec2 S) {
 			ui::HomeView v = home;
 			v.focusRow = 1;
-			v.cardSel = 2;
+			v.cardSel = 1;
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
 			ui::drawHome(dl, S, v);
 		} },
@@ -423,6 +553,31 @@ int main(int argc, char **argv)
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
 			ui::drawSettings(dl, S, net);
 		} },
+		{ "controller", [&](ImDrawList *dl, ImVec2 S) {
+			ui::SettingsView v = set;
+			v.navSel = 1;
+			v.nav.insert(v.nav.begin() + 1, ui::SetNav{ "Controller", "2 changed" });
+			v.pageTitle = "Controller";
+			v.rows.clear();
+			ui::SetRow r;
+			r.kind = ui::SetRow::Kind::Group; r.key = "gb"; r.name = "Buttons"; v.rows.push_back(r);
+			const char *names[][2] = { { "A", "Cross" }, { "B", "Circle" }, { "X", "Square" }, { "Y", "Triangle" }, { "Black", "R1" },
+				{ "White", "L1" }, { "Left trigger", "L2" }, { "Right trigger", "R2" }, { "Start", "Automatic" } };
+			for (const auto &n : names) {
+				r = {}; r.key = n[0]; r.name = n[0]; r.value = n[1]; r.choices = { n[1] }; r.choice = 0;
+				r.changed = std::string(n[0]) == "A";
+				if (r.changed) { r.choices = { "Square" }; }
+				v.rows.push_back(r);
+			}
+			r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gs"; r.name = "Sticks and triggers"; v.rows.push_back(r);
+			r = {}; r.key = "sticks"; r.name = "Sticks"; r.choices = { "As they are", "Swapped" }; v.rows.push_back(r);
+			r = {}; r.key = "dl"; r.name = "Left stick deadzone"; r.choices = { "15%" }; r.changed = true; v.rows.push_back(r);
+			v.rowSel = 1;
+			v.rows[1].desc = "The DualSense button that is the Xbox's. A trigger on one of the Xbox's pressure-sensitive buttons gives how "
+				"far it is pressed.";
+			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
+			ui::drawSettings(dl, S, v);
+		} },
 		{ "keyboard", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
 			ui::drawSettings(dl, S, net);
@@ -431,6 +586,65 @@ int main(int argc, char **argv)
 				kb.open("Server", "192.168.1.1", "address or name", ui::Keyboard::Kind::Address, false, nullptr);
 			}
 			kb.draw(dl, S, true);
+		} },
+		{ "game-states", [&](ImDrawList *dl, ImVec2 S) {
+			ui::GameView v = gp;
+			v.stateSel = 1;
+			v.about.clear();
+			v.footer = { { "LR", "Choose" }, { "X", "Load" }, { "O", "Back" } };
+			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
+			ui::drawGamePage(dl, S, v, 1.0f);
+		} },
+		{ "mods", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "mods", { 0.2f, 0.3f }, 0.6f });
+			ui::drawListScreen(dl, S, mods);
+		} },
+		{ "storage", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "storage", { 0.2f, 0.3f }, 0.6f });
+			ui::drawListScreen(dl, S, storage);
+		} },
+		{ "storage-moving", [&](ImDrawList *dl, ImVec2 S) {
+			ui::ListScreenView v = storage;
+			v.intro = "Moving your data to /mnt/usb0/OGBox. Leave OGBox open until it's done.";
+			v.rows.clear();
+			v.progress = 0.42f;
+			v.progressText = "1.4 GB of 3.3 GB \xC2\xB7 hdd/UDATA/4d530064/";
+			v.footer = {};
+			v.footerRight = "Moving\xE2\x80\xA6";
+			ui::backdrop(dl, S, { 0, {}, "storage", { 0.2f, 0.3f }, 0.6f });
+			ui::drawListScreen(dl, S, v);
+		} },
+		{ "hdd", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "hdd", { 0.2f, 0.3f }, 0.6f });
+			ui::drawListScreen(dl, S, hdd);
+		} },
+		{ "quick", [&](ImDrawList *dl, ImVec2 S) {
+			ui::Tex shot = fakeCover(31, 640, 360);
+			dl->AddImage(shot.id, ImVec2(0, 0), S);
+			ui::drawHud(dl, S, ui::HudView{});
+			ui::drawQuickMenu(dl, S, qv, 1.0f);
+		} },
+		{ "notice", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "notice", { 0.5f, 0.3f }, 0.5f });
+			ui::drawNotice(dl, S, notice);
+		} },
+		{ "boot", [&](ImDrawList *dl, ImVec2 S) {
+			dl->AddRectFilled(ImVec2(0, 0), S, IM_COL32(0, 0, 0, 255));
+			const float lh = S.y * 0.46f, lw = lh * logo.w / logo.h;
+			const ImVec4 box((S.x - lw) * 0.5f, S.y * 0.12f, lw, lh);
+			dl->AddImage(logo.id, ImVec2(box.x, box.y), ImVec2(box.x + box.z, box.y + box.w));
+			ui::BootView b;
+			b.logoBox = box;
+			b.progress = 0.6f;
+			b.left = "Starting the Xbox";
+			b.right = "OGBox 0.0.4";
+			b.lines = { "hakuX core: ready", "disc: Starfall Tactics.iso (XISO, 4.2 GB)", "kernel: 5838, EEPROM: NTSC-U", "video: 640 x 480, 3x" };
+			b.elapsed = 1.6f;
+			ui::drawBoot(dl, S, b);
+		} },
+		{ "hud", [&](ImDrawList *dl, ImVec2 S) {
+			dl->AddRectFilled(ImVec2(0, 0), S, IM_COL32(12, 16, 22, 255));
+			ui::drawHud(dl, S, hud);
 		} },
 		{ "popup", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });

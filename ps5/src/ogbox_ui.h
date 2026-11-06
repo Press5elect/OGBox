@@ -4,15 +4,21 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
- * OGBox 0.0.3: the menus' look. A neutral dark ground, one accent, Manrope for titles and Inter for
+ * The menus' look. A dark ground, one accent (the Xbox's green), Manrope for titles and Inter for
  * text, everything sized for a 1080-line screen and scaled (K) to the real one, and motion that
  * answers the controller: the selection slides, the chosen cover grows, the background takes the
  * chosen game's colours and drifts.
  *
- * The screens here draw from a view (what to show) into an ImGui draw list and keep their own
- * motion state; the title fills the views and reads the controller (ogbox_main.cpp). Nothing here
- * knows the console, Vulkan or the emulator, so tests/ui renders every screen on a computer
- * (a software rasterizer, PNG files) to look at it before a build goes to the console.
+ * Every screen draws from a view (what to show) into an ImGui draw list and keeps its own motion
+ * state; the title fills the views and reads the controller (ogbox_main.cpp). Nothing here knows the
+ * console, Vulkan or the emulator, so tests/ui renders every screen on a computer (a software
+ * rasterizer, PNG files) to look at it before a build goes to the console.
+ *
+ *   ogbox_ui.cpp           the tokens, type, motion and the pieces every screen is made of
+ *   ogbox_ui_home.cpp      the game list (covers or a list) and the game page
+ *   ogbox_ui_settings.cpp  the settings, a form over a screen, the on-screen keyboard
+ *   ogbox_ui_screens.cpp   the list screens (mods, data folder, hard disk), the quick menu, the
+ *                          notice, the boot screen, the in-game status, popups and toasts
  */
 #ifndef OGBOX_UI_H
 #define OGBOX_UI_H
@@ -20,18 +26,30 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "imgui.h"
 
 namespace ui {
 
-// ---- scale, palette, type -------------------------------------------------------------------
+// ---- scale, layout, palette, type -----------------------------------------------------------
 
 /* The screen's height over 1080: every size here is a 1080-line one times it. */
 void setScale(float k);
 float K();
 inline float px(float v) { return v * K(); }
+
+/* The grid every screen keeps to (1080-line units): the side margins, the head's band, where the
+ * content starts and ends, where the footer's hints sit. */
+namespace grid {
+constexpr float margin = 96.0f;
+constexpr float headY = 56.0f, headH = 56.0f;
+constexpr float top = 160.0f;
+constexpr float bottom = 960.0f;
+constexpr float footY = 1006.0f;
+constexpr float rSmall = 8.0f, rMid = 12.0f, rLarge = 18.0f;
+} // namespace grid
 
 enum class Theme { Dark, Code };
 struct Palette {
@@ -90,7 +108,7 @@ Tex glow();
 // ---- pieces -----------------------------------------------------------------------------------
 
 /* The DualSense's buttons: X O S T (cross, circle, square, triangle), L1 R1 L2 R2 OPT TP, LR (left
- * and right), UD. Drawn as an outlined key; its width. */
+ * and right), UD, U, D. Drawn as an outlined key; its width. */
 float keycap(ImDrawList *dl, ImVec2 p, float h, const std::string &name, ImU32 col, ImU32 fill = 0, bool measureOnly = false);
 struct Hint {
 	std::string key, text;
@@ -100,11 +118,15 @@ float hint(ImDrawList *dl, ImVec2 p, const Hint &h, ImU32 col, bool measureOnly 
 /* The hints along the foot of the screen, and words at its right. */
 void footer(ImDrawList *dl, ImVec2 screen, const std::vector<Hint> &hints, const std::string &right = std::string());
 
-enum class Icon { None, Folder, Disc, Up, Console, Usb, Network, Server, Gear, Power, Dash, Check, Plus, Lock, Warn, Pad, Keyboard };
+enum class Icon { None, Folder, Disc, Up, Console, Usb, Network, Server, Gear, Power, Dash, Check, Plus, Lock, Warn, Pad, Keyboard,
+	Play, Restart, Save, Load, Puzzle, Trash, Back, Info };
 void icon(ImDrawList *dl, Icon i, ImVec2 centre, float size, ImU32 col);
 
-/* A rounded label (a game's status, its region); its width. */
+/* A rounded label (a game's status, its region); its width. kind: 0 plain, 1 good, 2 warning. */
 float chip(ImDrawList *dl, ImVec2 p, const std::string &s, ImU32 fill, ImU32 col, bool measureOnly = false);
+float chipKind(ImDrawList *dl, ImVec2 p, const std::string &s, int kind, float a = 1.0f, bool measureOnly = false);
+/* Chips side by side, wrapping to maxW; the height they took (0 for none). */
+float chipRow(ImDrawList *dl, ImVec2 p, const std::vector<std::pair<std::string, int>> &chips, float maxW, float a = 1.0f);
 /* Choices side by side, the chosen one filled; its width. */
 float segmented(ImDrawList *dl, ImVec2 p, const std::vector<std::string> &items, int on, bool focused, bool measureOnly = false);
 /* An on/off switch (its knob slides: anim 0..1). */
@@ -118,6 +140,94 @@ void panel(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float r, ImU32 fill, ImU32 bord
 void shadow(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float r, float spread, float strength = 0.55f);
 /* A spinner. */
 void spinner(ImDrawList *dl, ImVec2 c, float r, ImU32 col);
+/* What has the controller: a light fill and the accent's outline (amount 0..1; warn: amber). */
+void focusBox(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float r, float amount, bool warn = false);
+/* A bar filling (f 0..1). */
+void progress(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float f, ImU32 col = 0);
+
+/* A button: a key and its words. Primary: filled with the accent; else outlined. Its width. */
+struct Button {
+	std::string text;
+	std::string key;              // a keycap before the words ("" none)
+	Icon icon{ Icon::None };      // or an icon
+	bool primary{ false };
+};
+constexpr float kButtonH = 56.0f;
+float button(ImDrawList *dl, ImVec2 p, const Button &b, float focus, float a = 1.0f, bool measureOnly = false);
+
+/* The head of a screen: the logo, its title and a few words, the status at the right. */
+struct Head {
+	Tex logo;
+	std::string title, subtitle;
+	std::vector<std::pair<std::string, ImU32>> status;   // words and a dot's colour (0 none)
+};
+void head(ImDrawList *dl, ImVec2 screen, const Head &h);
+
+/* "Saving..." over everything, a ring turning. */
+void busy(ImDrawList *dl, ImVec2 screen, const std::string &text);
+
+// ---- lists ------------------------------------------------------------------------------------
+
+/* A row of a list screen: an item (the controller lands on it), a section's heading, or words. */
+struct ListRow {
+	enum class Kind { Item, Section, Note };
+	Kind kind{ Kind::Item };
+	std::string key;              // the motion's key (unique in its list)
+	std::string title, sub;       // its name and a second line
+	std::string right;            // words at its right
+	Icon icon{ Icon::None };
+	Tex thumb;                    // a picture before its name (a cover, a save's)
+	bool thumbSlot{ false };      // its room kept when there is none (a disc drawn there): rows line up
+	int toggle{ -1 };             // a switch at its right: -1 none, 0 off, 1 on
+	bool current{ false };        // the one in use (a check mark)
+	bool dim{ false };            // greyed: can't be chosen (still read)
+	bool danger{ false };         // its name in the failure colour (quit, delete)
+	bool accent{ false };         // its name and icon in the accent (the recommended one)
+	int indent{ 0 };              // under the row before it (a trainer's options)
+	ImU32 dot{ 0 };               // a status dot before the right words
+};
+/* Rows in a box: the chosen one framed (focused) or marked, the box scrolled to keep it in sight;
+ * the height of all of them. sel indexes rows (Items only are chosen). */
+float drawList(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::vector<ListRow> &rows, int sel, bool focused,
+	const std::string &scrollKey, float appear = 1.0f);
+/* The next Item from sel in dir (+1 / -1), or sel when none; the first Item for sel < 0. */
+int listStep(const std::vector<ListRow> &rows, int sel, int dir);
+
+/* Beside a list: what the chosen row is, in words, a picture or a few facts. */
+struct Aside {
+	std::string title;
+	std::string text;
+	std::string note;             // smaller, fainter, at its foot (paths, a CRC)
+	bool warn{ false };           // the text in the warning colour
+	Tex picture;                  // 16:9, at its top
+	std::string pictureEmpty;     // its words when there is none ("Empty slot")
+	std::vector<std::pair<std::string, std::string>> facts;   // label, value
+};
+void drawAside(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const Aside &a, float appear = 1.0f);
+
+/* A screen of rows: the mods, the data folder, the hard disk. One list or two side by side (pane:
+ * which has the controller), else the list and an aside. */
+struct ListScreenView {
+	Head head;
+	std::string intro;            // words over the list
+	bool introWarn{ false };
+	std::string title1;           // the list's own heading ("" none)
+	std::vector<ListRow> rows;
+	int sel{ 0 };
+	std::string title2;           // the second list (the hard disk's saves)
+	std::vector<ListRow> rows2;
+	int sel2{ -1 };
+	bool twoLists{ false };
+	int pane{ 0 };
+	Aside aside;                  // when there is no second list
+	std::string message;          // under the list (an error, what was done)
+	bool messageBad{ false };
+	float progress{ -1.0f };      // a bar under the intro (0..1; < 0 none)
+	std::string progressText;
+	std::vector<Hint> footer;
+	std::string footerRight;
+};
+void drawListScreen(ImDrawList *dl, ImVec2 screen, const ListScreenView &v);
 
 // ---- the backdrop -----------------------------------------------------------------------------
 
@@ -141,6 +251,7 @@ struct HomeGame {
 	std::string sub, size;        // the list's second line: its region, its size
 	ImU32 tint{ 0 };              // its colour (the placeholder's; the light's)
 };
+/* The places, folders, the dashboard and the actions: a strip of pills over the games. */
 struct HomeCard {
 	std::string title, sub;
 	Icon icon{ Icon::Folder };
@@ -148,15 +259,15 @@ struct HomeCard {
 	bool accent{ false };         // its icon in the accent (the dashboard)
 };
 struct HomeView {
-	bool list{ false };           // 0.0.3: the list layout (the cards first, then the games, one column)
+	bool list{ false };           // the list layout (the games in a column, the chosen one beside)
 	// the head
 	Tex logo;
 	std::vector<std::string> tabs;
 	int tab{ 0 };
 	std::vector<std::pair<std::string, ImU32>> status;   // at the right: words and a dot's colour (0 none)
-	float coverProgress{ -1.0f };   // 0.0.3: the covers downloading, 0..1 (under the status; < 0 none)
-	std::string coverText;          // ... "Covers 12 of 140 · 8%"
-	// the games along the row
+	float coverProgress{ -1.0f };   // the covers downloading, 0..1 (at the foot; < 0 none)
+	std::string coverText;          // ... "Covers 12 of 140"
+	// the games
 	std::vector<HomeGame> games;
 	std::function<Tex(size_t)> cover;   // a game's cover (only those in sight are asked)
 	std::function<Tex(size_t)> blur;    // ... its tiny one
@@ -166,13 +277,14 @@ struct HomeView {
 	std::string title;
 	std::vector<std::pair<std::string, int>> chips;   // words and a kind (0 plain, 1 good, 2 warn)
 	std::string meta;             // a line or two
-	std::string primary, secondary;   // the buttons ("Continue where I left off", "Start from the beginning")
+	std::string about, aboutSource;   // its description and where it is from ("" none yet)
+	std::string primary, secondary;   // the buttons ("Continue", "Start from the beginning")
 	std::string primaryKey{ "X" }, secondaryKey{ "S" };
-	// the row of cards below (folders, the dashboard, an action)
+	// the strip over the games: where this is, and the folders, the dashboard, an action
 	std::string cardsTitle, cardsSub;
 	std::vector<HomeCard> cards;
 	int cardSel{ -1 };
-	int focusRow{ 0 };            // 0 the games, 1 the cards
+	int focusRow{ 0 };            // 0 the games, 1 the strip
 	// when there is nothing
 	std::string empty, error;
 	bool loading{ false };
@@ -290,8 +402,10 @@ struct GameState {
 	bool empty{ false };
 	bool left{ false };           // "where I left off"
 };
+/* What to do with the game: a row of buttons, the first the main one; the chosen one's words under. */
 struct GameAction {
 	std::string name, sub;
+	Icon icon{ Icon::None };
 };
 struct GameView {
 	std::string title, coverTitle;
@@ -299,7 +413,7 @@ struct GameView {
 	ImU32 tint{ 0 };
 	std::vector<std::pair<std::string, int>> chips;
 	std::vector<GameFact> facts;
-	std::string about, aboutSource;   // 0.0.3: its description and where it is from ("" none)
+	std::string about, aboutSource;   // its description and where it is from ("" none)
 	std::vector<GameState> states;
 	int stateSel{ -1 };           // the states have the controller
 	std::vector<GameAction> actions;
@@ -307,6 +421,62 @@ struct GameView {
 	std::vector<Hint> footer;
 };
 void drawGamePage(ImDrawList *dl, ImVec2 screen, const GameView &v, float appear);
+
+// ---- the quick menu, over a paused game ----------------------------------------------------------
+
+struct QuickView {
+	Tex cover;
+	std::string title, sub;       // the game, its title ID
+	std::string status{ "Paused" };
+	std::vector<ListRow> rows;
+	int sel{ 0 };
+	bool showSlot{ false };       // the slot's card beside the panel
+	Aside slot;                   // its picture, name and when
+	std::string busy;             // "Saving..." over it
+	std::vector<Hint> footer;
+};
+void drawQuickMenu(ImDrawList *dl, ImVec2 screen, const QuickView &v, float appear);
+
+// ---- before the game list: the notice, the boot screen -------------------------------------------
+
+struct NoticeView {
+	std::string kicker, title, subtitle;
+	std::string lead;             // the first paragraph, brighter
+	std::vector<std::string> paragraphs;
+	std::string fine;             // the last, fainter
+	bool canContinue{ false };
+};
+void drawNotice(ImDrawList *dl, ImVec2 screen, const NoticeView &v);
+
+/* The boot screen's bar and words (the logo is the presenter's, drawn in logoBox: kept clear). */
+struct BootView {
+	ImVec4 logoBox{ 0, 0, 0, 0 }; // x, y, w, h in pixels
+	float progress{ 0.0f };
+	std::string left, right;
+	std::vector<std::string> lines;   // typed one after another
+	float elapsed{ 0.0f };
+};
+void drawBoot(ImDrawList *dl, ImVec2 screen, const BootView &v);
+
+// ---- over a running game: the frame rate, the trainer's LED, what is happening ------------------------
+
+struct HudView {
+	bool showFps{ false };
+	float fps{ 0.0f };
+	bool showLed{ false };
+	float ledAlpha{ 1.0f };
+	ImU32 ledColour{ 0 };         // 0: off
+	std::string ledText;
+	bool showStatus{ false };     // the panel at the top left (no picture yet, or trouble)
+	std::string statusTitle;
+	std::vector<std::pair<std::string, std::string>> statusLines;   // label, value
+	int badLine{ -1 };            // the line whose value is in the failure colour
+	std::string note;             // the core's words, wrapped under the lines
+	std::string problem;
+	bool waiting{ false };        // a spinner: the first frame to come
+	std::vector<Hint> statusHints;
+};
+void drawHud(ImDrawList *dl, ImVec2 screen, const HudView &v);
 
 // ---- a choice over a screen, and a message -----------------------------------------------------
 

@@ -37,7 +37,7 @@ zipflags=(-isystem "$libzip_src/lib" -isystem "$work/libzip" "$work/libzip/lib/l
 
 export ASAN_OPTIONS=detect_leaks=1
 export UBSAN_OPTIONS=print_stacktrace=1
-clang++ -std=c++20 -g -O1 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+"${CXX:-clang++}" -std=c++20 -g -O1 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
 	-fno-omit-frame-pointer -pthread -DOGBOX_UPDATE_TEST -I "$root/ps5/src/platform" \
 	-isystem "$root/.deps/src/rapidjson/include" \
 	"$here/update_test.cpp" "$root/ps5/src/platform/ps5_update.cpp" "${zipflags[@]}" -o "$work/update_test"

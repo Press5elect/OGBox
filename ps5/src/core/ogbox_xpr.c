@@ -124,7 +124,8 @@ bool ogbox_xpr_decode(const uint8_t *xpr, size_t n, uint8_t **rgba, int *w, int 
         th = ((sizew >> 12) & 0xFFF) + 1;
         pitch = ((sizew >> 24) + 1) * 64;
     }
-    if (hdr >= n || tw > 1024 || th > 1024 || !tw || !th) {
+    /* a linear texture's rows are read pitch bytes apart, each tw * 4 bytes long */
+    if (hdr >= n || tw > 1024 || th > 1024 || !tw || !th || (linear && pitch < tw * 4)) {
         return false;
     }
     const uint8_t *d = xpr + hdr;

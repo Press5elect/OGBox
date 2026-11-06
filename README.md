@@ -55,7 +55,10 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
    later in Settings > Data folder, and OGBox moves everything for you.
 4. **Pick a game.** Your games show as covers, or as a list if you prefer (Settings > Game list).
    - **L1 / R1** switch between the **Internal**, **USB** and **Network** tabs.
-   - The **D-pad** moves, **CROSS** opens a folder or starts a game, **CIRCLE** goes back.
+   - The **D-pad** moves along your games. **UP** goes to the strip above them: the folders, the
+     Xbox dashboard and adding a network share. **DOWN** comes back to the games.
+   - **CROSS** opens a folder or starts a game, **SQUARE** starts it from the beginning, **CIRCLE**
+     goes back.
    - **L2 / R2** jump a letter back or forward.
    - **TRIANGLE** opens a game's page: its cover, description, save states, settings and mods.
    - **OPTIONS** opens Settings.
@@ -73,6 +76,11 @@ Back and the right half for Start. OPTIONS is the quick menu for player 1 and St
 players. If you'd rather have OPTIONS as Start, Settings > Interface > **Quick menu button** puts
 the quick menu on a half-second hold instead. Each signed-in user's controller is a player (1 to 4),
 and the menus show each face button in its Xbox colour (A green, B red, X blue, Y yellow).
+
+**Settings > Controller** changes any of it: which DualSense button is each Xbox button, trigger,
+D-pad direction, Start and Back, the sticks (swapped, or up and down turned over), and deadzones
+for each stick and the triggers, for a worn stick that drifts. A game can have its own (its page >
+Settings, or the quick menu), and a change applies at once, even in a game.
 
 ### Updates
 
@@ -176,7 +184,8 @@ PS5_CLANG=/usr/lib/llvm-20/bin/clang bash ps5/tools/build.sh       # dist/PPSA99
 PS5_CLANG=/usr/lib/llvm-20/bin/clang HAKUX_SRC=<a hakuX tree> bash ps5/tools/build.sh
                                                     # hakuX from a work tree instead
 python3 ps5/tools/stage-notices.py --check dist/PPSA99251   # the release check
-tests/update/run-update-tests.sh <work folder>              # the updater on the PC
+tests/run-pc-tests.sh --fetch                       # every PC test (patches, images, shares,
+                                                    # updater, menus); CI runs it on each push
 ps5/tools/deploy.sh                                 # upload over the console's FTP server
 ```
 

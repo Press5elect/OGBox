@@ -99,7 +99,9 @@ static bool buf_copy(OgboxBuf *dst, const OgboxBuf *src)
     if (!buf_reserve(dst, src->size ? src->size : 1)) {
         return false;
     }
-    memcpy(dst->data, src->data, src->size);
+    if (src->size) {
+        memcpy(dst->data, src->data, src->size);
+    }
     dst->size = src->size;
     return true;
 }
@@ -183,8 +185,9 @@ bool ogbox_apply_ips(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
                 say(why, why_len, "%s at %llu", "a record past the IPS file's end", (unsigned long long)at);
                 return false;
             }
-            if (off + len > out.size) {
-                buf_resize(&out, off + len);
+            if (off + len > out.size && !buf_resize(&out, off + len)) {
+                free(out.data);
+                return false;
             }
             memcpy(out.data + off, p + at, len);
             at += len;
@@ -201,8 +204,9 @@ bool ogbox_apply_ips(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
                 free(out.data);
                 return false;
             }
-            if (off + len > out.size) {
-                buf_resize(&out, off + len);
+            if (off + len > out.size && !buf_resize(&out, off + len)) {
+                free(out.data);
+                return false;
             }
             memset(out.data + off, v, len);
         }
@@ -225,6 +229,9 @@ static bool bps_num(const uint8_t *p, size_t n, size_t *at, uint64_t *v)
 {
     uint64_t data = 0, shift = 1;
     while (*at < n) {
+        if (shift >> 56) {
+            return false;   /* more than 64 bits: no patch has a number that large */
+        }
         const uint8_t x = p[(*at)++];
         data += (x & 0x7F) * shift;
         if (x & 0x80) {
@@ -256,7 +263,7 @@ bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
     size_t at = 4;
     uint64_t src_size, dst_size, meta;
     if (!bps_num(p, n, &at, &src_size) || !bps_num(p, n, &at, &dst_size) || !bps_num(p, n, &at, &meta) ||
-        src_size != buf->size || at + meta > n - 12 || dst_size > (256u << 20)) {
+        src_size != buf->size || at > n - 12 || meta > n - 12 - at || dst_size > (256u << 20)) {
         say(why, why_len, "%s (%llu)", "a BPS header that doesn't fit the file", (unsigned long long)src_size);
         return false;
     }
@@ -273,20 +280,21 @@ bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
             break;
         }
         const unsigned cmd = (unsigned)(d & 3);
-        const size_t len = (size_t)(d >> 2) + 1;
-        if (o + len > out.size) {
+        const uint64_t len64 = (d >> 2) + 1;
+        if (len64 > out.size - o) {
             free(out.data);
             say(why, why_len, "%s at %llu", "a BPS action past the end", (unsigned long long)o);
             return false;
         }
+        const size_t len = (size_t)len64;
         if (cmd == 0) {             /* SourceRead */
-            if (o + len > buf->size) {
+            if (o > buf->size || len > buf->size - o) {
                 free(out.data);
                 return false;
             }
             memcpy(out.data + o, buf->data + o, len);
         } else if (cmd == 1) {      /* TargetRead */
-            if (at + len > n - 12) {
+            if (len > n - 12 - at) {
                 free(out.data);
                 return false;
             }
@@ -298,10 +306,16 @@ bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
                 free(out.data);
                 return false;
             }
+            /* the offsets stay within the 256 MB output, so a larger step is broken, and turning
+             * it down keeps the sums below from overflowing */
+            if ((raw >> 1) > (256u << 20)) {
+                free(out.data);
+                return false;
+            }
             const int64_t delta = (raw & 1 ? -1 : 1) * (int64_t)(raw >> 1);
             if (cmd == 2) {         /* SourceCopy */
                 src_rel += delta;
-                if (src_rel < 0 || (size_t)src_rel + len > buf->size) {
+                if (src_rel < 0 || (uint64_t)src_rel > buf->size || len > buf->size - (size_t)src_rel) {
                     free(out.data);
                     return false;
                 }
@@ -309,7 +323,8 @@ bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
                 src_rel += (int64_t)len;
             } else {                /* TargetCopy: byte by byte (it may overlap) */
                 dst_rel += delta;
-                if (dst_rel < 0 || (size_t)dst_rel >= o + len) {
+                /* from bytes already written: each byte read is then behind the one written */
+                if (dst_rel < 0 || (uint64_t)dst_rel >= o) {
                     free(out.data);
                     return false;
                 }
@@ -391,7 +406,7 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
             size_t dn = 0;
             const unsigned long long off = strtoull(f[1], NULL, 16);
             uint8_t *data = unhex(f[2], &dn);
-            ok = data && off + dn <= work.size;
+            ok = data && off <= work.size && dn <= work.size - off;
             if (ok) {
                 memcpy(work.data + off, data, dn);
             } else if (why && why_len) {
