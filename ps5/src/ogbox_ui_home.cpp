@@ -312,7 +312,8 @@ void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
 		if (!v.about.empty()) {
 			const float x = px(1090.0f), w = S.x - L - x, y = px(276.0f) + px(14.0f) * (1.0f - a);
 			label(dl, px(13.0f), ImVec2(x, y), alpha(p.textFaint, a), "About");
-			const float h = paragraph(dl, F::Body, px(18.0f), ImVec2(x, y + px(30.0f)), alpha(p.textDim, a), v.about, w, 9, 1.45f);
+			const float h = scrollParagraph(dl, F::Body, px(18.0f), ImVec2(x, y + px(30.0f)), alpha(p.textDim, a), v.about, w - px(16.0f),
+				px(18.0f) * 1.45f * 9.0f, "home.about", 1.45f);
 			if (!v.aboutSource.empty()) {
 				textFit(dl, F::Small, px(13.5f), ImVec2(x, y + px(30.0f) + h + px(12.0f)), alpha(p.textFaint, a), v.aboutSource, w);
 			}
@@ -515,7 +516,8 @@ void drawHomeList(ImDrawList *dl, ImVec2 S, const HomeView &v)
 			const int lines = std::max(0, static_cast<int>((bottom - y - px(60.0f)) / lh));
 			if (lines > 0) {
 				label(dl, px(13.0f), ImVec2(dx0, y), alpha(p.textFaint, a), "About");
-				const float h = paragraph(dl, F::Body, px(17.5f), ImVec2(dx0, y + px(28.0f)), alpha(p.textDim, a), v.about, dx1 - dx0, lines, 1.45f);
+				const float h = scrollParagraph(dl, F::Body, px(17.5f), ImVec2(dx0, y + px(28.0f)), alpha(p.textDim, a), v.about,
+					dx1 - dx0 - px(16.0f), lh * static_cast<float>(lines), "home.about.list", 1.45f);
 				if (!v.aboutSource.empty()) {
 					textFit(dl, F::Small, px(13.5f), ImVec2(dx0, y + px(28.0f) + h + px(10.0f)), alpha(p.textFaint, a), v.aboutSource, dx1 - dx0);
 				}
@@ -564,6 +566,7 @@ void drawGamePage(ImDrawList *dl, ImVec2 S, const GameView &v, float appear)
 	}
 	// ---- the right: the name, chips and words; what to do; the save states
 	const float x = c1.x + px(72.0f), w = S.x - L - x;
+	label(dl, px(13.0f), ImVec2(L, px(78.0f)), alpha(p.textFaint, a), "Game Details");   // 0.0.6: the page's name
 	float y = top - px(6.0f) + px(16.0f) * (1.0f - a);
 	const float fs = detail::fitSize(F::Display, v.title, w, px(60.0f), px(36.0f), 2);
 	y += paragraph(dl, F::Display, fs, ImVec2(x, y), alpha(p.text, a), v.title, w, 2, 1.05f) + px(22.0f);
@@ -577,7 +580,8 @@ void drawGamePage(ImDrawList *dl, ImVec2 S, const GameView &v, float appear)
 	if (!v.about.empty()) {
 		const float room = bottom - y - actionsH - statesH - px(64.0f);
 		const int lines = std::max(2, std::min(5, static_cast<int>(room / (px(18.0f) * 1.4f))));
-		y += paragraph(dl, F::Body, px(18.0f), ImVec2(x, y), alpha(p.textDim, a), v.about, std::min(w, px(1080.0f)), lines, 1.4f);
+		y += scrollParagraph(dl, F::Body, px(18.0f), ImVec2(x, y), alpha(p.textDim, a), v.about, std::min(w, px(1080.0f)),
+			px(18.0f) * 1.4f * static_cast<float>(lines), "game.about", 1.4f);
 		if (!v.aboutSource.empty()) {
 			text(dl, F::Small, px(13.5f), ImVec2(x, y + px(8.0f)), alpha(p.textFaint, a), v.aboutSource.c_str());
 			y += px(26.0f);

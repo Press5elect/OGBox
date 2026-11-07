@@ -29,6 +29,9 @@ bool sideBySide(const SetRow &r)
 
 float rowHeight(const SetRow &r, float w, bool open)
 {
+	if (r.hidden) {
+		return 0.0f;
+	}
 	switch (r.kind) {
 	case SetRow::Kind::Group:
 		return px(48.0f);
@@ -40,8 +43,8 @@ float rowHeight(const SetRow &r, float w, bool open)
 	if (!open || r.desc.empty()) {
 		return px(72.0f);
 	}
-	const float dw = w - px(52.0f);
-	const float dh = paragraph(nullptr, F::Small, px(15.5f), ImVec2(0, 0), 0, r.desc, dw, 6);
+	const float dw = w - px(64.0f);
+	const float dh = scrollParagraph(nullptr, F::Small, px(15.5f), ImVec2(0, 0), 0, r.desc, dw, px(15.5f) * 1.35f * 9.0f, "row." + r.key);
 	return px(72.0f) + dh + px(14.0f);
 }
 
@@ -91,7 +94,8 @@ void drawRow(ImDrawList *dl, const SetRow &r, ImVec2 p0, float w, float h, float
 				text(dl, F::Body, fs, ImVec2(vx, cy - px(12.0f)), p.accent, "\xE2\x86\x90");
 				vx += arrow;
 			}
-			text(dl, F::Body, fs, ImVec2(vx, cy - px(12.0f)), r.inherited ? p.textFaint : p.text, s.c_str());
+			const bool off = std::find(r.offChoices.begin(), r.offChoices.end(), r.choice) != r.offChoices.end();
+			text(dl, F::Body, fs, ImVec2(vx, cy - px(12.0f)), r.inherited || off ? p.textFaint : p.text, s.c_str());
 			if (focused) {
 				text(dl, F::Body, fs, ImVec2(vx + tw + px(8.0f), cy - px(12.0f)), p.accent, "\xE2\x86\x92");
 			}
@@ -172,8 +176,8 @@ void drawRow(ImDrawList *dl, const SetRow &r, ImVec2 p0, float w, float h, float
 	}
 	if (open > 0.01f && !r.desc.empty()) {
 		dl->PushClipRect(ImVec2(p0.x, p0.y + lineH - px(6.0f)), p1, true);
-		paragraph(dl, F::Small, px(15.5f), ImVec2(p0.x + px(26.0f), p0.y + lineH - px(6.0f)), alpha(p.textFaint, open), r.desc,
-			w - px(52.0f), 6);
+		scrollParagraph(dl, F::Small, px(15.5f), ImVec2(p0.x + px(26.0f), p0.y + lineH - px(6.0f)), alpha(p.textFaint, open), r.desc,
+			w - px(64.0f), px(15.5f) * 1.35f * 9.0f, "row." + r.key);
 		dl->PopClipRect();
 	}
 }
@@ -195,7 +199,7 @@ float drawRows(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::vector<SetRow> &
 		const float full = rowHeight(r, w, true);
 		hs[i] = closed + (full - closed) * smooth(o);
 		ys[i] = total;
-		total += hs[i] + gap;
+		total += hs[i] + (rows[i].hidden ? 0.0f : gap);
 	}
 	// the scroll that keeps the chosen row in sight (a little room around it)
 	const float viewH = p1.y - p0.y;
@@ -215,7 +219,7 @@ float drawRows(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::vector<SetRow> &
 	dl->PushClipRect(p0, p1, true);
 	for (size_t i = 0; i < rows.size(); i++) {
 		const float y = p0.y + ys[i] - scroll;
-		if (y > p1.y || y + hs[i] < p0.y) {
+		if (rows[i].hidden || y > p1.y || y + hs[i] < p0.y) {
 			continue;
 		}
 		const bool on = static_cast<int>(i) == sel;
@@ -231,6 +235,160 @@ float drawRows(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::vector<SetRow> &
 			alpha(P().bg, 0.9f));
 	}
 	return total;
+}
+
+/* 0.0.6: the Xbox controller, drawn (a generic pad of its shape: two grips, the left stick high, the
+ * D-pad and the right stick low, the face buttons and Black and White at the right, the triggers
+ * above), each control's DualSense counterpart in a column at its side with a line to it; the
+ * chosen one in the accent. */
+void drawPadPicture(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::vector<PadCallout> &pad, const std::string &focus)
+{
+	const Palette &p = P();
+	const float W = p1.x - p0.x, H = p1.y - p0.y;
+	// the body in the middle half
+	const float bw = std::min(W * 0.46f, H * 1.45f), bh = bw * 0.62f;
+	const ImVec2 c(p0.x + W * 0.5f, p0.y + H * 0.52f);
+	const auto at = [&](float u, float v) { return ImVec2(c.x + (u - 0.5f) * bw, c.y + (v - 0.5f) * bh); };
+	const ImU32 body = mix(p.surface2, IM_COL32(255, 255, 255, 255), 0.06f), edge = IM_COL32(255, 255, 255, 46);
+	/* the silhouette: the body and two grips, drawn once a little larger in the edge's colour and
+	 * then in the body's (one clean outline, no seams where they meet) */
+	const auto shape = [&](float grow, ImU32 col) {
+		dl->AddRectFilled(ImVec2(at(0.06f, 0.14f).x - grow, at(0.06f, 0.14f).y - grow), ImVec2(at(0.94f, 0.66f).x + grow, at(0.94f, 0.66f).y + grow),
+			col, bh * 0.26f + grow);
+		for (const float u : { 0.21f, 0.79f }) {
+			dl->AddCircleFilled(at(u, 0.72f), bh * 0.27f + grow, col, 48);
+			dl->AddCircleFilled(at(u + (u < 0.5f ? 0.04f : -0.04f), 0.58f), bh * 0.3f + grow, col, 48);
+		}
+	};
+	shape(px(1.5f), edge);
+	shape(0.0f, body);
+	// where each control is on the body (u, v), its shape
+	struct Spot {
+		const char *key;
+		float u, v;
+		int shape;        // 0 a round button, 1 a stick, 2 a D-pad arm, 3 a trigger, 4 a small oval
+		int dir;          // the D-pad arm's: 0 up, 1 down, 2 left, 3 right
+		bool right;       // its callout's column
+	};
+	/* (each column in the order of its controls' heights, so the lines don't cross) */
+	static const Spot spots[] = {
+		{ "pad_lt", 0.2f, 0.06f, 3, 0, false }, { "pad_back", 0.44f, 0.3f, 4, 0, false }, { "pad_lthumb", 0.2f, 0.36f, 1, 0, false },
+		{ "pad_up", 0.36f, 0.52f, 2, 0, false }, { "pad_left", 0.36f, 0.52f, 2, 2, false },
+		{ "pad_right", 0.36f, 0.52f, 2, 3, false }, { "pad_down", 0.36f, 0.52f, 2, 1, false },
+		{ "pad_rt", 0.8f, 0.06f, 3, 0, true }, { "pad_start", 0.56f, 0.3f, 4, 0, true }, { "pad_y", 0.8f, 0.24f, 0, 0, true },
+		{ "pad_x", 0.73f, 0.35f, 0, 0, true }, { "pad_b", 0.87f, 0.35f, 0, 0, true }, { "pad_a", 0.8f, 0.46f, 0, 0, true },
+		{ "pad_white", 0.9f, 0.5f, 0, 0, true }, { "pad_rthumb", 0.64f, 0.56f, 1, 0, true }, { "pad_black", 0.86f, 0.59f, 0, 0, true },
+	};
+	const float r = bh * 0.06f;
+	/* where a control's line ends: a D-pad arm's middle */
+	const auto anchor = [&](const Spot &s) {
+		const ImVec2 q = at(s.u, s.v);
+		if (s.shape != 2) {
+			return q;
+		}
+		const float l = r * 1.6f;
+		return s.dir == 0 ? ImVec2(q.x, q.y - l) : s.dir == 1 ? ImVec2(q.x, q.y + l) : s.dir == 2 ? ImVec2(q.x - l, q.y) : ImVec2(q.x + l, q.y);
+	};
+	const auto find = [&](const char *key) -> const PadCallout * {
+		for (const PadCallout &o : pad) {
+			if (o.key == key) {
+				return &o;
+			}
+		}
+		return nullptr;
+	};
+	float &pulse = value("padpic.pulse", 0.0f);
+	pulse += dt();
+	const float glowA = 0.55f + 0.25f * std::sin(pulse * 4.0f);
+	// the controls
+	for (const Spot &s : spots) {
+		const bool on = focus == s.key;
+		const ImU32 fill = on ? p.accent : IM_COL32(255, 255, 255, 34);
+		const ImU32 line = on ? p.accent : IM_COL32(255, 255, 255, 70);
+		const ImVec2 q = at(s.u, s.v);
+		switch (s.shape) {
+		case 0:
+			if (on) {
+				dl->AddCircleFilled(q, r * 1.9f, alpha(p.accent, 0.25f * glowA), 24);
+			}
+			dl->AddCircleFilled(q, r, fill, 24);
+			break;
+		case 1:
+			if (on) {
+				dl->AddCircleFilled(q, r * 2.6f, alpha(p.accent, 0.25f * glowA), 32);
+			}
+			dl->AddCircleFilled(q, r * 1.8f, IM_COL32(0, 0, 0, 90), 32);
+			dl->AddCircleFilled(q, r * 1.35f, fill, 32);
+			dl->AddCircle(q, r * 1.8f, line, 32, px(1.5f));
+			break;
+		case 2: {
+			const float a = r * 0.85f, l = r * 2.2f;
+			const ImVec2 d = s.dir == 0 ? ImVec2(0, -1) : s.dir == 1 ? ImVec2(0, 1) : s.dir == 2 ? ImVec2(-1, 0) : ImVec2(1, 0);
+			const ImVec2 e(q.x + d.x * l, q.y + d.y * l), m(q.x + d.x * a, q.y + d.y * a);
+			const ImVec2 n(d.y, d.x);
+			dl->AddQuadFilled(ImVec2(m.x - n.x * a, m.y - n.y * a), ImVec2(e.x - n.x * a, e.y - n.y * a), ImVec2(e.x + n.x * a, e.y + n.y * a),
+				ImVec2(m.x + n.x * a, m.y + n.y * a), fill);
+			if (s.dir == 0) {
+				dl->AddRectFilled(ImVec2(q.x - a, q.y - a), ImVec2(q.x + a, q.y + a), IM_COL32(255, 255, 255, 34));
+			}
+			break;
+		}
+		case 3:
+			if (on) {
+				dl->AddRectFilled(ImVec2(q.x - bw * 0.1f, q.y - r * 1.8f), ImVec2(q.x + bw * 0.1f, q.y + r * 1.8f), alpha(p.accent, 0.25f * glowA),
+					r * 1.2f);
+			}
+			dl->AddRectFilled(ImVec2(q.x - bw * 0.08f, q.y - r * 1.1f), ImVec2(q.x + bw * 0.08f, q.y + r * 1.1f), fill, r);
+			break;
+		default:
+			dl->AddRectFilled(ImVec2(q.x - r * 1.0f, q.y - r * 0.55f), ImVec2(q.x + r * 1.0f, q.y + r * 0.55f), fill, r * 0.55f);
+			break;
+		}
+	}
+	// the callouts: a column at each side, a line from each to its control
+	const float fs = px(15.5f), rowH = std::min(px(46.0f), H / 9.0f);
+	for (const bool right : { false, true }) {
+		std::vector<const Spot *> col;
+		for (const Spot &s : spots) {
+			if (s.right == right) {
+				col.push_back(&s);
+			}
+		}
+		const float y0 = c.y - rowH * static_cast<float>(col.size()) * 0.5f;
+		const float colW = std::max(px(150.0f), (W - bw) * 0.5f - px(40.0f));
+		for (size_t i = 0; i < col.size(); i++) {
+			const Spot &s = *col[i];
+			const PadCallout *o = find(s.key);
+			if (!o) {
+				continue;
+			}
+			const bool on = focus == s.key;
+			const float y = y0 + rowH * static_cast<float>(i) + rowH * 0.5f;
+			const float x0 = right ? p1.x - colW : p0.x, x1 = x0 + colW;
+			if (on) {
+				focusBox(dl, ImVec2(x0 - px(10.0f), y - rowH * 0.46f), ImVec2(x1 + px(10.0f), y + rowH * 0.46f), px(grid::rSmall), 1.0f, false);
+			}
+			const std::string name = o->name, val = on ? "\xE2\x86\x90 " + o->value + " \xE2\x86\x92" : o->value;
+			const float nw = std::min(colW * 0.45f, measure(F::Small, fs, name.c_str()).x);
+			const float vw = std::min(colW - nw - px(14.0f), measure(F::Body, fs, val.c_str()).x);
+			const ImU32 vc = on ? p.accentText : o->changed ? p.text : p.textDim;
+			if (!right) {
+				textFit(dl, F::Small, fs, ImVec2(x0, y - px(10.0f)), p.textFaint, name, colW * 0.45f);
+				textFit(dl, F::Body, fs, ImVec2(x1 - vw, y - px(10.0f)), vc, val, colW - nw - px(14.0f));
+			} else {
+				textFit(dl, F::Body, fs, ImVec2(x0, y - px(10.0f)), vc, val, colW - nw - px(14.0f));
+				textFit(dl, F::Small, fs, ImVec2(x1 - nw, y - px(10.0f)), p.textFaint, name, colW * 0.45f);
+			}
+			// the leader: from the column's inner edge to the control
+			const ImVec2 q = anchor(s);
+			const ImVec2 from(right ? x0 - px(14.0f) : x1 + px(14.0f), y);
+			const ImVec2 bend(right ? std::min(from.x - px(16.0f), q.x + px(30.0f)) : std::max(from.x + px(16.0f), q.x - px(30.0f)), y);
+			const ImU32 lc = on ? p.accent : IM_COL32(255, 255, 255, 38);
+			dl->AddLine(from, bend, lc, on ? px(2.0f) : px(1.2f));
+			dl->AddLine(bend, q, lc, on ? px(2.0f) : px(1.2f));
+			dl->AddCircleFilled(q, px(2.5f), lc, 8);
+		}
+	}
 }
 
 void drawSettings(ImDrawList *dl, ImVec2 S, const SettingsView &v)
@@ -316,6 +474,13 @@ void drawSettings(ImDrawList *dl, ImVec2 S, const SettingsView &v)
 		y = b1.y + px(12.0f);
 	}
 	const float bottom = px(grid::bottom);
+	if (!v.pad.empty()) {
+		const std::string focus = !v.focusNav && v.rowSel >= 0 && v.rowSel < static_cast<int>(v.rows.size())
+			? v.rows[static_cast<size_t>(v.rowSel)].key : std::string();
+		const float ph = px(420.0f);
+		drawPadPicture(dl, ImVec2(px0 + px(26.0f) + slide, y), ImVec2(px1 - px(26.0f) + slide, y + ph), v.pad, focus);
+		y += ph + px(18.0f);
+	}
 	drawRows(dl, ImVec2(px0 + slide, y), ImVec2(px1 + slide, bottom), v.rows, v.rowSel, !v.focusNav, "set." + v.pageTitle);
 	footer(dl, S, v.footer, v.footerRight);
 }

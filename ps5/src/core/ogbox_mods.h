@@ -73,6 +73,7 @@ typedef struct OgboxModEntry {
     char category[16];
     char author[64];
     char source[64];
+    char region[16];       /* 0.0.6: a patch's release ("USA", "PAL"...; "" any) */
     /* 0.0.2: the release check (OGBOX_FIT_*), and why it doesn't fit */
     int fit;
     char fit_why[192];

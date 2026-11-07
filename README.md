@@ -105,7 +105,7 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   exact depth, and cropping the overscan.
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
   compiling shaders in the background, and building cached shaders at start.
-- **Audio:** the resampler (As the Xbox, Sinc or Linear). Sound is mixed the fast way, as xemu does by default.
+- **Audio:** the resampler (Normal, Sinc or Linear). Sound is mixed the fast way, as xemu does by default.
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
   when such a patch is on), drive timing and the clock.
 - **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
@@ -256,9 +256,39 @@ Changed
 - Sound as the Xbox's sound chip makes it, from tests on a real console (xemu pull request #3105
   by raddad772): its own 8-point resampling with pitch changes smoothed across each frame, the
   volume curve, envelope and LFO timings, 3D sound's head filters and their fades, the effects'
-  filters, and the mix's rounding. Settings > Audio > Resampler: As the Xbox (the new default),
-  Sinc or Linear.
+  filters, and the mix's rounding. Settings > Advanced > Resampler: Normal (the Xbox's own, the
+  new default), Sinc or Linear.
+- The menus, tidied:
+  - The game list's first tab is called Internal. The Network tab shows only the shares set in
+    Settings > Network and shares, with no Up or "Add a network share" card.
+  - The game page is Game Details: Load State is always there, the mods screen is Game Patches
+    (its patches in one group, Patches; one made for another version of the game says
+    Incompatible, and which version it is for), and Saves reads Import Saves while the game has
+    none.
+  - The quick menu: Resume, Save State, Load State (LEFT and RIGHT choose the slot), Game
+    Settings, Patches, Log What the GPU Draws (for debugging), Restart the Game and Quit the
+    Game.
+  - Settings: shorter descriptions, without "takes effect at the next game start" and "default"
+    lines (TRIANGLE gives the default). Resolution scale is Internal resolution; Force 32-bit
+    colour is one of 16-bit dithering's choices; Drive timing is Fast disc drive (turned over);
+    The Xbox is XBOX; Network is Network and shares; the data folder and the Xbox hard disk's
+    place are under About, its saves under XBOX; About has the credits.
+  - Settings > Controller: a drawn Xbox controller with each button's DualSense counterpart;
+    Rumble strength (0 to 100%); the sticks Normal or Swapped, Invert left stick and Invert right
+    stick.
+  - Long descriptions scroll with the right stick, in every menu.
+- Xbox Live through Insignia is greyed out in Settings > Network and shares: work in progress.
 
+Added
+- Settings > Picture and sound > Upscaling filter: Bilinear (Sharp), and FSR1 (AMD's FidelityFX
+  Super Resolution 1.0) in place of Snapdragon GSR.
+- Settings > Interface > FPS counter: which corner.
+- Settings > Interface > Quick menu button: L1+L2+R1+R2+OPTIONS, Touch pad held or L3+R3, which
+  leave OPTIONS to be the Xbox's Start.
+- Settings > Updates > What's New?: this version's notes.
+
+Fixed
+- OGBox's logo is back at the top left of the menus (it was missing after the start screen).
 ### 0.0.5
 
 Added

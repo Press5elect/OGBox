@@ -78,6 +78,12 @@ float label(ImDrawList *dl, float size, ImVec2 p, ImU32 col, const std::string &
 /* Lines of s wrapped to w, at most maxLines (the last cut with an ellipsis); the height. */
 float paragraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float w, int maxLines = 99,
 	float lineGap = 1.35f);
+/* 0.0.6: s wrapped to w in at most maxH: when it is taller, it is clipped and the right stick
+ * (setScrollInput) scrolls it, faded at the edge that has more; key names its scroll. The height. */
+float scrollParagraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float w, float maxH,
+	const std::string &key, float lineGap = 1.35f);
+/* 0.0.6: the right stick's up and down this frame (-1..1, down positive), for scrollParagraph. */
+void setScrollInput(float y);
 
 // ---- time and motion --------------------------------------------------------------------------
 
@@ -314,6 +320,14 @@ struct SetRow {
 	Icon icon{ Icon::None };
 	ImU32 dot{ 0 };               // a status dot before the value (a share's)
 	bool warn{ false };
+	std::vector<int> offChoices;  // 0.0.6: choices greyed out (work in progress): drawn faint
+	bool hidden{ false };         // 0.0.6: chosen and changed as a row, but drawn elsewhere (the controller's picture)
+};
+/* 0.0.6: a control of the Xbox controller's picture (Settings > Controller): which row it is, its
+ * name on the Xbox, and the DualSense control it is (the row's value). */
+struct PadCallout {
+	std::string key, name, value;
+	bool changed{ false };
 };
 struct SetNav {
 	std::string name, sub;
@@ -332,6 +346,7 @@ struct SettingsView {
 	bool bannerWarn{ false };
 	std::vector<SetRow> rows;
 	int rowSel{ 0 };
+	std::vector<PadCallout> pad;  // 0.0.6: the controller's picture above the rows ("" none)
 	ImU32 glowTint{ 0 };
 	std::vector<Hint> footer;
 	std::string footerRight;
@@ -462,6 +477,7 @@ void drawBoot(ImDrawList *dl, ImVec2 screen, const BootView &v);
 
 struct HudView {
 	bool showFps{ false };
+	int fpsCorner{ 1 };           // 0.0.6: 0 top left, 1 top right, 2 bottom left, 3 bottom right
 	float fps{ 0.0f };
 	bool showLed{ false };
 	float ledAlpha{ 1.0f };

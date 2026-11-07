@@ -39,55 +39,39 @@ std::vector<Option> makeOptions()
 	 * shorter words; the keys and values are as before, so settings.txt and a game's own carry
 	 * over. */
 	// ---- Graphics: how the picture looks
-	o.push_back({ "render_scale", Section::Graphics, "Resolution scale",
-		"Draws the game at a multiple of its own resolution: sharper, and heavier. 2x suits a 1080p screen, 4x a 4K "
-		"one.",
-		{ { "1", "1x (original)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x (very heavy)" },
-			{ "6", "6x (heaviest)" } },
+	o.push_back({ "render_scale", Section::Graphics, "Internal resolution",
+		"1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen.",
+		{ { "1", "1x (Xbox default)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" } },
 		"1", true });
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
-		"Smooths jagged edges. FXAA: light, a little soft. SMAA: sharper, a little heavier. SSAA: the game drawn above "
-		"the screen's resolution and scaled down (the resolution scale goes up to 4x on a 1080p screen, 6x on 4K): "
-		"the best, and by far the heaviest.",
-		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA (heaviest)" } }, "0", true });
-	o.push_back({ "aspect", Section::Graphics, "Aspect ratio",
-		"The picture's shape. Auto: the game's own (16:9 when the Xbox's screen format is widescreen).",
+		"Smooths jagged edges. FXAA: the lightest and softest. SMAA: sharper. SSAA: the best picture quality, but it "
+		"may tank performance.",
+		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" } }, "0", true });
+	o.push_back({ "aspect", Section::Graphics, "Aspect ratio", "",
 		{ { "auto", "Auto" }, { "4:3", "4:3" }, { "16:9", "16:9" }, { "stretch", "Stretch to the screen" } },
 		"auto", true });
+	/* 0.0.6: Bilinear (Sharp) and FSR1 (AMD's EASU) in place of Snapdragon GSR ("sgsr" reads as FSR1) */
 	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
-		"How a picture smaller than the screen is scaled up. Snapdragon GSR keeps edges sharper. (With FXAA on, the "
-		"picture is scaled bilinearly.)",
-		{ { "bilinear", "Bilinear (smooth)" }, { "sgsr", "Snapdragon GSR (sharper)" } }, "bilinear", true });
+		"Bilinear: the default. FSR1 scales the picture up to 4K; it does nothing at an internal resolution above 4x.",
+		{ { "bilinear", "Bilinear" }, { "sharp", "Bilinear (Sharp)" }, { "fsr", "FSR1" } }, "bilinear", true });
 	/* 0.0.1: the depth vertex programs store, exactly their screen-space z (hakuX-native's
 	 * shader/ff.h HLE_ZEXACT_IN_GLSL); off: the GPU's own, with its early depth test */
 	o.push_back({ "exact_depth", Section::Graphics, "Exact depth",
-		"Surfaces the game draws at one depth (a sky's layers) get exactly that depth, as on the console, "
-		"instead of flickering where they overlap. Costs some GPU time: turn it off for a game that "
-		"needs the speed and shows no flicker.",
-		kOnOff, "1", true });
-	/* 0.0.3: dithering into 16-bit targets (hakuX's vk/draw.c NC_HLE_DITHER) */
+		"Helps games that struggle with flickering textures.", kOnOff, "1", true });
+	/* 0.0.3: dithering into 16-bit targets (hakuX's vk/draw.c NC_HLE_DITHER); 0.0.6: with Force 32-bit
+	 * colour (NC_HLE_FORCE32) as one of its choices */
 	o.push_back({ "dither", Section::Graphics, "16-bit dithering",
-		"Games that draw in 16-bit colour are dithered by the Xbox in a fine pattern of dots, to hide colour bands. "
-		"As the Xbox: its pattern, by the game's own pixels (with the resolution scale up, it shows as a grain of "
-		"dots). Fine: the same pattern by screen pixel, too fine to see. Off: no dots, but visible colour bands.",
-		{ { "xbox", "As the Xbox" }, { "fine", "Fine" }, { "off", "Off" } }, "xbox", true });
-	/* 0.0.4: anisotropic filtering, 32-bit colour and sharpening (hakuX's NC_HLE_ANISO, NC_HLE_FORCE32 and
-	 * NC_HLE_SHARPEN): all off by default, the Xbox's own picture */
-	o.push_back({ "aniso", Section::Graphics, "Anisotropic filtering",
-		"Keeps floors, roads and walls seen at a slant sharp into the distance, where the game's own filtering "
-		"blurs them. A higher resolution scale doesn't do this. Only textures the game filters smoothly are "
-		"changed (not pixel art or menus). Light on the console's GPU. As the game sets it: the Xbox's own.",
-		{ { "0", "As the game sets it" }, { "2", "2x" }, { "4", "4x" }, { "8", "8x" }, { "16", "16x" } },
-		"0", true });
-	o.push_back({ "force32", Section::Graphics, "Force 32-bit colour",
-		"Games that draw in 16-bit colour (skies, fog, smoke and dark areas show bands of colour) are drawn in 32-bit "
-		"instead, so the bands and the dots that hide them go. The game still sees 16-bit pixels where it reads "
-		"them back, so a few games that depend on that can look wrong with it: turn it off for those. Experimental.",
-		kOnOff, "0", true });
-	o.push_back({ "sharpen", Section::Graphics, "Sharpening",
-		"Sharpens the picture's edges and fine detail (contrast-adaptive: flat areas and already strong edges "
-		"are left alone, so it adds no halos). Light on the GPU.",
+		"Games that draw in 16-bit colour hide its colour bands with a fine pattern of dots. Default: the Xbox's "
+		"pattern, by the game's own pixels (at a higher internal resolution it shows as a grain). Scaled dithering: "
+		"the same pattern by screen pixel, too fine to see. Force 32-bit: drawn in 32-bit colour, with no bands and "
+		"no dots; a few games look wrong with it. Off: no dots, but visible colour bands.",
+		{ { "off", "Off" }, { "xbox", "Default" }, { "fine", "Scaled dithering" }, { "force32", "Force 32-bit" } },
+		"xbox", true });
+	/* 0.0.4: anisotropic filtering and sharpening (hakuX's NC_HLE_ANISO and NC_HLE_SHARPEN) */
+	o.push_back({ "aniso", Section::Graphics, "Anisotropic filtering", "",
+		{ { "0", "Default" }, { "2", "2x" }, { "4", "4x" }, { "8", "8x" }, { "16", "16x" } }, "0", true });
+	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
@@ -96,57 +80,40 @@ std::vector<Option> makeOptions()
 	// ---- Performance: how games run
 	/* 0.0.1: the HLE GPU's two threads (the push-buffer decoder, the renderer) on cores of their own */
 	o.push_back({ "gpu_cores", Section::Performance, "GPU on separate cores",
-		"Runs the Xbox GPU's emulation (its command reader and its renderer) on processor cores of its own, apart "
-		"from the Xbox CPU and everything else. Faster; turn it off for a game that freezes or stutters with it.",
-		kOnOff, "1", true });
-	// OGBox 0.1.29: hakuX PR #14 (pjperez), the app's "Frame pacing" (on there by default; off
-	// here, as an enhancement is the user's choice).
+		"Runs the Xbox GPU on processor cores of its own. Turn it off when a game stutters or freezes.", kOnOff, "1",
+		true });
+	// OGBox 0.1.29: hakuX PR #14 (pjperez), the app's "Frame pacing" (off by default)
 	o.push_back({ "frame_pacing", Section::Performance, "Frame pacing",
-		"Keeps the game at most two frames ahead of the picture, so the controller is read close to what is on "
-		"screen. Helps the input lag of a game whose drawing can't keep up; no change in the others.",
-		kOnOff, "0", true });
-	o.push_back({ "uncapped", Section::Performance, "Uncapped frame rate",
-		"Shows each frame as soon as it is ready instead of waiting for the display.", kOnOff, "0", true });
-	// 0.0.2: off by default (the console draws everything). On, a draw whose shader isn't built yet is
-	// skipped when its target was drawn in the last frames; a loading screen's background is drawn once
-	// under a spinner that redraws every frame, so it never came back (a game's first run, its cache
-	// empty). Once a game's shaders are cached, "Build cached shaders at start" readies them anyway.
+		"Helps the input lag of a game whose drawing can't keep up.", kOnOff, "0", true });
+	o.push_back({ "uncapped", Section::Performance, "Uncapped frame rate", "For debugging only.", kOnOff, "0", true });
+	// 0.0.2: off by default (the console draws everything); on, a draw whose shader isn't built yet is skipped
 	o.push_back({ "async_shaders", Section::Performance, "Compile shaders in the background",
-		"Off: the game waits for each new shader (a short stutter the first time), and everything is drawn. On: "
-		"new shaders are compiled without stopping the game, and what needs them is missing until they are ready: "
-		"something drawn once, such as a loading screen's background, can stay missing.",
+		"The first time a game runs, expect hitches while this is off. On, the hitches are gone, but some textures or "
+		"loading screens might be missing.",
 		kOnOff, "0", true });
 	o.push_back({ "prebuild_shaders", Section::Performance, "Build cached shaders at start",
-		"Builds the shaders a game used before while it starts, so they are ready when it needs them.", kOnOff, "1",
-		true });
+		"Builds the shaders a game used before, before it starts.", kOnOff, "1", true });
 	// ---- Audio (0.1.59's APU, hakuX-lr's: its DSP programs run, or the fast mix; the voices' resampler)
 	o.push_back({ "audio_dsp", Section::Audio, "Audio processing",
-		"Fast: the game's voices mixed directly, as hakuX does and as xemu does by default. Full DSP: the Xbox's own audio "
-		"programs run (effects, reverb), translated to the console's own code (xemu's DSP56300 recompiler); experimental, "
-		"as in xemu: some games' programs never finish a frame (surround sound especially), and a game that falls behind "
-		"or goes silent switches to Fast by itself (the boot log says so).",
-		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
+		"Fast: the game's voices mixed directly. Full DSP: the Xbox's own audio programs run; experimental.",
+		{ { "fast", "Fast" }, { "full", "Full DSP" } }, "fast", true });
 	/* the MCPX's own resampler (xemu PR #3105, measured on a console) is the default */
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
-		"How each voice is brought to the output rate. As the Xbox: the console's own 8-point interpolation, measured "
-		"on real hardware, pitch changes smoothed across each frame as it does. Sinc: cleaner highs than the Xbox had. "
-		"Linear: lighter, a little dull.",
-		{ { "mcpx", "As the Xbox" }, { "sinc", "Sinc" }, { "linear", "Linear" } }, "mcpx", true });
+		"Normal: the Xbox's own 8-point interpolation. Sinc: cleaner highs than the Xbox. Linear: a little dull.",
+		{ { "mcpx", "Normal" }, { "sinc", "Sinc" }, { "linear", "Linear" } }, "mcpx", true });
 	// ---- Console: the Xbox itself
 	o.push_back({ "language", Section::Console, "Language",
-		"Games show their text and speech in it where they have it; the others keep their own.",
+		"Affects the in-game language.",
 		{ { "auto", "Auto (English)" }, { "en", "English" }, { "ja", "Japanese" }, { "de", "Deutsch" },
 			{ "fr", "Fran\xC3\xA7" "ais" }, { "es", "Espa\xC3\xB1ol" }, { "it", "Italiano" }, { "ko", "Korean" },
 			{ "zh", "Chinese" }, { "pt", "Portugu\xC3\xAAs" } },
 		"auto", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
-		"The Xbox's RAM. Auto: 64 MB as the console has, 128 MB (the RAM upgrade) when a patch that needs it is on. "
-		"128 MB: as a console with the upgrade, so a game that asks for 64 MB only (most do) gets 64 MB.",
+		"The Xbox's RAM. Auto: 128 MB only when a patch needs it to run. 64 MB: the Xbox's default.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
-	o.push_back({ "console_timing", Section::Console, "Drive timing",
-		"Disc and hard disk reads take time as on the console (a quarter of it at its fastest), so a game's other "
-		"threads run while it loads, as games expect. Off: faster loads, but some games freeze.",
-		kOnOff, "1", true });
+	/* 0.0.6: "Drive timing" turned over ("console_timing" 0 reads as on) */
+	o.push_back({ "fast_drive", Section::Console, "Fast disc drive", "Faster game loads; might freeze some games.",
+		kOnOff, "0", true });
 	{
 		Option days{ "clock_days", Section::Console, "Clock offset: days",
 			"Moves the Xbox's clock from the PS5's time. Games date their saves by it, and some hold events on given "
@@ -175,15 +142,16 @@ std::vector<Option> makeOptions()
 		"1920x1080 in the few games that offer it. Much heavier: use resolution scale 1x.", kOnOff, "0", true });
 	o.push_back({ "pal60", Section::Video, "PAL 60 Hz",
 		"European games run at 60 Hz instead of 50 Hz where they offer it.", kOnOff, "0", true });
-	o.push_back({ "av_pack", Section::Video, "Video cable", "The cable the Xbox thinks it has.",
+	o.push_back({ "av_pack", Section::Video, "Video cable", "",
 		{ { "hdtv", "HDTV (component): all modes" }, { "standard", "Standard AV (composite): 480i only" },
 			{ "svideo", "S-Video: 480i only" } },
 		"hdtv", true });
 	// ---- Network
 	o.push_back({ "network", Section::Network, "Connection",
-		"Xbox Live through Insignia, or system link: play with the consoles on your network, or over the Internet through XLink Kai.",
+		"System link: play with the consoles on your network, or over the Internet through XLink Kai. Xbox Live "
+		"through Insignia: work in progress.",
 		{ { "off", "Off (no cable)" }, { "lan", "LAN: consoles on this network" },
-			{ "kai", "XLink Kai: over the Internet" }, { "insignia", "Xbox Live: Insignia" } },
+			{ "kai", "XLink Kai: over the Internet" }, { "insignia", "Xbox Live: Insignia (work in progress)", true } },
 		"off", false });
 	{
 		Option peers{ "lan_peers", Section::Network, "Other consoles",
@@ -216,7 +184,7 @@ std::vector<Option> makeOptions()
 		place("list_usb", "USB drives",
 			"The console's USB drives (/mnt/usb0 to usb7). Connected ones: only a drive that is plugged in.",
 			{ { "0", "Hidden" }, { "1", "Connected ones" }, { "2", "All eight" } }, "0");
-		place("list_ext", "Extended storage", "The extended storage drives (/mnt/ext0, ext1), when there.", kOnOff, "1");
+		place("list_ext", "Internal NVMe", "The console's M.2 storage (/mnt/ext0, ext1), when there.", kOnOff, "1");
 		place("list_network", "Network shares", "The shares of /data/ogbox/network.cfg.", kOnOff, "1");
 		// 0.1.45: how the list looks
 		place("list_covers", "Covers and descriptions",
@@ -224,10 +192,10 @@ std::vector<Option> makeOptions()
 			"libretro's thumbnails by its Redump name, else MobCat's scans of the boxes by the disc's serial, else "
 			"the picture in the disc's own default.xbe. A game's page shows its description from Wikipedia.",
 			kOnOff, "1");
-		place("home_layout", "Layout", "The games as a row of covers with the chosen one's details beside them, or as a "
+		place("home_layout", "View", "The games as a row of covers with the chosen one's details beside them, or as a "
 			"list with the chosen one's cover and details at the right (for big folders).",
 			{ { "covers", "Covers" }, { "list", "List" } }, "covers");
-		place("list_layout", "Layout", "The folder's discs as a list, or as a grid of their covers.",
+		place("list_layout", "View", "The folder's discs as a list, or as a grid of their covers.",
 			{ { "list", "List" }, { "grid", "Grid of covers" } }, "list");
 		place("list_names", "Names", "The discs' names as their files have them, or without the extension and the "
 			"bracketed parts (region, languages, revision).",
@@ -263,15 +231,18 @@ std::vector<Option> makeOptions()
 		up.now = true;
 		o.push_back(up);
 	}
+	/* 0.0.6: which corner ("1", as before: the top right) */
 	o.push_back({ "show_fps", Section::Interface, "FPS counter",
-		"The frame rate and frame time in a corner while playing.", kOnOff, "1", false });
+		"The frame rate and frame time in a corner while playing.",
+		{ { "0", "Off" }, { "tl", "Top left" }, { "1", "Top right" }, { "bl", "Bottom left" }, { "br", "Bottom right" } }, "1", false });
 	{
 		/* 0.1.53 */
 		Option qm{ "quick_menu", Section::Interface, "Quick menu button",
-			"The button that opens the quick menu in a game (save states, the game's settings, quit). OPTIONS: the "
-			"Xbox's Start and Back are the touch pad's right and left halves. OPTIONS held: a short press is Start, "
-			"held half a second it opens the menu; the touch pad is Back.",
-			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" } }, "options", false };
+			"The button that opens the quick menu in a game. OPTIONS: the Xbox's Start and Back are the touch pad's right "
+			"and left halves. OPTIONS held: a short press is Start, held half a second it opens the menu. With a "
+			"combination, OPTIONS is the Xbox's Start and the touch pad its Back (Settings > Controller can change both).",
+			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" }, { "combo", "L1+L2+R1+R2+OPTIONS" },
+				{ "touch_hold", "Touch pad held" }, { "l3r3", "L3+R3" } }, "options", false };
 		qm.now = true;
 		o.push_back(qm);
 	}
@@ -294,13 +265,7 @@ std::vector<Option> makeOptions()
 					break;
 				}
 			}
-			Option p{ padKey(c), Section::Controller, padLabel(c),
-				startBack ? "The DualSense button that is the Xbox's. Automatic: the touch pad's right half is Start and its left "
-					"half Back (with Settings > Interface > Quick menu button on \"OPTIONS held\", the whole touch pad is Back and "
-					"a short OPTIONS press is Start); for players 2 to 4 OPTIONS is Start too. Player 1's OPTIONS always opens "
-					"the quick menu."
-					: "The DualSense button that is the Xbox's. A trigger on one of the Xbox's pressure-sensitive buttons (A, B, X, "
-					"Y, Black, White, the triggers) gives how far it is pressed.",
+			Option p{ padKey(c), Section::Controller, padLabel(c), "",
 				std::move(choices), defValue, true };
 			p.now = true;
 			o.push_back(p);
@@ -313,19 +278,16 @@ std::vector<Option> makeOptions()
 			p.now = true;
 			o.push_back(p);
 		};
-		add("pad_sticks", "Sticks", "Which stick is the Xbox's left one: as on the DualSense, or swapped.",
-			{ { "normal", "As they are" }, { "swapped", "Swapped" } }, "normal");
-		add("pad_invert_ly", "Left stick: up is down", "Turns the left stick's up and down over, for games that look the other way.",
-			kOnOff, "0");
-		add("pad_invert_ry", "Right stick: up is down", "Turns the right stick's up and down over, for games that look the other way.",
-			kOnOff, "0");
-		add("pad_dead_l", "Left stick deadzone", "How far the left stick moves before the game sees it, so a worn stick that drifts "
-			"stays still; the rest of its reach still gives the full range. Most Xbox games have a deadzone of their own: raise this "
-			"only if a game drifts.", dead, "0");
-		add("pad_dead_r", "Right stick deadzone", "How far the right stick moves before the game sees it (a drifting camera); the "
-			"rest of its reach still gives the full range.", dead, "0");
-		add("pad_dead_t", "Trigger deadzone", "How far L2 and R2 go before the game sees them: for a game that reads a light touch "
-			"as a press.", dead, "0");
+		add("pad_sticks", "Sticks", "", { { "normal", "Normal" }, { "swapped", "Swapped" } }, "normal");
+		add("pad_invert_ly", "Invert left stick", "", kOnOff, "0");
+		add("pad_invert_ry", "Invert right stick", "", kOnOff, "0");
+		add("pad_dead_l", "Left stick deadzone", "", dead, "0");
+		add("pad_dead_r", "Right stick deadzone", "", dead, "0");
+		add("pad_dead_t", "Trigger deadzone", "", dead, "0");
+		/* 0.0.6: the rumble's strength, as PSWin's game profiles have it (a percent of what the game asks for) */
+		add("pad_rumble", "Rumble strength", "", { { "0", "Off" }, { "10", "10%" }, { "20", "20%" }, { "30", "30%" },
+			{ "40", "40%" }, { "50", "50%" }, { "60", "60%" }, { "70", "70%" }, { "80", "80%" }, { "90", "90%" }, { "100", "100%" } },
+			"100");
 	}
 	return o;
 }
@@ -360,11 +322,19 @@ void readFile(const std::string &path, std::map<std::string, std::string> &out)
 			continue;
 		}
 		const std::string key = trim(s.substr(0, eq));
+		const std::string v = trim(s.substr(eq + 1));
 		if (option(key)) {
-			out[key] = trim(s.substr(eq + 1));
+			out[key] = v;
+		} else if (key == "force32" && v == "1" && !out.count("dither")) {
+			out["dither"] = "force32";     // 0.0.6: Force 32-bit colour is one of the dithering's choices
+		} else if (key == "console_timing" && v == "0" && !out.count("fast_drive")) {
+			out["fast_drive"] = "1";       // 0.0.6: Drive timing off is Fast disc drive on
 		}
 	}
 	std::fclose(f);
+	if (out.count("upscale") && out["upscale"] == "sgsr") {
+		out["upscale"] = "fsr";            // 0.0.6: Snapdragon GSR gave way to FSR1
+	}
 }
 
 void writeFile(const std::string &path, const std::map<std::string, std::string> &values, const char *head)
@@ -396,7 +366,7 @@ const char *sectionName(Section s)
 	case Section::Audio: return "Audio";
 	case Section::Console: return "Console";
 	case Section::Video: return "Video modes";
-	case Section::Network: return "Network";
+	case Section::Network: return "Network and shares";
 	case Section::Library: return "Game list";
 	case Section::Interface: return "Interface";
 	case Section::Controller: return "Controller";
@@ -633,7 +603,7 @@ std::vector<std::string> Settings::coreArgs() const
 	a.push_back(std::string("pace=") + (on("frame_pacing") ? "1" : "0"));
 	a.push_back(std::string("asyncpipe=") + (on("async_shaders") ? "1" : "0"));
 	a.push_back(std::string("prebuild=") + (on("prebuild_shaders") ? "1" : "0"));
-	a.push_back(std::string("devtime=") + (on("console_timing") ? "1" : "0"));
+	a.push_back(std::string("devtime=") + (on("fast_drive") ? "0" : "1"));
 	// 0.1.47: the RAM; Auto: 128 MB when a patch on for the game needs it (ogbox_patches.c)
 	const std::string ram = value("console_ram");
 	const bool patch128 = !gameKey.empty() && ogbox_patches_need_128(gameKey.c_str());
@@ -664,12 +634,12 @@ std::vector<std::string> Settings::coreArgs() const
 	if (value("dither") == "fine" || value("dither") == "off") {   // 0.0.3
 		a.push_back("NC_HLE_DITHER=" + value("dither"));
 	}
+	if (value("dither") == "force32") {   // 0.0.6: Force 32-bit colour, one of the dithering's choices
+		a.push_back("NC_HLE_FORCE32=1");
+	}
 	// 0.0.4: anisotropic filtering, 32-bit colour, sharpening
 	if (value("aniso") == "2" || value("aniso") == "4" || value("aniso") == "8" || value("aniso") == "16") {
 		a.push_back("NC_HLE_ANISO=" + value("aniso"));
-	}
-	if (value("force32") == "1") {
-		a.push_back("NC_HLE_FORCE32=1");
 	}
 	if (value("sharpen") == "30" || value("sharpen") == "60" || value("sharpen") == "90") {
 		a.push_back("NC_HLE_SHARPEN=" + value("sharpen"));
@@ -689,7 +659,7 @@ std::vector<std::string> Settings::coreArgs() const
 			a.push_back("net=kai");
 			a.push_back("kai=" + kai);
 		}
-	} else if (net == "insignia") {
+	} else if (net == "insignia" && false) {   // 0.0.6: Insignia is greyed out (work in progress)
 		const std::string dns = trim(value("insignia_dns"));
 		a.push_back("net=nat");
 		a.push_back("dns=" + (dns.empty() ? std::string("46.101.64.175") : dns));

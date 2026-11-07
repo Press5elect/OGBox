@@ -686,8 +686,8 @@ int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
         copyf(out[n].fit_why, sizeof(out[n].fit_why), fit_of(key, g_db[i].p.id, &out[n].fit));
         if (crc && crc != disc && out[n].fit != OGBOX_FIT_NO) {
             out[n].fit = OGBOX_FIT_NO;
-            snprintf(out[n].fit_why, sizeof(out[n].fit_why), "it was made for the default.xbe of CRC-32 %08x, this "
-                     "disc's is %08x", crc, disc);
+            snprintf(out[n].fit_why, sizeof(out[n].fit_why), "its default.xbe has CRC-32 %08X; this disc's has %08X",
+                     crc, disc);
         }
         n++;
     }

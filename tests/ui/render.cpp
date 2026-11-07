@@ -275,31 +275,29 @@ int main(int argc, char **argv)
 	home.cardsTitle = "Games";
 	home.cardsSub = "/data/ogbox/games";
 	home.cards = { { "Up", "ogbox", ui::Icon::Up }, { "Classics", "", ui::Icon::Folder }, { "Racing", "", ui::Icon::Folder },
-		{ "Xbox dashboard", "", ui::Icon::Dash, false, true }, { "Add a network share", "", ui::Icon::Plus, true } };
-	home.footer = { { "X", "Continue" }, { "S", "From the start" }, { "T", "Game page" }, { "L2 R2", "A to Z" }, { "OPT", "Settings" },
+		{ "Xbox dashboard", "", ui::Icon::Dash, false, true } };
+	home.footer = { { "X", "Continue" }, { "S", "From the start" }, { "T", "Game Details" }, { "L2 R2", "A to Z" }, { "OPT", "Settings" },
 		{ "O", "Back" } };
 	home.version = "OGBox 0.0.3";
 
 	ui::SettingsView set;
 	set.logo = logo;
 	set.title = "Settings";
-	set.subtitle = "for every game";
-	set.nav = { { "Picture and sound", "what you'd change" }, { "The Xbox", "as its dashboard sets it" },
-		{ "Advanced", "can break games", 0, true }, { "Network", "Insignia connected", ui::P().ok, false, true },
-		{ "Data folder", "/data/ogbox \xC2\xB7 412 GB free" }, { "Xbox hard disk", "38 saves" }, { "Updates", "0.0.3 \xC2\xB7 the newest" },
-		{ "Interface", "Dark" }, { "About", "build 6d5366ca" } };
+	set.nav = { { "Picture and sound", "2x \xC2\xB7 Auto" }, { "XBOX", "English \xC2\xB7 HDTV" },
+		{ "Advanced", "experimental", 0, true }, { "Network and shares", "LAN \xC2\xB7 2 shares", ui::P().ok, false, true },
+		{ "Game list", "with covers" }, { "Interface", "Dark" }, { "Updates", "0.0.6 \xC2\xB7 the newest" }, { "About", "0.0.6" } };
 	set.navSel = 0;
 	set.focusNav = false;
 	set.pageTitle = "Picture and sound";
 	set.pageAction = "";
 	{
 		ui::SetRow r;
-		r.key = "render_scale"; r.name = "Resolution"; r.choices = { "1x", "2x", "3x", "4x" }; r.choice = 2;
-		r.desc = "How sharp the picture is drawn: 3x is 1920 x 1440 for a 640 x 480 game. Higher costs speed in heavy scenes.";
+		r.key = "render_scale"; r.name = "Internal resolution"; r.choices = { "1x (Xbox default)", "2x", "3x", "4x" }; r.choice = 2;
+		r.desc = "1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen.";
 		set.rows.push_back(r);
 		r = {}; r.key = "aspect"; r.name = "Shape"; r.choices = { "As the game", "4:3", "16:9", "Stretch" }; r.choice = 0;
 		set.rows.push_back(r);
-		r = {}; r.key = "upscale"; r.name = "Scaling"; r.choices = { "Smooth", "Sharp" }; r.choice = 0; r.changed = true;
+		r = {}; r.key = "upscale"; r.name = "Upscaling filter"; r.choices = { "Bilinear", "Bilinear (Sharp)", "FSR1" }; r.choice = 2; r.changed = true;
 		set.rows.push_back(r);
 		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "fxaa"; r.name = "Smooth edges (FXAA)"; r.on = true;
 		set.rows.push_back(r);
@@ -315,13 +313,14 @@ int main(int argc, char **argv)
 
 	ui::SettingsView net = set;
 	net.navSel = 3;
-	net.pageTitle = "Network";
+	net.pageTitle = "Network and shares";
 	net.pageAction = "";
 	net.rows.clear();
 	{
 		ui::SetRow r;
 		r.kind = ui::SetRow::Kind::Group; r.key = "g1"; r.name = "Online play"; net.rows.push_back(r);
-		r = {}; r.key = "conn"; r.name = "Connection"; r.choices = { "Off", "LAN", "XLink Kai", "Insignia" }; r.choice = 3;
+		r = {}; r.key = "conn"; r.name = "Connection"; r.choices = { "Off (no cable)", "LAN: consoles on this network", "XLink Kai: over the Internet",
+			"Xbox Live: Insignia (work in progress)" }; r.choice = 3; r.offChoices = { 3 };
 		net.rows.push_back(r);
 		r = {}; r.kind = ui::SetRow::Kind::Text; r.key = "dns"; r.name = "Insignia DNS"; r.value = "46.101.64.175"; r.placeholder = "DNS";
 		r.desc = "Accounts are made on insignia.live and tied to the console's identity; sign in from the Xbox dashboard.";
@@ -373,8 +372,8 @@ int main(int argc, char **argv)
 	gp.states.push_back({ "Empty slot", {}, true });
 	gp.facts = { { "Last played", "2 hours ago" }, { "Title ID", "4D530064.01" }, { "Serial", "MS-064" }, { "File", "Starfall Tactics.iso" } };
 	gp.actions = { { "Continue", "Where you left off, 2 hours ago", ui::Icon::Play }, { "From the start", "", ui::Icon::Restart },
-		{ "Save states", "4 saved", ui::Icon::Load }, { "Settings", "3 of its own", ui::Icon::Gear },
-		{ "Mods", "12 for it, 2 on", ui::Icon::Puzzle }, { "Saves", "copy, bring in, delete", ui::Icon::Save } };
+		{ "Load State", "4 saved", ui::Icon::Load }, { "Settings", "3 of its own", ui::Icon::Gear },
+		{ "Game Patches", "12 for it, 2 on", ui::Icon::Puzzle }, { "Import Saves", "", ui::Icon::Save } };
 	gp.footer = { { "LR", "Choose" }, { "X", "Open" }, { "O", "Back" } };
 
 	ui::PopupView pop;
@@ -383,17 +382,16 @@ int main(int argc, char **argv)
 	pop.items = { "Continue", "Start from the beginning", "Cancel" };
 	pop.sel = 0;
 
-	const ui::Head setHead{ logo, "Mods, patches and cheats", "Starfall Tactics \xC2\xB7 4D530064.01", {} };
+	const ui::Head setHead{ logo, "Game Patches", "Starfall Tactics \xC2\xB7 4D530064.01", {} };
 	ui::ListScreenView mods;
 	mods.head = setHead;
 	{
 		using R = ui::ListRow;
 		R r;
-		r.kind = R::Kind::Section; r.key = "s1"; r.title = "Patches \xC2\xB7 applied to a copy of the XBE"; mods.rows.push_back(r);
-		r = {}; r.kind = R::Kind::Section; r.key = "s1a"; r.title = "Widescreen (16:9)"; r.indent = 0; mods.rows.push_back(r);
+		r.kind = R::Kind::Section; r.key = "s1"; r.title = "Patches"; mods.rows.push_back(r);
 		r = {}; r.key = "p1"; r.title = "16:9 widescreen"; r.sub = "by Mobcat \xC2\xB7 from patches.db"; r.toggle = 1; mods.rows.push_back(r);
-		r = {}; r.key = "p2"; r.title = "60 FPS"; r.sub = "by Jay \xC2\xB7 made for another release"; r.toggle = 0; r.dim = true;
-		r.right = "another release"; mods.rows.push_back(r);
+		r = {}; r.key = "p2"; r.title = "60 FPS"; r.sub = "by Jay"; r.toggle = 0; r.dim = true;
+		r.right = "Incompatible"; mods.rows.push_back(r);
 		r = {}; r.kind = R::Kind::Section; r.key = "s2"; r.title = "Cheats"; mods.rows.push_back(r);
 		r = {}; r.key = "c1"; r.title = "Infinite health"; r.toggle = 0; mods.rows.push_back(r);
 		r = {}; r.key = "c2"; r.title = "All levels open"; r.toggle = 1; r.right = "once"; mods.rows.push_back(r);
@@ -467,14 +465,13 @@ int main(int argc, char **argv)
 		using R = ui::ListRow;
 		R r;
 		r.key = "resume"; r.title = "Resume"; r.icon = ui::Icon::Play; qv.rows.push_back(r);
-		r = {}; r.key = "save"; r.title = "Save state"; r.right = "\xE2\x86\x90 slot 3 \xE2\x86\x92"; r.icon = ui::Icon::Save; qv.rows.push_back(r);
-		r = {}; r.key = "load"; r.title = "Load state"; r.right = "slot 3"; r.icon = ui::Icon::Load; qv.rows.push_back(r);
-		r = {}; r.key = "left"; r.title = "Where you left off"; r.right = "2 hours ago"; r.icon = ui::Icon::Back; qv.rows.push_back(r);
-		r = {}; r.key = "set"; r.title = "Game settings"; r.right = "next start"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
-		r = {}; r.key = "mods"; r.title = "Mods, patches, cheats"; r.right = "next start"; r.icon = ui::Icon::Puzzle; qv.rows.push_back(r);
-		r = {}; r.key = "log"; r.title = "Log what the GPU draws"; r.icon = ui::Icon::Info; qv.rows.push_back(r);
-		r = {}; r.key = "restart"; r.title = "Restart the game"; r.icon = ui::Icon::Restart; qv.rows.push_back(r);
-		r = {}; r.key = "quit"; r.title = "Quit the game"; r.icon = ui::Icon::Power; r.danger = true; qv.rows.push_back(r);
+		r = {}; r.key = "save"; r.title = "Save State"; r.right = "\xE2\x86\x90 slot 3 \xE2\x86\x92"; r.icon = ui::Icon::Save; qv.rows.push_back(r);
+		r = {}; r.key = "load"; r.title = "Load State"; r.right = "\xE2\x86\x90 slot 3 \xE2\x86\x92"; r.icon = ui::Icon::Load; qv.rows.push_back(r);
+		r = {}; r.key = "set"; r.title = "Game Settings"; r.right = "next start"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
+		r = {}; r.key = "mods"; r.title = "Patches"; r.right = "next start"; r.icon = ui::Icon::Puzzle; qv.rows.push_back(r);
+		r = {}; r.key = "log"; r.title = "Log What the GPU Draws"; r.right = "debugging only"; r.icon = ui::Icon::Info; qv.rows.push_back(r);
+		r = {}; r.key = "restart"; r.title = "Restart the Game"; r.icon = ui::Icon::Restart; qv.rows.push_back(r);
+		r = {}; r.key = "quit"; r.title = "Quit the Game"; r.icon = ui::Icon::Power; r.danger = true; qv.rows.push_back(r);
 	}
 	qv.sel = 1;
 	qv.showSlot = true;
@@ -560,21 +557,25 @@ int main(int argc, char **argv)
 			v.pageTitle = "Controller";
 			v.rows.clear();
 			ui::SetRow r;
-			r.kind = ui::SetRow::Kind::Group; r.key = "gb"; r.name = "Buttons"; v.rows.push_back(r);
-			const char *names[][2] = { { "A", "Cross" }, { "B", "Circle" }, { "X", "Square" }, { "Y", "Triangle" }, { "Black", "R1" },
-				{ "White", "L1" }, { "Left trigger", "L2" }, { "Right trigger", "R2" }, { "Start", "Automatic" } };
+			const char *names[][3] = { { "pad_lt", "Left trigger", "L2" }, { "pad_lthumb", "Left stick click", "L3" },
+				{ "pad_up", "D-pad up", "D-pad up" }, { "pad_down", "D-pad down", "D-pad down" }, { "pad_left", "D-pad left", "D-pad left" },
+				{ "pad_right", "D-pad right", "D-pad right" }, { "pad_back", "Back", "Touch pad" }, { "pad_rt", "Right trigger", "R2" },
+				{ "pad_y", "Y", "Triangle" }, { "pad_x", "X", "Square" }, { "pad_b", "B", "Circle" }, { "pad_a", "A", "Square" },
+				{ "pad_white", "White", "L1" }, { "pad_black", "Black", "R1" }, { "pad_start", "Start", "Touch pad" },
+				{ "pad_rthumb", "Right stick click", "R3" } };
 			for (const auto &n : names) {
-				r = {}; r.key = n[0]; r.name = n[0]; r.value = n[1]; r.choices = { n[1] }; r.choice = 0;
-				r.changed = std::string(n[0]) == "A";
-				if (r.changed) { r.choices = { "Square" }; }
+				r = {}; r.key = n[0]; r.name = n[1]; r.choices = { n[2] }; r.choice = 0; r.hidden = true;
+				r.changed = std::string(n[0]) == "pad_a";
 				v.rows.push_back(r);
+				v.pad.push_back({ n[0], n[1], n[2], r.changed });
 			}
 			r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gs"; r.name = "Sticks and triggers"; v.rows.push_back(r);
-			r = {}; r.key = "sticks"; r.name = "Sticks"; r.choices = { "As they are", "Swapped" }; v.rows.push_back(r);
+			r = {}; r.key = "sticks"; r.name = "Sticks"; r.choices = { "Normal", "Swapped" }; v.rows.push_back(r);
+			r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "inv"; r.name = "Invert left stick"; v.rows.push_back(r);
 			r = {}; r.key = "dl"; r.name = "Left stick deadzone"; r.choices = { "15%" }; r.changed = true; v.rows.push_back(r);
-			v.rowSel = 1;
-			v.rows[1].desc = "The DualSense button that is the Xbox's. A trigger on one of the Xbox's pressure-sensitive buttons gives how "
-				"far it is pressed.";
+			r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gr"; r.name = "Rumble"; v.rows.push_back(r);
+			r = {}; r.key = "rumble"; r.name = "Rumble strength"; r.choices = { "80%" }; r.changed = true; v.rows.push_back(r);
+			v.rowSel = 11;
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
 			ui::drawSettings(dl, S, v);
 		} },
