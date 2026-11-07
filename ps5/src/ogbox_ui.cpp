@@ -405,6 +405,43 @@ float paragraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std:
 	return y - p.y - (line ? lh - size * 1.15f : 0.0f);
 }
 
+namespace {
+float g_scrollIn = 0.0f;
+}
+
+void setScrollInput(float y)
+{
+	g_scrollIn = std::fabs(y) < 0.2f ? 0.0f : y;
+}
+
+float scrollParagraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float w, float maxH,
+	const std::string &key, float lineGap)
+{
+	const float full = paragraph(nullptr, f, size, ImVec2(0, 0), 0, s, w, 9999, lineGap);
+	if (full <= maxH + 0.5f) {
+		if (dl) {
+			paragraph(dl, f, size, p, col, s, w, 9999, lineGap);
+		}
+		return full;
+	}
+	if (!dl) {
+		return maxH;
+	}
+	// the scroll, kept by key and the text's length (another text starts at its top)
+	float &at = value("scroll." + key + "." + std::to_string(s.size()), 0.0f);
+	at = std::max(0.0f, std::min(full - maxH, at + g_scrollIn * dt() * px(700.0f)));
+	dl->PushClipRect(p, ImVec2(p.x + w + px(4.0f), p.y + maxH), true);
+	paragraph(dl, f, size, ImVec2(p.x, p.y - at), col, s, w, 9999, lineGap);
+	dl->PopClipRect();
+	// a thin bar at the right: where in the text this is
+	const float barX = p.x + w + px(10.0f);
+	const float th = std::max(px(24.0f), maxH * maxH / full);
+	const float ty = p.y + (maxH - th) * (at / (full - maxH));
+	dl->AddRectFilled(ImVec2(barX, p.y), ImVec2(barX + px(3.0f), p.y + maxH), IM_COL32(255, 255, 255, 18), px(2.0f));
+	dl->AddRectFilled(ImVec2(barX, ty), ImVec2(barX + px(3.0f), ty + th), col, px(2.0f));
+	return maxH;
+}
+
 // ---- time and motion --------------------------------------------------------------------------
 
 void beginFrame(double seconds)

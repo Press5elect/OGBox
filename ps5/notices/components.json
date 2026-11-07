@@ -77,7 +77,7 @@
    "name": "hakuX: the native core (the reimplemented Xbox kernel, the devices, the network, savestates), the HLE GPU (hw/xbox/hle) and its host interface, its GLib subset (its own reimplementation, not GLib's code)",
    "licence": "GPL-3.0-or-later",
    "copyright": "rfandango and the hakuX contributors",
-   "modifications": "the PS5 port, Copyright (C) 2026 Press5elect: ps5/patches/hakux/*.patch on the pinned revision; FEX, the Android app, the AAudio output (native/dev/apu/out.c) and the Android window's presenter (hw/xbox/hle/vk/swapchain.c) is not built; its place is taken by ps5/hakux, and its FXAA and SGSR filters are OGBox's presenter's shaders (shaders/glsl/ogbox/fxaa.frag, sgsr.frag, 0.1.26)",
+   "modifications": "the PS5 port, Copyright (C) 2026 Press5elect: ps5/patches/hakux/*.patch on the pinned revision; FEX, the Android app, the AAudio output (native/dev/apu/out.c) and the Android window's presenter (hw/xbox/hle/vk/swapchain.c) is not built; its place is taken by ps5/hakux, and its FXAA filter is OGBox's presenter's shader (shaders/glsl/ogbox/fxaa.frag, 0.1.26)",
    "texts": {
     "hakuX-LICENSE.txt": "build/hakux-src/LICENSE",
     "hakuX-COPYING.txt": "build/hakux-src/COPYING"
@@ -91,20 +91,20 @@
    }
   },
   {
-   "id": "snapdragon-gsr",
-   "name": "Snapdragon Game Super Resolution 1 (Qualcomm's sgsr1_shader_mobile.frag), as hakuX adapts it, in OGBox's presenter (shaders/glsl/ogbox/sgsr.frag)",
-   "licence": "BSD-3-Clause",
-   "copyright": "Copyright (c) 2023, 2025, Qualcomm Innovation Center, Inc.",
-   "modifications": "hakuX's adaptation (its input, output and gamma ramp); OGBox 0.1.26: OGBox's presenter's input and output, no gamma ramp, Copyright (C) 2026 Press5elect",
+   "id": "fidelityfx-fsr1",
+   "name": "AMD FidelityFX Super Resolution 1.0's EASU (ffx_fsr1.h FsrEasuF), ported to GLSL in OGBox's presenter (shaders/glsl/ogbox/fsr1.frag)",
+   "licence": "MIT",
+   "copyright": "Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.",
+   "modifications": "OGBox 0.0.6: a GLSL port for one pass from the picture to the screen, Copyright (C) 2026 Press5elect",
    "texts": {
-    "snapdragon-gsr.license.txt": "build/hakux-src/licenses/snapdragon-gsr.license.txt"
+    "FidelityFX-FSR-LICENSE.txt": "ps5/licenses/FidelityFX-FSR-LICENSE.txt"
    },
    "artifacts": [
     "shaders/"
    ],
    "source": {
-    "url": "https://github.com/SnapdragonStudios/snapdragon-gsr",
-    "revision": "as in hakuX @hakux"
+    "url": "https://github.com/GPUOpen-Effects/FidelityFX-FSR",
+    "revision": "v1.0.2"
    }
   },
   {

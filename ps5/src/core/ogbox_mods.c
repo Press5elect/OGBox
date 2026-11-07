@@ -1294,6 +1294,7 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
             copy(e->category, sizeof(e->category), patches[i].category);
             copy(e->author, sizeof(e->author), patches[i].author);
             copy(e->source, sizeof(e->source), patches[i].source);
+            copy(e->region, sizeof(e->region), patches[i].region);
             e->patch = true;
             e->on = patches[i].on;
             e->fit = patches[i].fit;

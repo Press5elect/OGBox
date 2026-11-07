@@ -136,6 +136,9 @@ int ps5vfs_fileno(FILE* fp);
 int ps5vfs_disc_open(const char* path);
 /* OGBox 0.1.26: a descriptor ps5vfs_disc_open gave, given back (a plain one closed). */
 void ps5vfs_disc_close(int fd);
+/* OGBox 0.0.6: while reads of a share are under way, how long none of them has finished (seconds;
+ * 0 when none is under way): a share that stopped answering, said on the screen. */
+double ps5vfs_stalled_seconds(void);
 
 /* ---- writing ---------------------------------------------------------------
  * Whole files only, and only for virtual paths. Each returns 0, or -1 with errno (EROFS from a

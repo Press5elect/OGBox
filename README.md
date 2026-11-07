@@ -5,8 +5,8 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**Latest release: [v0.0.5](https://github.com/Press5elect/OGBox/releases/tag/v0.0.5).** Download
-`OGBox-v0.0.5.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v0.0.6](https://github.com/Press5elect/OGBox/releases/tag/v0.0.6).** Download
+`OGBox-v0.0.6.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -22,10 +22,10 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **highly experimental** software. 0.0.5 is the fifth public release, after a long run of
-bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Many others won't start, stop
-partway, slow down, or lose their graphics or sound. Crashes and freezes happen, and OGBox reminds
-you of that every time it starts.
+This is **experimental** software. 0.0.6 is the sixth public release, after a long run of
+bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
+partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen, and
+OGBox says so the first time each version starts.
 
 If you're curious how it works: the Xbox's own x86 code runs directly on the PS5's processor, in
 its compatibility mode, instead of being translated. Calls into the Xbox kernel go through a gate
@@ -105,7 +105,7 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   exact depth, and cropping the overscan.
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
   compiling shaders in the background, and building cached shaders at start.
-- **Audio:** the resampler. Sound is mixed the fast way, as xemu does by default.
+- **Audio:** the resampler (Normal, Sinc or Linear). Sound is mixed the fast way, as xemu does by default.
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
   when such a patch is on), drive timing and the clock.
 - **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
@@ -214,7 +214,9 @@ The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_c
 
 - **hakuX** by rfandango and its contributors (GPL-3.0-or-later): the emulator. Its MCPX APU is
   xemu's (LGPL-2.1-or-later), with Hatari's DSP56300 emulation (GPL-2.0-or-later); its kernel
-  export table is nxdk's (CC0).
+  export table is nxdk's (CC0). The voice processor's measured behaviour is from raddad772's
+  tests on a retail console (xemu pull request #3105, LGPL-2.1-or-later), by way of
+  CallistoNTG's hakuX port.
 - **OGBox's logo** (the green X and the name) by Press5elect: `ps5/art/ogbox-logo.png`, the
   title's icon and launcher pictures (`ps5/tools/make-title-art.py`) and the start screen.
 - **Crux2** and **Kelvin** by Press5elect: the console platform code (the boot log, the crash
@@ -247,6 +249,50 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.6
+
+Added
+- Settings > Picture and sound > Upscaling filter: Bilinear (Sharp), and FSR1 (AMD's FidelityFX
+  Super Resolution 1.0) in place of Snapdragon GSR.
+- Settings > Picture and sound > FPS counter: which corner it is in.
+- Settings > Controller: a drawn Xbox controller with each button's DualSense counterpart, and
+  Rumble strength (0 to 100%).
+- Settings > Interface > Quick menu button: L1+L2+R1+R2+OPTIONS, Touch pad held or L3+R3, which
+  leave OPTIONS free to be the Xbox's Start.
+- Settings > Updates > What's New?: this version's notes.
+- A game on a network share waits for the share when it doesn't answer at the start, with the
+  seconds counted on the screen ("Waiting for the network share..."; CIRCLE goes back to the game
+  list). A share that stops answering during a game is shown the same way while the game waits.
+
+Changed
+- Sound as the Xbox's sound chip makes it, from tests on a real console (xemu pull request #3105
+  by raddad772): its own 8-point resampling with pitch changes smoothed across each frame, the
+  volume curve, envelope and LFO timings, 3D sound's head filters and their fades, the effects'
+  filters, and the mix's rounding. Settings > Advanced > Resampler: Normal (the Xbox's own, the
+  new default), Sinc or Linear.
+- The game list's first tab is called Internal. The Network tab shows only the shares set in
+  Settings > Network and shares, with no Up or "Add a network share" card.
+- The game page is Game Details. Load State is always there; the mods screen is Game Patches,
+  with every patch in one group; a patch made for another version of the game says Incompatible
+  and which version it is for; Saves reads Import Saves while the game has none.
+- The quick menu: Resume, Save State, Load State (LEFT and RIGHT choose the slot), Game Settings,
+  Patches, Log What the GPU Draws (for debugging), Restart the Game and Quit the Game.
+- Settings: shorter descriptions, without the "takes effect at the next game start" and "default"
+  lines (TRIANGLE sets the default). Resolution scale is Internal resolution; Force 32-bit colour
+  is one of 16-bit dithering's choices; Drive timing is Fast disc drive (turned over); The Xbox is
+  XBOX; Network is Network and shares; the data folder and the Xbox hard disk's location are
+  under About, with the credits; the saves are under XBOX. A game's setting that follows Settings
+  reads Default. Your old settings carry over.
+- Controller: the sticks are Normal or Swapped, with Invert left stick and Invert right stick.
+- Long descriptions scroll with the right stick, in every menu.
+- Xbox Live through Insignia is greyed out in Settings > Network and shares: work in progress.
+- The start notice is shown once per version (a fresh install or after an update).
+
+Fixed
+- OGBox's logo is back at the top left of the menus (it was missing after the start screen).
+- A game that checks where its files are on the disc against its own default.xbe crippled itself
+  and crashed when one of its patches was on: the patched default.xbe reported a made-up position.
 
 ### 0.0.5
 

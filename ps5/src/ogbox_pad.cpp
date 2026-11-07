@@ -74,7 +74,7 @@ int percent(const std::string &s)
 const std::vector<PadSource> &padSources()
 {
 	static const std::vector<PadSource> s = {
-		{ "auto", "Automatic", src::automatic },
+		{ "auto", "Touch pad", src::automatic },   // 0.0.6: Start and Back on the touch pad's halves
 		{ "cross", "Cross", PAD_CROSS },
 		{ "circle", "Circle", PAD_CIRCLE },
 		{ "square", "Square", PAD_SQUARE },
@@ -90,7 +90,7 @@ const std::vector<PadSource> &padSources()
 		{ "left", "D-pad left", PAD_LEFT },
 		{ "right", "D-pad right", PAD_RIGHT },
 		{ "options", "OPTIONS", PAD_OPTIONS },
-		{ "touch", "Touch pad", PAD_TOUCH_PAD },
+		{ "touch", "Touch pad (whole)", PAD_TOUCH_PAD },
 		{ "touch_left", "Touch pad, left half", src::touchLeft },
 		{ "touch_right", "Touch pad, right half", src::touchRight },
 		{ "none", "Nothing", src::none },

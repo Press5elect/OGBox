@@ -61,7 +61,8 @@ void drawListScreen(ImDrawList *dl, ImVec2 S, const ListScreenView &v)
 			y2 += px(34.0f);
 		}
 		if (v.rows2.empty() && !v.aside.text.empty()) {
-			paragraph(dl, F::Body, px(18.0f), ImVec2(split + px(22.0f), y2 + px(8.0f)), p.textDim, v.aside.text, R - split - px(44.0f), 12, 1.4f);
+			scrollParagraph(dl, F::Body, px(18.0f), ImVec2(split + px(22.0f), y2 + px(8.0f)), p.textDim, v.aside.text, R - split - px(56.0f),
+				bottom - y2 - px(24.0f), "aside." + v.head.title, 1.4f);
 		} else {
 			drawList(dl, ImVec2(split, y2), ImVec2(R, bottom), v.rows2, v.sel2, v.pane == 1, "ls2." + v.head.title + v.title2);
 		}
@@ -223,12 +224,17 @@ void drawHud(ImDrawList *dl, ImVec2 S, const HudView &v)
 		const float nfs = px(30.0f), sfs = px(15.0f);
 		const float nw = measure(F::Title, nfs, n.c_str()).x, sw = measure(F::Small, sfs, ms).x;
 		const float w = px(20.0f) + nw + px(12.0f) + sw + px(20.0f), h = px(52.0f);
-		const ImVec2 p0(S.x - m - w, ry), p1(S.x - m, ry + h);
+		const bool right = v.fpsCorner == 1 || v.fpsCorner == 3, low = v.fpsCorner >= 2;
+		/* (the status panel has the top left while it shows: the counter goes under it) */
+		const float fy = low ? S.y - m - h : ry;
+		const ImVec2 p0(right ? S.x - m - w : m, fy), p1(p0.x + w, fy + h);
 		panel(dl, p0, p1, px(grid::rMid), IM_COL32(0, 0, 0, 180), IM_COL32(255, 255, 255, 24));
 		text(dl, F::Title, nfs, ImVec2(p0.x + px(20.0f), p0.y + (h - measure(F::Title, nfs, "0").y) * 0.5f), p.accent, n.c_str());
 		text(dl, F::Small, sfs, ImVec2(p0.x + px(20.0f) + nw + px(12.0f), p0.y + (h - measure(F::Small, sfs, "A").y) * 0.5f + px(2.0f)),
 			p.textDim, ms);
-		ry += h + px(12.0f);
+		if (v.fpsCorner == 1) {
+			ry += h + px(12.0f);   // the LED under it
+		}
 	}
 	if (v.showLed) {
 		const float la = v.ledAlpha;
@@ -299,8 +305,10 @@ void drawPopup(ImDrawList *dl, ImVec2 S, const PopupView &v, float appear)
 	dl->AddRectFilled(ImVec2(0, 0), S, IM_COL32(0, 0, 0, static_cast<int>(150 * a)));
 	const float w = px(720.0f);
 	const float tw = w - px(80.0f);
-	const float textH = v.text.empty() ? 0.0f : paragraph(nullptr, F::Body, px(18.5f), ImVec2(0, 0), 0, v.text, tw, 8) + px(24.0f);
 	const float rh = px(60.0f);
+	const float textMax = std::max(px(120.0f), S.y - px(340.0f) - rh * static_cast<float>(v.items.size()));
+	const float textH = v.text.empty() ? 0.0f
+		: scrollParagraph(nullptr, F::Body, px(18.5f), ImVec2(0, 0), 0, v.text, tw, textMax, "popup." + v.title) + px(24.0f);
 	const float h = px(100.0f) + textH + rh * static_cast<float>(v.items.size()) + px(80.0f);
 	const ImVec2 p0((S.x - w) * 0.5f, (S.y - h) * 0.5f + px(24.0f) * (1.0f - a)), p1(p0.x + w, p0.y + h);
 	shadow(dl, p0, p1, px(grid::rLarge), px(50.0f), 0.7f * a);
@@ -308,7 +316,7 @@ void drawPopup(ImDrawList *dl, ImVec2 S, const PopupView &v, float appear)
 	text(dl, F::Title, px(28.0f), ImVec2(p0.x + px(40.0f), p0.y + px(36.0f)), alpha(p.text, a), v.title.c_str());
 	float y = p0.y + px(96.0f);
 	if (!v.text.empty()) {
-		paragraph(dl, F::Body, px(18.5f), ImVec2(p0.x + px(40.0f), y), alpha(p.textDim, a), v.text, tw, 8);
+		scrollParagraph(dl, F::Body, px(18.5f), ImVec2(p0.x + px(40.0f), y), alpha(p.textDim, a), v.text, tw, textMax, "popup." + v.title);
 		y += textH;
 	}
 	float &hy = value("popup.y", y);

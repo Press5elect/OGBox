@@ -173,6 +173,11 @@ native core's work tree (oldest first; author: subject):
   3b19aef07f Claude: apu: full DSP runs the GP and the EP until they halt, as xemu does
   663a4ff00a Claude: apu: hakuX-lr's frame limit back
   838ebe1857 Claude: apu: Fast by default, as xemu
+  8074e5bef8 Claude: apu: the MCPX voice processor as measured on a retail console (xemu PR #3105 by
+             raddad772, LGPL-2.1-or-later, by way of CallistoNTG's hakuX port): HRIR taps, HRTF
+             ramps, ear routes, filters, the 8-point Lagrange resampler, envelopes, LFOs, mix rounding
+  3ec54ec2c7 Claude: io: an overlay file (a patched XBE, a mod's file) shows the disc file's start sector in its
+             control block (TOCA Race Driver 3's archive check against default.xbe)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -17990,7 +17995,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..47736bde3a51f4a2321e8eb28e8c2385a9e6d8c3 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0648b8bc1 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18035,7 +18040,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..47736bde3a51f4a2321e8eb28e8c2385
      .hrtf = true,
      .volume_limit = 1.0f,
      .num_workers = 0,
-+    .resampler = VP_RESAMPLE_SINC,      /* linear where the build isn't AArch64 (vp/resample_sinc.h) */
++    .resampler = VP_RESAMPLE_MCPX,      /* the console's own (xemu PR #3105); sinc, linear by choice */
 +    .use_dsp_jit = true,
  };
  
@@ -18299,25 +18304,26 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..47736bde3a51f4a2321e8eb28e8c2385
      }
      pthread_mutex_unlock(&d->lock);
      return NULL;
-@@ -670,10 +859,16 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -670,10 +859,17 @@ static void *mcpx_apu_frame_thread(void *arg)
   * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
   * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
   * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
 - * before (an A/B switch). */
-+ * before (an A/B switch), NC_APU_RESAMPLER=linear|sinc overrides the
++ * before (an A/B switch), NC_APU_RESAMPLER=mcpx|sinc|linear overrides the
 + * resampler the core option chose (nc_dev_apu_set_resampler). */
  static void config_init(void)
  {
 +    const char *rs = getenv("NC_APU_RESAMPLER");
-+    if (rs && (!strcmp(rs, "sinc") || !strcmp(rs, "linear"))) {
-+        g_apu_config.resampler = !strcmp(rs, "sinc") ? VP_RESAMPLE_SINC : VP_RESAMPLE_LINEAR;
++    if (rs && (!strcmp(rs, "mcpx") || !strcmp(rs, "sinc") || !strcmp(rs, "linear"))) {
++        g_apu_config.resampler = !strcmp(rs, "mcpx") ? VP_RESAMPLE_MCPX
++                                 : !strcmp(rs, "sinc") ? VP_RESAMPLE_SINC : VP_RESAMPLE_LINEAR;
 +    }
      g_apu_config.use_dsp = getenv_int_clamped("NC_APU_DSP", 0, 1, g_apu_config.use_dsp);
 +    g_apu_config.use_dsp_jit = getenv_int_clamped("NC_APU_DSP_JIT", 0, 1, true);
      g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
      g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
      g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
-@@ -684,7 +879,7 @@ static void config_init(void)
+@@ -684,7 +880,7 @@ static void config_init(void)
  static void *apu_trace_thread(void *arg)
  {
      MCPXAPUState *d = arg;
@@ -18326,7 +18332,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..47736bde3a51f4a2321e8eb28e8c2385
          sleep(2);
          nc_log("hakuX-native-apu",
                 "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
-@@ -727,9 +922,19 @@ static void *apu_trace_thread(void *arg)
+@@ -727,9 +923,19 @@ static void *apu_trace_thread(void *arg)
      return NULL;
  }
  
@@ -18347,7 +18353,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..47736bde3a51f4a2321e8eb28e8c2385
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,10 +959,48 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,10 +960,48 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -18466,6 +18472,61 @@ index a12ae47b40c96ca4c3c2feaaaa5dfd62efcd363e..79c7b2ab0ec3c7e112c6cd4dba4a839e
  /* the bytes queued */
  int apu_out_queued(void);
  /* one EP frame in (the frame thread: the only producer; there is room) */
+diff --git a/native/dev/apu/apu_regs.h b/native/dev/apu/apu_regs.h
+index bcbcbf5172621aef2475b0024b6f2de00d8e4f64..06941f6d2e4e5f3f8152f6c99c5dfe38f04068a4 100644
+--- a/native/dev/apu/apu_regs.h
++++ b/native/dev/apu/apu_regs.h
+@@ -176,7 +176,12 @@
+ #define NV1BA0_PIO_SET_VOICE_TAR_VOLA                    0x00000360
+ #define NV1BA0_PIO_SET_VOICE_TAR_VOLB                    0x00000364
+ #define NV1BA0_PIO_SET_VOICE_TAR_VOLC                    0x00000368
++/* Xbox FE method = voice-record offset + 0x300. The 0x350/0x370
++ * methods were silently ignored in older xemu/hakuX. Hardware verified:
++ * raddad772, https://github.com/xemu-project/xemu/pull/3105 (e1a8fad). */
++#define NV1BA0_PIO_SET_VOICE_LFO_DELAY                   0x00000350
+ #define NV1BA0_PIO_SET_VOICE_LFO_ENV                     0x0000036C
++#define NV1BA0_PIO_SET_VOICE_LFO_MOD                     0x00000370
+ #define NV1BA0_PIO_SET_VOICE_TAR_FCA                     0x00000374
+ #define NV1BA0_PIO_SET_VOICE_TAR_FCB                     0x00000378
+ #define NV1BA0_PIO_SET_VOICE_TAR_PITCH                   0x0000037C
+@@ -261,6 +266,8 @@
+ #define NV_PAVS_VOICE_CFG_ENVF                           0x00000014
+ #define NV_PAVS_VOICE_CFG_MISC                           0x00000018
+ #   define NV_PAVS_VOICE_CFG_MISC_EF_RELEASERATE            (0xFFF << 0)
++#   define NV_PAVS_VOICE_CFG_MISC_LFOA_DELAY_ENABLE         (1u << 14)
++#   define NV_PAVS_VOICE_CFG_MISC_LFOF_DELAY_ENABLE         (1u << 15)
+ #   define NV_PAVS_VOICE_CFG_MISC_FMODE                     (3 << 16)
+ #define NV_PAVS_VOICE_CFG_HRTF_TARGET                    0x0000001C
+ #   define NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE             0x0000FFFF
+@@ -308,8 +315,18 @@
+ #   define NV_PAVS_VOICE_TAR_VOLC_VOLUME4                   0x0000FFF0
+ #   define NV_PAVS_VOICE_TAR_VOLC_VOLUME7_B11_8             0x000F0000
+ #   define NV_PAVS_VOICE_TAR_VOLC_VOLUME5                   0xFFF00000
++#define NV_PAVS_VOICE_PAR_LFO_DELAY                      0x00000050
++#   define NV_PAVS_VOICE_PAR_LFO_DELAY_LFOA                 0x00007FFFu
++#   define NV_PAVS_VOICE_PAR_LFO_DELAY_LFOF                 0x7FFF0000u
+ #define NV_PAVS_VOICE_TAR_LFO_ENV                        0x0000006C
+ #   define NV_PAVS_VOICE_TAR_LFO_ENV_EA_RELEASERATE         (0xFFF << 0)
++#   define NV_PAVS_VOICE_TAR_LFO_ENV_LFOA_DELTA             (0x3FFu << 12)
++#   define NV_PAVS_VOICE_TAR_LFO_ENV_LFOF_DELTA             (0x3FFu << 22)
++#define NV_PAVS_VOICE_TAR_LFO_MOD                        0x00000070
++#   define NV_PAVS_VOICE_TAR_LFO_MOD_LFOA_AMPLITUDE         0x000000FFu
++#   define NV_PAVS_VOICE_TAR_LFO_MOD_LFOA_PITCH             0x0000FF00u
++#   define NV_PAVS_VOICE_TAR_LFO_MOD_LFOA_CUTOFF            0x00FF0000u
++#   define NV_PAVS_VOICE_TAR_LFO_MOD_LFOF_PITCH             0xFF000000u
+ #define NV_PAVS_VOICE_TAR_FCA                            0x00000074
+ #   define NV_PAVS_VOICE_TAR_FCA_FC0                        0x0000FFFF
+ #   define NV_PAVS_VOICE_TAR_FCA_FC1                        0xFFFF0000
+@@ -356,7 +373,8 @@ enum MCPX_HW_NOTIFIER {
+ #define HRTF_ENTRY_COUNT 128
+ 
+ #define MULTIPASS_BIN      31
+-#define MULTIPASS_BIN_MASK (1 << MULTIPASS_BIN)
++/* Bin 31 must be shifted in an unsigned word (signed 1<<31 is undefined). */
++#define MULTIPASS_BIN_MASK (1u << MULTIPASS_BIN)
+ 
+ // clang-format on
+ 
 diff --git a/native/dev/apu/dsp/dsp.c b/native/dev/apu/dsp/dsp.c
 index ed4eb20703b6275a1e90f8c31bbd71393ba69f56..d822e312beb8b4b1eb13e4f885c713bd2c1225e1 100644
 --- a/native/dev/apu/dsp/dsp.c
@@ -19744,6 +19805,30 @@ index 0000000000000000000000000000000000000000..025ff7fffe96910d550088146ca01cb5
 +#endif
 +
 +#endif
+diff --git a/native/dev/apu/fpconv.h b/native/dev/apu/fpconv.h
+index f4cff5a933501eb1616bc249f9a1c876ffbda49a..65fdb7c27e25cb9e966963090e86c96cc5200919 100644
+--- a/native/dev/apu/fpconv.h
++++ b/native/dev/apu/fpconv.h
+@@ -22,6 +22,7 @@
+ #define FLOATCONV_H
+ 
+ #include <stdint.h>
++#include <math.h>
+ 
+ static inline float int8_to_float(int8_t x)
+ {
+@@ -65,7 +66,10 @@ static inline uint32_t float_to_24b(float value)
+     } else if (scaled_value <= (-8.0 * 0x100000)) {
+         int24 = -1 - 0x7fffff;
+     } else {
+-        int24 = lrint(scaled_value);
++        /* MCPX rounds 24-bit mixbin writes with halves UP (towards +inf),
++         * not the host FPU's ties-to-even lrint behaviour.
++         * Source: raddad772 Xbox APU tests, xemu PR #3105 45af4ac. */
++        int24 = (int)floor(scaled_value + 0.5);
+     }
+     return int24 & 0xffffff;
+ }
 diff --git a/native/dev/apu/out.c b/native/dev/apu/out.c
 index a7c29f432a965e644a78bedc022a0dc6a7105f78..9380bde112803173f5981a6a29bd2157841d6d02 100644
 --- a/native/dev/apu/out.c
@@ -20111,19 +20196,27 @@ index f6dd8f603770d0c8d60a9018fc40227b9f8e3d44..ac2bd0d1fcfada4dedc78eb9237d5f25
          inbufsize -= 4;
          inbuf += 4;
 diff --git a/native/dev/apu/vp/hrtf.h b/native/dev/apu/vp/hrtf.h
-index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..fde067ac4bf37761c4f7e61290aeab410e8e87f7 100644
+index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..6edcb0631984915cef5e083af6114bc179c3ad1f 100644
 --- a/native/dev/apu/vp/hrtf.h
 +++ b/native/dev/apu/vp/hrtf.h
-@@ -18,7 +18,7 @@
+@@ -17,13 +17,13 @@
+  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
   */
  /* hakuX native core: the same filter (31-tap HRIR convolution per channel,
-  * an interaural delay with linear interpolation, parameters smoothed per
+- * an interaural delay with linear interpolation, parameters smoothed per
 - * sample), laid out for NEON. The delay line holds its samples twice, so
-+ * sample), laid out for NEON (and SSE2, AVX2 + FMA on x86-64). The delay line holds its samples twice, so
++ * an interaural delay with linear interpolation, its parameters moved to a
++ * new target across one 32-sample frame, as the MCPX does), laid out for
++ * NEON (and SSE2, AVX2 + FMA on x86-64). The delay line holds its samples twice, so
   * any delay's window is contiguous; the coefficients are stored reversed
   * and padded to 32 with a zero tap, so the convolution is a dot product of
   * two contiguous arrays. Its sums are associated differently from the
-@@ -34,6 +34,8 @@
+  * scalar loop's (rounding-level differences: tests/hle/test_apu_hrtf.c). */
+-
+ #ifndef HW_XBOX_MCPX_HRTF_H
+ #define HW_XBOX_MCPX_HRTF_H
+ 
+@@ -34,17 +34,16 @@
  
  #if defined(__aarch64__)
  #include <arm_neon.h>
@@ -20132,7 +20225,26 @@ index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..fde067ac4bf37761c4f7e61290aeab41
  #endif
  
  #include "native/dev/apu/apu_regs.h"
-@@ -64,6 +66,18 @@ static inline void hrtf_filter_init(HrtfFilter *f)
+-
+ #define HRTF_SAMPLES_PER_FRAME  NUM_SAMPLES_PER_FRAME
+ #define HRTF_NUM_TAPS           31
+ #define HRTF_TAPS_PADDED        32
+ #define HRTF_MAX_DELAY_SAMPLES  42
+ #define HRTF_BUFLEN             (HRTF_NUM_TAPS + HRTF_MAX_DELAY_SAMPLES)
+-#define HRTF_PARAM_SMOOTH_ALPHA 0.01f
+-
+ typedef struct {
+     int buf_pos;
+     struct {
+@@ -57,13 +56,25 @@ typedef struct {
+     } ch[2];
+     float itd_cur;
+     float itd_tar;
++    bool target_initialised; /* first frame uses exact entry (no HRTF fade) */
+ } HrtfFilter;
+-
+ static inline void hrtf_filter_init(HrtfFilter *f)
+ {
      memset(f, 0, sizeof(*f));
  }
  
@@ -20151,25 +20263,125 @@ index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..fde067ac4bf37761c4f7e61290aeab41
  static inline void
  hrtf_filter_set_target_params(HrtfFilter *f, float hrir_coeff[2][HRTF_NUM_TAPS],
                                float itd)
-@@ -110,6 +124,57 @@ static inline bool hrtf_filter_settled(const HrtfFilter *f)
+@@ -73,27 +84,36 @@ hrtf_filter_set_target_params(HrtfFilter *f, float hrir_coeff[2][HRTF_NUM_TAPS],
+ 
+     for (int ch = 0; ch < 2; ch++) {
+         const float *coeff = hrir_coeff[ch];
+-
+-        // Normalize coefficients for unity filter gain (each channel's own)
+-        float s = 0.0f;
+-        for (int k = 0; k < HRTF_NUM_TAPS; k++) {
+-            s += fabsf(coeff[k]);
+-        }
+-        const bool norm = !(s == 0.0f || s == 1.0f);
++        /* Preserve raw decoded HRIR gain: retail Xbox hardware does not
++         * normalize taps by their absolute sum. In particular, a single
++         * 0x40 coefficient must retain 1/16 gain, not become 1. Keep the
++         * reversed tap order and zero padding required by the NEON path.
++         * Source: raddad772, xemu-project/xemu#3105, commit 03ae86d:
++         * https://github.com/xemu-project/xemu/pull/3105
++         */
+         float *tar = f->ch[ch].hrir_coeff_tar;
+         for (int k = 0; k < HRTF_NUM_TAPS; k++) {
+-            tar[HRTF_NUM_TAPS - 1 - k] = norm ? coeff[k] / s : coeff[k];
++            tar[HRTF_NUM_TAPS - 1 - k] = coeff[k];
+         }
+         tar[HRTF_NUM_TAPS] = 0.0f;
+     }
++    /* On a newly started voice, the Xbox uses the programmed taps on its
++     * FIRST frame; only later target changes use the 32-sample transition.
++     * Source: raddad772 real Xbox tests, xemu PR #3105, 21db778. */
++    if (!f->target_initialised) {
++        f->target_initialised = true;
++        f->itd_cur = f->itd_tar;
++        for (int ch = 0; ch < 2; ch++) {
++            memcpy(f->ch[ch].hrir_coeff_cur, f->ch[ch].hrir_coeff_tar,
++                   sizeof(f->ch[ch].hrir_coeff_cur));
++        }
++    }
+ }
+-
+-static inline float hrtf_filter_smooth_param(float cur, float tar)
+-{
+-    // FIXME: Match hardware parameter transition
+-    return cur + HRTF_PARAM_SMOOTH_ALPHA * (tar - cur);
+-}
+-
++/* Each target transition spans one 32-sample VP frame. A new target
++ * starts from the previous frame's final values, rather than asymptotically
++ * approaching it via the old 0.01 exponential smoothing coefficient.
++ * Source: raddad772 retail MCPX tests, xemu PR #3105 21db778.
++ */
+ /* The parameters at their targets: a step leaves them as they are. */
+ static inline bool hrtf_filter_settled(const HrtfFilter *f)
+ {
+@@ -109,12 +129,12 @@ static inline bool hrtf_filter_settled(const HrtfFilter *f)
+     }
      return true;
  }
+-
+-/* sum of c[m] * w[m] over the padded taps. With tar, each c[m] is first
+- * smoothed one step toward tar[m] (the per-sample parameter step) and
+- * stored; with dfrac, each w[m] is first interpolated toward w[m - 1] (the
+- * sample one further back). */
+-static inline float hrtf_dot(float *c, const float *tar, const float *w, float dfrac)
++/* sum of c[m] * w[m] over the padded taps. With tar, the coefficient is
++ * c[m] + (tar[m] - c[m]) * frac (this sample's place on the frame-linear
++ * ramp, sample n at n / 32, as xemu PR #3105 21db778; c itself is left as it
++ * is, moved to tar at the frame's end); with dfrac, each w[m] is first
++ * interpolated toward w[m - 1] (the sample one further back). */
++static inline float hrtf_dot(const float *c, const float *tar, float frac, const float *w, float dfrac)
+ {
+     const bool interp = dfrac > 0.0f;
+     const float w0 = 1 - dfrac;
+@@ -123,10 +143,8 @@ static inline float hrtf_dot(float *c, const float *tar, const float *w, float d
+     for (int m = 0; m < HRTF_TAPS_PADDED; m += 8) {
+         float32x4_t c0 = vld1q_f32(c + m), c1 = vld1q_f32(c + m + 4);
+         if (tar) {
+-            c0 = vfmaq_n_f32(c0, vsubq_f32(vld1q_f32(tar + m), c0), HRTF_PARAM_SMOOTH_ALPHA);
+-            c1 = vfmaq_n_f32(c1, vsubq_f32(vld1q_f32(tar + m + 4), c1), HRTF_PARAM_SMOOTH_ALPHA);
+-            vst1q_f32(c + m, c0);
+-            vst1q_f32(c + m + 4, c1);
++            c0 = vfmaq_n_f32(c0, vsubq_f32(vld1q_f32(tar + m), c0), frac);
++            c1 = vfmaq_n_f32(c1, vsubq_f32(vld1q_f32(tar + m + 4), c1), frac);
+         }
+         float32x4_t s0 = vld1q_f32(w + m), s1 = vld1q_f32(w + m + 4);
+         if (interp) {
+@@ -140,31 +158,80 @@ static inline float hrtf_dot(float *c, const float *tar, const float *w, float d
+ #else
+     float acc = 0.0f;
+     for (int m = 0; m < HRTF_TAPS_PADDED; m++) {
+-        if (tar) {
+-            c[m] = hrtf_filter_smooth_param(c[m], tar[m]);
+-        }
++        const float cm = tar ? c[m] + (tar[m] - c[m]) * frac : c[m];
+         float s = w[m];
+         if (interp) {
+             s = s * w0 + w[m - 1] * dfrac;
+         }
+-        acc += c[m] * s;
++        acc += cm * s;
+     }
+     return acc;
+ #endif
+ }
  
+-static inline void hrtf_filter_process(HrtfFilter *f,
+-                                       float in[HRTF_SAMPLES_PER_FRAME][2],
+-                                       float out[HRTF_SAMPLES_PER_FRAME][2])
 +#if defined(__x86_64__)
 +/* hrtf_dot's NEON sums in SSE2: its lanes and their order, each fused
 + * multiply-add a multiply and an add */
-+static inline float hrtf_dot_sse2(float *c, const float *tar, const float *w, float dfrac)
++static inline float hrtf_dot_sse2(const float *c, const float *tar, float frac, const float *w, float dfrac)
 +{
 +    const bool interp = dfrac > 0.0f;
-+    const __m128 alpha = _mm_set1_ps(HRTF_PARAM_SMOOTH_ALPHA), vf = _mm_set1_ps(dfrac), v0 = _mm_set1_ps(1 - dfrac);
++    const __m128 vf = _mm_set1_ps(dfrac), v0 = _mm_set1_ps(1 - dfrac), fr = _mm_set1_ps(frac);
 +    __m128 a0 = _mm_setzero_ps(), a1 = a0;
 +    for (int m = 0; m < HRTF_TAPS_PADDED; m += 8) {
 +        __m128 c0 = _mm_loadu_ps(c + m), c1 = _mm_loadu_ps(c + m + 4);
 +        if (tar) {
-+            c0 = _mm_add_ps(c0, _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(tar + m), c0), alpha));
-+            c1 = _mm_add_ps(c1, _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(tar + m + 4), c1), alpha));
-+            _mm_storeu_ps(c + m, c0);
-+            _mm_storeu_ps(c + m + 4, c1);
++            c0 = _mm_add_ps(c0, _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(tar + m), c0), fr));
++            c1 = _mm_add_ps(c1, _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(tar + m + 4), c1), fr));
 +        }
 +        __m128 s0 = _mm_loadu_ps(w + m), s1 = _mm_loadu_ps(w + m + 4);
 +        if (interp) {
@@ -20184,17 +20396,16 @@ index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..fde067ac4bf37761c4f7e61290aeab41
 +
 +/* hrtf_dot's NEON sums in AVX2 + FMA, bit for bit: lanes 0-3 its a0, 4-7 a1 */
 +static inline __attribute__((always_inline)) VP_AVX2 float
-+hrtf_dot_avx2(float *c, const float *tar, const float *w, float dfrac)
++hrtf_dot_avx2(const float *c, const float *tar, float frac, const float *w, float dfrac)
 +{
 +    const bool interp = dfrac > 0.0f;
-+    const __m256 alpha = _mm256_set1_ps(HRTF_PARAM_SMOOTH_ALPHA), vf = _mm256_set1_ps(dfrac);
-+    const __m256 v0 = _mm256_set1_ps(1 - dfrac);
++    const __m256 vf = _mm256_set1_ps(dfrac);
++    const __m256 v0 = _mm256_set1_ps(1 - dfrac), fr = _mm256_set1_ps(frac);
 +    __m256 a = _mm256_setzero_ps();
 +    for (int m = 0; m < HRTF_TAPS_PADDED; m += 8) {
 +        __m256 cv = _mm256_loadu_ps(c + m);
 +        if (tar) {
-+            cv = _mm256_fmadd_ps(_mm256_sub_ps(_mm256_loadu_ps(tar + m), cv), alpha, cv);
-+            _mm256_storeu_ps(c + m, cv);
++            cv = _mm256_fmadd_ps(_mm256_sub_ps(_mm256_loadu_ps(tar + m), cv), fr, cv);
 +        }
 +        __m256 sv = _mm256_loadu_ps(w + m);
 +        if (interp) {
@@ -20206,36 +20417,59 @@ index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..fde067ac4bf37761c4f7e61290aeab41
 +}
 +#endif
 +
- /* sum of c[m] * w[m] over the padded taps. With tar, each c[m] is first
-  * smoothed one step toward tar[m] (the per-sample parameter step) and
-  * stored; with dfrac, each w[m] is first interpolated toward w[m - 1] (the
-@@ -153,9 +218,11 @@ static inline float hrtf_dot(float *c, const float *tar, const float *w, float d
- #endif
- }
- 
--static inline void hrtf_filter_process(HrtfFilter *f,
--                                       float in[HRTF_SAMPLES_PER_FRAME][2],
--                                       float out[HRTF_SAMPLES_PER_FRAME][2])
-+typedef float (*HrtfDot)(float *c, const float *tar, const float *w, float dfrac);
++typedef float (*HrtfDot)(const float *c, const float *tar, float frac, const float *w, float dfrac);
 +
++/* A frame through the filter. A new target is reached across the frame in
++ * a straight line (sample n at n / 32 of the way, the ITD too), then the
++ * parameters are snapped to it: no float error builds up between frames and
++ * the settled fast path is back the next frame. */
 +static inline __attribute__((always_inline)) void
 +hrtf_filter_run(HrtfFilter *f, float in[HRTF_SAMPLES_PER_FRAME][2], float out[HRTF_SAMPLES_PER_FRAME][2],
 +                HrtfDot dot)
  {
-     /* the parameters step once per sample (the coefficients in hrtf_dot) */
+-    /* the parameters step once per sample (the coefficients in hrtf_dot) */
      const bool settled = hrtf_filter_settled(f);
-@@ -183,11 +250,38 @@ static inline void hrtf_filter_process(HrtfFilter *f,
+     for (int n = 0; n < HRTF_SAMPLES_PER_FRAME; n++) {
+-        if (!settled) {
+-            f->itd_cur = hrtf_filter_smooth_param(f->itd_cur, f->itd_tar);
+-        }
++        const float frac = n / (float)HRTF_SAMPLES_PER_FRAME;
++        const float itd = settled ? f->itd_cur : f->itd_cur + (f->itd_tar - f->itd_cur) * frac;
+         const int pos = f->buf_pos;
+-
+         for (int ch = 0; ch < 2; ch++) {
+             float *buf = f->ch[ch].buf;
+ 
+@@ -173,21 +240,54 @@ static inline void hrtf_filter_process(HrtfFilter *f,
+             buf[pos + HRTF_BUFLEN] = in[n][ch];
+ 
+             // Interaural time difference (channel delay)
+-            float d = f->itd_cur * (ch == 0 ? +1.0f : -1.0f);
++            float d = itd * (ch == 0 ? +1.0f : -1.0f);
+             if (d < 0.0f) {
+                 d = 0.0f;
+             }
+             int di = d;
+             float dfrac = d - di;
+-
              // HRIR Convolution: tap k reads the sample di + k back,
              // buf[pos + HRTF_BUFLEN - di - k]; reversed, from tap 30 up
              const float *w = &buf[pos + HRTF_BUFLEN - di - (HRTF_NUM_TAPS - 1)];
 -            out[n][ch] = hrtf_dot(f->ch[ch].hrir_coeff_cur, settled ? NULL : f->ch[ch].hrir_coeff_tar, w, dfrac);
-+            out[n][ch] = dot(f->ch[ch].hrir_coeff_cur, settled ? NULL : f->ch[ch].hrir_coeff_tar, w, dfrac);
++            out[n][ch] = dot(f->ch[ch].hrir_coeff_cur, settled ? NULL : f->ch[ch].hrir_coeff_tar, frac, w, dfrac);
          }
  
          f->buf_pos = (pos + 1) % HRTF_BUFLEN;
      }
- }
- 
++    if (!settled) {
++        f->itd_cur = f->itd_tar;
++        for (int ch = 0; ch < 2; ch++) {
++            memcpy(f->ch[ch].hrir_coeff_cur, f->ch[ch].hrir_coeff_tar,
++                   sizeof(f->ch[ch].hrir_coeff_cur));
++        }
++    }
++}
++
 +#if defined(__x86_64__)
 +static inline VP_AVX2 void hrtf_filter_process_avx2(HrtfFilter *f, float in[HRTF_SAMPLES_PER_FRAME][2],
 +                                                    float out[HRTF_SAMPLES_PER_FRAME][2])
@@ -20261,11 +20495,105 @@ index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..fde067ac4bf37761c4f7e61290aeab41
 +#else
 +    hrtf_filter_run(f, in, out, hrtf_dot);
 +#endif
+ }
+ 
+ #endif
+diff --git a/native/dev/apu/vp/mcpx_curves.h b/native/dev/apu/vp/mcpx_curves.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..537a9b6e43938da8792506d1b8f5fe26a48b74f4
+--- /dev/null
++++ b/native/dev/apu/vp/mcpx_curves.h
+@@ -0,0 +1,63 @@
++/*
++ * hakuX native core — the MCPX voice processor's measured curves, from
++ * raddad772's tests on a retail console (xemu PR #3105,
++ * https://github.com/xemu-project/xemu/pull/3105, by way of CallistoNTG's
++ * hakuX port): the volume curve, the HRIR taps' format and the filters'
++ * frequency coefficients. In a header of their own so tests/hle/test_apu_mcpx.c
++ * checks them against the measurements.
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.
++ */
++#ifndef NATIVE_DEV_APU_VP_MCPX_CURVES_H
++#define NATIVE_DEV_APU_VP_MCPX_CURVES_H
++
++#include <math.h>
++#include <stdint.h>
++
++/* A route's gain in 1/16384 for an attenuation in 1/64 dB (0..4095), PR
++ * fb7e45a: straight lines between whole decibels through
++ * round(4095 * 10^(-k / 20)), rounded down; from 48 dB a straight line to
++ * nothing at 63 dB. Attenuation 0 is unity (16384). */
++static inline uint32_t mcpx_attenuation_gain(int att)
++{
++    if (att <= 0) {
++        return 16384;
++    }
++    if (att >= 63 * 64) {
++        return 0;
++    }
++    const int k = att >> 6;
++    const uint32_t n48 = (uint32_t)floor(4095.0 * pow(10.0, -48 / 20.0) + 0.5);
++    const uint32_t n0 = k <= 48 ? (uint32_t)floor(4095.0 * pow(10.0, -k / 20.0) + 0.5) : n48 * (uint32_t)(63 - k) / 15;
++    const uint32_t n1 = k + 1 <= 48 ? (uint32_t)floor(4095.0 * pow(10.0, -(k + 1) / 20.0) + 0.5)
++                                    : n48 * (uint32_t)(63 - (k + 1)) / 15;
++    return (256 * n0 - 4 * (n0 - n1) * (uint32_t)(att & 63)) >> 6;
 +}
 +
- #endif
++/* An HRIR tap, PR ccc18b4: sign-magnitude, a 3-bit exponent and a 4-bit
++ * mantissa (S EEE MMMM), from 1/2048 to 31/32: e = 0, m / 2048; else
++ * (16 + m) * 2^(e - 1) / 2048. 0x40 is 1/16. */
++static inline float hrtf_coeff_to_float(uint8_t encoded)
++{
++    const unsigned exponent = (encoded >> 4) & 7u;
++    const unsigned mantissa = encoded & 15u;
++    const unsigned magnitude = exponent ? ((16u + mantissa) << (exponent - 1)) : mantissa;
++    const float coefficient = (float)magnitude / 2048.0f;
++    return (encoded & 0x80u) ? -coefficient : coefficient;
++}
++
++/* A filter's frequency coefficient for fc in 1/4096 octave, PR b323e32: 2^(fc
++ * / 4096) taken to a 1024th of an octave (rounded down), then to the nearest
++ * 1/65536, at most FFFFh. Measured: D97Eh gave 3043h. */
++static inline float mcpx_filter_frequency(double fc)
++{
++    const int k = (int)floor(fc / 4.0);
++    const int octave = (int)floor(k / 1024.0);
++    const double c = ldexp(exp2((k - octave * 1024) / 1024.0) * 65536.0, octave);
++    return (float)(fmin(fmax(floor(c + 0.5), 0.0), 65535.0) / 65536.0);
++}
++
++#endif
+diff --git a/native/dev/apu/vp/mcpx_round.h b/native/dev/apu/vp/mcpx_round.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..663755f33099932f7699f50786acb042ccc3c208
+--- /dev/null
++++ b/native/dev/apu/vp/mcpx_round.h
+@@ -0,0 +1,19 @@
++/* MCPX rounding: the filters round each value halfway UP, not ties-to-even,
++ * to 2^-19 of full scale, xemu PR #3105 06ef59e's svf_round (its "1/16 of a
++ * 24-bit sample" is 10h in 24-bit units: an impulse through an I3DL2 path
++ * with a = 8000h settled at 10h on a retail console, which this step gives
++ * and a finer one does not). Double intermediates; values are not saturated
++ * by the filter.
++ */
++#ifndef HAKUX_MCPX_ROUND_H
++#define HAKUX_MCPX_ROUND_H
++#include <math.h>
++static inline double mcpx_round_units(double value, double units)
++{
++    return floor(value * units + 0.5) / units;
++}
++static inline double mcpx_round_filter(double value)
++{
++    return mcpx_round_units(value, 524288.0); /* 2^19, the PR's svf_round */
++}
++#endif
 diff --git a/native/dev/apu/vp/mix_inline.h b/native/dev/apu/vp/mix_inline.h
-index 02af417b7943135fab7297e7dbb6e7cf8185d880..063921ae280250046484efb821a4f5e7b3b4e14b 100644
+index 02af417b7943135fab7297e7dbb6e7cf8185d880..480b3d386cff97bf64f5ac884920d13cb12fb337 100644
 --- a/native/dev/apu/vp/mix_inline.h
 +++ b/native/dev/apu/vp/mix_inline.h
 @@ -2,9 +2,10 @@
@@ -20321,7 +20649,7 @@ index 02af417b7943135fab7297e7dbb6e7cf8185d880..063921ae280250046484efb821a4f5e7
  static inline void mix_one_bin(float *dst, const float *src, float g) {
  #if defined(__aarch64__)
      float32x4_t gv = vdupq_n_f32(g);
-@@ -48,6 +72,15 @@ static inline void mix_one_bin(float *dst, const float *src, float g) {
+@@ -48,9 +72,57 @@ static inline void mix_one_bin(float *dst, const float *src, float g) {
          d = vfmaq_f32(d, gv, s);
          vst1q_f32(dst + i, d);
      }
@@ -20337,11 +20665,57 @@ index 02af417b7943135fab7297e7dbb6e7cf8185d880..063921ae280250046484efb821a4f5e7
  #else
      mix_one_bin_scalar(dst, src, g);
  #endif
+ }
+ 
++/* The MCPX interpolates each route's quantised gain across 32 samples.
++ * Sample 0 uses the previous gain and sample 31 is 31/32 toward the
++ * current target. NEON remains in use for both the constant and ramped
++ * paths, preserving hakuX's per-bin worker optimisations.
++ * Source: raddad772 Xbox tests, xemu PR #3105 commit 8156cca. */
++static inline unsigned mcpx_gain_at(unsigned previous, unsigned target,
++                                    unsigned sample)
++{
++    return (previous * (NUM_SAMPLES_PER_FRAME - sample) +
++            target * sample) / NUM_SAMPLES_PER_FRAME;
++}
++static inline void mix_one_bin_ramped(float *dst, const float *src,
++                                      unsigned previous, unsigned target,
++                                      float headroom)
++{
++    if (previous == target) {
++        mix_one_bin(dst, src, (float)target / (16384.0f * headroom));
++        return;
++    }
++#if defined(__aarch64__)
++    for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i += 4) {
++        float gains[4];
++        for (int j = 0; j < 4; j++) {
++            gains[j] = (float)mcpx_gain_at(previous, target, i+j) /
++                       (16384.0f * headroom);
++        }
++        float32x4_t d = vld1q_f32(dst+i);
++        float32x4_t x = vld1q_f32(src+i);
++        d = vfmaq_f32(d, x, vld1q_f32(gains));
++        vst1q_f32(dst+i, d);
++    }
++#else
++    for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++        dst[i] += src[i] * (float)mcpx_gain_at(previous, target, i) /
++                  (16384.0f * headroom);
++    }
++#endif
++}
++
+ #endif /* HW_XBOX_MCPX_APU_VP_MIX_INLINE_H */
 diff --git a/native/dev/apu/vp/resample.c b/native/dev/apu/vp/resample.c
-index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a8464da1a 100644
+index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..1a5486469fd805fd30388a9b2f9db6b2b3050afb 100644
 --- a/native/dev/apu/vp/resample.c
 +++ b/native/dev/apu/vp/resample.c
-@@ -4,9 +4,14 @@
+@@ -1,12 +1,18 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <math.h>
++#include <pthread.h>
  
  #if defined(__aarch64__)
  #include <arm_neon.h>
@@ -20356,7 +20730,7 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
  
  /*
   * Linear-interpolation resampler stub used in place of libsamplerate.
-@@ -14,9 +19,9 @@
+@@ -14,9 +20,9 @@
   * Per-refill malloc/memcpy/free was the bulk of the cost in profiling
   * (PGR2 race, 2026-06-01 ~3.4% host CPU). Replace with a fixed inline
   * buffer + memmove-compact on refill. The lerp inner loop gets a NEON
@@ -20369,20 +20743,27 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
   *
   * Buffer sizing: the only producer is voice_resample_callback which
   * returns at most NUM_SAMPLES_PER_FRAME=32 frames per call. Worst-case
-@@ -27,8 +32,10 @@
+@@ -27,8 +33,17 @@
  #define STUB_MAX_CHANNELS 2
  #define STUB_BUFFER_FRAMES 128
  
 -struct SRC_STATE {
 -    src_callback_t cb;
 +struct VpResampler {
-+    int quality;       /* VP_RESAMPLE_*: the linear fields below, or sinc */
++    int quality;       /* VP_RESAMPLE_*: the linear fields below, sinc, or the MCPX's */
 +    void *sinc;        /* resample_sinc.c's converter, a VpSinc (sinc) */
++    /* the MCPX's: the last 8 input frames (the output sits between win[3]
++     * and win[4]), the cursor past win[3] in 16.16 (5.0 when empty: five
++     * frames to take before the first output, which is then frame 0), and
++     * how far into input_buf the window has taken */
++    float win[8][STUB_MAX_CHANNELS];
++    uint32_t mpos;
++    int mread;
 +    vp_resample_cb cb;
      void *cb_data;
      int channels;
  
-@@ -40,24 +47,13 @@ struct SRC_STATE {
+@@ -40,24 +55,13 @@ struct SRC_STATE {
      float input_pos;   /* fractional read cursor in frames; >=0, < input_len */
  };
  
@@ -20409,7 +20790,7 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
          return NULL;
      }
      state->cb = cb;
-@@ -75,7 +71,7 @@ SRC_STATE *src_callback_new(src_callback_t cb, int converter_type, int channels,
+@@ -75,7 +79,7 @@ SRC_STATE *src_callback_new(src_callback_t cb, int converter_type, int channels,
   * Returns 1 if the buffer now has at least 2 frames (the minimum
   * needed to produce a single interpolated output), 0 otherwise.
   */
@@ -20418,7 +20799,7 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
  {
      int ch = state->channels;
  
-@@ -134,23 +130,16 @@ static int src_refill_input(SRC_STATE *state)
+@@ -134,23 +138,16 @@ static int src_refill_input(SRC_STATE *state)
      return state->input_len >= 2;
  }
  
@@ -20447,7 +20828,7 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
           * output frame. Bit-identical to the scalar form
           *   out[c] = s0[c] + frac * (s1[c] - s0[c])
           * because vfma_n_f32(a, b, n) computes a + b*n with a single
-@@ -193,11 +182,18 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
+@@ -193,11 +190,18 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
  
              float frac = pos - (float)idx0;
              const float *base = state->input_buf;
@@ -20466,7 +20847,7 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
  
              out_frames++;
              pos += step;
-@@ -207,7 +203,7 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
+@@ -207,7 +211,7 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
      }
  #endif
  
@@ -20475,18 +20856,120 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
      while (out_frames < frames) {
          int need = (int)state->input_pos + 1;
          if (need >= state->input_len) {
-@@ -247,22 +243,118 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
+@@ -247,22 +251,260 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
      return out_frames;
  }
  
 -int src_reset(SRC_STATE *state)
-+/* ---- the qualities (resample.h) */
++/* ---- the MCPX's: 8-point Lagrange (xemu PR #3105 38e5733, measured) ----
++ *
++ * The weights for the 8 frames around the cursor (3 before its frame, 4
++ * after), at each 256th of a frame, each rounded to 1/65536: at half a frame
++ * they are 1225, -245, 49 and -5 / 2048 on each side, and eighths of a frame
++ * matched the console to the bit. Between 256ths the weights are
++ * interpolated (assumed). */
++static float g_lagrange[257][8];
++static pthread_once_t g_lagrange_once = PTHREAD_ONCE_INIT;
 +
-+bool vp_resample_sinc_available(void)
++static void lagrange_init(void)
  {
 -    if (state) {
 -        state->input_len = 0;
 -        state->input_pos = 0.0f;
++    for (int r = 0; r <= 256; r++) {
++        for (int k = -3; k <= 4; k++) {
++            double w = 1.0;
++            for (int j = -3; j <= 4; j++) {
++                if (j != k) {
++                    w *= (r / 256.0 - j) / (k - j);
++                }
++            }
++            g_lagrange[r][k + 3] = (float)(round(w * 65536.0) / 65536.0);
++        }
++    }
++}
++
++static void mcpx_reset(VpResampler *r)
++{
++    memset(r->win, 0, sizeof(r->win));
++    r->mpos = 5u << 16;
++    r->mread = 0;
++    r->input_len = 0;
++}
++
++/* The next input frame into the window; false when the input has ended */
++static bool mcpx_take(VpResampler *r)
++{
++    const int ch = r->channels;
++    if (r->mread >= r->input_len) {
++        float *got_data = NULL;
++        long got = r->cb(r->cb_data, &got_data);
++        if (got <= 0 || got_data == NULL) {
++            return false;
++        }
++        if (got > STUB_BUFFER_FRAMES) {
++            got = STUB_BUFFER_FRAMES;
++        }
++        memcpy(r->input_buf, got_data, sizeof(float) * (size_t)got * (size_t)ch);
++        r->input_len = (int)got;
++        r->mread = 0;
++    }
++    memmove(r->win[0], r->win[1], sizeof(r->win[0]) * 7);
++    for (int c = 0; c < ch; c++) {
++        r->win[7][c] = r->input_buf[r->mread * ch + c];
++    }
++    r->mread++;
++    return true;
++}
++
++static long mcpx_read(VpResampler *r, const uint32_t *steps, uint32_t step, long frames, float *data)
++{
++    const int ch = r->channels;
++    for (long n = 0; n < frames; n++) {
++        while (r->mpos >= 0x10000u) {
++            if (!mcpx_take(r)) {
++                return n;
++            }
++            r->mpos -= 0x10000u;
++        }
++        const uint32_t frac = r->mpos;
++        if (frac == 0) {
++            /* on a frame: that frame, as the console gives it */
++            for (int c = 0; c < ch; c++) {
++                data[n * ch + c] = r->win[3][c];
++            }
++        } else {
++            const float *lo = g_lagrange[frac >> 8], *hi = g_lagrange[(frac >> 8) + 1];
++            const float a = (float)(frac & 0xFF) / 256.0f;
++            float wgt[8];
++            for (int k = 0; k < 8; k++) {
++                wgt[k] = lo[k] + (hi[k] - lo[k]) * a;
++            }
++            for (int c = 0; c < ch; c++) {
++                float acc = 0.0f;
++                for (int k = 0; k < 8; k++) {
++                    acc += wgt[k] * r->win[k][c];
++                }
++                data[n * ch + c] = acc;
++            }
++        }
++        r->mpos += steps ? steps[n] : step;
++    }
++    return frames;
++}
++
++/* A ratio (output rate / input rate) as the cursor's step in 16.16, at
++ * least 1 (the VP's pitch reaches 1/512 .. 512) */
++static uint32_t step_of(double ratio)
++{
++    const double s = 65536.0 / ratio;
++    return s < 1.0 ? 1u : s > 4294967295.0 ? 0xFFFFFFFFu : (uint32_t)s;
++}
++
++/* ---- the qualities (resample.h) */
++
++bool vp_resample_sinc_available(void)
++{
 +#ifdef VP_HAVE_SINC
 +    return true;
 +#else
@@ -20496,6 +20979,9 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
 +
 +const char *vp_resample_name(int quality)
 +{
++    if (quality == VP_RESAMPLE_MCPX) {
++        return "the MCPX's (8-point Lagrange)";
++    }
 +    if (quality != VP_RESAMPLE_SINC) {
 +        return "linear";
 +    }
@@ -20512,6 +20998,12 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
 +VpResampler *vp_resample_new(vp_resample_cb cb, int quality, int channels, void *cb_data)
 +{
 +    VpResampler *r = linear_new(cb, channels, cb_data);
++    if (r && quality == VP_RESAMPLE_MCPX) {
++        pthread_once(&g_lagrange_once, lagrange_init);
++        r->quality = VP_RESAMPLE_MCPX;
++        mcpx_reset(r);
++        return r;
++    }
 +#ifdef VP_HAVE_SINC
 +    if (r && quality == VP_RESAMPLE_SINC) {
 +        r->sinc = vp_sinc_new(channels);
@@ -20535,6 +21027,9 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
 +    if (!(ratio > 0.0) || !isfinite(ratio)) {
 +        ratio = 1.0;
 +    }
++    if (r->quality == VP_RESAMPLE_MCPX) {
++        return mcpx_read(r, NULL, step_of(ratio), frames, data);
++    }
 +#ifdef VP_HAVE_SINC
 +    if (r->sinc) {
 +        return vp_sinc_read(r->sinc, r->cb, r->cb_data, ratio, frames, data);
@@ -20543,8 +21038,29 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
 +    return linear_read(r, ratio, frames, data);
 +}
 +
++long vp_resample_read_steps(VpResampler *r, const uint32_t *steps, long frames, float *data)
++{
++    if (!r || !r->cb || !data || !steps || frames <= 0) {
++        return 0;
++    }
++    if (r->quality == VP_RESAMPLE_MCPX) {
++        return mcpx_read(r, steps, 0, frames, data);
++    }
++    /* the others: at the steps' mean rate */
++    double sum = 0.0;
++    for (long n = 0; n < frames; n++) {
++        sum += steps[n];
++    }
++    return vp_resample_read(r, sum > 0.0 ? 65536.0 * (double)frames / sum : 1.0, frames, data);
++}
++
 +double vp_resample_ahead(const VpResampler *r)
 +{
++    if (r->quality == VP_RESAMPLE_MCPX) {
++        /* the frames taken beyond the cursor: the window's 4 after win[3],
++         * less the cursor's way past win[3], and those not yet taken */
++        return (double)(r->input_len - r->mread) + 4.0 - (double)r->mpos / 65536.0;
++    }
 +#ifdef VP_HAVE_SINC
 +    if (r->sinc) {
 +        return vp_sinc_ahead(r->sinc);
@@ -20553,14 +21069,18 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
 +    return r->input_len - r->input_pos;
 +}
 +
-+/* linear reads the frame at its position and the next */
++/* linear reads the frame at its position and the next; the MCPX's three
++ * frames before its position too */
 +double vp_resample_reach(const VpResampler *r)
 +{
++    if (r->quality == VP_RESAMPLE_MCPX) {
++        return 3.0;
+     }
+-    return 0;
 +#ifdef VP_HAVE_SINC
 +    if (r->sinc) {
 +        return vp_sinc_reach(r->sinc);
-     }
--    return 0;
++    }
 +#endif
 +    return 0.0;
  }
@@ -20580,6 +21100,9 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
 +#endif
 +    r->input_len = 0;
 +    r->input_pos = 0.0f;
++    if (r->quality == VP_RESAMPLE_MCPX) {
++        mcpx_reset(r);
++    }
  }
  
 -void src_float_to_short_array(const float *in, short *out, int len)
@@ -20603,7 +21126,7 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
  {
      if (!in || !out || len <= 0) {
          return;
-@@ -287,6 +379,30 @@ void src_float_to_short_array(const float *in, short *out, int len)
+@@ -287,6 +529,30 @@ void src_float_to_short_array(const float *in, short *out, int len)
          else if (v < -1.0f) v = -1.0f;
          out[i] = (short)(v * 32767.0f);
      }
@@ -20635,18 +21158,22 @@ index 94e17f2639bee637c3ae9f39f0cc8ab483ad814c..3336beaf7569712df7c2a167909b064a
      for (int i = 0; i < len; ++i) {
          float v = in[i];
 diff --git a/native/dev/apu/vp/resample.h b/native/dev/apu/vp/resample.h
-index 00a0bf332b0528503e91415139686241eb8adcb3..9ad6d8c84198a1ef5b2900a423b21d6e29322ae6 100644
+index 00a0bf332b0528503e91415139686241eb8adcb3..a93ccca2587ae3fd86d806847415a01450f9cc32 100644
 --- a/native/dev/apu/vp/resample.h
 +++ b/native/dev/apu/vp/resample.h
-@@ -1,23 +1,49 @@
+@@ -1,23 +1,58 @@
  /*
 - * hakuX native core — the voices' resampler (resample.c, linear with NEON):
 - * libsamplerate's callback API, the subset the VP uses.
 + * hakuX native core — the voices' resamplers: libsamplerate's callback API
-+ * shape under the core's own names, in two qualities:
-+ * - band-limited sinc, the default: a 32-tap Kaiser-windowed sinc through
-+ *   NEON (resample_sinc.c), on AArch64; elsewhere linear. A quality
-+ *   setting, not a claim about the Xbox's undocumented interpolation;
++ * shape under the core's own names, in three qualities:
++ * - the MCPX's own, the default: 8-point Lagrange interpolation, each weight
++ *   rounded to 1/65536, the weights between 256ths of a sample interpolated,
++ *   and a cursor in 16.16 that can step differently on each output sample
++ *   (a pitch ramped across a frame). Measured on a retail console:
++ *   raddad772's tests, xemu PR #3105 38e5733 and e38ad53;
++ * - band-limited sinc: a 32-tap Kaiser-windowed sinc through NEON
++ *   (resample_sinc.c), on AArch64; elsewhere linear;
 + * - linear (resample.c, NEON): what the core had before, lighter.
 + * A resampler pulls its input from the callback, 32 frames at a time, and
 + * keeps its phase, history and rate across reads; vp_resample_reset clears
@@ -20659,6 +21186,7 @@ index 00a0bf332b0528503e91415139686241eb8adcb3..9ad6d8c84198a1ef5b2900a423b21d6e
  
 +#include <stdbool.h>
  #include <stddef.h>
++#include <stdint.h>
  
 -typedef struct SRC_STATE SRC_STATE;
 -typedef long (*src_callback_t)(void *cb_data, float **data);
@@ -20668,7 +21196,7 @@ index 00a0bf332b0528503e91415139686241eb8adcb3..9ad6d8c84198a1ef5b2900a423b21d6e
 -enum {
 -    SRC_SINC_FASTEST = 0,
 -};
-+enum { VP_RESAMPLE_LINEAR = 0, VP_RESAMPLE_SINC = 1 };
++enum { VP_RESAMPLE_LINEAR = 0, VP_RESAMPLE_SINC = 1, VP_RESAMPLE_MCPX = 2 };
  
 -SRC_STATE *src_callback_new(src_callback_t cb, int converter_type, int channels, int *error, void *cb_data);
 -long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data);
@@ -20686,6 +21214,10 @@ index 00a0bf332b0528503e91415139686241eb8adcb3..9ad6d8c84198a1ef5b2900a423b21d6e
 + * data; fewer only when the input has ended. Any positive ratio: the VP's
 + * pitch with its envelope spans 1/512 .. 512 (NaN, 0 or less: 1) */
 +long vp_resample_read(VpResampler *r, double ratio, long frames, float *data);
++/* The same with the cursor's advance given for each output frame, in 16.16
++ * input frames (the MCPX's per-sample pitch ramp). The MCPX converter follows
++ * each step; the others read at the steps' mean rate. */
++long vp_resample_read_steps(VpResampler *r, const uint32_t *steps, long frames, float *data);
 +/* The input frames the callback gave that the output hasn't reached yet,
 + * and how far before its position an output still reads the input: a
 + * sound whose input ended is fully played once its silence after the end
@@ -21528,19 +22060,107 @@ index 0000000000000000000000000000000000000000..882ee985fae0c66fdefa8a150e820c07
 +}
 +
 +#endif
+diff --git a/native/dev/apu/vp/svf.h b/native/dev/apu/vp/svf.h
+index a02b561f0f33fa4955418ee3e89e02de0d56794d..e6ec13330b7abf312bab68800e4cf3dcc4517d66 100644
+--- a/native/dev/apu/vp/svf.h
++++ b/native/dev/apu/vp/svf.h
+@@ -11,6 +11,7 @@
+ #define SVF_H
+ 
+ #include <math.h>
++#include "mcpx_round.h"
+ 
+ #define flush_to_zero(x) x
+ 
+@@ -29,13 +30,12 @@
+ typedef struct {
+     float f;     // 2.0*sin(PI*fs/(fc*r));
+     float q;     // 2.0*cos(pow(q, 0.1)*PI*0.5);
+-    float qnrm;  // sqrt(m/2.0f+0.01f);
+-    float h;     // high pass output
+-    float b;     // band pass output
+-    float l;     // low pass output
+-    float p;     // peaking output (allpass with resonance)
+-    float n;     // notch output
+-    float *op;   // pointer to output value
++    double h;    // high pass output (1/16 PCM-step precision)
++    double b;    // band pass output
++    double l;    // low pass output
++    double p;    // peaking output (allpass with resonance)
++    double n;    // notch output
++    double *op;  // pointer to output value
+ } sv_filter;
+ 
+ /* Store data in SVF struct, takes the sampling frequency, cutoff frequency
+@@ -48,7 +48,6 @@ static inline void setup_svf(sv_filter *sv, float fs, float fc, float q, int t)
+ static inline void setup_svf(sv_filter *sv, float fc, float q, int t) {
+     sv->f = fc;
+     sv->q = q;
+-    sv->qnrm = sqrt(sv->q/2.0+0.01);
+     switch(t) {
+     case F_LP:
+         sv->op = &(sv->l);
+@@ -68,24 +67,28 @@ static inline void setup_svf(sv_filter *sv, float fc, float q, int t) {
+ }
+ 
+ /* Run one sample through the SV filter. Filter is by andy@vellocet */
+-static inline float run_svf(sv_filter *sv, float in) {
+-    float out;
+-    int i;
+-    in = sv->qnrm * in ;
+-    for (i=0; i < F_R; i++) {
+-        // very slight waveshape for extra stability
+-        sv->b = flush_to_zero(sv->b - sv->b * sv->b * sv->b * 0.001f);
+-        // regular state variable code here
+-        // the notch and peaking outputs are optional
+-        sv->h = flush_to_zero(in - sv->l - sv->q * sv->b);
+-        sv->b = sv->b + sv->f * sv->h;
+-        sv->l = flush_to_zero(sv->l + sv->f * sv->b);
+-        sv->n = sv->l + sv->h;
+-        sv->p = sv->l - sv->h;
+-        out = *(sv->op);
+-        in = out;
+-    }
+-    return out;
++/* MCPX rounds each state-variable filter operation to 1/16 of a 24-bit
++ * sample (halves upward). Preserve the intermediate precision in double.
++ * Tested on retail Xbox by raddad772, xemu PR #3105 commit 06ef59e. */
++static inline float run_svf(sv_filter *sv, float in)
++{
++    double high = mcpx_round_filter((double)in - sv->l - sv->q * sv->b);
++    double band = mcpx_round_filter(sv->b + sv->f * high);
++    double low  = mcpx_round_filter(sv->l + sv->f * band);
++    sv->h = high; sv->b = band; sv->l = low;
++    sv->n = low + high; sv->p = low - high;
++    return (float)*(sv->op);
++}
++
++/* Same SVF with peaking output rounded to the hardware 1/16-PCM step.
++ * Source: raddad772, xemu PR #3105 commits fbe7463, 06ef59e. */
++static inline float run_para_eq(sv_filter *sv, float in, float gain)
++{
++    double high = mcpx_round_filter((double)in - sv->l - sv->q * sv->b);
++    double band = mcpx_round_filter(sv->b + sv->f * high);
++    double low  = mcpx_round_filter(sv->l + sv->f * band);
++    sv->h = high; sv->b = band; sv->l = low;
++    return (float)mcpx_round_filter((double)in + gain * sv->q * band);
+ }
+ 
+ #endif
 diff --git a/native/dev/apu/vp/vp.c b/native/dev/apu/vp/vp.c
-index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7cd8dfdce 100644
+index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c536a68399 100644
 --- a/native/dev/apu/vp/vp.c
 +++ b/native/dev/apu/vp/vp.c
-@@ -22,6 +22,7 @@
+@@ -22,6 +22,8 @@
  #include "native/dev/apu/apu_int.h"
  #include "adpcm.h"
  #include "mix_inline.h"
 +#include "stereo_route.h"
++#include "mcpx_curves.h"
  #include "native/core/mmio.h"   /* nc_mmio_retry */
  
  /* -------------------------------------------------------------------------
-@@ -123,6 +124,65 @@ static const struct {
+@@ -123,6 +125,65 @@ static const struct {
      { NV_PAPU_TVLMP, NV_PAPU_CVLMP, NV_PAPU_NVLMP }, // MP
  };
  
@@ -21606,7 +22226,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
                                int status)
  {
-@@ -131,6 +191,25 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -131,6 +192,25 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
                             v * MCPX_HW_NOTIFIER_COUNT + notifier);
      notify_offset += 15; // Final byte is status, same for all notifiers
  
@@ -21632,7 +22252,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
      // FIXME: Check notify enable
      // FIXME: Set NV1BA0_NOTIFICATION_STATUS_IN_PROGRESS when appropriate
      apu_ram_st8(notify_offset, status);
-@@ -144,13 +223,29 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -144,34 +224,53 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
      apu_st(&d->set_irq, true);
  }
  
@@ -21641,30 +22261,69 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  static void voice_reset_filters(MCPXAPUState *d, uint16_t v)
  {
      assert(v < MCPX_HW_MAX_VOICES);
++    memset(d->vp.filters[v].previous_mix_gain, 0,
++           sizeof(d->vp.filters[v].previous_mix_gain));
      memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
-+    d->vp.filters[v].ending = false;
-+    d->vp.filters[v].silence_fed = 0;
-+    d->vp.route[v] = VP_ROUTE_UNDECIDED;
-     if (d->vp.filters[v].resampler) {
+-    if (d->vp.filters[v].resampler) {
 -        src_reset(d->vp.filters[v].resampler);
 -    }
-+        vp_resample_reset(d->vp.filters[v].resampler);
-+    } else {
+-}
+-
+-static float clampf(float v, float min, float max)
+-{
+-    if (v < min) {
+-        return min;
+-    } else if (v > max) {
+-        return max;
++    memset(&d->vp.filters[v].paraeq, 0, sizeof(d->vp.filters[v].paraeq));
++    memset(&d->vp.filters[v].i3dl2_state, 0,
++           sizeof(d->vp.filters[v].i3dl2_state));
++    MCPXAPUVoiceFilter *f = &d->vp.filters[v];
++    f->lfo_phase[0] = f->lfo_phase[1] = 0;
++    f->lfo_wait[0] = f->lfo_wait[1] = 0;
++    f->lfo_armed = false;
++    f->previous_pitch_valid = false;
++    f->previous_dls2_valid = false;
++    f->previous_paraeq_valid = false;
++    f->ending = false;
++    f->silence_fed = 0;
++    d->vp.route[v] = VP_ROUTE_UNDECIDED;
++    if (f->resampler) {
++        vp_resample_reset(f->resampler);
+     } else {
+-        return v;
+-    }
 +        /* the voice's first sound: its resampler made now, at the guest's
 +         * VOICE_ON, not in a frame (the sinc converter is 4 KB; made for
 +         * the voices a title uses, not all 256), kept for its later
 +         * sounds */
-+        d->vp.filters[v].voice = v;
-+        d->vp.filters[v].resampler =
-+            vp_resample_new(&voice_resample_callback, d->vp.resample_quality, 2, &d->vp.filters[v]);
++        f->voice = v;
++        f->resampler = vp_resample_new(&voice_resample_callback, d->vp.resample_quality, 2, f);
 +    }
-+    /* the voice slot's previous sound out of the HRTF filter too (its
-+     * coefficients and delays, the voice's HRTF entry, stay) */
-+    hrtf_filter_clear_history(&d->vp.filters[v].hrtf);
++    /* the voice slot's previous sound out of the HRTF filter too; a new
++     * sound's first frame uses its HRTF entry as it is, with no ramp from the
++     * last sound's (xemu PR #3105 21db778: params_set cleared at VOICE_ON) */
++    hrtf_filter_clear_history(&f->hrtf);
++    f->hrtf.target_initialised = false;
  }
  
- static float clampf(float v, float min, float max)
-@@ -472,6 +567,8 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
+-/* attenuate()'s values for the 4096 volumes, computed once (the same
+- * expression: a voice asks for 16 a frame) */
++
++
++/* the curve's 4096 values as gains, computed once (a voice asks for 16 a frame) */
+ static float g_attenuation[0x1000];
+ 
+ static void attenuation_init(void)
+ {
+-    for (int vol = 0; vol < 0x1000; vol++) {
+-        g_attenuation[vol] = (vol == 0xFFF) ? 0.0 : powf(10.0f, vol/(64.0 * -20.0f));
++    for (int att = 0; att < 0x1000; att++) {
++        g_attenuation[att] = (float)mcpx_attenuation_gain(att) / 16384.0f;
+     }
+ }
+ 
+@@ -472,6 +571,8 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
          for (unsigned i = 1;; i++) {
  #if defined(__aarch64__)
              __asm__ __volatile__("yield" ::: "memory");
@@ -21673,7 +22332,110 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  #endif
              if (!__atomic_load_n(&d->vp.voice_spinlocks[v].v, __ATOMIC_RELAXED) &&
                  apu_spin_trylock(&d->vp.voice_spinlocks[v])) {
-@@ -928,6 +1025,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -518,11 +619,13 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
+     return (apu_ld(&d->vp.voice_locked[v / 64]) & mask) != 0;
+ }
+ 
++
+ static void set_hrir_coeff_tar(MCPXAPUState *d, int channel, int coeff_idx,
+                                int8_t value)
+ {
+     int entry = d->vp.hrtf.current_entry;
+-    d->vp.hrtf.entries[entry].hrir[channel][coeff_idx] = int8_to_float(value);
++    d->vp.hrtf.entries[entry].hrir[channel][coeff_idx] =
++        hrtf_coeff_to_float((uint8_t)value);
+ }
+ 
+ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -600,7 +703,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+                                NV_PAVS_VOICE_CFG_ENV0_EA_DELAYTIME);
+             voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
+                            NV_PAVS_VOICE_CUR_ECNT_EACOUNT, delay_time * 16);
+-        } else if (ea_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_ATTACK) {
++        } else if (ea_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_ATTACK ||
++                   ea_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_DECAY) {
+             voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
+                            NV_PAVS_VOICE_CUR_ECNT_EACOUNT, 0);
+         } else if (ea_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD) {
+@@ -621,7 +725,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+                                NV_PAVS_VOICE_CFG_ENV0_EA_DELAYTIME);
+             voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
+                            NV_PAVS_VOICE_CUR_ECNT_EFCOUNT, delay_time * 16);
+-        } else if (ef_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_ATTACK) {
++        } else if (ef_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_ATTACK ||
++                   ef_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_DECAY) {
+             voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
+                            NV_PAVS_VOICE_CUR_ECNT_EFCOUNT, 0);
+         } else if (ef_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD) {
+@@ -634,6 +739,20 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+         // FIXME: Will count be overwritten in other cases too?
+ 
+         voice_reset_filters(d, selected_handle);
++        /* Reset stale HRTF delay/history on a new voice. Its first frame
++         * must start at the programmed entry, not ramp from zero.
++         * Source: raddad772 Xbox tests, xemu PR #3105 21db778. */
++        hrtf_filter_init(&d->vp.filters[selected_handle].hrtf);
++        if (selected_handle < MCPX_HW_MAX_3D_VOICES) {
++            uint16_t target = voice_get_mask(d, selected_handle,
++                          NV_PAVS_VOICE_CFG_HRTF_TARGET,
++                          NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE);
++            if (target != HRTF_NULL_HANDLE && target < HRTF_ENTRY_COUNT) {
++                hrtf_filter_set_target_params(&d->vp.filters[selected_handle].hrtf,
++                                               d->vp.hrtf.entries[target].hrir,
++                                               d->vp.hrtf.entries[target].itd);
++            }
++        }
+         voice_set_mask(d, selected_handle, NV_PAVS_VOICE_PAR_STATE,
+                        NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE, 1);
+         break;
+@@ -740,10 +859,18 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+         voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_VOLC,
+                        0xFFFFFFFF, argument);
+         break;
++    case NV1BA0_PIO_SET_VOICE_LFO_DELAY:
++        voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_PAR_LFO_DELAY,
++                       0xFFFFFFFFu, argument);
++        break;
+     case NV1BA0_PIO_SET_VOICE_LFO_ENV:
+         voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_LFO_ENV,
+                        0xFFFFFFFF, argument);
+         break;
++    case NV1BA0_PIO_SET_VOICE_LFO_MOD:
++        voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_LFO_MOD,
++                       0xFFFFFFFFu, argument);
++        break;
+     case NV1BA0_PIO_SET_VOICE_TAR_FCA:
+         voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_FCA,
+                        0xFFFFFFFF, argument);
+@@ -839,18 +966,15 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+             argument & NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_HANDLE;
+         break;
+     case NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET: {
+-        // FIXME: Is there an upper limit for the SGE table size?
+-        // FIXME: NV_PAPU_VPSGEADDR is probably bad, as inbuf SGE use the same
+-        // handle range (or that is also wrong)
+-        // NV_PAPU_EPFADDR   EP outbufs
+-        // NV_PAPU_GPFADDR   GP outbufs
+-        // But how does it know which outbuf is being written?!
+-        uint64_t sge_address =
+-            d->regs[NV_PAPU_VPSGEADDR] + d->vp.outbuf_sge_handle * 8;
+-        apu_ram_st32(sge_address,
+-                    argument &
+-                        NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET_PARAMETER);
+-        DPRINTF("Wrote outbuf SGE[0x%X] = 0x%08X\n", d->vp.outbuf_sge_handle,
++        /* Output-buffer SGEs are distinct from the voice INPUT page table.
++         * Output DMA is not emulated yet, so do not store these pages until
++         * that path has its own backing state. Writing them to VPSGEADDR
++         * overwrote valid voice sample pages, resulting in silent voices.
++         * Source: raddad772 retail MCPX tests, xemu PR #3105 abc1d80:
++         * https://github.com/xemu-project/xemu/pull/3105
++         */
++        DPRINTF("Ignored unemulated outbuf SGE[%u] = 0x%08X\n",
++                d->vp.outbuf_sge_handle,
+                 argument & NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET_PARAMETER);
+         break;
+     }
+@@ -928,6 +1052,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          break;
      case SE2FE_IDLE_VOICE:
          if (d->regs[NV_PAPU_FETFORCE1] & NV_PAPU_FETFORCE1_SE2FE_IDLE_VOICE) {
@@ -21686,7 +22448,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
              d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FEMETHMODE;
              d->regs[NV_PAPU_FECTL] |= NV_PAPU_FECTL_FEMETHMODE_TRAPPED;
              d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FETRAPREASON;
-@@ -970,6 +1073,11 @@ uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
+@@ -970,6 +1100,11 @@ uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
      DPRINTF("mcpx apu VP: read [0x%" PRIx64 "] (%s)\n", addr,
              get_method_str(addr));
  
@@ -21698,7 +22460,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
      switch (addr) {
      case NV1BA0_PIO_FREE:
          /* we don't simulate the queue for now,
-@@ -988,6 +1096,18 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -988,6 +1123,18 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  
      DPRINTF("mcpx apu VP: [0x%" PRIx64 "] %s = 0x%lx\n", addr,
              get_method_str(addr), val);
@@ -21717,7 +22479,303 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  
      switch (addr) {
      case NV1BA0_PIO_SET_ANTECEDENT_VOICE:
-@@ -1368,7 +1488,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1009,7 +1156,9 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+     case NV1BA0_PIO_SET_VOICE_TAR_VOLA:
+     case NV1BA0_PIO_SET_VOICE_TAR_VOLB:
+     case NV1BA0_PIO_SET_VOICE_TAR_VOLC:
++    case NV1BA0_PIO_SET_VOICE_LFO_DELAY:
+     case NV1BA0_PIO_SET_VOICE_LFO_ENV:
++    case NV1BA0_PIO_SET_VOICE_LFO_MOD:
+     case NV1BA0_PIO_SET_VOICE_TAR_FCA:
+     case NV1BA0_PIO_SET_VOICE_TAR_FCB:
+     case NV1BA0_PIO_SET_VOICE_TAR_PITCH:
+@@ -1109,165 +1258,146 @@ static uint64_t get_data_ptr(MCPXAPUState *d, uint64_t sge_base,
+     return prd_address + addr % APU_PAGE_SIZE;
+ }
+ 
++/* Each envelope advances BEFORE the next 32 samples play. The guest level
++ * byte is deliberately kept at its release-start value during release,
++ * because the hardware derives the release curve from that snapshot.
++ * Hardware measurements: raddad772, xemu PR #3105 commit 3a94344. */
++static float envelope_store_level(MCPXAPUState *d, uint8_t *c, uint16_t v,
++                                  uint32_t level_reg, uint32_t level_mask,
++                                  double level2048)
++{
++    if (level2048 < 0.0) level2048 = 0.0;
++    if (level2048 > 2048.0) level2048 = 2048.0;
++    unsigned guest_byte = (unsigned)level2048 / 8u;
++    if (guest_byte > 255u) guest_byte = 255u;
++    voice_set_mask_nolock(d, c, v, level_reg, level_mask, guest_byte);
++    return (float)(level2048 / 2048.0);
++}
++
+ static float voice_step_envelope(MCPXAPUState *d, uint8_t *c, uint16_t v,
+-                           uint32_t reg_0,
+-                           uint32_t reg_a, uint32_t rr_reg, uint32_t rr_mask,
+-                           uint32_t lvl_reg, uint32_t lvl_mask,
+-                           uint32_t count_mask, uint32_t cur_mask)
++                                uint32_t reg_0, uint32_t reg_a,
++                                uint32_t rr_reg, uint32_t rr_mask,
++                                uint32_t lvl_reg, uint32_t lvl_mask,
++                                uint32_t count_mask, uint32_t cur_mask)
+ {
+-    uint8_t cur = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask);
++    uint32_t cur = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask);
++    uint32_t count = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask);
++    uint32_t attack = voice_get_mask_nolock(d, c, v, reg_0,
++                                 NV_PAVS_VOICE_CFG_ENV0_EA_ATTACKRATE);
++    uint32_t hold = voice_get_mask_nolock(d, c, v, reg_a,
++                                 NV_PAVS_VOICE_CFG_ENVA_EA_HOLDTIME);
++    uint32_t decay = voice_get_mask_nolock(d, c, v, reg_a,
++                                 NV_PAVS_VOICE_CFG_ENVA_EA_DECAYRATE);
++    uint32_t sustain_byte = voice_get_mask_nolock(d, c, v, reg_a,
++                                 NV_PAVS_VOICE_CFG_ENVA_EA_SUSTAINLEVEL);
++    uint32_t release = voice_get_mask_nolock(d, c, v, rr_reg, rr_mask);
++    const bool amplitude = (count_mask == NV_PAVS_VOICE_CUR_ECNT_EACOUNT);
++    const double sustain = floor(sustain_byte * (2048.0 / 255.0));
+     switch (cur) {
+     case NV_PAVS_VOICE_PAR_STATE_EFCUR_OFF:
+-        voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask, 0);
+-        voice_set_mask_nolock(d, c, v, lvl_reg, lvl_mask, 0xFF);
+-        return 1.0f;
+-    case NV_PAVS_VOICE_PAR_STATE_EFCUR_DELAY: {
+-        uint16_t count =
+-            voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask);
+-        voice_set_mask_nolock(d, c, v, lvl_reg, lvl_mask, 0x00); // FIXME: Confirm this?
+-
+-        if (count == 0) {
+-            cur++;
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask, cur);
+-            count = 0;
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,0);
++        return envelope_store_level(d,c,v,lvl_reg,lvl_mask, amplitude ? 2048 : 0);
++    case NV_PAVS_VOICE_PAR_STATE_EFCUR_DELAY:
++        if (!count) {
++            voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_STATE,cur_mask,cur+1);
+         } else {
+             count--;
+         }
+-        voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask, count);
+-        return 0.0f;
+-    }
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,count);
++        return envelope_store_level(d,c,v,lvl_reg,lvl_mask,0);
+     case NV_PAVS_VOICE_PAR_STATE_EFCUR_ATTACK: {
+-        uint16_t count =
+-            voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask);
+-        uint16_t attack_rate =
+-            voice_get_mask_nolock(d, c, v, reg_0, NV_PAVS_VOICE_CFG_ENV0_EA_ATTACKRATE);
+-
+-        float value;
+-        if (attack_rate == 0) {
+-            // FIXME: [division by zero]
+-            //       Got crackling sound in hardware for amplitude env.
+-            value = 255.0f;
+-        } else {
+-            if (count <= (attack_rate * 16)) {
+-                value = (count * 0xFF) / (attack_rate * 16);
+-            } else {
+-                // FIXME: Overflow in hardware
+-                //       The actual value seems to overflow, but not sure how
+-                value = 255.0f;
+-            }
+-        }
+-        voice_set_mask_nolock(d, c, v, lvl_reg, lvl_mask, value);
+-        // FIXME: Comparison could also be the other way around?! Test please.
+-        if (count == (attack_rate * 16)) {
+-            cur++;
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask, cur);
+-            uint16_t hold_time =
+-                voice_get_mask_nolock(d, c, v, reg_a, NV_PAVS_VOICE_CFG_ENVA_EA_HOLDTIME);
+-            count = hold_time * 16; // FIXME: Skip next phase if count is 0?
+-                                    // [other instances too]
+-        } else {
+-            count++;
+-        }
+-        voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask, count);
+-        return value / 255.0f;
+-    }
+-    case NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD: {
+-        uint16_t count =
+-            voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask);
+-        voice_set_mask_nolock(d, c, v, lvl_reg, lvl_mask, 0xFF);
+-
+-        if (count == 0) {
+-            cur++;
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask, cur);
+-            uint16_t decay_rate = voice_get_mask_nolock(
+-                d, c, v, reg_a, NV_PAVS_VOICE_CFG_ENVA_EA_DECAYRATE);
+-            count = decay_rate * 16;
+-        } else {
+-            count--;
+-        }
+-        voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask, count);
+-        return 1.0f;
+-    }
++        if (count < 0xFFFFu) count++;
++        double level = attack ? fmin(2048.0, floor(2048.0*count/(attack*16.0)))
++                              : 2048.0;
++        if (!attack || count >= attack*16u) {
++            voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_STATE,cur_mask,cur+1);
++            count = hold*16u;
++        }
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,count);
++        return envelope_store_level(d,c,v,lvl_reg,lvl_mask,level);
++    }
++    case NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD:
++        if (!count) voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_STATE,cur_mask,cur+1);
++        else count--;
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,count);
++        return envelope_store_level(d,c,v,lvl_reg,lvl_mask,2048);
+     case NV_PAVS_VOICE_PAR_STATE_EFCUR_DECAY: {
+-        uint16_t count =
+-            voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask);
+-        uint16_t decay_rate =
+-            voice_get_mask_nolock(d, c, v, reg_a, NV_PAVS_VOICE_CFG_ENVA_EA_DECAYRATE);
+-        uint8_t sustain_level =
+-            voice_get_mask_nolock(d, c, v, reg_a, NV_PAVS_VOICE_CFG_ENVA_EA_SUSTAINLEVEL);
+-
+-        // FIXME: Decay should return a value no less than sustain
+-        float value;
+-        if (decay_rate == 0) {
+-            value = 0.0f;
+-        } else {
+-            // FIXME: This formula and threshold is not accurate, but I can't
+-            // get it any better for now
+-            value = 255.0f * powf(0.99988799f, (decay_rate * 16 - count) *
+-                                                   4096 / decay_rate);
+-        }
+-        if (value <= (sustain_level + 0.2f) || (value > 255.0f)) {
+-            // FIXME: Should we still update lvl?
+-            cur++;
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask, cur);
+-        } else {
+-            count--;
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask, count);
+-            voice_set_mask_nolock(d, c, v, lvl_reg, lvl_mask, value);
++        double level = 2048.0;
++        if (decay) {
++            if (count < 0xFFFFu) count++;
++            level = floor(2048.0 * exp(-(double)count/(2.0*decay)));
++        }
++        if (!decay || level <= sustain) {
++            level = decay ? sustain : 2048.0;
++            voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_STATE,cur_mask,cur+1);
++            count = 0;
+         }
+-        return value / 255.0f;
+-    }
+-    case NV_PAVS_VOICE_PAR_STATE_EFCUR_SUSTAIN: {
+-        uint8_t sustain_level =
+-            voice_get_mask_nolock(d, c, v, reg_a, NV_PAVS_VOICE_CFG_ENVA_EA_SUSTAINLEVEL);
+-        voice_set_mask_nolock(
+-            d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask,
+-            0x00); // FIXME: is this only set to 0 once or forced to zero?
+-        voice_set_mask_nolock(d, c, v, lvl_reg, lvl_mask, sustain_level);
+-        return sustain_level / 255.0f;
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,count);
++        return envelope_store_level(d,c,v,lvl_reg,lvl_mask,level);
+     }
++    case NV_PAVS_VOICE_PAR_STATE_EFCUR_SUSTAIN:
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,0);
++        voice_set_mask_nolock(d,c,v,lvl_reg,lvl_mask,sustain_byte);
++        return (float)(sustain/2048.0);
+     case NV_PAVS_VOICE_PAR_STATE_EFCUR_RELEASE: {
+-        uint16_t count =
+-            voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask);
+-        uint16_t release_rate = voice_get_mask_nolock(d, c, v, rr_reg, rr_mask);
+-
+-        if (release_rate == 0) {
+-            count = 0;
+-        }
+-
+-        float value = 0;
+-        if (count == 0) {
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, cur_mask, ++cur);
+-        } else {
+-            // FIXME: Appears to be an exponential but unsure about actual
+-            // curve; performing standard decay of current level to T60 over the
+-            // release interval which seems about right.
+-            // FIXME: Based on sustain level or just decay of current level?
+-            // FIXME: Update level? A very similar, alternative decay function
+-            // (probably what the hw actually does): y(t)=2^(-10t), which would
+-            // permit simpler attenuation more efficiently and update level on
+-            // each round.
+-            float pos = clampf(1 - count / (release_rate * 16.0), 0, 1);
+-            uint8_t lvl = voice_get_mask_nolock(d, c, v, lvl_reg, lvl_mask);
+-            value = powf(M_E, -6.91*pos)*lvl;
+-            count--; // FIXME: Should release count ascend or descend?
+-            voice_set_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_ECNT, count_mask, count);
+-        }
+-
+-        return value / 255.0f;
++        /* A release starts at count = R*16, after VOICE_RELEASE. */
++        uint32_t t = release*16u > count ? release*16u - count : 0u;
++        if (!release || t >= release*15u) {
++            voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_STATE,cur_mask,cur+1);
++            voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,0);
++            return 0.0f;
++        }
++        voice_set_mask_nolock(d,c,v,NV_PAVS_VOICE_CUR_ECNT,count_mask,
++                              count ? count-1u : 0u);
++        double start = voice_get_mask_nolock(d,c,v,lvl_reg,lvl_mask)*8.0;
++        double fall = floor(start*exp(-(double)t/(2.0*release)));
++        double tail = floor(start*2.0*(release*15u-t)/(2048.0*release)+0.5);
++        return (float)((t < release*11u ? fmax(fall,tail) : tail)/2048.0);
+     }
+     case NV_PAVS_VOICE_PAR_STATE_EFCUR_FORCE_RELEASE:
+-        if (count_mask == NV_PAVS_VOICE_CUR_ECNT_EACOUNT) {
+-            voice_off_nolock(d, c, v);
+-        }
++        if (amplitude) voice_off_nolock(d,c,v);
+         return 0.0f;
+     default:
+-        fprintf(stderr, "Unknown envelope state 0x%x\n", cur);
+-        assert(false);
++        /* Unknown guest state: avoid crashing a shipping hakuX build. */
+         return 0.0f;
+     }
+ }
+ 
++/* Two independent 16-bit LFO phase accumulators, triangular rising-first.
++ * Delays are in 32-sample frames; signed depths in register 0x70.
++ * Source: raddad772, xemu PR #3105 commit e1a8fad. */
++static void voice_step_lfos(MCPXAPUState *d, uint8_t *c, uint16_t v,
++                            float *att, float *pitch, float *cutoff)
++{
++    MCPXAPUVoiceFilter *f=&d->vp.filters[v];
++    if (!f->lfo_armed) {
++        uint32_t misc=voice_get_mask_nolock(d,c,v,NV_PAVS_VOICE_CFG_MISC,0xFFFFFFFFu);
++        f->lfo_wait[0] = (misc & NV_PAVS_VOICE_CFG_MISC_LFOA_DELAY_ENABLE) ?
++            voice_get_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_LFO_DELAY,
++                                   NV_PAVS_VOICE_PAR_LFO_DELAY_LFOA) : 0;
++        f->lfo_wait[1] = (misc & NV_PAVS_VOICE_CFG_MISC_LFOF_DELAY_ENABLE) ?
++            voice_get_mask_nolock(d,c,v,NV_PAVS_VOICE_PAR_LFO_DELAY,
++                                   NV_PAVS_VOICE_PAR_LFO_DELAY_LFOF) : 0;
++        f->lfo_armed=true;
++    }
++    uint32_t delta_masks[2]={NV_PAVS_VOICE_TAR_LFO_ENV_LFOA_DELTA,
++                              NV_PAVS_VOICE_TAR_LFO_ENV_LFOF_DELTA};
++    float values[2]={0,0};
++    for(int k=0;k<2;k++) {
++        if (f->lfo_wait[k]) { f->lfo_wait[k]--; continue; }
++        f->lfo_phase[k]=(uint16_t)(f->lfo_phase[k]+voice_get_mask_nolock(
++                                     d,c,v,NV_PAVS_VOICE_TAR_LFO_ENV,delta_masks[k]));
++        int p=f->lfo_phase[k];
++        values[k]=(p<0x4000 ? p : p<0xC000 ? 0x8000-p : p-0x10000)/16384.0f;
++    }
++    uint32_t mod=voice_get_mask_nolock(d,c,v,NV_PAVS_VOICE_TAR_LFO_MOD,0xFFFFFFFFu);
++    int8_t a_amp=(int8_t)(mod&0xFFu), a_pitch=(int8_t)((mod>>8)&0xFFu);
++    int8_t a_fc=(int8_t)((mod>>16)&0xFFu), f_pitch=(int8_t)((mod>>24)&0xFFu);
++    *att=a_amp*8.0f*values[0];
++    *pitch=(a_pitch*values[0]+f_pitch*values[1])*32.0f;
++    *cutoff=a_fc*256.0f*values[0];
++}
++
+ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+                        float samples[][2],
+                        int num_samples_requested)
+@@ -1368,7 +1498,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
              d->vp.ssl[v].ssl_seg = 0;
              if (!persist) {
                  d->vp.ssl[v].ssl_index = 0;
@@ -21726,7 +22784,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
              } else {
                  set_notify_status(
                      d, v, MCPX_HW_NOTIFIER_SSLA_DONE + d->vp.ssl[v].ssl_index,
-@@ -1391,7 +1511,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1391,7 +1521,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                  segment_length = apu_ram_ld32(addr + 4);
              }
          }
@@ -21739,7 +22797,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
          assert(segment_length != 0);
          seg_len = (segment_length >> 0) & 0xffff;
          seg_cs = (segment_length >> 16) & 3;
-@@ -1399,7 +1523,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1399,7 +1533,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
          seg_s = (segment_length >> 23) & 1;
          assert(seg_cs == container_size_index);
          assert((seg_spb + 1) == samples_per_block);
@@ -21752,7 +22810,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
          container_size_index = seg_cs;
          if (seg_cs == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
              sample_size = NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24;
-@@ -1555,13 +1683,16 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1555,13 +1693,16 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
          }
      }
  
@@ -21769,7 +22827,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
                  int next_index = (ssl_index + 1) % 2;
                  DPRINTF("SSL%c\n", 'A' + next_index);
                  d->vp.ssl[v].ssl_index = next_index;
-@@ -1574,7 +1705,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1574,7 +1715,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                  cbo = lbo;
              } else {
                  cbo = ebo;
@@ -21779,7 +22837,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
                  DPRINTF("end of buffer!\n");
              }
          }
-@@ -1595,7 +1727,7 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1595,7 +1737,7 @@ static long voice_resample_callback(void *cb_data, float **data)
      uint8_t *c = filter->cb_voice_cache;
  
      int sample_count = 0;
@@ -21788,7 +22846,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
          int active = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                      NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE);
          if (!active) {
-@@ -1614,6 +1746,9 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1614,6 +1756,9 @@ static long voice_resample_callback(void *cb_data, float **data)
          /* Starvation causes SRC hang on repeated calls. Provide silence. */
          memset(&filter->resample_buf[2*sample_count], 0,
              2*(NUM_SAMPLES_PER_FRAME-sample_count)*sizeof(float));
@@ -21798,9 +22856,24 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
          sample_count = NUM_SAMPLES_PER_FRAME;
      }
  
-@@ -1629,29 +1764,22 @@ static int voice_resample(MCPXAPUState *d, uint8_t *c, uint16_t v,
-     MCPXAPUVoiceFilter *filter = &d->vp.filters[v];
+@@ -1621,49 +1766,32 @@ static long voice_resample_callback(void *cb_data, float **data)
+     return sample_count;
+ }
  
++/* Keep hakuX's synchronous 32-sample refill callback. That preserves its
++ * guest CBO/SSL/notifier progression and mute-skip plumbing; only sample
++ * interpolation/cursor arithmetic changes to the MCPX's 8-point Lagrange.
++ * The actual interpolation lives in resample.c, including NEON support.
++ * Source: raddad772, xemu PR #3105 commits 38e5733 and e38ad53. */
+ static int voice_resample(MCPXAPUState *d, uint8_t *c, uint16_t v,
+-                          float samples[][2],
+-                          int requested_num, float rate)
++                          float samples[][2], int requested_num,
++                          const uint32_t *steps)
+ {
+     assert(v < MCPX_HW_MAX_VOICES);
+     MCPXAPUVoiceFilter *filter = &d->vp.filters[v];
+-
      if (filter->resampler == NULL) {
 +        /* made at its VOICE_ON (voice_reset_filters); here only for a voice
 +         * a state load left playing, or if that ran out of memory */
@@ -21812,7 +22885,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
 -         * which case using this resampler is overkill, but quality is good
 -         * so use it for now.
 -         */
-         // FIXME: Don't do 2ch resampling if this is a mono voice
+-        // FIXME: Don't do 2ch resampling if this is a mono voice
 -        filter->resampler = src_callback_new(&voice_resample_callback,
 -                                           SRC_SINC_FASTEST, 2, &err, filter);
 +        filter->resampler = vp_resample_new(&voice_resample_callback, d->vp.resample_quality, 2, filter);
@@ -21822,21 +22895,118 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
 +            return -1;
          }
      }
- 
+-
 -    /* The voice table through to the libsamplerate callback (whose
-+    /* The voice table through to the resampler's callback (whose
-      * signature we cannot extend), for the synchronous duration of
+-     * signature we cannot extend), for the synchronous duration of
 -     * src_callback_read. */
-+     * vp_resample_read. */
++    /* The voice table through to the resampler's callback (whose
++     * signature we cannot extend), for the synchronous duration of the read. */
      filter->cb_voice_cache = c;
 -    int count = src_callback_read(filter->resampler, rate, requested_num,
 -                                  (float *)samples);
-+    int count = vp_resample_read(filter->resampler, rate, requested_num,
-+                                 (float *)samples);
++    long got = vp_resample_read_steps(filter->resampler, steps, requested_num, (float *)samples);
      filter->cb_voice_cache = NULL;
-     if (count == -1) {
-         DPRINTF("resample error\n");
-@@ -1779,7 +1907,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+-    if (count == -1) {
+-        DPRINTF("resample error\n");
+-    }
+-    if (count != requested_num) {
+-        DPRINTF("resample returned fewer than expected: %d\n", count);
+-
+-        if (count == 0)
+-            return -1;
+-    }
+-
+-    return count;
++    return got > 0 ? (int)got : -1;
+ }
+ 
+ static int peek_ahead_multipass_bin(MCPXAPUState *d, uint8_t *c,
+@@ -1711,9 +1839,28 @@ static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
+     int mp_bin = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
+                                 NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
+ 
++    /* On MCPX hardware, a multipass voice reads its source bin multiplied
++     * by 2^headroom (CFG_FMT bits 15:13), undoing the attenuation applied
++     * when the source voices were mixed into that bin. DirectSound commonly
++     * sets both fields to 7; without this the second pass is 42 dB too low.
++     * Use the raw mask here to avoid depending on a register-name alias.
++     * Source: raddad772, xemu-project/xemu#3105, commit 12e9219.
++     */
++    unsigned headroom = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
++                                               0x0000E000u);
++    float scale = (float)(1u << headroom);
+     for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+-        samples[i][0] = mixbins[mp_bin][i];
+-        samples[i][1] = mixbins[mp_bin][i];
++        /* The multipass input is first converted to a saturated 24-bit
++         * sample, halves UP, and only then raised by 2^headroom. Otherwise
++         * a bin value outside [-1,1] or halfway between PCM24 values feeds
++         * different data into its second pass. Source: #3105 12e9219,
++         * 45af4ac. */
++        double pcm=floor((double)mixbins[mp_bin][i]*8388608.0+0.5);
++        if (pcm < -8388608.0) pcm=-8388608.0;
++        if (pcm > 8388607.0) pcm=8388607.0;
++        float value=(float)(pcm/8388608.0)*scale;
++        samples[i][0] = value;
++        samples[i][1] = value;
+     }
+ 
+     // DirectSound sets clear mix to true
+@@ -1732,7 +1879,12 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+     assert(v < MCPX_HW_MAX_VOICES);
+     bool stereo = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
+                                  NV_PAVS_VOICE_CFG_FMT_STEREO);
+-    unsigned int channels = stereo ? 2 : 1;
++    const bool is_3d = v < MCPX_HW_MAX_3D_VOICES;
++    /* The sample decoder still consumes the encoded stereo data, but the
++     * 3D voice processor filters/mixes channel 0 alone even when STEREO=1.
++     * Source: retail Xbox measurement, xemu-project/xemu#3105 5cebb72.
++     */
++    unsigned int channels = (stereo && !is_3d) ? 2 : 1;
+     bool paused = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
+                                  NV_PAVS_VOICE_PAR_STATE_PAUSED);
+ 
+@@ -1751,7 +1903,23 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+                                NV_PAVS_VOICE_TAR_PITCH_LINK_PITCH);
+     int8_t ps = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_ENV0,
+                                NV_PAVS_VOICE_CFG_ENV0_EF_PITCHSCALE);
+-    float rate = 1.0 / powf(2.0f, (p + ps * 32 * ef_value) / 4096.0f);
++    /* The guest specifies pitch logarithmically. Ramp its logarithm over
++     * the 32 samples (not the resampling ratio itself). A direct -1000h
++     * step over one frame should advance ~23 inputs, not 16 or 24.
++     * Source: xemu PR #3105 e38ad53. */
++    float lfo_att=0, lfo_pitch=0, lfo_fc=0;
++    voice_step_lfos(d,c,v,&lfo_att,&lfo_pitch,&lfo_fc);
++    double pitch = p + ps * 32.0 * ef_value + lfo_pitch;
++    MCPXAPUVoiceFilter *vf=&d->vp.filters[v];
++    double pitch_from = vf->previous_pitch_valid ? vf->previous_pitch : pitch;
++    uint32_t pitch_steps[NUM_SAMPLES_PER_FRAME];
++    for (int i=0;i<NUM_SAMPLES_PER_FRAME;i++) {
++        double sample_pitch = pitch_from+(pitch-pitch_from)*((double)i/32.0);
++        double step=exp2(sample_pitch/4096.0)*65536.0;
++        pitch_steps[i]=(uint32_t)fmax(1.0,fmin(step,4294967295.0));
++    }
++    vf->previous_pitch=pitch;
++    vf->previous_pitch_valid=true;
+ 
+     float ea_value = voice_step_envelope(
+         d, c, v, NV_PAVS_VOICE_CFG_ENV0, NV_PAVS_VOICE_CFG_ENVA,
+@@ -1769,6 +1937,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+      * bit-exactly (the loop trip count and num_samples_requested are value-
+      * independent of the decoded samples; we only null the sample VALUES). */
+     bool skip_muted = voice_all_vols_maxed(d, c, v);
++    if (skip_muted) {
++        for (int b = 0; b < 8; b++) {
++            if (d->vp.filters[v].previous_mix_gain[b] != 0) {
++                skip_muted = false; /* fade out, do not abruptly cut */
++                break;
++            }
++        }
++    }
+ #endif
+ 
+     float samples[NUM_SAMPLES_PER_FRAME][2] = { 0 };
+@@ -1779,7 +1955,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
  #if !defined(HAKUX_AUDIO_NO_PROCESS) || !HAKUX_AUDIO_NO_PROCESS
  #if HAKUX_AUDIO_SKIP_MUTED
      /* Thread the per-voice skip decision into voice_get_samples (reached via
@@ -21845,7 +23015,17 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
       * only for the synchronous duration of the resample loop below, same
       * lifetime contract as cb_voice_cache. Multipass voices have no decode
       * loop, so this is consumed only on the non-multipass path. */
-@@ -1809,6 +1937,15 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1796,7 +1972,8 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+             }
+             int count =
+                 voice_resample(d, c, v, &samples[sample_count],
+-                               NUM_SAMPLES_PER_FRAME - sample_count, rate);
++                               NUM_SAMPLES_PER_FRAME - sample_count,
++                               &pitch_steps[sample_count]);
+             if (count < 0) {
+                 break;
+             }
+@@ -1809,6 +1986,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
      if (!active) {
          return;
      }
@@ -21853,7 +23033,6 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
 +     * passed its last sample and the filter no longer reads it, this frame
 +     * still mixed. The guest sees the end a frame or so after its decoder
 +     * reached it, as the resampler reads ahead. */
-+    const MCPXAPUVoiceFilter *vf = &d->vp.filters[v];
 +    if (vf->ending && (!vf->resampler || vp_resample_ahead(vf->resampler) - vf->silence_fed <=
 +                                            -vp_resample_reach(vf->resampler))) {
 +        voice_off_nolock(d, c, v);
@@ -21861,7 +23040,16 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  #else
      /* HAKUX_AUDIO_NO_PROCESS=1: skip the expensive sample-production +
       * mixing path. Envelopes above still advance guest-observable
-@@ -1941,10 +2078,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1825,7 +2010,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+      * (void)multipass; (void)rate; (void)mixbins; */
+     (void)samples;
+     (void)multipass;
+-    (void)rate;
++    (void)pitch_steps;
+     (void)mixbins;
+     return;
+ #endif
+@@ -1941,61 +2126,144 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * muted-frame input -- exactly the decode we skipped.) */
      if (d->vp.filters[v].muted_prev) {
          memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
@@ -21869,20 +23057,259 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
 -            memset(d->vp.filters[v].hrtf.ch[ch].buf, 0,
 -                   sizeof(d->vp.filters[v].hrtf.ch[ch].buf));
 -        }
++        memset(&d->vp.filters[v].paraeq, 0, sizeof(d->vp.filters[v].paraeq));
++        memset(&d->vp.filters[v].i3dl2_state, 0,
++               sizeof(d->vp.filters[v].i3dl2_state));
 +        hrtf_filter_clear_history(&d->vp.filters[v].hrtf);
          d->vp.filters[v].muted_prev = false;
      }
  #endif
-@@ -1994,7 +2128,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
  
+     int fmode = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_MISC,
+                                NV_PAVS_VOICE_CFG_MISC_FMODE);
+-
+-    // FIXME: Move to function
+-    bool lpf = false;
+-    if (v < MCPX_HW_MAX_3D_VOICES) {
+-        /* 1:DLS2+I3DL2 2:ParaEQ+I3DL2 3:I3DL2 */
+-        lpf = (fmode == 1);
+-    } else {
+-        /* 0:Bypass 1:DLS2 2:ParaEQ 3(Mono):DLS2+ParaEQ 3(Stereo):Bypass */
+-        lpf = stereo ? (fmode == 1) : (fmode & 1);
+-    }
+-    if (lpf) {
+-        for (int ch = 0; ch < 2; ch++) {
+-            // FIXME: Cutoff modulation via NV_PAVS_VOICE_CFG_ENV1_EF_FCSCALE
+-            int16_t fc = voice_get_mask_nolock(
+-                d, c, v, NV_PAVS_VOICE_TAR_FCA + (ch % channels) * 4,
+-                NV_PAVS_VOICE_TAR_FCA_FC0);
+-            float fc_f = clampf(pow(2, fc / 4096.0), 0.003906f, 1.0f);
+-            uint16_t q = voice_get_mask_nolock(
+-                d, c, v, NV_PAVS_VOICE_TAR_FCA + (ch % channels) * 4,
+-                NV_PAVS_VOICE_TAR_FCA_FC1);
+-            float q_f = clampf(q / (1.0 * 0x8000), 0.079407f, 1.0f);
+-            sv_filter *filter = &d->vp.filters[v].svf[ch];
+-            setup_svf(filter, fc_f, q_f, F_LP);
+-            for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+-                samples[i][ch] = run_svf(filter, samples[i][ch]);
+-                samples[i][ch] = fminf(fmaxf(samples[i][ch], -1.0f), 1.0f);
++    uint16_t hrtf_handle = HRTF_NULL_HANDLE;
++    if (is_3d) {
++        hrtf_handle = voice_get_mask_nolock(d, c, v,
++                     NV_PAVS_VOICE_CFG_HRTF_TARGET,
++                     NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE);
++    }
++    const bool has_hrtf = is_3d && hrtf_handle != HRTF_NULL_HANDLE &&
++                          hrtf_handle < HRTF_ENTRY_COUNT;
++
++    /* Filter modes, measured on retail Xbox (raddad772 #3105 commits
++     * fbe7463 ParaEQ, b4a9b50 I3DL2, 2e31ff4 null HRTF, b323e32 SVF).
++     * 3D HRTF: 1 DLS2+I3DL2, 2 ParaEQ+I3DL2, 3 I3DL2.
++     * 2D mono (including 3D without HRTF): 1 DLS2, 2 ParaEQ,
++     *     3 DLS2 then ParaEQ. 2D stereo: modes 1/2, mode 3 bypass.
++     */
++    const bool spatial_filter = is_3d && has_hrtf;
++    const bool dls2 = spatial_filter ? (fmode == 1) :
++                      (fmode == 1 || (channels == 1 && fmode == 3));
++    const bool peq = spatial_filter ? (fmode == 2) :
++                     (fmode == 2 || (channels == 1 && fmode == 3));
++    const bool i3dl2 = spatial_filter && fmode != 0;
++    /* F envelope shifts DLS2/ParaEQ frequency in units of 256 per scale
++     * byte, and the A LFO adds its cutoff modulation. Coefficients ramp
++     * linearly through the output frame, without resetting filter history.
++     * Source: xemu PR #3105 957c5ee (retail Xbox measurement). */
++    int8_t fc_scale=(int8_t)voice_get_mask_nolock(d,c,v,NV_PAVS_VOICE_CFG_ENV1,
++                                  NV_PAVS_VOICE_CFG_ENV1_EF_FCSCALE);
++    double fc_bend=fc_scale*256.0*ef_value+lfo_fc;
++    if (dls2 || peq) {
++        uint32_t misc = voice_get_mask_nolock(d, c, v,
++                            NV_PAVS_VOICE_CFG_MISC, 0xFFFFFFFFu);
++        unsigned qbits = (misc >> 18) & 7u;
++        for (unsigned ch = 0; ch < channels; ch++) {
++            if (dls2) {
++                /* DLS2 always reads FCA except for stereo channel 1. */
++                uint32_t reg = (ch == 1) ? NV_PAVS_VOICE_TAR_FCB :
++                                          NV_PAVS_VOICE_TAR_FCA;
++                uint32_t word = voice_get_mask_nolock(d, c, v, reg, 0xFFFFFFFFu);
++                float f = mcpx_filter_frequency((int16_t)(word & 0xFFFFu)+fc_bend);
++                float f0 = vf->previous_dls2_valid ? vf->previous_dls2_f[ch] : f;
++                vf->previous_dls2_f[ch]=f;
++                float q = (float)(word >> 16) / 32768.0f;
++                sv_filter *filter = &vf->svf[ch];
++                setup_svf(filter, f, q, F_LP);
++                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++                    filter->f = f0 + (f-f0)*(i/32.0f);
++                    samples[i][ch] = run_svf(filter, samples[i][ch]);
++                }
++            }
++            if (peq) {
++                /* On 3D use FCA; on 2D mono FCB; on stereo FCA/FCB. */
++                uint32_t reg = spatial_filter ? NV_PAVS_VOICE_TAR_FCA :
++                               (channels == 1 || ch == 1) ?
++                               NV_PAVS_VOICE_TAR_FCB : NV_PAVS_VOICE_TAR_FCA;
++                uint32_t word = voice_get_mask_nolock(d, c, v, reg, 0xFFFFFFFFu);
++                float f = mcpx_filter_frequency((int16_t)(word & 0xFFFFu)+fc_bend);
++                float f0 = vf->previous_paraeq_valid ? vf->previous_paraeq_f[ch] : f;
++                vf->previous_paraeq_f[ch]=f;
++                float q = 1.0f / (float)(1u << qbits);
++                float gain = (float)(int16_t)(word >> 16) / 8192.0f;
++                sv_filter *filter = &vf->paraeq[ch];
++                setup_svf(filter, f, q, F_BP);
++                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++                    filter->f = f0 + (f-f0)*(i/32.0f);
++                    samples[i][ch] = run_para_eq(filter, samples[i][ch], gain);
++                }
+             }
+         }
+     }
++    vf->previous_dls2_valid=dls2;
++    vf->previous_paraeq_valid=peq;
+ 
+-    if (v < MCPX_HW_MAX_3D_VOICES && g_apu_config.hrtf) {
+-        uint16_t hrtf_handle =
+-            voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_HRTF_TARGET,
+-                           NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE);
+-        if (hrtf_handle != HRTF_NULL_HANDLE) {
+-            hrtf_filter_process(&d->vp.filters[v].hrtf, samples, samples);
++    /* I3DL2 has two independent one-pole low-pass histories. The direct
++     * output feeds HRTF routes 0..3 and dry routes 4,6; room routes 5,7
++     * use the other history. FCB low16 and high16 hold their coefficients.
++     * Source: retail Xbox tests, xemu PR #3105 b4a9b50.
++     */
++    float room_samples[NUM_SAMPLES_PER_FRAME];
++    if (i3dl2) {
++        uint32_t fcb = voice_get_mask_nolock(d, c, v,
++                                              NV_PAVS_VOICE_TAR_FCB, 0xFFFFFFFFu);
++        float a_direct = (float)(fcb & 0xFFFFu) / 65536.0f;
++        float a_room = (float)(fcb >> 16) / 65536.0f;
++        double *hist = d->vp.filters[v].i3dl2_state;
++        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++            float x = samples[i][0];
++            hist[0] = mcpx_round_filter((1.0 - a_direct) * x +
++                                                a_direct * hist[0]);
++            hist[1] = mcpx_round_filter((1.0 - a_room) * x +
++                                                a_room * hist[1]);
++            samples[i][0] = hist[0];
++            room_samples[i] = hist[1];
++        }
++    }
++
++    /* Keep the dry 3D voice separate from HRTF output: routes 0/1 receive
++     * left HRTF, routes 2/3 right HRTF, routes 4..7 the UNFILTERED voice.
++     * With no HRTF entry the hardware emits silence on routes 0..3; when the
++     * user explicitly disables HRTF keep a dry fallback for compatibility.
++     * The HRTF's two input channels must both use mono channel 0, including
++     * for voices whose encoded input happens to be stereo.
++     * Source: raddad772 retail measurements, xemu-project/xemu#3105
++     * commits 478546e (routing) and 5cebb72 (3D mono).
++     */
++    const bool use_hrtf = has_hrtf && g_apu_config.hrtf;
++    float hrtf_samples[NUM_SAMPLES_PER_FRAME][2] = { 0 };
++    if (use_hrtf) {
++        /* The MCPX samples the selected HRIR entry every voice frame;
++         * games may rewrite taps without changing the handle. Refreshing
++         * the target here preserves the one-frame interpolation in hrtf.h.
++         * Source: xemu PR #3105, commit 21db778. */
++        hrtf_filter_set_target_params(&vf->hrtf,
++                         d->vp.hrtf.entries[hrtf_handle].hrir,
++                         d->vp.hrtf.entries[hrtf_handle].itd);
++        float hrtf_input[NUM_SAMPLES_PER_FRAME][2];
++        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++            hrtf_input[i][0] = samples[i][0];
++            hrtf_input[i][1] = samples[i][0];
+         }
++        hrtf_filter_process(&d->vp.filters[v].hrtf, hrtf_input, hrtf_samples);
+     }
+ 
+-    // FIXME: ParaEQ
+-
      /* Deinterleave samples[32][2] into per-channel contiguous buffers once
-      * (amortized across 8 subsequent mix_one_bin calls). mix_one_bin
+-     * (amortized across 8 subsequent mix_one_bin calls). mix_one_bin
 -     * (NEON-accelerated on aarch64) reads contiguous float[32]. */
-+     * (NEON on aarch64, SSE2/AVX2 on x86-64) reads contiguous float[32]. */
++     * (amortized across the 8 mix_one_bin_ramped calls; NEON on aarch64,
++     * SSE2/AVX2 on x86-64, read contiguous float[32]), keeping the dry
++     * input apart from the HRTF ears, made only when HRTF is in use. */
      float channel_buf[2][NUM_SAMPLES_PER_FRAME];
++    float hrtf_channel_buf[2][NUM_SAMPLES_PER_FRAME];
      for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
          channel_buf[0][i] = samples[i][0];
-@@ -2026,9 +2160,36 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+     }
+@@ -2004,31 +2272,103 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+             channel_buf[1][i] = samples[i][1];
+         }
+     }
++    if (use_hrtf) {
++        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++            hrtf_channel_buf[0][i] = hrtf_samples[i][0];
++            hrtf_channel_buf[1][i] = hrtf_samples[i][1];
++        }
++    }
+ 
+     /* The VP's own mix (the default, no DSP): the frame's mixbins are
+      * cleared unread at its end, but for the multipass bin the next voices
+      * of a group read (scheduled together, voice_work_schedule) */
++    /* Route target gains: attenuation is quantised to units of 1/16384;
++     * envelope level is in 2048ths, then the product rounds DOWN.
++     * Source: raddad772's real Xbox tests, xemu PR #3105 8156cca.
++     * These are calculated for all eight routes even if a NULL HRTF entry
++     * suppresses an ear send, so its previous gain still advances. */
++    unsigned target_gain[8];
++    /* Both factors are nonnegative. Truncation gives the hardware's
++     * round-down without extra libm calls in this hot 8-route loop. The
++     * attenuation table stores exact multiples of 1/16384. */
++    unsigned envelope = (unsigned)(ea_value * 2048.0f);
++    if (envelope > 2048u) envelope = 2048u;
++    for (int b = 0; b < 8; b++) {
++        /* Fully muted routes stay silent even under a negative amplitude
++         * LFO. Its depth is measured in 1/8 dB steps. */
++        int att=(int)vol[b]+(int)floorf(lfo_att);
++        if (att<0) att=0;
++        if (att>4095) att=4095;
++        unsigned attenuation=(vol[b]==0xFFF) ? 0u :
++                              (unsigned)(attenuate((uint16_t)att)*16384.0f);
++        target_gain[b]=(attenuation*envelope)/2048u;
++    }
+     const bool mon_vp = d->monitor.point == MCPX_APU_DEBUG_MON_VP;
+     for (int b = 0; b < 8; b++) {
+         if (mon_vp && bin[b] != MULTIPASS_BIN) {
+             continue;
+         }
+-        float g = ea_value;
+-        float hr;
+-        if ((v < MCPX_HW_MAX_3D_VOICES) && (b < 4)) {
+-            // FIXME: Not sure if submix/voice headroom factor in for HRTF
+-            hr = 1 << d->vp.hrtf_headroom;
++        const float *source;
++        if (is_3d) {
++            if (b < 4) {
++                if (!has_hrtf) {
++                    /* hardware: a NULL HRTF entry has no ear sends, and the
++                     * route's gain starts again from nothing (PR #3105 478546e) */
++                    target_gain[b] = 0;
++                    continue;
++                }
++                /* the HRTF's ears; with HRTF off in the settings, the voice dry */
++                source = use_hrtf ? hrtf_channel_buf[b < 2 ? 0 : 1] : channel_buf[0];
++            } else {
++                /* Dry means without HRTF convolution, but I3DL2 routes
++                 * 5 and 7 use the independent room low-pass filter. */
++                source = (i3dl2 && (b == 5 || b == 7)) ?
++                         room_samples : channel_buf[0];
++            }
+         } else {
+-            hr = 1 << d->vp.submix_headroom[bin[b]];
++            source = channel_buf[b % channels];
+         }
+-        g *= attenuate(vol[b]) / hr;
+-        mix_one_bin(mixbins[bin[b]], channel_buf[b % channels], g);
++        /* HRTF submixes use the DESTINATION bin's headroom, not the
++         * SET_HRTF_HEADROOM register (no observable hardware effect).
++         * Source: xemu-project/xemu#3105, commit 42f675d.
++         */
++        float hr = (float)(1u << d->vp.submix_headroom[bin[b]]);
++        mix_one_bin_ramped(mixbins[bin[b]], source,
++                           d->vp.filters[v].previous_mix_gain[b],
++                           target_gain[b], hr);
      }
  
      if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
@@ -21922,7 +23349,47 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
           *
           * If the current voice belongs to a multipass sub-voice group we must
           * skip it here to avoid mixing it in twice because the sub-voices are
-@@ -2195,6 +2356,7 @@ static void *voice_worker_thread(void *arg)
+@@ -2057,10 +2397,16 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+         }
+         g *= ea_value;
+         for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+-            sample_buf[i][0] += g*samples[i][0];
+-            sample_buf[i][1] += g*samples[i][1];
++            /* The monitor is a debug-only mix. Keep its previous audible
++             * HRTF behaviour now that routing no longer filters in place. */
++            sample_buf[i][0] += g * (use_hrtf ? hrtf_samples[i][0] : samples[i][0]);
++            sample_buf[i][1] += g * (use_hrtf ? hrtf_samples[i][1] :
++                                    (is_3d ? samples[i][0] : samples[i][1]));
+         }
+     }
++    for (int b = 0; b < 8; b++) {
++        d->vp.filters[v].previous_mix_gain[b] = (uint16_t)target_gain[b];
++    }
+ }
+ 
+ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+@@ -2077,9 +2423,9 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+                                     NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
+         bool clear_mix = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
+                                         NV_PAVS_VOICE_CFG_FMT_CLEAR_MIX);
+-        src_v |= (1 << mp_bin);
++        src_v |= (1u << mp_bin);
+         if (clear_mix) {
+-            clr_v |= (1 << mp_bin);
++            clr_v |= (1u << mp_bin);
+         }
+     }
+ 
+@@ -2109,7 +2455,7 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+                             NV_PAVS_VOICE_CFG_FMT_V7BIN);
+ 
+     for (int i = 0; i < 8; i++) {
+-        dst_v |= 1 << bin[i];
++        dst_v |= 1u << bin[i];
+     }
+ 
+     if (src) {
+@@ -2195,6 +2541,7 @@ static void *voice_worker_thread(void *arg)
          pthread_cond_wait(&self->cond, &vwd->lock);
      } while (!vwd->workers_should_exit);
  
@@ -21930,7 +23397,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
      return NULL;
  }
  
-@@ -2251,6 +2413,8 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
+@@ -2251,6 +2598,8 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
                  } else if (us < HELD_SPIN_US) {
  #if defined(__aarch64__)
                      __asm__ __volatile__("yield" ::: "memory");
@@ -21939,7 +23406,59 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  #endif
                  } else {
                      usleep(HELD_NAP_US);
-@@ -2484,6 +2648,21 @@ static void voice_work_finalize(MCPXAPUState *d)
+@@ -2320,16 +2669,45 @@ static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
+     bool group = false;
+     uint32_t dirty = 0;
+ 
++    /* The parallel scheduler assumes the DirectSound convention: bin 31 is
++     * the only multipass source, consumed/cleared by the MP voice, with all
++     * contributing source voices consecutive. Retail MCPX permits other
++     * bins and layouts. Detect those first and preserve list order on one
++     * worker, avoiding both the old asserts and cross-worker dependencies.
++     * The normal fast scheduling path is unchanged for conventional layouts.
++     * Source: raddad772, xemu PR #3105 1296ec2.
++     */
++    bool unusual_multipass = false;
++    uint32_t check_dirty = 0;
++    for (int i = 0; i < vwd->queue_len; i++) {
++        uint32_t src, dst, clr;
++        get_voice_bin_src_dst(d, c, vwd->queue[i].voice, &src, &dst, &clr);
++        if ((src && (src != MULTIPASS_BIN_MASK ||
++                     clr != MULTIPASS_BIN_MASK)) ||
++            (!src && !(dst & MULTIPASS_BIN_MASK) &&
++             (check_dirty & MULTIPASS_BIN_MASK))) {
++            unusual_multipass = true;
++            break;
++        }
++        check_dirty = (check_dirty & ~clr) | dst;
++    }
++    if (unusual_multipass) {
++        VoiceWorker *worker = &vwd->workers[0];
++        for (int i = 0; i < vwd->queue_len; i++) {
++            worker->queue[worker->queue_len++] = vwd->queue[i];
++        }
++        if (vwd->queue_len) {
++            vwd->workers_pending |= 1ull;
++        }
++        return;
++    }
++
+     for (int i = 0; i < vwd->queue_len; i++) {
+         uint32_t src, dst, clr;
+         get_voice_bin_src_dst(d, c, vwd->queue[i].voice, &src, &dst, &clr);
+ 
+-        // TODO: To simplify submix scheduling, we make a few assumptions based
+-        // on Xbox software observations. However, the configurability of
+-        // multipass sources suggests the hardware may not be so strict. We'll
+-        // defer making this more robust for now.
+-        //
+-        // We currently assume that:
++        // Checked above: the normal parallel path uses DirectSound's layout.
++        // The uncommon layouts were sent to the ordered worker-0 fallback:
+         //
+         // - MP bin is constant
+         assert(!src || (src == MULTIPASS_BIN_MASK));
+@@ -2484,6 +2862,21 @@ static void voice_work_finalize(MCPXAPUState *d)
   * to stop playing; with its first voice reported every frame and ignored,
   * the group was never released and the game spun in GetStatus, loading,
   * where the guest turned the three off within one frame (the Odin 3). */
@@ -21961,7 +23480,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
  {
      unsigned k = 0;
-@@ -2501,9 +2680,23 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
+@@ -2501,9 +2894,23 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
       * holds the voice locks of its batch, which a guest write may be waiting
       * on (a voice not reported now is in a later frame: it stays listed) */
      if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
@@ -21988,7 +23507,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
      }
      apu_spin_unlock(&d->vp.fe_spin);
  }
-@@ -2591,7 +2784,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
+@@ -2591,7 +2998,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
      if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
          /* Mix all voices together to hear any audible voice */
          int16_t isamp[NUM_SAMPLES_PER_FRAME * 2];
@@ -21997,7 +23516,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
                                   NUM_SAMPLES_PER_FRAME * 2);
          int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
          for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
-@@ -2615,12 +2808,30 @@ void mcpx_apu_vp_init(MCPXAPUState *d)
+@@ -2615,12 +3022,31 @@ void mcpx_apu_vp_init(MCPXAPUState *d)
      d->vp.voice_cache = NULL;
      d->vp.ssl_cache = NULL;
  
@@ -22008,7 +23527,8 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
 +    /* The voices' resampler quality: the content's (g_apu_config.resampler),
 +     * for the session; each voice's is made at its first VOICE_ON
 +     * (voice_reset_filters) */
-+    const int quality = vp_resample_sinc_available() ? g_apu_config.resampler : VP_RESAMPLE_LINEAR;
++    const int quality = g_apu_config.resampler == VP_RESAMPLE_MCPX || vp_resample_sinc_available()
++                            ? g_apu_config.resampler : VP_RESAMPLE_LINEAR;
 +    if (quality != g_apu_config.resampler) {
 +        nc_log("hakuX-apu", "resampler: %s not in this build, %s", vp_resample_name(g_apu_config.resampler),
 +               vp_resample_name(quality));
@@ -22028,19 +23548,35 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
  
      d->vp.voice_cache = NULL;
      d->vp.ssl_cache = NULL;
-@@ -2640,7 +2851,11 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
+@@ -2640,7 +3066,26 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
      g_idle_last = 0xFFFF;
      for (int v = 0; v < ARRAY_SIZE(d->vp.filters); v++) {
          hrtf_filter_init(&d->vp.filters[v].hrtf);
+-    }
 +        d->vp.filters[v].ending = false;
 +        d->vp.filters[v].silence_fed = 0;
-     }
++        memset(d->vp.filters[v].previous_mix_gain, 0,
++               sizeof(d->vp.filters[v].previous_mix_gain));
++        memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
++        memset(&d->vp.filters[v].paraeq, 0, sizeof(d->vp.filters[v].paraeq));
++        memset(&d->vp.filters[v].i3dl2_state, 0,
++               sizeof(d->vp.filters[v].i3dl2_state));
++        d->vp.filters[v].lfo_armed = false;
++        memset(d->vp.filters[v].lfo_phase, 0, sizeof(d->vp.filters[v].lfo_phase));
++        memset(d->vp.filters[v].lfo_wait, 0, sizeof(d->vp.filters[v].lfo_wait));
++        d->vp.filters[v].previous_pitch_valid = false;
++        d->vp.filters[v].previous_dls2_valid = false;
++        d->vp.filters[v].previous_paraeq_valid = false;
++        if (d->vp.filters[v].resampler) {
++            vp_resample_reset(d->vp.filters[v].resampler);
++        }
++    }
 +    /* undecided: what a state load without the routes (an older one) keeps */
 +    memset(d->vp.route, VP_ROUTE_UNDECIDED, sizeof(d->vp.route));
      refresh_table(&d->vp.voice_cache, 0, 0);
      refresh_table(&d->vp.ssl_cache, 0, 0);
  }
-@@ -2674,3 +2889,181 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
+@@ -2674,3 +3119,181 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
      nc_log("hakuX-native-state", "apu: %u 3D voices' HRTF filters set again (%u entries hold coefficients)", set,
             entries);
  }
@@ -22223,10 +23759,10 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..7a8cebc6f32c6e09538e6bcb91c454b7
 +    }
 +}
 diff --git a/native/dev/apu/vp/vp.h b/native/dev/apu/vp/vp.h
-index bc96610e9f894eebce6568da853649b93b18c2df..fec377f6ea8a1714726a935c9c39fe428b853a7f 100644
+index bc96610e9f894eebce6568da853649b93b18c2df..97e38bf1bf5bdeb27a8d681f177156b684ccfda6 100644
 --- a/native/dev/apu/vp/vp.h
 +++ b/native/dev/apu/vp/vp.h
-@@ -39,17 +39,23 @@ typedef struct MCPXAPUVPSSLData {
+@@ -39,17 +39,42 @@ typedef struct MCPXAPUVPSSLData {
  typedef struct MCPXAPUVoiceFilter {
      uint16_t voice;
      float resample_buf[NUM_SAMPLES_PER_FRAME * 2];
@@ -22238,7 +23774,26 @@ index bc96610e9f894eebce6568da853649b93b18c2df..fec377f6ea8a1714726a935c9c39fe42
 +     * last sample; voice_process turns it off then. Cleared at VOICE_ON. */
 +    bool ending;
 +    uint32_t silence_fed;
++    /* Transient VP oscillator/pitch and coefficient-ramp state. These are
++     * reset on VOICE_ON, not written to savestates; guest registers remain
++     * authoritative. Source: original Xbox measurements, xemu PR #3105
++     * commits e38ad53, e1a8fad and 957c5ee. */
++    uint16_t lfo_phase[2];
++    uint16_t lfo_wait[2];
++    bool lfo_armed;
++    double previous_pitch;
++    bool previous_pitch_valid;
++    float previous_dls2_f[2];
++    float previous_paraeq_f[2];
++    bool previous_dls2_valid;
++    bool previous_paraeq_valid;
++    /* Per-voice route gains in MCPX 1/16384 units. Host-side transient
++     * state only: reset on VOICE_ON or reset; newly started voices fade in.
++     * Source: xemu PR #3105 commit 8156cca. */
++    uint16_t previous_mix_gain[8];
      sv_filter svf[2];
++    sv_filter paraeq[2];      /* separate SVF integrators for EQ modes */
++    double i3dl2_state[2];     /* independent direct/room LPF histories */
      HrtfFilter hrtf;
 -    /* The voice table for voice_resample_callback (libsamplerate's callback
 +    /* The voice table for voice_resample_callback (the resampler's callback
@@ -22254,7 +23809,7 @@ index bc96610e9f894eebce6568da853649b93b18c2df..fec377f6ea8a1714726a935c9c39fe42
       *   inside voice_resample_callback -> voice_get_samples to null the per-
       *   sample decode for a muted voice. Same synchronous-call lifetime
       *   contract as cb_voice_cache above (a refactor caching it across calls
-@@ -99,6 +105,11 @@ typedef struct VoiceWorkDispatch {
+@@ -99,6 +124,11 @@ typedef struct VoiceWorkDispatch {
  typedef struct {
      VoiceWorkDispatch voice_work_dispatch;
      MCPXAPUVoiceFilter filters[MCPX_HW_MAX_VOICES];
@@ -22266,7 +23821,7 @@ index bc96610e9f894eebce6568da853649b93b18c2df..fec377f6ea8a1714726a935c9c39fe42
  
      // FIXME: Where are these stored?
      int ssl_base_page;
-@@ -150,6 +161,10 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
+@@ -150,6 +180,10 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
   * all of them notified now, for a frame thread stopped for the guest that
   * waited their time (true when one was). */
  bool mcpx_apu_vp_off_pending(void);
@@ -23272,7 +24827,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc09051931a45 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489590d362a 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -23366,7 +24921,28 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              g_files[i].used = true;
              g_files[i].fd = -1;
              return &g_files[i];
-@@ -486,6 +533,34 @@ static struct {
+@@ -443,7 +490,19 @@ static uint32_t file_handle(NcKernel *k, NcFile *nf)
+     const uint32_t fcb = obj + FO_FCB;
+     nc_vm_wr32(k->vm, obj + FO_FSCONTEXT, fcb);
+     if (nf->kind == F_DISC) {
+-        nc_vm_wr32(k->vm, fcb, nf->disc.sector);
++        /* OGBox 0.0.6: an overlay file (a mod's, a patched XBE) that replaces one of the disc's shows
++         * the disc file's start sector, not its overlay number (NC_DISC_OVERLAY + index): TOCA Race
++         * Driver 3 checks where its archives are against default.xbe's sector, and with the
++         * widescreen patch's default.xbe the check failed: the game crippled itself and crashed
++         * after its menus. */
++        uint32_t sector = nf->disc.sector;
++        const char *rel;
++        NcDiscFile orig;
++        if (sector >= NC_DISC_OVERLAY && device_of(nf->path, &rel) == -1 && nc_disc_find_orig(k->disc, rel, &orig) &&
++            !(orig.attr & 0x10)) {
++            sector = orig.sector;
++        }
++        nc_vm_wr32(k->vm, fcb, sector);
+     } else if (nf->kind == F_HOST && !nf->is_dir) {
+         /* Host files have no clusters: the inode orders them stably. */
+         struct stat st;
+@@ -486,6 +545,34 @@ static struct {
      bool started;
  } g_closer = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
  
@@ -23401,7 +24977,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  static void close_now(const CloseJob *j)
  {
      if (fsync(j->fd) != 0) {
-@@ -559,7 +634,14 @@ void nc_io_close(NcKernel *k, uint32_t object)
+@@ -559,7 +646,14 @@ void nc_io_close(NcKernel *k, uint32_t object)
      uint32_t i = nc_vm_rd32(k->vm, object + FO_INDEX);
      if (i < MAX_FILES && g_files[i].used) {
          NcFile *nf = &g_files[i];
@@ -23417,7 +24993,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              close_later(nf);
          } else {
              if (nf->fd >= 0) {
-@@ -714,7 +796,10 @@ typedef struct DiscJob {
+@@ -714,7 +808,10 @@ typedef struct DiscJob {
      bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
      bool ok;
      int err;
@@ -23429,7 +25005,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  } DiscJob;
  
  static struct {
-@@ -727,7 +812,30 @@ static struct {
+@@ -727,7 +824,30 @@ static struct {
      unsigned busy;           /* queued, reading or done: at most DISC_JOBS */
      bool started;
      bool hurry;              /* a savestate's drain: no drive time left to wait (atomic) */
@@ -23461,7 +25037,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  
  static uint64_t mono_ns(void)
  {
-@@ -758,25 +866,70 @@ static void *reader_thread(void *arg)
+@@ -758,25 +878,70 @@ static void *reader_thread(void *arg)
          DiscJob j = g_reader.q[g_reader.head];
          g_reader.head = (g_reader.head + 1) % DISC_JOBS;
          g_reader.n--;
@@ -23534,7 +25110,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          g_reader.done[g_reader.ndone++] = j;
          pthread_mutex_unlock(&g_reader.mu);
          nc_irq_post_work();
-@@ -799,11 +952,13 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
+@@ -799,11 +964,13 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
      }
  }
  
@@ -23549,7 +25125,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  {
      static int in_place = -1; /* NC_DISC_SYNC: every disc read in place, as before */
      if (in_place < 0) {
-@@ -827,8 +982,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -827,8 +994,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = run[0].va, .n = n,
                   .dev_us = dev_us, .iosb = a[4], .event = event, .apc = a[2], .apc_ctx = a[3],
@@ -23562,7 +25138,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      size_t segs = 0;
      for (unsigned r = 0; r < nrun; r++) {
          segs += run[r].len / NC_PAGE + 2;
-@@ -873,6 +1030,8 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -873,6 +1042,8 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      const bool queued = g_reader.started && g_reader.busy < DISC_JOBS;
      if (queued) {
@@ -23571,7 +25147,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          pin_buffer(k, &j, 1);
          g_reader.q[(g_reader.head + g_reader.n++) % DISC_JOBS] = j;
          g_reader.busy++;
-@@ -896,7 +1055,7 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
+@@ -896,7 +1067,7 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
      pin_buffer(k, j, -1);
      const bool ok = j->ok;
      const int err = j->err;
@@ -23580,7 +25156,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          if (nc_vm_dma.wrote) {
              nc_vm_dma.wrote(j->seg[i].pa, j->seg[i].len);    /* what a guest store would mark */
          }
-@@ -907,12 +1066,24 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
+@@ -907,12 +1078,24 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
      }
      uint32_t st = NC_STATUS_SUCCESS, n = j->n;
      if (!ok) {
@@ -23608,7 +25184,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      if (j->event) {
          nc_ke_set_event(k, j->event);
      }
-@@ -943,6 +1114,34 @@ void nc_io_poll(NcKernel *k)
+@@ -943,6 +1126,34 @@ void nc_io_poll(NcKernel *k)
      }
  }
  
@@ -23643,7 +25219,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  /* ---------------------------------------------------------------- open */
  
  static void remove_tree(const char *path, bool self);
-@@ -972,6 +1171,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
+@@ -972,6 +1183,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
      return true;
  }
  
@@ -23675,7 +25251,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  /* An overwritten file growing into [from, to): FATX shows what its clusters
   * held, the old contents (NcFile.old_path). */
  static void regrow(NcFile *nf, uint64_t from, uint64_t to)
-@@ -1031,9 +1255,32 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
+@@ -1031,9 +1267,32 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
      return st;
  }
  
@@ -23708,7 +25284,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      char name[512], path[512];
      ansi(k, nc_vm_rd32(k->vm, attrs + 4), name, sizeof(name));
      const uint32_t root = nc_vm_rd32(k->vm, attrs);
-@@ -1110,6 +1357,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1110,6 +1369,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          if (exists < 0) {
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "open %s: path not found", path);
@@ -23717,7 +25293,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              }
              return STATUS_OBJECT_PATH_NOT_FOUND;
          }
-@@ -1125,9 +1374,34 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1125,9 +1386,34 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          if (exists && disposition == FILE_CREATE) {
              return STATUS_OBJECT_NAME_COLLISION;
          }
@@ -23752,7 +25328,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              }
              return STATUS_OBJECT_NAME_NOT_FOUND;
          }
-@@ -1163,7 +1437,11 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1163,7 +1449,11 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
              } else {
                  *info = 1;
              }
@@ -23765,7 +25341,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              if (fd < 0) {
                  nc_log("hakuX-native-io", "open %s (%s): %s", path, host, strerror(errno));
                  if (old_path[0]) {
-@@ -1192,23 +1470,59 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1192,23 +1482,59 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          nf->old_size = old_size;
          snprintf(nf->host, sizeof(nf->host), "%s", host);
      }
@@ -23827,7 +25403,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1221,6 +1535,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1221,6 +1547,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, a[1], a[2], FILE_OPEN, a[5], &h, &info);
@@ -23837,7 +25413,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1236,6 +1553,9 @@ static uint64_t file_size(const NcFile *nf)
+@@ -1236,6 +1565,9 @@ static uint64_t file_size(const NcFile *nf)
          return nf->disc.size;
      }
      struct stat st;
@@ -23847,7 +25423,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      return nf->fd >= 0 && fstat(nf->fd, &st) == 0 ? (uint64_t)st.st_size : 0;
  }
  
-@@ -1427,6 +1747,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
+@@ -1427,6 +1759,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
      return true;
  }
  
@@ -23910,7 +25486,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  /* NtReadFile's work for a buffer of runs (len bytes in all): a[] as
   * NtReadFile takes it, its Buffer and Length aside. */
  static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned nrun, uint32_t len)
-@@ -1447,7 +1823,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1447,7 +1835,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          uint64_t o = off;
          for (unsigned i = 0; i < nrun; i++) {
              nc_vm_will_write(run[i].va, run[i].len);
@@ -23919,7 +25495,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              o += run[i].len;
          }
          io_moved(k, nf, a[7], off + len);
-@@ -1469,6 +1845,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1469,6 +1857,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -23927,7 +25503,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1863,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +1875,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -23945,7 +25521,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1502,10 +1886,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1502,10 +1898,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          bool ok = true;
          uint64_t o = off;
          for (unsigned i = 0; ok && i < nrun; i++) {
@@ -23958,7 +25534,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              o += run[i].len;
          }
          if (!ok) {
-@@ -1515,11 +1898,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1515,11 +1910,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -23973,7 +25549,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          }
          nc_log("hakuX-native-io", "read %s +%llx %u into %08x -> %08x n=%u%s%s [%02x%02x%02x%02x %02x%02x%02x%02x]",
                 nf->path, (unsigned long long)off, len, va0, st, n, a[1] ? " event" : "", a[2] ? " apc" : "",
-@@ -1635,7 +2019,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1635,7 +2031,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
          if (nf->partition == 0) {
              const uint64_t off = io_offset(k, nf, a[7]);
              nc_vm_will_read(a[5], a[6]);
@@ -23982,7 +25558,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              io_moved(k, nf, a[7], off + a[6]);
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
-@@ -1649,7 +2033,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1649,7 +2045,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
          const uint64_t o = io_offset(k, nf, a[7]);
          io_moved(k, nf, a[7], o + a[6]);
          nc_vm_will_read(a[5], a[6]);
@@ -23991,7 +25567,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          /* The FATX superblock: "FATX", volume id, sectors per cluster. */
          const uint8_t *sb = nc_vm_host(k->vm, a[5]);
          if (o == 0 && a[6] >= 12 && !memcmp(sb, "FATX", 4)) {
-@@ -1680,14 +2064,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1680,14 +2076,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
              regrow(nf, size, off); /* the gap a write past the end leaves */
          }
      }
@@ -24032,7 +25608,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          }
          nc_log("hakuX-native-io", "write %s +%llx %u from %08x -> %08x [%02x%02x%02x%02x %02x%02x%02x%02x]", nf->path,
                 (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-@@ -1748,6 +2156,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
+@@ -1748,6 +2168,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
  /* NtQueryInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24040,7 +25616,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1808,14 +2217,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1808,14 +2229,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
      if (a[3] < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -24077,7 +25653,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1853,7 +2283,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2295,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -24087,7 +25663,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2292,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2304,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -24105,7 +25681,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2544,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2556,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -24148,7 +25724,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2596,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2608,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -24160,7 +25736,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
              }
              free(dir);
          }
-@@ -2198,6 +2636,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2198,6 +2648,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
   * FileAttributes 0x38, FileNameLength 0x3C, FileName (ANSI) 0x40. */
  static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24168,7 +25744,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      NcFile *nf = file_of(k, a[0]);
      if (!nf || !nf->is_dir) {
          return nf ? STATUS_INVALID_DEVICE_REQUEST : NC_STATUS_INVALID_HANDLE;
-@@ -2282,6 +2721,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -2282,6 +2733,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  /* NtQueryFullAttributesFile(ObjectAttributes, FileInformation (FILE_NETWORK_OPEN_INFORMATION)) */
  static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24176,7 +25752,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info);
      if (st != NC_STATUS_SUCCESS) {
-@@ -2295,6 +2735,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
+@@ -2295,6 +2747,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
  /* NtDeleteFile(ObjectAttributes) */
  static uint64_t NtDeleteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -24184,7 +25760,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      char name[512], path[512], host[512];
      ansi(k, nc_vm_rd32(k->vm, a[0] + 4), name, sizeof(name));
      if (!resolve_name(k, nc_vm_rd32(k->vm, a[0]), name, sizeof(name))) {
-@@ -2386,6 +2827,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2839,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -24234,7 +25810,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2890,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2902,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -24244,7 +25820,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      } else {
          nc_log("hakuX-native-io", "scsi %02x (%u bytes): zeros", cdb[0], n);
      }
-@@ -2455,7 +2942,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
+@@ -2455,7 +2954,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
  {
      nc_log("hakuX-native-io", "device control %08x on device %08x (out %u)", a[0], a[1], a[5]);
      if (a[4] && a[5]) {
@@ -24253,7 +25829,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      }
      if (a[6]) {
          nc_vm_wr32(k->vm, a[6], 0);
-@@ -2525,7 +3012,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
+@@ -2525,7 +3024,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
      if (max < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -24262,7 +25838,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..227690e909918058a359cf846e9fc090
      *(uint16_t *)nc_vm_host(k->vm, a[1]) = len;
      return NC_STATUS_SUCCESS;
  }
-@@ -2779,7 +3266,7 @@ bool nc_file_state_save(NcBuf *b)
+@@ -2779,7 +3278,7 @@ bool nc_file_state_save(NcBuf *b)
  static void file_drop(NcFile *nf)
  {
      if (nf->used) {
@@ -28342,7 +29918,7 @@ index 0000000000000000000000000000000000000000..813c5f30688d49bb12548256ebd8a433
 +
 +#endif
 diff --git a/tests/hle/CMakeLists.txt b/tests/hle/CMakeLists.txt
-index d58451fa6cba42d371542ead3f1f971c07589630..4d46d244b006fe6fd90dcac21230f7f83ee7a764 100644
+index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac55093f58d0b7 100644
 --- a/tests/hle/CMakeLists.txt
 +++ b/tests/hle/CMakeLists.txt
 @@ -28,6 +28,8 @@ set(HLE_PURE_SOURCES
@@ -28354,7 +29930,7 @@ index d58451fa6cba42d371542ead3f1f971c07589630..4d46d244b006fe6fd90dcac21230f7f8
    ${REPO_ROOT}/native/core/cheats.c
    ${NC_DEPS}/root/subprojects/nv2a_vsh_cpu/src/nv2a_vsh_disassembler.c
  )
-@@ -46,18 +48,45 @@ hle_test(test_ring)
+@@ -46,18 +48,48 @@ hle_test(test_ring)
  hle_test(test_arena)
  hle_test(test_pageuse)
  hle_test(test_pusher)
@@ -28397,24 +29973,134 @@ index d58451fa6cba42d371542ead3f1f971c07589630..4d46d244b006fe6fd90dcac21230f7f8
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
 +audio_test(test_apu_simd ${REPO_ROOT}/native/dev/apu/vp/resample.c
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
++# the MCPX's measured curves and resampler (xemu PR #3105)
++audio_test(test_apu_mcpx ${REPO_ROOT}/native/dev/apu/vp/resample.c
++           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
 +
  # The shader generators live in the local tools/ (not versioned).
  if(EXISTS ${REPO_ROOT}/tools/hle/scan/hle_vshgen.c)
    add_executable(hle_vshgen ${REPO_ROOT}/tools/hle/scan/hle_vshgen.c)
 diff --git a/tests/hle/test_apu_hrtf.c b/tests/hle/test_apu_hrtf.c
-index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152fa28814e 100644
+index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..44c9611f600473825351d4ec6424ab357189236c 100644
 --- a/tests/hle/test_apu_hrtf.c
 +++ b/tests/hle/test_apu_hrtf.c
-@@ -3,7 +3,7 @@
-  * rounding, over random audio with the parameters moving (new targets every
-  * few frames, delays from 0 to the 42-sample limit, fractional and whole)
-  * and settled. Built for the host and, with the NDK, for the device (its
+@@ -1,17 +1,21 @@
+ /* The native core's HRTF filter (native/dev/apu/vp/hrtf.h) against xemu's
+- * scalar one (the reference below, as it was): the same output within float
+- * rounding, over random audio with the parameters moving (new targets every
+- * few frames, delays from 0 to the 42-sample limit, fractional and whole)
+- * and settled. Built for the host and, with the NDK, for the device (its
 - * NEON path). */
-+ * NEON path); on x86-64 at each vector level the host has. */
++ * scalar one as xemu PR #3105 left it (the reference below: taps as written,
++ * no normalization; a new target reached across one frame in a straight line,
++ * sample n at n / 32 of the way, the ITD too; a filter's first frame at its
++ * target): the same output within float rounding, over random audio with the
++ * parameters moving (new targets every few frames, delays from 0 to the
++ * 42-sample limit, fractional and whole) and settled. Built for the host and,
++ * with the NDK, for the device (its NEON path); on x86-64 at each vector
++ * level the host has. */
  #include "hle_test.h"
  
  #include <math.h>
-@@ -147,8 +147,253 @@ static void run(int frames, int retarget_every, const float *itds, int n_itds, b
++#include <stdbool.h>
+ #include <stdlib.h>
+ 
+ #include "native/dev/apu/vp/hrtf.h"
+ 
+-/* ---- xemu's filter */
++/* ---- xemu's filter (PR #3105 21db778 and 03ae86d) */
+ #define REF_BUFLEN (HRTF_NUM_TAPS + HRTF_MAX_DELAY_SAMPLES)
+ 
+ typedef struct {
+@@ -23,46 +27,38 @@ typedef struct {
+     } ch[2];
+     float itd_cur;
+     float itd_tar;
++    bool params_set;
+ } RefFilter;
+ 
+ static void ref_set_target_params(RefFilter *f, float hrir_coeff[2][HRTF_NUM_TAPS], float itd)
+ {
+     f->itd_tar = fmaxf(-HRTF_MAX_DELAY_SAMPLES, fminf(itd, HRTF_MAX_DELAY_SAMPLES));
+     for (int ch = 0; ch < 2; ch++) {
+-        float *coeff = f->ch[ch].hrir_coeff_tar;
+-        memcpy(coeff, hrir_coeff[ch], sizeof(f->ch[ch].hrir_coeff_tar));
+-        float s = 0.0f;
+-        for (int k = 0; k < HRTF_NUM_TAPS; k++) {
+-            s += fabsf(coeff[k]);
+-        }
+-        if (s == 0.0f || s == 1.0f) {
+-            break;
+-        }
+-        for (int k = 0; k < HRTF_NUM_TAPS; k++) {
+-            coeff[k] /= s;
+-        }
++        memcpy(f->ch[ch].hrir_coeff_tar, hrir_coeff[ch], sizeof(f->ch[ch].hrir_coeff_tar));
+     }
+ }
+ 
+-static float ref_smooth(float cur, float tar)
++static void ref_settle(RefFilter *f)
+ {
+-    return cur + HRTF_PARAM_SMOOTH_ALPHA * (tar - cur);
++    for (int ch = 0; ch < 2; ch++) {
++        memcpy(f->ch[ch].hrir_coeff_cur, f->ch[ch].hrir_coeff_tar, sizeof(f->ch[ch].hrir_coeff_cur));
++    }
++    f->itd_cur = f->itd_tar;
+ }
+ 
+ static void ref_process(RefFilter *f, float in[HRTF_SAMPLES_PER_FRAME][2], float out[HRTF_SAMPLES_PER_FRAME][2])
+ {
++    if (!f->params_set) {
++        ref_settle(f);
++        f->params_set = true;
++    }
+     for (int n = 0; n < HRTF_SAMPLES_PER_FRAME; n++) {
+-        for (int ch = 0; ch < 2; ch++) {
+-            for (int k = 0; k < HRTF_NUM_TAPS; k++) {
+-                f->ch[ch].hrir_coeff_cur[k] = ref_smooth(f->ch[ch].hrir_coeff_cur[k], f->ch[ch].hrir_coeff_tar[k]);
+-            }
+-        }
+-        f->itd_cur = ref_smooth(f->itd_cur, f->itd_tar);
++        const float w = n / (float)HRTF_SAMPLES_PER_FRAME;
+         for (int ch = 0; ch < 2; ch++) {
+             float *buf = f->ch[ch].buf;
+-            float *coeff = f->ch[ch].hrir_coeff_cur;
+             buf[f->buf_pos] = in[n][ch];
+-            float d = f->itd_cur * (ch == 0 ? +1.0f : -1.0f);
++            const float itd = f->itd_cur + (f->itd_tar - f->itd_cur) * w;
++            float d = itd * (ch == 0 ? +1.0f : -1.0f);
+             if (d < 0.0f) {
+                 d = 0.0f;
+             }
+@@ -76,12 +72,14 @@ static void ref_process(RefFilter *f, float in[HRTF_SAMPLES_PER_FRAME][2], float
+                     int idx2 = (idx1 - 1 + REF_BUFLEN) % REF_BUFLEN;
+                     s = s * (1 - dfrac) + buf[idx2] * dfrac;
+                 }
+-                acc += coeff[k] * s;
++                const float c = f->ch[ch].hrir_coeff_cur[k];
++                acc += (c + (f->ch[ch].hrir_coeff_tar[k] - c) * w) * s;
+             }
+             out[n][ch] = acc;
+         }
+         f->buf_pos = (f->buf_pos + 1) % REF_BUFLEN;
+     }
++    ref_settle(f);
+ }
+ 
+ /* ---- the run */
+@@ -129,7 +127,9 @@ static void run(int frames, int retarget_every, const float *itds, int n_itds, b
+         hrtf_filter_process(&f, b, b);      /* in place, as the VP calls it */
+         for (int n = 0; n < HRTF_SAMPLES_PER_FRAME; n++) {
+             for (int ch = 0; ch < 2; ch++) {
+-                const double e = fabs((double)a[n][ch] - (double)b[n][ch]);
++                /* relative to the frame's scale: the taps are applied as
++                 * written, so the outputs reach several times full scale */
++                const double e = fabs((double)a[n][ch] - (double)b[n][ch]) / fmax(1.0, fabs((double)a[n][ch]));
+                 if (e > g_max_err) {
+                     g_max_err = e;
+                 }
+@@ -147,8 +147,261 @@ static void run(int frames, int retarget_every, const float *itds, int n_itds, b
      HT_EQ_INT(f.buf_pos, ref.buf_pos);
  }
  
@@ -28455,7 +30141,7 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 + * impulse response: from silence, silence, not the previous sound's tail.
 + * Without the clear (the old reset) its tail comes out. */
 +static void test_history_new_voice(void)
- {
++{
 +    static HrtfFilter f, stale;
 +    hrtf_filter_init(&f);
 +    float h[2][HRTF_NUM_TAPS] = {{0}};
@@ -28490,7 +30176,7 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 + * position at the start, the parameters as they were; and from there the
 + * filter runs exactly as a clean one with the same parameters. */
 +static void test_history_every_position(void)
-+{
+ {
 +    static HrtfFilter f, c, clean;
 +    hrtf_filter_init(&f);
 +    float h[2][HRTF_NUM_TAPS];
@@ -28531,22 +30217,28 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 +    HT_EQ_INT(seen, HRTF_BUFLEN);
 +}
 +
-+/* Clearing the history of a voice whose parameters are still moving leaves
-+ * them moving where they were */
++/* A new target is reached across one frame and the filter is settled after
++ * it (xemu PR #3105 21db778); clearing the history of a voice whose
++ * parameters are moving leaves them where they were */
 +static void test_history_keeps_moving_parameters(void)
 +{
 +    static HrtfFilter f, before;
 +    hrtf_filter_init(&f);
 +    float h[2][HRTF_NUM_TAPS];
 +    random_hrir(h);
-+    hrtf_filter_set_target_params(&f, h, -20.25f);
-+    float in[HRTF_SAMPLES_PER_FRAME][2], out[HRTF_SAMPLES_PER_FRAME][2];
-+    random_frame(in);
-+    hrtf_filter_process(&f, in, out);
++    hrtf_filter_set_target_params(&f, h, -20.25f);   /* the first: at once */
++    HT_CHECK(hrtf_filter_settled(&f));
++    random_hrir(h);
++    hrtf_filter_set_target_params(&f, h, 9.5f);      /* the next: across a frame */
 +    HT_CHECK(!hrtf_filter_settled(&f));
 +    before = f;
 +    hrtf_filter_clear_history(&f);
 +    HT_CHECK(params_equal(&f, &before));
++    float in[HRTF_SAMPLES_PER_FRAME][2], out[HRTF_SAMPLES_PER_FRAME][2];
++    random_frame(in);
++    hrtf_filter_process(&f, in, out);
++    HT_CHECK(hrtf_filter_settled(&f));
++    HT_CHECK(f.itd_cur == 9.5f);
 +}
 +
 +/* New targets for a voice that keeps playing (no VOICE_ON): its history
@@ -28579,11 +30271,10 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 +    HT_CHECK(nonzero > 0);
 +}
 +
-+/* Each ear's own coefficients, normalized by their own absolute sum (left
-+ * as they are when it is 0 or 1), and its own delay: an impulse through a
-+ * settled filter against values worked out by hand, not against the
-+ * reference above (whose normalization stops at the first ear with a sum of
-+ * 0 or 1 and leaves the other ear's coefficients unset). */
++/* Each ear's own coefficients as written, not normalized (retail hardware:
++ * a single 0x40 tap, 1/16, stays 1/16; xemu PR #3105 03ae86d), and its own
++ * delay: an impulse through a settled filter against values worked out by
++ * hand. */
 +static void impulse_response(const float h[2][HRTF_NUM_TAPS], float itd, float y[2][HRTF_SAMPLES_PER_FRAME])
 +{
 +    static HrtfFilter f;
@@ -28611,28 +30302,27 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 +static void test_coefficients_by_ear(void)
 +{
 +    float h[2][HRTF_NUM_TAPS], y[2][HRTF_SAMPLES_PER_FRAME], w0[HRTF_SAMPLES_PER_FRAME], w1[HRTF_SAMPLES_PER_FRAME];
-+    /* asymmetric: 2 at tap 0 (sum 2: 1), 0.25 at taps 1 and 2 (sum 0.5: 0.5 each) */
++    /* asymmetric: 2 at tap 0, 0.25 at taps 1 and 2: as they are */
 +    memset(h, 0, sizeof(h));
 +    h[0][0] = 2.0f;
 +    h[1][1] = h[1][2] = 0.25f;
 +    impulse_response(h, 0.0f, y);
 +    memset(w0, 0, sizeof(w0));
 +    memset(w1, 0, sizeof(w1));
-+    w0[0] = 1.0f;
-+    w1[1] = w1[2] = 0.5f;
++    w0[0] = 2.0f;
++    w1[1] = w1[2] = 0.25f;
 +    expect(y[0], w0);
 +    expect(y[1], w1);
-+    /* the first ear's sum 0: silent; the second still normalized (3 at tap 3: 1) */
++    /* one ear silent, the other a single 1/16 tap (0x40) at tap 3 */
 +    memset(h, 0, sizeof(h));
-+    h[1][3] = 3.0f;
++    h[1][3] = 1.0f / 16.0f;
 +    impulse_response(h, 0.0f, y);
 +    memset(w0, 0, sizeof(w0));
 +    memset(w1, 0, sizeof(w1));
-+    w1[3] = 1.0f;
++    w1[3] = 1.0f / 16.0f;
 +    expect(y[0], w0);
 +    expect(y[1], w1);
-+    /* the first ear's sum 1: as it is (0.5 at tap 0, -0.5 at tap 4); the
-+     * second normalized (4 at tap 2: 1) */
++    /* signs kept: 0.5 at tap 0 and -0.5 at tap 4; 4 at tap 2 */
 +    memset(h, 0, sizeof(h));
 +    h[0][0] = 0.5f;
 +    h[0][4] = -0.5f;
@@ -28642,7 +30332,7 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 +    memset(w1, 0, sizeof(w1));
 +    w0[0] = 0.5f;
 +    w0[4] = -0.5f;
-+    w1[2] = 1.0f;
++    w1[2] = 4.0f;
 +    expect(y[0], w0);
 +    expect(y[1], w1);
 +    /* a delay of +3 holds the first ear back 3 samples, not the second */
@@ -28658,7 +30348,11 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 +    expect(y[1], w1);
 +}
 +
-+static void run_suite(void)
++/* bound: the largest difference allowed, as a share of the output. The
++ * fused multiply-adds of the AVX2 + FMA level (the compiler contracts the
++ * delay's arithmetic there too) round the fractional delay differently from
++ * the scalar reference: about 1e-5 of the output, -100 dB. */
++static void run_suite(double bound)
 +{
 +    g_max_err = 0;
 +    HT_RUN(test_history_new_voice);
@@ -28669,10 +30363,14 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
      const float moving[] = {0.0f, 7.25f, -13.5f, 42.0f, -42.0f, 41.9f, -0.3f, 30.0f, 100.0f, -100.0f};
      const float whole[] = {0.0f, 5.0f, -12.0f, 42.0f, -42.0f};
      run(400, 3, moving, 10, false);         /* parameters always moving */
-@@ -158,5 +403,19 @@ int main(void)
+@@ -156,7 +409,21 @@ int main(void)
+     run(3000, 1, whole, 5, true);           /* one target: settles (the fast path) */
+     run(3000, 1, moving + 1, 1, true);      /* settles on a fractional delay */
      run(3000, 1, moving + 5, 1, true);      /* ... next to the delay limit */
-     fprintf(stderr, "hrtf: max |difference| %.3g\n", g_max_err);
-     HT_CHECK(g_max_err < 2e-6);
+-    fprintf(stderr, "hrtf: max |difference| %.3g\n", g_max_err);
+-    HT_CHECK(g_max_err < 2e-6);
++    fprintf(stderr, "hrtf: max difference %.3g of the output\n", g_max_err);
++    HT_CHECK(g_max_err < bound);
 +}
 +
 +int main(void)
@@ -28682,13 +30380,189 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..bbcc88968e2d6704535973cbb4ed2152
 +    for (int level = vp_simd_set(VP_SIMD_AVX2); level >= VP_SIMD_SCALAR; level--) {
 +        vp_simd_set(level);
 +        fprintf(stderr, "hrtf: %s\n", vp_simd_name(level));
-+        run_suite();
++        run_suite(level == VP_SIMD_AVX2 ? 3e-5 : 2e-6);
 +    }
 +#else
-+    run_suite();
++    run_suite(2e-6);
 +#endif
      return ht_failures != 0;
  }
+diff --git a/tests/hle/test_apu_mcpx.c b/tests/hle/test_apu_mcpx.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..9bd37837c95e98fda55d508297b769cfaf7d4a3b
+--- /dev/null
++++ b/tests/hle/test_apu_mcpx.c
+@@ -0,0 +1,170 @@
++/* The MCPX voice processor's measured behaviour (xemu PR #3105: raddad772's
++ * tests on a retail console, https://github.com/xemu-project/xemu/pull/3105)
++ * against the native core's code: the volume curve, the HRIR taps' format,
++ * the filters' frequency coefficients and rounding, the 24-bit mix rounding,
++ * and the 8-point Lagrange resampler with its per-sample pitch ramp. Each
++ * expected value is one the PR states was measured, or follows from one. */
++#include "hle_test.h"
++
++#include <math.h>
++#include <stdlib.h>
++
++#include "native/dev/apu/fpconv.h"
++#include "native/dev/apu/vp/mcpx_curves.h"
++#include "native/dev/apu/vp/mcpx_round.h"
++#include "native/dev/apu/vp/resample.h"
++
++/* ---- the volume curve (fb7e45a) */
++static void test_attenuation(void)
++{
++    HT_EQ_INT(mcpx_attenuation_gain(0), 16384);              /* unity */
++    HT_EQ_INT(mcpx_attenuation_gain(-5), 16384);
++    HT_EQ_INT(mcpx_attenuation_gain(1 * 64), 4 * 3650);      /* 1 dB: round(4095 * 10^-0.05) = 3650 */
++    HT_EQ_INT(mcpx_attenuation_gain(6 * 64), 4 * 2052);      /* 6 dB: 2052 */
++    HT_EQ_INT(mcpx_attenuation_gain(48 * 64), 4 * 16);       /* 48 dB: 16 */
++    HT_EQ_INT(mcpx_attenuation_gain(63 * 64), 0);            /* nothing at 63 dB */
++    HT_EQ_INT(mcpx_attenuation_gain(4095), 0);
++    /* half a decibel: halfway between the nodes, rounded down */
++    HT_EQ_INT(mcpx_attenuation_gain(6 * 64 + 32), (256 * 2052 - 4 * (2052 - 1829) * 32) >> 6);
++    /* never louder as the attenuation grows */
++    for (int a = 1; a < 4096; a++) {
++        HT_CHECK(mcpx_attenuation_gain(a) <= mcpx_attenuation_gain(a - 1));
++    }
++}
++
++/* ---- HRIR taps (ccc18b4) */
++static void test_hrir_taps(void)
++{
++    HT_CHECK(hrtf_coeff_to_float(0x40) == 1.0f / 16.0f);     /* measured: 0x40 is 1/16 */
++    HT_CHECK(hrtf_coeff_to_float(0xC0) == -1.0f / 16.0f);
++    HT_CHECK(hrtf_coeff_to_float(0x01) == 1.0f / 2048.0f);   /* the smallest */
++    HT_CHECK(hrtf_coeff_to_float(0x0F) == 15.0f / 2048.0f);
++    HT_CHECK(hrtf_coeff_to_float(0x10) == 16.0f / 2048.0f);  /* e = 1: continues from e = 0 */
++    HT_CHECK(hrtf_coeff_to_float(0x7F) == 31.0f / 32.0f);    /* the largest */
++    HT_CHECK(hrtf_coeff_to_float(0x80) == 0.0f);
++}
++
++/* ---- the filters' frequency coefficients (b323e32) and rounding (06ef59e) */
++static void test_filters(void)
++{
++    /* measured: D97Eh gave 3043h */
++    HT_EQ_INT((int)lrint(mcpx_filter_frequency((int16_t)0xD97E) * 65536.0f), 0x3043);
++    /* at most FFFFh, not unity */
++    HT_EQ_INT((int)lrint(mcpx_filter_frequency(0) * 65536.0f), 0xFFFF);
++    /* an impulse through an I3DL2 path with a = 8000h settles at 10h (24-bit
++     * units) for good: y = (1 - a) x + a y', rounded halves up */
++    double y = 0.0;
++    const double a = 0x8000 / 65536.0;
++    for (int n = 0; n < 200; n++) {
++        const double x = n == 0 ? 0.5 : 0.0;
++        y = mcpx_round_filter((1.0 - a) * x + a * y);
++    }
++    HT_EQ_INT((int)lrint(y * 8388608.0), 0x10);
++}
++
++/* ---- the mix's 24-bit rounding (45af4ac): halves up */
++static void test_mix_rounding(void)
++{
++    HT_EQ_U32(float_to_24b(0.5f / 8388608.0f), 1);           /* +0.5 LSB: up */
++    HT_EQ_U32(float_to_24b(-0.5f / 8388608.0f), 0);          /* -0.5 LSB: up, to 0 */
++    HT_EQ_U32(float_to_24b(1.5f / 8388608.0f), 2);
++    HT_EQ_U32(float_to_24b(2.5f / 8388608.0f), 3);           /* lrint would give 2 */
++}
++
++/* ---- the resampler (38e5733, e38ad53) */
++static float g_input[4096][2];
++static long g_fed;
++
++static long feed(void *cb_data, float **data)
++{
++    (void)cb_data;
++    *data = &g_input[g_fed][0];
++    g_fed += 32;
++    return 32;
++}
++
++static VpResampler *mcpx_resampler(void)
++{
++    g_fed = 0;
++    VpResampler *r = vp_resample_new(feed, VP_RESAMPLE_MCPX, 2, NULL);
++    HT_CHECK(r != NULL);
++    HT_EQ_INT(vp_resample_quality(r), VP_RESAMPLE_MCPX);
++    return r;
++}
++
++static void test_resampler_weights(void)
++{
++    /* an impulse at frame 100, read every half frame: the outputs on frames
++     * give the frames themselves; those between them the half-frame weights,
++     * measured as 1225, -245, 49 and -5 / 2048 on each side */
++    memset(g_input, 0, sizeof(g_input));
++    g_input[100][0] = g_input[100][1] = 1.0f;
++    VpResampler *r = mcpx_resampler();
++    float out[256][2];
++    uint32_t steps[256];
++    for (int i = 0; i < 256; i++) {
++        steps[i] = 0x8000;
++    }
++    HT_EQ_INT(vp_resample_read_steps(r, steps, 256, &out[0][0]), 256);
++    /* output 2n is frame n; 2n + 1 is halfway between n and n + 1 */
++    for (int n = 0; n < 128; n++) {
++        HT_CHECK(out[2 * n][0] == (n == 100 ? 1.0f : 0.0f));
++    }
++    static const float want[8] = { -5, 49, -245, 1225, 1225, -245, 49, -5 };   /* for n = 103 .. 96 */
++    for (int k = 0; k < 8; k++) {
++        const int n = 103 - k;                                 /* halfway after frame n */
++        HT_CHECK(fabsf(out[2 * n + 1][0] - want[k] / 2048.0f) < 1e-7f);
++        HT_CHECK(out[2 * n + 1][1] == out[2 * n + 1][0]);
++    }
++    vp_resample_delete(r);
++}
++
++static void test_resampler_pitch_ramp(void)
++{
++    /* a ramp in (frame n is n / 1024): Lagrange keeps a straight line, so the
++     * output is the cursor's place. Measured: pitch 0 to -1000h across one
++     * frame advanced the cursor 23 frames, the sum of 2^(-n/32). */
++    for (int n = 0; n < 4096; n++) {
++        g_input[n][0] = g_input[n][1] = (float)n / 1024.0f;
++    }
++    VpResampler *r = mcpx_resampler();
++    uint32_t steps[32], one[1] = { 0x10000 };
++    double advance = 0.0;
++    for (int i = 0; i < 32; i++) {
++        steps[i] = (uint32_t)(exp2((-4096.0 * i / 32.0) / 4096.0) * 65536.0);
++        advance += steps[i] / 65536.0;
++    }
++    HT_EQ_INT((int)advance, 23);
++    float out[32][2], next[1][2];
++    HT_EQ_INT(vp_resample_read_steps(r, steps, 32, &out[0][0]), 32);
++    HT_CHECK(out[0][0] == 0.0f);                               /* starts on frame 0 */
++    HT_EQ_INT(vp_resample_read_steps(r, one, 1, &next[0][0]), 1);
++    HT_CHECK(fabs(next[0][0] * 1024.0 - advance) < 0.01);
++    vp_resample_delete(r);
++}
++
++static void test_resampler_ahead(void)
++{
++    /* vp.c ends a sound once its silence passes ahead + reach: the frames
++     * taken beyond the cursor, and how far back the window reads (3) */
++    VpResampler *r = mcpx_resampler();
++    HT_CHECK(vp_resample_reach(r) == 3.0);
++    float out[1][2];
++    uint32_t steps[1] = { 0x10000 };
++    vp_resample_read_steps(r, steps, 1, &out[0][0]);           /* takes 32 frames, reads frame 0 */
++    HT_CHECK(fabs(vp_resample_ahead(r) - 30.0) < 1e-9);        /* the cursor on frame 1, frames 2 .. 31 ahead */
++    vp_resample_reset(r);
++    vp_resample_delete(r);
++}
++
++int main(void)
++{
++    HT_RUN(test_attenuation);
++    HT_RUN(test_hrir_taps);
++    HT_RUN(test_filters);
++    HT_RUN(test_mix_rounding);
++    HT_RUN(test_resampler_weights);
++    HT_RUN(test_resampler_pitch_ramp);
++    HT_RUN(test_resampler_ahead);
++    return ht_failures != 0;
++}
 diff --git a/tests/hle/test_apu_resample.c b/tests/hle/test_apu_resample.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..85f8f60d46b41a6b13557a8e09f740d111cf96ba
@@ -29260,10 +31134,10 @@ index 0000000000000000000000000000000000000000..85f8f60d46b41a6b13557a8e09f740d1
 +}
 diff --git a/tests/hle/test_apu_simd.c b/tests/hle/test_apu_simd.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a1c8666f793b6ecb38c6a587759a7ec7d397d84
+index 0000000000000000000000000000000000000000..6a86444b8b2714da0a21f665a703f5958c276206
 --- /dev/null
 +++ b/tests/hle/test_apu_simd.c
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,401 @@
 +/* Copyright (C) 2026-present PortareOS */
 +/* The VP's vector paths against scalar models of their arithmetic, bit for
 + * bit: the mix (vp/mix_inline.h) and the HRTF filter's dot product
@@ -29396,8 +31270,10 @@ index 0000000000000000000000000000000000000000..7a1c8666f793b6ecb38c6a587759a7ec
 +/* ---- the HRTF filter's dot product */
 +
 +/* NEON's hrtf_dot in scalar code: two 4-lane accumulators, each fused
-+ * multiply-add one rounding, summed (a0 + a1), then (0 + 1) + (2 + 3) */
-+static float neon_dot(float *c, const float *tar, const float *w, float dfrac)
++ * multiply-add one rounding, summed (a0 + a1), then (0 + 1) + (2 + 3). With
++ * tar, each coefficient is frac of the way to its target (the frame-linear
++ * ramp, xemu PR #3105 21db778), c itself left as it is. */
++static float neon_dot(const float *c, const float *tar, float frac, const float *w, float dfrac)
 +{
 +    const bool interp = dfrac > 0.0f;
 +    const float w0 = 1 - dfrac;
@@ -29406,8 +31282,7 @@ index 0000000000000000000000000000000000000000..7a1c8666f793b6ecb38c6a587759a7ec
 +        for (int j = 0; j < 8; j++) {
 +            float cj = c[m + j];
 +            if (tar) {
-+                cj = fmaf(tar[m + j] - cj, HRTF_PARAM_SMOOTH_ALPHA, cj);
-+                c[m + j] = cj;
++                cj = fmaf(tar[m + j] - cj, frac, cj);
 +            }
 +            float s = w[m + j];
 +            if (interp) {
@@ -29426,14 +31301,14 @@ index 0000000000000000000000000000000000000000..7a1c8666f793b6ecb38c6a587759a7ec
 +}
 +
 +#if defined(__x86_64__)
-+static VP_AVX2 float dot_avx2(float *c, const float *tar, const float *w, float dfrac)
++static VP_AVX2 float dot_avx2(const float *c, const float *tar, float frac, const float *w, float dfrac)
 +{
-+    return hrtf_dot_avx2(c, tar, w, dfrac);
++    return hrtf_dot_avx2(c, tar, frac, w, dfrac);
 +}
 +#endif
 +
 +/* the build's NEON path or x86-64's AVX2 one against the model: the same
-+ * sums, the same coefficients stepped; SSE2's within rounding */
++ * sums, the coefficients left as they were; SSE2's within rounding */
 +static void test_hrtf_neon_sums(void)
 +{
 +    int ls[3];
@@ -29455,18 +31330,19 @@ index 0000000000000000000000000000000000000000..7a1c8666f793b6ecb38c6a587759a7ec
 +            memcpy(c2, c, sizeof(c));
 +            const bool moving = trial & 1;
 +            const float dfrac = trial & 2 ? 0.0f : (trial % 97) / 97.0f;
-+            const float want = neon_dot(c, moving ? tar : NULL, w + 1, dfrac);
++            const float frac = (trial % 32) / 32.0f;   /* the sample's place on the ramp */
++            const float want = neon_dot(c, moving ? tar : NULL, frac, w + 1, dfrac);
 +            float got;
 +#if defined(__x86_64__)
 +            if (level == VP_SIMD_AVX2) {
-+                got = dot_avx2(c2, moving ? tar : NULL, w + 1, dfrac);
++                got = dot_avx2(c2, moving ? tar : NULL, frac, w + 1, dfrac);
 +            } else if (level == VP_SIMD_SSE2) {
-+                got = hrtf_dot_sse2(c2, moving ? tar : NULL, w + 1, dfrac);
++                got = hrtf_dot_sse2(c2, moving ? tar : NULL, frac, w + 1, dfrac);
 +            } else {
-+                got = hrtf_dot(c2, moving ? tar : NULL, w + 1, dfrac);
++                got = hrtf_dot(c2, moving ? tar : NULL, frac, w + 1, dfrac);
 +            }
 +#else
-+            got = hrtf_dot(c2, moving ? tar : NULL, w + 1, dfrac);
++            got = hrtf_dot(c2, moving ? tar : NULL, frac, w + 1, dfrac);
 +#endif
 +            off += memcmp(&got, &want, sizeof(got)) != 0;
 +            steps_off += memcmp(c, c2, sizeof(c)) != 0;

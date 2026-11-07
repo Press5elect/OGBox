@@ -85,6 +85,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <condition_variable>   // (0.0.4; prelude.h has them: this file is in a namespace)
 #include <deque>
 #include <set>
@@ -127,6 +128,24 @@ extern "C" int pshakux_prop_set(const char *name, const char *value);
 namespace {
 
 constexpr const char *kBootFile = "/data/homebrew/PPSA99251/boot.txt";
+constexpr const char *kNoticeSeenFile = "/data/ogbox/notice-seen.txt";   // 0.0.6: the version whose notice was read
+
+/* The version whose start notice was read ("" none). */
+std::string noticeSeenFor()
+{
+	std::string v;
+	if (FILE *f = std::fopen(kNoticeSeenFile, "r")) {
+		char line[128] = "";
+		if (std::fgets(line, sizeof(line), f)) {
+			v = line;
+		}
+		std::fclose(f);
+	}
+	while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) {
+		v.pop_back();
+	}
+	return v;
+}
 constexpr const char *kDataRoot = "/data/ogbox";
 constexpr double kQuitHoldSeconds = 2.0;
 constexpr const char *kLibraryFile = "/data/ogbox/library.txt";
@@ -729,6 +748,13 @@ class VulkanExample : public VulkanExampleBase
 public:
 	BootConfig boot;
 	bool configured{ false };
+	/* 0.0.6: the disc image is on a share that didn't answer at the start: tried again each second
+	 * (on a thread of its own: a share that doesn't answer can take a while to say so) */
+	struct ShareWait {
+		bool active{ false };
+		double since{ 0.0 }, nextTry{ 0.0 };
+		std::shared_ptr<std::atomic<int>> result;   // 0 trying, 1 there, 2 not yet
+	} shareWait;
 	std::string problem;
 
 	// The picture: one sampled image, a staging buffer per frame in flight
@@ -960,6 +986,8 @@ public:
 	bool touchBack[PAD_PLAYERS]{};            // a touch pad click began on its left half (Back)
 	bool touchWas[PAD_PLAYERS]{};
 	ogbox::PadMap padMap;                     // Settings > Controller, the game's own on top
+	int rumblePercent{ 100 };
+	double buzzUntil{ 0.0 };                  // 0.0.6: the settings' test buzz stops then                 // 0.0.6: Settings > Controller > Rumble strength
 	ogbox::TapLatch tapLatch[PAD_PLAYERS];    // a tap shorter than a frame still reaches the game
 	std::string toast;
 	double toastUntil{ 0.0 };
@@ -978,6 +1006,8 @@ public:
 		int pill{ 0 };
 		bool states{ false };                 // the load-state list is shown
 		bool returnTo{ false };               // a screen opened from it comes back to it
+		std::string savesKnown;               // 0.0.6: the path whose saves were looked for
+		bool hasSaves{ false };
 		int stateSel{ 0 };
 		double since{ 0.0 };
 		int readTries{ 0 };                   // 0.0.3: its details read again after a failed read
@@ -1021,9 +1051,12 @@ public:
 	double rainLast{ 0.0 };
 	std::minstd_rand rng{ 1987u };
 	// a run's picture and overlay (the settings' Graphics and Interface)
-	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };
+	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };   // (0.0.6: FSR1's EASU in SGSR's place)
+	VkPipeline pipelineSharp{ VK_NULL_HANDLE };                                  // 0.0.6: Bilinear (Sharp)
 	std::string aspectMode{ "auto" };
 	bool fxaaOn{ false }, sgsrOn{ false }, showFps{ true }, rainOn{ true };
+	std::string fpsCorner{ "1" };   // 0.0.6: Settings' FPS counter: "tl", "1" (top right), "bl", "br"
+	bool sharpOn{ false };          // 0.0.6: Bilinear (Sharp)
 	/* 0.1.58: the settings' anti-aliasing beside FXAA: SMAA 1x (three passes at the picture's size
 	 * into images of its own, then shown as the picture is) and SSAA (the resolution scale raised
 	 * above the screen, the picture averaged down over every texel a pixel covers) */
@@ -1317,9 +1350,7 @@ public:
 					entries.push_back({ LibraryEntry::Dashboard, "Xbox dashboard", "none", 0, std::string() });
 				}
 				entries.push_back({ LibraryEntry::Hdd, "Xbox hard disk", std::string(), 0, std::string() });
-			} else if (tab == TabNetwork) {
-				entries.push_back({ LibraryEntry::AddShare, "Add a network share", std::string(), 0, std::string() });
-			}
+			}   // 0.0.6: no "Add a network share" card: the shares are Settings > Network and shares
 			for (const auto &played : ogbox::recentlyPlayed(60)) {
 				const std::string &game = played.second;
 				if (tabOfPath(game) != tab || !isDiscImage(baseName(game))) {
@@ -1375,12 +1406,18 @@ public:
 		if (!listing->done) {
 			return;
 		}
+		/* 0.0.6: no Up card in a network share: its folder is the one Settings > Network and shares
+		 * names (CIRCLE still goes back) */
+		const bool upCard = tab != TabNetwork;
 		if (listing->ok) {
-			entries = { { LibraryEntry::Up, "..", parentOf(folder), 0, std::string() } };
+			entries.clear();
+			if (upCard) {
+				entries.push_back({ LibraryEntry::Up, "..", parentOf(folder), 0, std::string() });
+			}
 			entries.insert(entries.end(), listing->entries.begin(), listing->entries.end());
 			if (prefs.global("list_sort") == "played") {
 				// 0.1.45: the discs played last first (folders stay first, by name)
-				std::stable_sort(entries.begin() + 1, entries.end(), [](const LibraryEntry &a, const LibraryEntry &b) {
+				std::stable_sort(entries.begin() + (upCard ? 1 : 0), entries.end(), [](const LibraryEntry &a, const LibraryEntry &b) {
 					if (a.kind != b.kind) {
 						return a.kind == LibraryEntry::Folder;
 					}
@@ -1388,7 +1425,7 @@ public:
 				});
 			}
 			writeLastFolder(folder);
-			pshakux_log("library: %s: %zu entries", folder.c_str(), entries.size() - 1);
+			pshakux_log("library: %s: %zu entries", folder.c_str(), entries.size() - (upCard ? 1 : 0));
 		} else {
 			listError = listing->error;
 			{
@@ -1397,7 +1434,10 @@ public:
 					listError += " - " + g_vfsError;
 				}
 			}
-			entries = { { LibraryEntry::Up, "..", parentOf(folder), 0, std::string() } };
+			entries.clear();
+			if (upCard) {
+				entries.push_back({ LibraryEntry::Up, "..", parentOf(folder), 0, std::string() });
+			}
 			pshakux_log("library: %s cannot be listed: %s", folder.c_str(), listError.c_str());
 		}
 		listing.reset();
@@ -1560,6 +1600,37 @@ public:
 		const VkResult r = vkDeviceWaitIdle(device);
 		pshakux_log("ogbox: the presenter's GPU work done (%d)", static_cast<int>(r));
 		syncLog();
+	}
+
+	/* 0.0.6: the share's disc image looked for again, once a second; the game started when it answers */
+	void pollShareWait()
+	{
+		const double now = now_seconds();
+		if (shareWait.result && shareWait.result->load() == 1) {
+			shareWait.active = false;
+			shareWait.result.reset();
+			pshakux_log("ogbox: the share answered after %.1f s: starting the game", now - shareWait.since);
+			struct stat st;
+			if (ps5vfs_stat(boot.image.c_str(), &st) == 0) {
+				pshakux_log("ogbox: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
+			}
+			configureRun();
+			if (configured) {
+				pshakux_log("ogbox: starting the core");
+				pshx_core_start();
+			}
+			return;
+		}
+		if ((!shareWait.result || shareWait.result->load() == 2) && now >= shareWait.nextTry) {
+			shareWait.nextTry = now + 1.0;
+			auto result = std::make_shared<std::atomic<int>>(0);
+			shareWait.result = result;
+			const std::string image = boot.image;
+			std::thread([result, image]() {
+				struct stat st;
+				result->store(ps5vfs_stat(image.c_str(), &st) == 0 ? 1 : 2);
+			}).detach();
+		}
 	}
 
 	void relaunchToLibrary()
@@ -1742,7 +1813,9 @@ public:
 			}
 			/* 0.0.1: each start (not back from a game) first says what this build is: CROSS, then the
 			 * splash (or the first start's question) */
-			if (!boot.back) {
+			/* 0.0.6: only once a version (a fresh install, or after an update): the version it was read
+			 * for is kept in /data/ogbox/notice-seen.txt */
+			if (!boot.back && noticeSeenFor() != pshakux_build_label()) {
 				afterNotice = screen;
 				screen = Screen::Notice;
 				screenSince = now_seconds();
@@ -1754,6 +1827,15 @@ public:
 			const bool virtualImage = ps5vfs_is_virtual(boot.image.c_str()) != 0;
 			if ((virtualImage ? ps5vfs_stat(boot.image.c_str(), &st) : stat(boot.image.c_str(), &st)) != 0) {
 				const int error = errno;
+				if (virtualImage) {
+					/* 0.0.6: a share that doesn't answer yet (the network still coming up, the server
+					 * waking): the game waits for it, the seconds on the screen, instead of failing */
+					pshakux_log("ogbox: the disc image %s isn't reachable yet (%s): waiting for the share", boot.image.c_str(),
+						std::strerror(error));
+					shareWait.active = true;
+					shareWait.since = now_seconds();
+					return;
+				}
 				pshakux_log("ogbox: the disc image %s cannot be opened: %s (%s)", boot.image.c_str(), std::strerror(error),
 					pshakux_sandbox_elevated() ? "out of the sandbox: the console's own paths are visible"
 						: "inside the sandbox: only part of /data is visible; the boot log's \"sandbox:\" lines say why");
@@ -1765,6 +1847,13 @@ public:
 			}
 			pshakux_log("ogbox: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
 		}
+		configureRun();
+	}
+
+	/* The core's arguments for this run (the settings, the game's own, its trainer, boot.txt's), and the
+	 * core configured with them. 0.0.6: from the constructor, or once a share being waited for answers. */
+	void configureRun()
+	{
 		pshakux_log("ogbox: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
 			boot.hdd.c_str(), boot.options.size());
 		std::vector<const char *> argv;
@@ -1794,8 +1883,10 @@ public:
 		fxaaOn = prefs.on("fxaa");
 		smaaOn = prefs.value("fxaa") == "smaa";
 		ssaaOn = prefs.value("fxaa") == "ssaa";
-		sgsrOn = prefs.value("upscale") == "sgsr";
-		showFps = prefs.on("show_fps");
+		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
+		sharpOn = prefs.value("upscale") == "sharp";
+		showFps = prefs.value("show_fps") != "0";
+		fpsCorner = prefs.value("show_fps");
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
@@ -1818,7 +1909,7 @@ public:
 		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s%s, anti-aliasing %s, upscaling %s, FPS counter %s",
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
 			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaOn ? "SSAA" : "off",
-			sgsrOn ? "SGSR" : "bilinear", showFps ? "on" : "off");
+			sgsrOn ? "FSR1" : sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
 		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
 		static std::vector<std::string> fromTrainer;
 		fromTrainer.clear();
@@ -1880,6 +1971,7 @@ public:
 		vkDestroyPipeline(device, pipeline, nullptr);
 		vkDestroyPipeline(device, pipelineFxaa, nullptr);
 		vkDestroyPipeline(device, pipelineSgsr, nullptr);
+		vkDestroyPipeline(device, pipelineSharp, nullptr);
 		destroySmaa();
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -2094,12 +2186,13 @@ public:
 		pipelineCI.stageCount = static_cast<uint32_t>(stages.size());
 		pipelineCI.pStages = stages.data();
 		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipeline));
-		/* 0.1.26: the settings' FXAA and Snapdragon GSR (hakuX's presenter's shaders,
-		 * shaders/glsl/ogbox/fxaa.frag and sgsr.frag): the same pipeline, another fragment stage */
+		/* 0.1.26: the settings' FXAA (hakuX's presenter's shader, shaders/glsl/ogbox/fxaa.frag); 0.0.6: FSR1
+		 * (AMD's EASU, fsr1.frag) where Snapdragon GSR was, and Bilinear (Sharp) (sharp.frag): the same
+		 * pipeline, another fragment stage */
 		const struct {
 			const char *file;
 			VkPipeline *out;
-		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/sgsr.frag.spv", &pipelineSgsr },
+		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp },
 			{ "ogbox/ssaa.frag.spv", &pipelineSsaa } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -2546,13 +2639,15 @@ public:
 					chosen = pipelineFxaa;
 				} else if (sgsrOn && smaller && pipelineSgsr != VK_NULL_HANDLE) {
 					chosen = pipelineSgsr;
+				} else if (sharpOn && smaller && pipelineSharp != VK_NULL_HANDLE) {
+					chosen = pipelineSharp;
 				} else if (ssaaOn && larger && pipelineSsaa != VK_NULL_HANDLE) {
 					chosen = pipelineSsaa;   // averaged down over every texel a pixel covers
 				}
 			}
 			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
 			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
-			if (chosen == pipelineSsaa) {
+			if (chosen == pipelineSsaa || chosen == pipelineSharp) {
 				const float metrics[4] = { 0.0f, 0.0f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			}
@@ -2579,9 +2674,18 @@ public:
 		/* 0.1.53: player 1's OPTIONS opens the quick menu (or, held, in the "OPTIONS held" mode); the
 		 * menu and its screens have the controller, and the game gets none while it is open */
 		pad_player(0, &menuPad);
+		ui::setScrollInput(menuPad.right_y);
+		if (shareWait.active) {
+			if ((menuPad.pressed & PAD_CIRCLE) && !relaunchAsked) {
+				pshakux_log("ogbox: waiting for the share given up (CIRCLE)");
+				relaunchToLibrary();
+			}
+			return;
+		}
 		gameMenuControls();
 		const bool menu = qm.open || qm.sub != Quick::Sub::None;
 		const bool holdMode = prefs.global("quick_menu") == "options_hold";
+		const std::string quickMode = prefs.global("quick_menu");
 		for (int player = 0; player < PAD_PLAYERS; player++) {
 			const struct pad_reading *readings = nullptr;
 			const int count = pad_player_readings(player, &readings);
@@ -2633,11 +2737,17 @@ public:
 				 * player 1, the others' Start. */
 				const bool autoStart = padMap.source[static_cast<int>(ogbox::XboxControl::Start)] == ogbox::src::automatic;
 				const bool autoBack = padMap.source[static_cast<int>(ogbox::XboxControl::Back)] == ogbox::src::automatic;
-				const bool back = holdMode || touchBack[player];
-				if (touch && back && autoBack) {
+				/* 0.0.6: with a combination opening the menu, OPTIONS is Start and the whole touch pad Back
+				 * (held, in the touch pad mode, it opens the menu: Back while held a moment only) */
+				const bool comboMode = quickMode == "combo" || quickMode == "touch_hold" || quickMode == "l3r3";
+				const bool back = holdMode || comboMode || touchBack[player];
+				const bool shouldersHeld = player == 0 && quickMode == "combo" && (buttons & (PAD_L1 | PAD_R1)) == (PAD_L1 | PAD_R1) &&
+					r.l2 > 127 && r.r2 > 127;
+				if (touch && back && autoBack && !(player == 0 && quickMode == "touch_hold" && qm.optionsSince >= 0.0 &&
+						now_seconds() - qm.optionsSince > 0.25)) {
 					x.buttons |= PSHX_PAD_BACK;
 				}
-				if (autoStart && ((touch && !back) || ((buttons & PAD_OPTIONS) && player != 0) ||
+				if (autoStart && ((touch && !back) || ((buttons & PAD_OPTIONS) && (player != 0 || comboMode) && !shouldersHeld) ||
 						(player == 0 && now_seconds() < qm.startPulseUntil))) {
 					x.buttons |= PSHX_PAD_START;   // (the last: a short OPTIONS press in the held mode)
 				}
@@ -2648,7 +2758,9 @@ public:
 			}
 			float large = 0.0f, small = 0.0f;
 			pshx_core_rumble(static_cast<unsigned>(player), &large, &small);
-			pad_player_vibrate(player, menu ? 0.0f : large, menu ? 0.0f : small);
+			/* 0.0.6: Settings > Controller's rumble strength (a percent, PSWin's way) */
+			const float strength = menu ? 0.0f : static_cast<float>(rumblePercent) / 100.0f;
+			pad_player_vibrate(player, large * strength, small * strength);
 		}
 		struct pad first{};
 		pad_player(0, &first);
@@ -2670,7 +2782,12 @@ public:
 	 * repeats, L2 / R2 as presses). */
 	void libraryControls()
 	{
+		if (buzzUntil > 0.0 && now_seconds() >= buzzUntil) {
+			buzzUntil = 0.0;
+			pad_vibrate(0.0f, 0.0f);
+		}
 		pad_player(0, &menuPad);
+		ui::setScrollInput(menuPad.right_y);   // 0.0.6: long text scrolls with the right stick
 		const uint32_t pressed = menuPad.pressed;
 		const uint32_t nav = navPressed();   // 0.0.3: with the D-pad's repeats, L2 / R2 as presses
 		/* 0.1.53: one owner of the controller a frame: the keyboard (0.0.3), a list of choices, the
@@ -2697,6 +2814,10 @@ public:
 				screen = afterNotice;
 				screenSince = now_seconds();
 				pshakux_log("ogbox: the experimental build's notice read");
+				if (FILE *f = std::fopen(kNoticeSeenFile, "w")) {
+					std::fputs(pshakux_build_label(), f);
+					std::fclose(f);
+				}
 			}
 			return;
 		}
@@ -2860,16 +2981,9 @@ public:
 		const auto kindOf = [](const OgboxModEntry &e) { return e.cheat ? 2 : e.patch ? 1 : e.gamefix ? -1 : 0; };
 		for (size_t i = 0; i < modList.size(); i++) {
 			OgboxModEntry &m = modList[i];
+			/* 0.0.6: the patches in one group, Patches (no headings by kind: "Misc" was most of them) */
 			if (i == 0 || kindOf(modList[i - 1]) != kindOf(m)) {
-				section(m.cheat ? "Cheats" : m.patch ? "Patches \xC2\xB7 applied to a copy of the disc's XBE at the start"
-					: m.gamefix ? "Game fixes \xC2\xB7 always on" : "Mods");
-			}
-			/* 0.1.52: the patches by kind, each under its own heading */
-			if (m.patch && (i == 0 || !modList[i - 1].patch || std::strcmp(modList[i - 1].category, m.category) != 0)) {
-				const std::string c = m.category;
-				section(c == "Widescreen" ? "Widescreen (16:9)" : c == "60 FPS" ? "60 FPS"
-					: c == "480i fix" ? "480i fix \xC2\xB7 games that misbehave in interlaced video"
-					: c == "480p" ? "480p \xC2\xB7 progressive video for games without it" : "Other fixes");
+				section(m.cheat ? "Cheats" : m.patch ? "Patches" : m.gamefix ? "Game fixes \xC2\xB7 always on" : "Mods");
 			}
 			/* 0.0.2: the release check (core/ogbox_mods.h): one made for another release of the game is
 			 * greyed out, without its switch, and can't be turned on (one on from before can be turned
@@ -2879,7 +2993,7 @@ public:
 			r.key = "m" + std::to_string(kindOf(m)) + ":" + m.id;
 			r.title = m.name;
 			r.sub = m.patch ? std::string("by ") + m.author : std::string();
-			r.right = other ? std::string(m.on ? "another release: left out" : "another release")
+			r.right = other ? std::string(m.on ? "Incompatible: left out" : "Incompatible")
 				: m.gamefix ? std::string("always on")
 				: m.cheat ? (m.once ? "once" : std::string())
 				: (!m.patch && m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
@@ -2893,7 +3007,11 @@ public:
 			}
 			std::string help;
 			if (other) {
-				help = std::string("Made for another release of the game, not this disc: ") + m.fit_why + ". " +
+				/* 0.0.6: which version of the game it is for */
+				const std::string region = m.region[0] ? std::string(m.region) : std::string();
+				help = (region.empty() ? std::string("Incompatible: made for another version of the game")
+						: "Incompatible: made for the " + region + " version of the game") +
+					(m.fit_why[0] ? std::string(" (") + m.fit_why + ")" : std::string()) + ". " +
 					(m.on ? "It's left out when the game starts. CROSS turns it off."
 						  : "It can't be turned on: it would change bytes this disc doesn't have where it expects them.");
 			} else {
@@ -2903,7 +3021,7 @@ public:
 						"whose bytes are not in this disc's XBE is left out (the boot log says so).";
 					const std::string all = std::string(m.name) + " " + m.description;
 					if (all.find("128") != std::string::npos) {
-						help += " Needs the 128 MB RAM upgrade: with Settings > Console > Memory on Auto, OGBox gives the game 128 MB while it's on.";
+						help += " Needs the 128 MB RAM upgrade: with Settings > Advanced > Memory on Auto, OGBox gives the game 128 MB while it's on.";
 					}
 				} else if (m.gamefix) {
 					help += "A game fix: OGBox always applies it, because the game doesn't run well on the PS5 without it. It can't be turned off.";
@@ -3009,7 +3127,7 @@ public:
 			r.key = "t" + std::string(t.rel);
 			r.title = t.name[0] ? t.name : baseName(t.rel);
 			r.sub = std::string(t.author[0] ? t.author : "a trainer") + " \xC2\xB7 " + (t.xbtf ? "XBTF" : "ETM");
-			r.right = other ? std::string(on ? "another release: doesn't run" : "another release")
+			r.right = other ? std::string(on ? "Incompatible: doesn't run" : "Incompatible")
 				: std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options");
 			r.toggle = other && !on ? -1 : on ? 1 : 0;
 			r.dim = other;
@@ -3020,8 +3138,8 @@ public:
 				std::to_string(t.noptions) + (t.noptions == 1 ? " option" : " options") + ": " + t.rel + ". ";
 			if (other) {
 				char d[256];   // 0.0.1: 96 cut the sentence short
-				std::snprintf(d, sizeof(d), "It was made for another release of the game (its XBE dated %08X, this disc's "
-					"%08X): it would find nothing to change, so it can't be chosen%s. ", static_cast<unsigned>(t.xbe_time),
+				std::snprintf(d, sizeof(d), "Incompatible: made for another version of the game (its default.xbe dated %08X, this "
+					"disc's %08X): it would find nothing to change, so it can't be chosen%s. ", static_cast<unsigned>(t.xbe_time),
 					static_cast<unsigned>(tv.xbeTime), on ? ", and it doesn't run at the start" : "");
 				help += d;
 			}
@@ -3106,7 +3224,7 @@ public:
 	{
 		ui::ListScreenView v;
 		v.head.logo = uiLogo();
-		v.head.title = "Mods, patches and cheats";
+		v.head.title = "Game Patches";   // 0.0.6
 		v.head.subtitle = modsTitle + " \xC2\xB7 " + modsKey;
 		std::vector<ModsRow> acts;
 		modsModel(v.rows, acts);
@@ -3221,6 +3339,9 @@ public:
 		if (library) {
 			renderLibrary();
 			return;
+		}
+		if (shareWait.active) {
+			pollShareWait();
 		}
 		const int state = pshx_core_state();
 		if (state != lastState) {
@@ -3380,14 +3501,12 @@ public:
 	void drawNotice()
 	{
 		ui::NoticeView v;
-		v.kicker = "Experimental build";
-		v.title = "Expect crashes and freezes";
+		/* 0.0.6: Press5elect's words */
+		v.kicker = "Not so much of an experimental build";
+		v.title = "But it might still crash or show glitches in games";
 		v.subtitle = std::string("OGBox ") + pshakux_build_label() + " for PS5";
-		v.lead = "This is a highly experimental build of an original Xbox emulator.";
-		v.paragraphs = { "Many games don't start yet, and the ones that do can stop, slow down, or show missing graphics or sound "
-			"problems at any point. Save in game often, and keep a copy of anything you care about.",
-			"If something goes wrong, ogbox-boot.log in OGBox's title folder says what happened: please include it when you report "
-			"a problem." };
+		v.lead = "If anything goes wrong, please send me ogbox-boot.log from OGBox's title folder.";
+		v.paragraphs = { "Thanks, and enjoy!", "Press5elect" };
 		v.fine = "OGBox comes with no games, BIOS or keys. Use it only with backups of games you own.";
 		v.canContinue = now_seconds() - screenSince > 1.0;
 		bd.key = "notice";
@@ -3514,6 +3633,10 @@ public:
 		}
 		ui::HudView v;
 		v.showFps = showFps && havePicture;
+		v.fpsCorner = fpsCorner == "tl" ? 0 : fpsCorner == "bl" ? 2 : fpsCorner == "br" ? 3 : 1;
+		if (v.fpsCorner == 0 && (!problem.empty() || !havePicture)) {
+			v.fpsCorner = 1;   // (the status panel's corner)
+		}
 		v.fps = fps;
 		if (now <= ledUntil) {
 			const int phase = static_cast<int>(now * 4.0) & 3;
@@ -3522,6 +3645,34 @@ public:
 			v.ledAlpha = static_cast<float>(std::min(1.0, (ledUntil - now) / 0.5));
 			v.ledColour = r && g ? IM_COL32(255, 158, 26, 255) : r ? IM_COL32(255, 46, 31, 255) : g ? IM_COL32(77, 255, 64, 255) : 0;
 			v.ledText = ledText;
+		}
+		if (shareWait.active) {
+			/* 0.0.6: waiting for the share, the seconds counted */
+			v.showStatus = true;
+			v.statusTitle = "Waiting for the network share\xE2\x80\xA6 " + std::to_string(static_cast<int>(now - shareWait.since)) + " s";
+			v.statusLines.push_back({ "Disc", baseName(boot.image) });
+			v.statusLines.push_back({ "Share", parentOf(boot.image) });
+			v.note = "The game starts as soon as the share answers.";
+			v.waiting = true;
+			v.statusHints = { { "O", "Back to the game list" } };
+			ImDrawList *dl = beginUiScreen("##hud", Ground::None);
+			ui::drawHud(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
+			endUiScreen();
+			return;
+		}
+		/* 0.0.6: a read of the share that hasn't finished for 2 s (the share stopped answering): said,
+		 * with the seconds, until it answers (the game waits for it meanwhile) */
+		const double stalled = havePicture ? ps5vfs_stalled_seconds() : 0.0;
+		if (stalled >= 2.0 && problem.empty() && state == PSHX_CORE_RUNNING) {
+			v.showStatus = true;
+			v.statusTitle = "Waiting for the network share\xE2\x80\xA6 " + std::to_string(static_cast<int>(stalled)) + " s";
+			v.statusLines.push_back({ "Disc", baseName(boot.image) });
+			v.note = "The game goes on when the share answers.";
+			v.waiting = true;
+			ImDrawList *dl = beginUiScreen("##hud", Ground::None);
+			ui::drawHud(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
+			endUiScreen();
+			return;
 		}
 		const bool trouble = !problem.empty() || state == PSHX_CORE_FAILED || state == PSHX_CORE_STOPPED;
 		/* 0.0.2: no panel over a game's frozen last frame (its next XBE is starting), only trouble */
@@ -3538,7 +3689,11 @@ public:
 				v.note = pshx_core_message();
 				v.waiting = state == PSHX_CORE_BOOTING || (state == PSHX_CORE_RUNNING && !havePicture);
 			}
-			v.statusHints = { { "OPT", "Quick menu: save, load, quit" } };
+			{
+				const std::string m = prefs.global("quick_menu");
+				v.statusHints = { { m == "combo" ? "L1+L2+R1+R2+OPTIONS" : m == "touch_hold" ? "TP" : m == "l3r3" ? "L3+R3" : "OPT",
+					"Quick menu: save, load, quit" } };
+			}
 		}
 		if (!v.showFps && !v.showLed && !v.showStatus) {
 			return;
@@ -3934,8 +4089,9 @@ public:
 	 * the game's own settings and its mods, patches and cheats (the screens of the game list), restart
 	 * and quit. PSFlyCast's and Crux2's: a panel from the right, the game dimmed behind. */
 
-	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SLOT, QR_LEFT, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT,
-		QR_COUNT };
+	/* 0.0.6: the rows shown, in order; the state slot (LEFT and RIGHT on Save State and Load State choose it)
+	 * and "Where you left off" (the game's start offers it) aren't rows any more */
+	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT, QR_COUNT, QR_SLOT, QR_LEFT };
 	/* 0.0.2: the quick menu's "Log what the GPU draws": this many draws (a few frames of a game),
 	 * from this long after it closes (time to bring the problem on screen) */
 	static constexpr int kDrawLogDraws = 5000;
@@ -4217,6 +4373,49 @@ public:
 		}
 		/* the button that opens it */
 		if (!qm.open) {
+			const std::string mode = prefs.global("quick_menu");
+			if (mode == "combo" || mode == "touch_hold" || mode == "l3r3") {
+				/* 0.0.6: a combination (OPTIONS is the Xbox's Start then): L1+L2+R1+R2+OPTIONS at once;
+				 * the touch pad held half a second (a tap is Back); L3+R3 let go within a second (held
+				 * longer, the screenshot) */
+				const uint32_t shoulders = PAD_L1 | PAD_R1 | ogbox::src::l2 | ogbox::src::r2;
+				uint32_t h = held;
+				if (menuPad.l2 > 0.5f) {
+					h |= ogbox::src::l2;
+				}
+				if (menuPad.r2 > 0.5f) {
+					h |= ogbox::src::r2;
+				}
+				if (mode == "combo") {
+					if ((h & shoulders) == shoulders && (pressed & PAD_OPTIONS)) {
+						quickOpen();
+					}
+				} else if (mode == "touch_hold") {
+					if (held & PAD_TOUCH_PAD) {
+						if (qm.optionsSince < 0.0) {
+							qm.optionsSince = now;
+						} else if (qm.optionsSince > 0.0 && now - qm.optionsSince >= 0.5) {
+							qm.optionsSince = 0.0;
+							quickOpen();
+						}
+					} else {
+						qm.optionsSince = -1.0;
+					}
+				} else {
+					const uint32_t sticks = PAD_L3 | PAD_R3;
+					if ((held & sticks) == sticks) {
+						if (qm.optionsSince < 0.0) {
+							qm.optionsSince = now;
+						}
+					} else {
+						if (qm.optionsSince > 0.0 && now - qm.optionsSince < 1.0) {
+							quickOpen();
+						}
+						qm.optionsSince = -1.0;
+					}
+				}
+				return;
+			}
 			if (holdMode) {
 				if (held & PAD_OPTIONS) {
 					if (qm.optionsSince < 0.0) {
@@ -4378,15 +4577,14 @@ public:
 		};
 		const RowText rows[QR_COUNT] = {
 			{ "resume", "Resume", "", ui::Icon::Play, false },
-			{ "save", "Save state", slotText, ui::Icon::Save, runKey.empty() },
-			{ "load", "Load state", slot.used ? slotText : std::string("slot ") + std::to_string(qm.slot) + " is empty", ui::Icon::Load, !slot.used },
-			{ "slot", "State slot", slotText, ui::Icon::Info, false },
-			{ "left", "Where you left off", left.used ? ogbox::dateText(left.mtime) : std::string("none yet"), ui::Icon::Back, !left.used },
-			{ "settings", "Game settings", "next start", ui::Icon::Gear, runKey.empty() },
-			{ "mods", "Mods, patches, cheats", "next start", ui::Icon::Puzzle, runKey.empty() },
-			{ "drawlog", "Log what the GPU draws", "5 s after you resume", ui::Icon::Info, false },
-			{ "restart", restartArmed ? "Restart: press again" : "Restart the game", "", ui::Icon::Restart, false },
-			{ "quit", "Quit the game", "", ui::Icon::Power, false },
+			{ "save", "Save State", slotText, ui::Icon::Save, runKey.empty() },
+			{ "load", "Load State", slot.used ? slotText : "\xE2\x86\x90 slot " + std::to_string(qm.slot) + " is empty \xE2\x86\x92",
+				ui::Icon::Load, !slot.used },
+			{ "settings", "Game Settings", "next start", ui::Icon::Gear, runKey.empty() },
+			{ "mods", "Patches", "next start", ui::Icon::Puzzle, runKey.empty() },
+			{ "drawlog", "Log What the GPU Draws", "debugging only", ui::Icon::Info, false },
+			{ "restart", restartArmed ? "Restart: press again" : "Restart the Game", "", ui::Icon::Restart, false },
+			{ "quit", "Quit the Game", "", ui::Icon::Power, false },
 		};
 		for (int i = 0; i < QR_COUNT; i++) {
 			ui::ListRow r;
@@ -5434,7 +5632,7 @@ public:
 		v.list = prefs.global("home_layout") == "list";
 		v.logo = uiLogo();
 		for (const int t : tabsShown()) {
-			v.tabs.push_back(t == TabInternal ? "Games" : tabName(t));
+			v.tabs.push_back(tabName(t));   // 0.0.6: Internal (was "Games"), USB, Network
 			if (t == tab) {
 				v.tab = static_cast<int>(v.tabs.size()) - 1;
 			}
@@ -5600,7 +5798,7 @@ public:
 				: "No Xbox disc images (.iso, .xiso, .chd, .cci) in this folder.";
 			if (folder.empty() && cards.empty()) {
 				v.empty = tab == TabUsb ? "No USB drive is plugged in (or Settings > Game list hides them)."
-					: tab == TabNetwork ? "No network share yet: add one in Settings > Network."
+					: tab == TabNetwork ? "No network share yet: add one in Settings > Network and shares."
 					: "Nothing to show: Settings > Game list hides every place here.";
 			}
 		}
@@ -5614,7 +5812,7 @@ public:
 			if (!v.secondary.empty()) {
 				v.footer.push_back({ "S", "From the start" });
 			}
-			v.footer.push_back({ "T", "Game page" });
+			v.footer.push_back({ "T", "Game Details" });
 			v.footer.push_back({ "L2 R2", "A to Z" });
 		} else {
 			v.footer = { { "LR", "Choose" }, { "X", "Open" } };
@@ -5645,8 +5843,8 @@ public:
 		if (forGame) {
 			return { SP_PICTURE, SP_CONTROLLER, SP_XBOX, SP_ADVANCED, SP_GAME_RESET };
 		}
-		return { SP_PICTURE, SP_CONTROLLER, SP_XBOX, SP_ADVANCED, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_DATA, SP_HDD, SP_UPDATES,
-			SP_ABOUT };
+		/* 0.0.6: the data folder and the Xbox hard disk's place under About, its saves under XBOX */
+		return { SP_PICTURE, SP_CONTROLLER, SP_XBOX, SP_ADVANCED, SP_NETWORK, SP_LIST, SP_INTERFACE, SP_UPDATES, SP_ABOUT };
 	}
 
 	static const char *setPageName(int page)
@@ -5654,16 +5852,16 @@ public:
 		switch (page) {
 		case SP_PICTURE: return "Picture and sound";
 		case SP_CONTROLLER: return "Controller";
-		case SP_XBOX: return "The Xbox";
+		case SP_XBOX: return "XBOX";
 		case SP_ADVANCED: return "Advanced";
-		case SP_NETWORK: return "Network";
+		case SP_NETWORK: return "Network and shares";
 		case SP_LIST: return "Game list";
 		case SP_INTERFACE: return "Interface";
 		case SP_DATA: return "Data folder";
 		case SP_HDD: return "Xbox hard disk";
 		case SP_UPDATES: return "Updates";
 		case SP_ABOUT: return "About";
-		default: return "Use the app's";
+		default: return "Use Default";
 		}
 	}
 
@@ -5672,15 +5870,14 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "aniso", "sharpen", "force32", "dither", "crop_overscan", "show_fps" } } };
+			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "aniso", "sharpen", "dither", "crop_overscan", "show_fps" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
-				{ "Timing", { "frame_pacing", "uncapped", "console_timing" } },
-				{ "Graphics", { "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth" } },
-				{ "Sound and memory", { "audio_resampler", "console_ram" } },
+				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth",
+					"audio_resampler", "console_ram" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {
@@ -5713,10 +5910,11 @@ public:
 		case SP_INTERFACE:
 			return { { "", { "theme", "rain", "quick_menu" } } };
 		case SP_CONTROLLER:
-			return { { "Buttons", { "pad_a", "pad_b", "pad_x", "pad_y", "pad_black", "pad_white", "pad_lt", "pad_rt", "pad_start",
-						"pad_back", "pad_lthumb", "pad_rthumb" } },
-				{ "D-pad", { "pad_up", "pad_down", "pad_left", "pad_right" } },
-				{ "Sticks and triggers", { "pad_sticks", "pad_invert_ly", "pad_invert_ry", "pad_dead_l", "pad_dead_r", "pad_dead_t" } } };
+			/* 0.0.6: the buttons on the controller's picture, in its order (left column, then right) */
+			return { { "", { "pad_lt", "pad_lthumb", "pad_up", "pad_down", "pad_left", "pad_right", "pad_back", "pad_rt", "pad_y",
+						"pad_x", "pad_b", "pad_a", "pad_white", "pad_black", "pad_start", "pad_rthumb" } },
+				{ "Sticks and triggers", { "pad_sticks", "pad_invert_ly", "pad_invert_ry", "pad_dead_l", "pad_dead_r", "pad_dead_t" } },
+				{ "Rumble", { "pad_rumble" } } };
 		case SP_UPDATES:
 			return { { "", { "update_check" } } };
 		default:
@@ -5728,12 +5926,19 @@ public:
 	void loadPadMap()
 	{
 		padMap = ogbox::padMapFrom([this](const char *key) { return prefs.value(key); });
+		const std::string r = prefs.value("pad_rumble");
+		rumblePercent = r.empty() ? 100 : std::max(0, std::min(100, std::atoi(r.c_str())));
 	}
 
 	/* A value set from the settings, with what follows from it at once. */
 	void setValue(const ogbox::Option &o, const std::string &next)
 	{
 		const std::string key = o.key;
+		if (key == "pad_rumble") {   // 0.0.6: a short buzz at the new strength, as PSWin gives
+			const float k = static_cast<float>(std::atoi(next.c_str())) / 100.0f;
+			pad_vibrate(0.5f * k, 0.12f * k);
+			buzzUntil = now_seconds() + 0.18;
+		}
 		if (forGame) {
 			const std::string own = prefs.override_(key);
 			prefs.setOverride(key, next == prefs.global(key) && own.empty() ? std::string() : next);
@@ -5748,7 +5953,8 @@ public:
 		} else if (key == "theme") {
 			themeCode = next == "code";
 		} else if (key == "show_fps") {
-			showFps = next == "1";
+			showFps = next != "0";
+			fpsCorner = next;
 		} else if (o.section == ogbox::Section::Controller) {
 			loadPadMap();
 		}
@@ -5771,13 +5977,7 @@ public:
 		RowAct a;
 		r.key = o.key;
 		r.name = o.label;
-		r.desc = o.description;
-		if (!o.text && !o.now) {
-			r.desc += " Takes effect at the next game start.";
-		}
-		if (!o.text) {
-			r.desc += " Default: " + ogbox::Settings::label(o, o.def) + ".";
-		}
+		r.desc = o.description;   // 0.0.6: no "takes effect" or "default" lines (TRIANGLE gives the default)
 		r.changed = forGame ? !own.empty() : (!o.text && v != o.def) || (o.text && !v.empty());
 		r.inherited = forGame && own.empty();
 		const ogbox::Option *op = &o;
@@ -5808,6 +6008,9 @@ public:
 		} else {
 			r.kind = ui::SetRow::Kind::Choice;
 			for (const ogbox::Choice &c : o.choices) {
+				if (c.off) {
+					r.offChoices.push_back(static_cast<int>(r.choices.size()));
+				}
 				r.choices.push_back(c.label);
 				if (v == c.value) {
 					r.choice = static_cast<int>(r.choices.size()) - 1;
@@ -5866,6 +6069,76 @@ public:
 		acts.push_back(a);
 	}
 
+	/* 0.0.6: the newest release notes in the README beside eboot.bin (its first "### " under "## Release
+	 * notes"), as text: the Added / Changed / Fixed headings and their points. */
+	std::string whatsNew() const
+	{
+		std::ifstream in(getAssetPath() + "../README.md");
+		std::string line, out;
+		bool inNotes = false, inVersion = false;
+		while (std::getline(in, line)) {
+			if (line.rfind("## Release notes", 0) == 0) {
+				inNotes = true;
+				continue;
+			}
+			if (!inNotes) {
+				continue;
+			}
+			if (line.rfind("### ", 0) == 0) {
+				if (inVersion) {
+					break;
+				}
+				inVersion = true;
+				continue;
+			}
+			if (line.rfind("## ", 0) == 0) {
+				break;
+			}
+			if (!inVersion || line.empty()) {
+				continue;
+			}
+			std::string t = line;
+			for (const char *mark : { "**", "`" }) {
+				for (size_t at = t.find(mark); at != std::string::npos; at = t.find(mark)) {
+					t.erase(at, std::strlen(mark));
+				}
+			}
+			if (t.rfind("- ", 0) == 0) {
+				out += "\n\xE2\x80\xA2 " + t.substr(2);
+			} else if (t.rfind("  ", 0) == 0) {
+				out += " " + t.substr(t.find_first_not_of(' '));   // a point's next line
+			} else {
+				out += (out.empty() ? "" : "\n\n") + t;   // Added, Changed, Fixed
+			}
+		}
+		return out.empty() ? std::string("This version's notes aren't in its folder (README.md).") : out;
+	}
+
+	/* 0.0.6: Settings > About's credits: who made what OGBox is built on. */
+	static std::vector<std::pair<std::string, std::string>> credits()
+	{
+		return {
+			{ "OGBox", "by Press5elect: the PS5 port, its menus, the logo and the native CPU backend." },
+			{ "hakuX", "by rfandango and its contributors (GPL-3.0-or-later): the emulator. hakuX-lr's graphics, audio, disc and "
+				"kernel work by PortareOS and its contributors." },
+			{ "xemu", "The MCPX APU (LGPL-2.1-or-later), and raddad772's measurements of the Xbox's voice processor on a real "
+				"console (xemu pull request #3105), by way of CallistoNTG's hakuX port." },
+			{ "DSP56300", "Hatari's DSP56300 emulation (GPL-2.0-or-later), and its JIT." },
+			{ "Cxbx-Reloaded", "The rules for which rdtsc instructions to patch (GPL-2.0-or-later)." },
+			{ "nxdk", "The Xbox kernel's export table (CC0)." },
+			{ "Mesa (RADV)", "The Vulkan driver (MIT and other permissive licences); its PS5 parts by Mihawk." },
+			{ "PS5 Vulkan and the payload SDK", "Mihawk's PS5_Vulkan and platform layer; John Tornblom and ps5-payload-dev's SDK." },
+			{ "FidelityFX FSR 1.0", "AMD's EASU upscaler (MIT)." },
+			{ "SMAA", "Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT)." },
+			{ "Dear ImGui", "Omar Cornut and contributors (MIT): the menus' drawing." },
+			{ "Network shares", "libsmb2 and libnfs by Ronnie Sahlberg (LGPL-2.1-or-later)." },
+			{ "Disc images", "libchdr (BSD-3-Clause), with the LZMA SDK, zstd and dr_flac." },
+			{ "Covers and descriptions", "libretro's thumbnails, MobCat's scans of the boxes, and Wikipedia's articles (CC BY-SA 4.0)." },
+			{ "Game data", "Redump's disc database (CC BY-SA 4.0); the patches' and trainers' authors are named beside each one." },
+			{ "Everything else", "LEGAL.txt, NOTICE.txt and licenses/ in OGBox's folder name every part, its authors and its licence." },
+		};
+	}
+
 	/* The page's rows and what each does. */
 	void settingsModel(int page, std::vector<ui::SetRow> &rows, std::vector<RowAct> &acts)
 	{
@@ -5909,27 +6182,43 @@ public:
 				ui::Icon::Console);
 			actionRow("hddpath", "Where it is", hdd, "", nullptr, rows, acts);
 			break;
+		case SP_XBOX:
+			/* 0.0.6: the Xbox hard disk's saves here (its place: About) */
+			groupRow("Xbox hard disk", rows, acts);
+			actionRow("hdd", "Saves and caches", "open", "The games' saves on the Xbox hard disk: copy them to a USB drive or the "
+				"console's backups, bring saves in, delete them; empty the cache drives.", [this]() { openHdd(0); }, rows, acts,
+				ui::Icon::Console);
+			break;
 		case SP_UPDATES:
 			actionRow("check", "Look for an update now", updateLine(), "Asks GitHub whether a newer OGBox is out and offers it with "
 				"what is new. Nothing is downloaded without asking; your settings, the hard disk, states and games stay.",
 				[this]() { checkForUpdate(); }, rows, acts, ui::Icon::Check);
+			/* 0.0.6: this version's release notes (the README beside eboot.bin) */
+			actionRow("news", "What's New?", "this version", "What was added, changed and fixed in this version.",
+				[this]() { openPopup(std::string("What's new in OGBox ") + pshakux_build_label(), whatsNew(), { "Close" }, [](int) {}); },
+				rows, acts, ui::Icon::Info);
 			break;
 		case SP_ABOUT:
-			actionRow("ver", "OGBox", pshakux_build_label(), "OGBox by Press5elect: hakuX for the PS5.", nullptr, rows, acts);
-			groupRow("The controller (Settings > Controller changes it)", rows, acts);
-			actionRow("c1", "Cross, Circle, Square, Triangle", "A, B, X, Y", "", nullptr, rows, acts, ui::Icon::Pad);
-			actionRow("c2", "L1, R1", "white, black", "", nullptr, rows, acts);
-			actionRow("c3", "L2, R2", "the triggers", "", nullptr, rows, acts);
-			actionRow("c4", prefs.global("quick_menu") == "options_hold" ? "OPTIONS (held), touch pad" : "OPTIONS, touch pad",
-				prefs.global("quick_menu") == "options_hold" ? "start (quick menu), back" : "quick menu, back | start", "", nullptr, rows, acts);
-			actionRow("c5", "L3 + R3 held", "a screenshot", "", nullptr, rows, acts);
+			/* 0.0.6: the version, where OGBox keeps its data and the Xbox hard disk, and the credits */
+			actionRow("ver", "OGBox", pshakux_build_label(), "", nullptr, rows, acts);
+			groupRow("Data folder", rows, acts);
+			actionRow("root", "Now", ogbox::storageRoot(), "Where OGBox keeps the Xbox hard disk, the caches, the covers and the "
+				"screenshots.", nullptr, rows, acts, ui::Icon::Folder);
+			actionRow("free", "Free there", ogbox::freeSpaceText(ogbox::storageRoot()), "", nullptr, rows, acts);
+			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive; OGBox moves its "
+				"data there and keeps using it.", [this]() { openStorage(false); }, rows, acts, ui::Icon::Usb);
+			actionRow("hddpath", "Xbox hard disk", hdd, "", nullptr, rows, acts, ui::Icon::Console);
+			groupRow("Credits", rows, acts);
+			for (const auto &c : credits()) {
+				actionRow("cr." + c.first, c.first, "", c.second, nullptr, rows, acts);
+			}
 			break;
 		case SP_GAME_RESET:
-			actionRow("reset", "Use the app's settings for everything", std::to_string(prefs.overrides()) + " of its own",
-				"Every setting of this game back to the app's.", [this]() {
+			actionRow("reset", "Set everything to Default", std::to_string(prefs.overrides()) + " of its own",
+				"Every setting of this game back to Default.", [this]() {
 					prefs.clearOverrides();
 					pshakux_log("settings: %s: every setting back to the app's", forGameKey.c_str());
-					showToast("This game follows the app's settings again");
+					showToast("This game uses the Default settings again");
 				}, rows, acts);
 			break;
 		default:
@@ -5954,9 +6243,9 @@ public:
 					changed += forGame ? !v.empty() : v != o.def;
 				}
 			}
-			return changed ? std::to_string(changed) + " changed" : std::string("as on an Xbox");
+			return changed ? std::to_string(changed) + " changed" : std::string();
 		}
-		case SP_ADVANCED: *warn = true; return "can break games";
+		case SP_ADVANCED: *warn = true; return "experimental";
 		case SP_NETWORK: {
 			const std::string net = prefs.global("network");
 			*dot = net.empty() || net == "0" || net == "off" ? 0 : ui::P().ok;
@@ -5968,7 +6257,7 @@ public:
 		case SP_DATA: return ogbox::freeSpaceText(ogbox::storageRoot());
 		case SP_HDD: return "saves and caches";
 		case SP_UPDATES: return updateLine();
-		case SP_ABOUT: return pshakux_build_label();
+		case SP_ABOUT: return pshakux_build_label();   // 0.0.6: the version only
 		case SP_GAME_RESET: return std::to_string(prefs.overrides()) + " of its own";
 		default: return std::string();
 		}
@@ -6075,8 +6364,8 @@ public:
 				acts[static_cast<size_t>(setRowSel)].square();
 			} else if (page == SP_PICTURE || page == SP_XBOX || page == SP_ADVANCED || page == SP_LIST || page == SP_INTERFACE ||
 				page == SP_NETWORK) {
-				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here go; it follows "
-					"the app's again." : "Every setting here back to how OGBox comes.", { "No", "Yes, reset them" }, [this, acts](int i) {
+				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here are removed, and it uses "
+					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, acts](int i) {
 						if (i == 1) {
 							for (const RowAct &a : acts) {
 								if (a.reset) {
@@ -6128,8 +6417,8 @@ public:
 		ui::SettingsView v;
 		v.logo = uiLogo();
 		v.title = "Settings";
-		v.subtitle = forGame ? forGameTitle + " \xC2\xB7 this game's own" : std::string("for every game");
-		v.right = forGame ? forGameKey : std::string("text fields open a keyboard; a USB keyboard types too");
+		v.subtitle = forGame ? forGameTitle + " \xC2\xB7 this game's own" : std::string();
+		v.right = forGame ? forGameKey : std::string();
 		for (size_t i = 0; i < pages.size(); i++) {
 			ui::SetNav n;
 			n.name = setPageName(pages[i]);
@@ -6141,15 +6430,31 @@ public:
 		v.focusNav = setFocusNav;
 		v.pageTitle = setPageName(page);
 		if (page == SP_ADVANCED) {
-			v.banner = "These change how games run. The defaults are the most accurate; change one when a game asks for it, "
-				"and change it back if anything gets worse.";
+			v.banner = "Experimental settings: they might crash the console.";
 			v.bannerWarn = true;
 		} else if (forGame && page != SP_GAME_RESET) {
-			v.banner = "Only this game's: a setting marked \"as the app's\" follows Settings; TRIANGLE puts one back.";
+			v.banner = "Only this game's: a setting marked \"Default\" follows Settings; TRIANGLE puts one back.";
 		}
 		std::vector<RowAct> acts;
 		settingsModel(page, v.rows, acts);
 		v.rowSel = setRowSel;
+		if (page == SP_CONTROLLER) {
+			/* 0.0.6: the buttons on the controller's picture instead of rows (still chosen with UP and DOWN) */
+			for (int i = 0; i < static_cast<int>(ogbox::XboxControl::Count); i++) {
+				const char *key = ogbox::padKey(static_cast<ogbox::XboxControl>(i));
+				for (ui::SetRow &r : v.rows) {
+					if (r.key == key) {
+						r.hidden = true;
+						ui::PadCallout c;
+						c.key = key;
+						c.name = ogbox::padLabel(static_cast<ogbox::XboxControl>(i));
+						c.value = r.choice >= 0 && r.choice < static_cast<int>(r.choices.size()) ? r.choices[static_cast<size_t>(r.choice)] : r.value;
+						c.changed = r.changed;
+						v.pad.push_back(c);
+					}
+				}
+			}
+		}
 		if (setFocusNav) {
 			v.footer = { { "UD", "Choose" }, { "X", "Open" }, { "O", forGame && !library ? "Back to the game" : "Back" } };
 		} else {
@@ -6157,7 +6462,7 @@ public:
 			v.footer = { { "UD", "Choose" } };
 			if (r && (r->kind == ui::SetRow::Kind::Choice || r->kind == ui::SetRow::Kind::Number || r->kind == ui::SetRow::Kind::Toggle)) {
 				v.footer.push_back({ "LR", "Change" });
-				v.footer.push_back({ "T", forGame ? "As the app's" : "Default" });
+				v.footer.push_back({ "T", "Default" });
 			} else if (r && r->kind == ui::SetRow::Kind::Text) {
 				v.footer.push_back({ "X", "Type" });
 				v.footer.push_back({ "T", "Clear" });
@@ -6648,16 +6953,39 @@ public:
 
 	enum GameAct { GA_PLAY, GA_FRESH, GA_STATES, GA_SETTINGS, GA_MODS, GA_SAVES };
 
+	/* 0.0.6: whether the game has saves on the Xbox hard disk (E:\UDATA\<title ID>), looked at once a page */
+	bool gameHasSaves()
+	{
+		if (!gp.info.ok) {
+			return false;
+		}
+		if (gp.savesKnown != gp.path) {
+			gp.savesKnown = gp.path;
+			char id[16];
+			std::snprintf(id, sizeof(id), "%08x", static_cast<unsigned>(gp.info.title_id));
+			const std::string hddRoot = boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd;
+			gp.hasSaves = false;
+			if (DIR *d = opendir((hddRoot + "/Partition1/UDATA/" + id).c_str())) {
+				while (struct dirent *e = readdir(d)) {
+					if (e->d_name[0] != '.' && std::strcmp(e->d_name, "TitleMeta.xbx") != 0 && std::strcmp(e->d_name, "TitleImage.xbx") != 0) {
+						gp.hasSaves = true;
+						break;
+					}
+				}
+				closedir(d);
+			}
+		}
+		return gp.hasSaves;
+	}
+
 	std::vector<int> gameActs() const
 	{
 		std::vector<int> a = { GA_PLAY };
 		if (gp.info.ok && ogbox::stateSlot(gp.info.key, ogbox::kQuitSlot).used) {
 			a.push_back(GA_FRESH);
 		}
-		if (gp.info.ok && !usedStateSlots(gp.info.key).empty()) {
-			a.push_back(GA_STATES);
-		}
 		if (gp.info.ok) {
+			a.push_back(GA_STATES);   // 0.0.6: Load State always (it says when there is none)
 			a.push_back(GA_SETTINGS);
 			a.push_back(GA_MODS);
 			a.push_back(GA_SAVES);
@@ -6699,7 +7027,7 @@ public:
 			gp.pill = std::min(n - 1, gp.pill + 1);
 		}
 		/* DOWN: the save states under the buttons, when there are */
-		if ((p & PAD_DOWN) && std::find(acts.begin(), acts.end(), static_cast<int>(GA_STATES)) != acts.end()) {
+		if ((p & PAD_DOWN) && gp.info.ok && !usedStateSlots(gp.info.key).empty()) {
 			gp.states = true;
 			gp.stateSel = 0;
 			return;
@@ -6720,6 +7048,10 @@ public:
 			startGame(gp.path, gp.info.key, 2);
 			break;
 		case GA_STATES:
+			if (usedStateSlots(gp.info.key).empty()) {
+				showToast("No save state for this game yet: the quick menu's Save State makes one");
+				break;
+			}
 			gp.states = true;
 			gp.stateSel = 0;
 			break;
@@ -6805,23 +7137,27 @@ public:
 				break;
 			case GA_FRESH: v.actions.push_back({ "From the start", "Start the game afresh; where you left off is kept", ui::Icon::Restart }); break;
 			case GA_STATES:
-				v.actions.push_back({ "Save states", std::to_string(slots.size()) + " saved: choose one to start from it", ui::Icon::Load });
+				v.actions.push_back({ "Load State", slots.empty() ? std::string("None saved yet")
+					: std::to_string(slots.size()) + " saved: choose one to start from it", ui::Icon::Load });
 				break;
 			case GA_SETTINGS:
-				v.actions.push_back({ "Settings", own ? std::to_string(own) + " of its own" : "As the app's", ui::Icon::Gear });
+				v.actions.push_back({ "Settings", own ? std::to_string(own) + " of its own" : "Default", ui::Icon::Gear });
 				break;
 			case GA_MODS:
-				v.actions.push_back({ "Mods", extras ? std::to_string(extras) + " mods, patches, cheats and trainers for it" +
+				v.actions.push_back({ "Game Patches", extras ? std::to_string(extras) + " patches, mods, cheats and trainers for it" +
 					(onCount ? ", " + std::to_string(onCount) + " on" : std::string()) : std::string("None known for it"), ui::Icon::Puzzle });
 				break;
-			case GA_SAVES: v.actions.push_back({ "Saves", "On the Xbox hard disk: copy, bring in, delete", ui::Icon::Save }); break;
+			case GA_SAVES:
+				/* 0.0.6: Import Saves while it has none on the Xbox hard disk */
+				v.actions.push_back({ gameHasSaves() ? "Saves" : "Import Saves", "", ui::Icon::Save });
+				break;
 			}
 		}
 		v.actionSel = gp.pill;
 		v.footer = gp.states ? std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Load" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Open" }, { "O", "Back" } };
 		if (!gp.states && !slots.empty()) {
-			v.footer.insert(v.footer.begin() + 2, { "D", "Save states" });
+			v.footer.insert(v.footer.begin() + 2, { "D", "Load State" });
 		}
 		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - gp.since) / 0.25));
 		ImDrawList *dl = beginUiScreen("##gamepage");
@@ -6871,10 +7207,22 @@ public:
 	{
 		if (!logoTried) {
 			logoTried = true;
-			if (!logoPixels.empty() && logoWidth && logoHeight) {
-				logoTex.fromBuffer(logoPixels.data(), static_cast<VkDeviceSize>(logoPixels.size()), VK_FORMAT_R8G8B8A8_UNORM,
+			/* 0.0.6: read again from its file: the boot screen's copy is let go once it is shown (the
+			 * menus that came after it had no logo) */
+			const std::string path = getAssetPath() + "ogbox-logo.png";
+			int w = 0, h = 0, n = 0;
+			stbi_uc *pixels = stbi_load(path.c_str(), &w, &h, &n, STBI_rgb_alpha);
+			if (pixels && w > 0 && h > 0) {
+				logoWidth = static_cast<uint32_t>(w);
+				logoHeight = static_cast<uint32_t>(h);
+				logoTex.fromBuffer(pixels, static_cast<VkDeviceSize>(size_t(w) * size_t(h) * 4), VK_FORMAT_R8G8B8A8_UNORM,
 					logoWidth, logoHeight, vulkanDevice, queue);
 				logoSet = ui.addTexture(logoTex.sampler, logoTex.view);
+			} else {
+				pshakux_log("ui: no logo for the menus (%s: %s)", path.c_str(), pixels ? "empty" : stbi_failure_reason());
+			}
+			if (pixels) {
+				stbi_image_free(pixels);
 			}
 		}
 		return logoSet ? reinterpret_cast<ImTextureID>(logoSet) : nullptr;

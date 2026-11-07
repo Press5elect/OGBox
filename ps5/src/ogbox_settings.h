@@ -29,6 +29,7 @@ const char *sectionHelp(Section s);
 struct Choice {
 	const char *value;
 	const char *label;
+	bool off{ false };   // 0.0.6: shown greyed out, not chosen (work in progress)
 };
 
 struct Option {
