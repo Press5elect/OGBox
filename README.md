@@ -105,7 +105,7 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   exact depth, and cropping the overscan.
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
   compiling shaders in the background, and building cached shaders at start.
-- **Audio:** the resampler. Sound is mixed the fast way, as xemu does by default.
+- **Audio:** the resampler (As the Xbox, Sinc or Linear). Sound is mixed the fast way, as xemu does by default.
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
   when such a patch is on), drive timing and the clock.
 - **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
@@ -214,7 +214,9 @@ The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_c
 
 - **hakuX** by rfandango and its contributors (GPL-3.0-or-later): the emulator. Its MCPX APU is
   xemu's (LGPL-2.1-or-later), with Hatari's DSP56300 emulation (GPL-2.0-or-later); its kernel
-  export table is nxdk's (CC0).
+  export table is nxdk's (CC0). The voice processor's measured behaviour is from raddad772's
+  tests on a retail console (xemu pull request #3105, LGPL-2.1-or-later), by way of
+  CallistoNTG's hakuX port.
 - **OGBox's logo** (the green X and the name) by Press5elect: `ps5/art/ogbox-logo.png`, the
   title's icon and launcher pictures (`ps5/tools/make-title-art.py`) and the start screen.
 - **Crux2** and **Kelvin** by Press5elect: the console platform code (the boot log, the crash
@@ -247,6 +249,15 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### Next
+
+Changed
+- Sound as the Xbox's sound chip makes it, from tests on a real console (xemu pull request #3105
+  by raddad772): its own 8-point resampling with pitch changes smoothed across each frame, the
+  volume curve, envelope and LFO timings, 3D sound's head filters and their fades, the effects'
+  filters, and the mix's rounding. Settings > Audio > Resampler: As the Xbox (the new default),
+  Sinc or Linear.
 
 ### 0.0.5
 

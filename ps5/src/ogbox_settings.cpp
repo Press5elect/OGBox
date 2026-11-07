@@ -126,9 +126,12 @@ std::vector<Option> makeOptions()
 		"as in xemu: some games' programs never finish a frame (surround sound especially), and a game that falls behind "
 		"or goes silent switches to Fast by itself (the boot log says so).",
 		{ { "fast", "Fast" }, { "full", "Full DSP (accurate, heavy)" } }, "fast", true });
+	/* the MCPX's own resampler (xemu PR #3105, measured on a console) is the default */
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
-		"How each voice is brought to the output rate. Sinc: clean highs. Linear: lighter, a little dull.",
-		{ { "sinc", "Sinc" }, { "linear", "Linear" } }, "sinc", true });
+		"How each voice is brought to the output rate. As the Xbox: the console's own 8-point interpolation, measured "
+		"on real hardware, pitch changes smoothed across each frame as it does. Sinc: cleaner highs than the Xbox had. "
+		"Linear: lighter, a little dull.",
+		{ { "mcpx", "As the Xbox" }, { "sinc", "Sinc" }, { "linear", "Linear" } }, "mcpx", true });
 	// ---- Console: the Xbox itself
 	o.push_back({ "language", Section::Console, "Language",
 		"Games show their text and speech in it where they have it; the others keep their own.",
@@ -652,8 +655,8 @@ std::vector<std::string> Settings::coreArgs() const
 	if (!std::getenv("NC_APU_DSP")) {
 		a.push_back("NC_APU_DSP=0");
 	}
-	if (value("audio_resampler") == "linear") {
-		a.push_back("NC_APU_RESAMPLER=linear");
+	if (value("audio_resampler") == "linear" || value("audio_resampler") == "sinc") {
+		a.push_back("NC_APU_RESAMPLER=" + value("audio_resampler"));   // (the core's own default: mcpx)
 	}
 	if (value("exact_depth") == "0") {   // 0.0.1
 		a.push_back("NC_HLE_EXACT_DEPTH=0");
