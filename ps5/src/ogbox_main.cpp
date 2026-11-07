@@ -128,6 +128,24 @@ extern "C" int pshakux_prop_set(const char *name, const char *value);
 namespace {
 
 constexpr const char *kBootFile = "/data/homebrew/PPSA99251/boot.txt";
+constexpr const char *kNoticeSeenFile = "/data/ogbox/notice-seen.txt";   // 0.0.6: the version whose notice was read
+
+/* The version whose start notice was read ("" none). */
+std::string noticeSeenFor()
+{
+	std::string v;
+	if (FILE *f = std::fopen(kNoticeSeenFile, "r")) {
+		char line[128] = "";
+		if (std::fgets(line, sizeof(line), f)) {
+			v = line;
+		}
+		std::fclose(f);
+	}
+	while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) {
+		v.pop_back();
+	}
+	return v;
+}
 constexpr const char *kDataRoot = "/data/ogbox";
 constexpr double kQuitHoldSeconds = 2.0;
 constexpr const char *kLibraryFile = "/data/ogbox/library.txt";
@@ -1795,7 +1813,9 @@ public:
 			}
 			/* 0.0.1: each start (not back from a game) first says what this build is: CROSS, then the
 			 * splash (or the first start's question) */
-			if (!boot.back) {
+			/* 0.0.6: only once a version (a fresh install, or after an update): the version it was read
+			 * for is kept in /data/ogbox/notice-seen.txt */
+			if (!boot.back && noticeSeenFor() != pshakux_build_label()) {
 				afterNotice = screen;
 				screen = Screen::Notice;
 				screenSince = now_seconds();
@@ -2794,6 +2814,10 @@ public:
 				screen = afterNotice;
 				screenSince = now_seconds();
 				pshakux_log("ogbox: the experimental build's notice read");
+				if (FILE *f = std::fopen(kNoticeSeenFile, "w")) {
+					std::fputs(pshakux_build_label(), f);
+					std::fclose(f);
+				}
 			}
 			return;
 		}
