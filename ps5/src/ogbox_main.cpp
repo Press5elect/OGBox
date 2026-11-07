@@ -3477,14 +3477,12 @@ public:
 	void drawNotice()
 	{
 		ui::NoticeView v;
-		v.kicker = "Experimental build";
-		v.title = "Expect crashes and freezes";
+		/* 0.0.6: Press5elect's words */
+		v.kicker = "Not so much of an experimental build";
+		v.title = "But it might still crash or show glitches in games";
 		v.subtitle = std::string("OGBox ") + pshakux_build_label() + " for PS5";
-		v.lead = "This is a highly experimental build of an original Xbox emulator.";
-		v.paragraphs = { "Many games don't start yet, and the ones that do can stop, slow down, or show missing graphics or sound "
-			"problems at any point. Save in game often, and keep a copy of anything you care about.",
-			"If something goes wrong, ogbox-boot.log in OGBox's title folder says what happened: please include it when you report "
-			"a problem." };
+		v.lead = "If anything goes wrong, please send me ogbox-boot.log from OGBox's title folder.";
+		v.paragraphs = { "Thanks, and enjoy!", "Press5elect" };
 		v.fine = "OGBox comes with no games, BIOS or keys. Use it only with backups of games you own.";
 		v.canContinue = now_seconds() - screenSince > 1.0;
 		bd.key = "notice";
