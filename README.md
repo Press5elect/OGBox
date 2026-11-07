@@ -293,6 +293,9 @@ Added
 
 Fixed
 - OGBox's logo is back at the top left of the menus (it was missing after the start screen).
+- A game that checks where its files are on the disc against its default.xbe no longer cripples
+  itself when a patch is on (the patched default.xbe reported a made-up position): TOCA Race
+  Driver 3 crashed after its menus with its widescreen patch.
 ### 0.0.5
 
 Added
