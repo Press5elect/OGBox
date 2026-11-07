@@ -5861,7 +5861,7 @@ public:
 		case SP_HDD: return "Xbox hard disk";
 		case SP_UPDATES: return "Updates";
 		case SP_ABOUT: return "About";
-		default: return "Use the app's";
+		default: return "Use Default";
 		}
 	}
 
@@ -6214,11 +6214,11 @@ public:
 			}
 			break;
 		case SP_GAME_RESET:
-			actionRow("reset", "Use the app's settings for everything", std::to_string(prefs.overrides()) + " of its own",
-				"Every setting of this game back to the app's.", [this]() {
+			actionRow("reset", "Set everything to Default", std::to_string(prefs.overrides()) + " of its own",
+				"Every setting of this game back to Default.", [this]() {
 					prefs.clearOverrides();
 					pshakux_log("settings: %s: every setting back to the app's", forGameKey.c_str());
-					showToast("This game follows the app's settings again");
+					showToast("This game uses the Default settings again");
 				}, rows, acts);
 			break;
 		default:
@@ -6364,8 +6364,8 @@ public:
 				acts[static_cast<size_t>(setRowSel)].square();
 			} else if (page == SP_PICTURE || page == SP_XBOX || page == SP_ADVANCED || page == SP_LIST || page == SP_INTERFACE ||
 				page == SP_NETWORK) {
-				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here go; it follows "
-					"the app's again." : "Every setting here back to how OGBox comes.", { "No", "Yes, reset them" }, [this, acts](int i) {
+				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here are removed, and it uses "
+					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, acts](int i) {
 						if (i == 1) {
 							for (const RowAct &a : acts) {
 								if (a.reset) {
@@ -6433,7 +6433,7 @@ public:
 			v.banner = "Experimental settings: they might crash the console.";
 			v.bannerWarn = true;
 		} else if (forGame && page != SP_GAME_RESET) {
-			v.banner = "Only this game's: a setting marked \"as the app's\" follows Settings; TRIANGLE puts one back.";
+			v.banner = "Only this game's: a setting marked \"Default\" follows Settings; TRIANGLE puts one back.";
 		}
 		std::vector<RowAct> acts;
 		settingsModel(page, v.rows, acts);
@@ -6462,7 +6462,7 @@ public:
 			v.footer = { { "UD", "Choose" } };
 			if (r && (r->kind == ui::SetRow::Kind::Choice || r->kind == ui::SetRow::Kind::Number || r->kind == ui::SetRow::Kind::Toggle)) {
 				v.footer.push_back({ "LR", "Change" });
-				v.footer.push_back({ "T", forGame ? "As the app's" : "Default" });
+				v.footer.push_back({ "T", "Default" });
 			} else if (r && r->kind == ui::SetRow::Kind::Text) {
 				v.footer.push_back({ "X", "Type" });
 				v.footer.push_back({ "T", "Clear" });
@@ -7141,7 +7141,7 @@ public:
 					: std::to_string(slots.size()) + " saved: choose one to start from it", ui::Icon::Load });
 				break;
 			case GA_SETTINGS:
-				v.actions.push_back({ "Settings", own ? std::to_string(own) + " of its own" : "As the app's", ui::Icon::Gear });
+				v.actions.push_back({ "Settings", own ? std::to_string(own) + " of its own" : "Default", ui::Icon::Gear });
 				break;
 			case GA_MODS:
 				v.actions.push_back({ "Game Patches", extras ? std::to_string(extras) + " patches, mods, cheats and trainers for it" +

@@ -172,7 +172,7 @@ void drawRow(ImDrawList *dl, const SetRow &r, ImVec2 p0, float w, float h, float
 	textFit(dl, F::Heading, nfs, ImVec2(nx, cy - measure(F::Heading, nfs, "Ag").y * 0.5f - (r.inherited ? px(9.0f) : 0.0f)),
 		p.text, r.name, nameW);
 	if (r.inherited) {
-		text(dl, F::Small, px(13.5f), ImVec2(nx, cy + px(6.0f)), p.textFaint, "as the app's");
+		text(dl, F::Small, px(13.5f), ImVec2(nx, cy + px(6.0f)), p.textFaint, "Default");
 	}
 	if (open > 0.01f && !r.desc.empty()) {
 		dl->PushClipRect(ImVec2(p0.x, p0.y + lineH - px(6.0f)), p1, true);
