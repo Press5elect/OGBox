@@ -286,6 +286,10 @@ Added
 - Settings > Interface > Quick menu button: L1+L2+R1+R2+OPTIONS, Touch pad held or L3+R3, which
   leave OPTIONS to be the Xbox's Start.
 - Settings > Updates > What's New?: this version's notes.
+- A game on a network share waits for the share when it doesn't answer at the start, the seconds
+  counted on the screen ("Waiting for the network share..."; CIRCLE goes back to the game list),
+  instead of failing. A share that stops answering during a game says so the same way, for as
+  long as the game waits for it.
 
 Fixed
 - OGBox's logo is back at the top left of the menus (it was missing after the start screen).

@@ -730,6 +730,13 @@ class VulkanExample : public VulkanExampleBase
 public:
 	BootConfig boot;
 	bool configured{ false };
+	/* 0.0.6: the disc image is on a share that didn't answer at the start: tried again each second
+	 * (on a thread of its own: a share that doesn't answer can take a while to say so) */
+	struct ShareWait {
+		bool active{ false };
+		double since{ 0.0 }, nextTry{ 0.0 };
+		std::shared_ptr<std::atomic<int>> result;   // 0 trying, 1 there, 2 not yet
+	} shareWait;
 	std::string problem;
 
 	// The picture: one sampled image, a staging buffer per frame in flight
@@ -1577,6 +1584,37 @@ public:
 		syncLog();
 	}
 
+	/* 0.0.6: the share's disc image looked for again, once a second; the game started when it answers */
+	void pollShareWait()
+	{
+		const double now = now_seconds();
+		if (shareWait.result && shareWait.result->load() == 1) {
+			shareWait.active = false;
+			shareWait.result.reset();
+			pshakux_log("ogbox: the share answered after %.1f s: starting the game", now - shareWait.since);
+			struct stat st;
+			if (ps5vfs_stat(boot.image.c_str(), &st) == 0) {
+				pshakux_log("ogbox: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
+			}
+			configureRun();
+			if (configured) {
+				pshakux_log("ogbox: starting the core");
+				pshx_core_start();
+			}
+			return;
+		}
+		if ((!shareWait.result || shareWait.result->load() == 2) && now >= shareWait.nextTry) {
+			shareWait.nextTry = now + 1.0;
+			auto result = std::make_shared<std::atomic<int>>(0);
+			shareWait.result = result;
+			const std::string image = boot.image;
+			std::thread([result, image]() {
+				struct stat st;
+				result->store(ps5vfs_stat(image.c_str(), &st) == 0 ? 1 : 2);
+			}).detach();
+		}
+	}
+
 	void relaunchToLibrary()
 	{
 		relaunchAsked = true;
@@ -1769,6 +1807,15 @@ public:
 			const bool virtualImage = ps5vfs_is_virtual(boot.image.c_str()) != 0;
 			if ((virtualImage ? ps5vfs_stat(boot.image.c_str(), &st) : stat(boot.image.c_str(), &st)) != 0) {
 				const int error = errno;
+				if (virtualImage) {
+					/* 0.0.6: a share that doesn't answer yet (the network still coming up, the server
+					 * waking): the game waits for it, the seconds on the screen, instead of failing */
+					pshakux_log("ogbox: the disc image %s isn't reachable yet (%s): waiting for the share", boot.image.c_str(),
+						std::strerror(error));
+					shareWait.active = true;
+					shareWait.since = now_seconds();
+					return;
+				}
 				pshakux_log("ogbox: the disc image %s cannot be opened: %s (%s)", boot.image.c_str(), std::strerror(error),
 					pshakux_sandbox_elevated() ? "out of the sandbox: the console's own paths are visible"
 						: "inside the sandbox: only part of /data is visible; the boot log's \"sandbox:\" lines say why");
@@ -1780,6 +1827,13 @@ public:
 			}
 			pshakux_log("ogbox: disc image %s, %lld bytes", boot.image.c_str(), static_cast<long long>(st.st_size));
 		}
+		configureRun();
+	}
+
+	/* The core's arguments for this run (the settings, the game's own, its trainer, boot.txt's), and the
+	 * core configured with them. 0.0.6: from the constructor, or once a share being waited for answers. */
+	void configureRun()
+	{
 		pshakux_log("ogbox: %s: disc %s, hard disk %s, %zu options", boot.source.c_str(), boot.image.c_str(),
 			boot.hdd.c_str(), boot.options.size());
 		std::vector<const char *> argv;
@@ -2601,6 +2655,13 @@ public:
 		 * menu and its screens have the controller, and the game gets none while it is open */
 		pad_player(0, &menuPad);
 		ui::setScrollInput(menuPad.right_y);
+		if (shareWait.active) {
+			if ((menuPad.pressed & PAD_CIRCLE) && !relaunchAsked) {
+				pshakux_log("ogbox: waiting for the share given up (CIRCLE)");
+				relaunchToLibrary();
+			}
+			return;
+		}
 		gameMenuControls();
 		const bool menu = qm.open || qm.sub != Quick::Sub::None;
 		const bool holdMode = prefs.global("quick_menu") == "options_hold";
@@ -3255,6 +3316,9 @@ public:
 			renderLibrary();
 			return;
 		}
+		if (shareWait.active) {
+			pollShareWait();
+		}
 		const int state = pshx_core_state();
 		if (state != lastState) {
 			lastState = state;
@@ -3559,6 +3623,34 @@ public:
 			v.ledAlpha = static_cast<float>(std::min(1.0, (ledUntil - now) / 0.5));
 			v.ledColour = r && g ? IM_COL32(255, 158, 26, 255) : r ? IM_COL32(255, 46, 31, 255) : g ? IM_COL32(77, 255, 64, 255) : 0;
 			v.ledText = ledText;
+		}
+		if (shareWait.active) {
+			/* 0.0.6: waiting for the share, the seconds counted */
+			v.showStatus = true;
+			v.statusTitle = "Waiting for the network share\xE2\x80\xA6 " + std::to_string(static_cast<int>(now - shareWait.since)) + " s";
+			v.statusLines.push_back({ "Disc", baseName(boot.image) });
+			v.statusLines.push_back({ "Share", parentOf(boot.image) });
+			v.note = "The game starts as soon as the share answers.";
+			v.waiting = true;
+			v.statusHints = { { "O", "Back to the game list" } };
+			ImDrawList *dl = beginUiScreen("##hud", Ground::None);
+			ui::drawHud(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
+			endUiScreen();
+			return;
+		}
+		/* 0.0.6: a read of the share that hasn't finished for 2 s (the share stopped answering): said,
+		 * with the seconds, until it answers (the game waits for it meanwhile) */
+		const double stalled = havePicture ? ps5vfs_stalled_seconds() : 0.0;
+		if (stalled >= 2.0 && problem.empty() && state == PSHX_CORE_RUNNING) {
+			v.showStatus = true;
+			v.statusTitle = "Waiting for the network share\xE2\x80\xA6 " + std::to_string(static_cast<int>(stalled)) + " s";
+			v.statusLines.push_back({ "Disc", baseName(boot.image) });
+			v.note = "The game goes on when the share answers.";
+			v.waiting = true;
+			ImDrawList *dl = beginUiScreen("##hud", Ground::None);
+			ui::drawHud(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
+			endUiScreen();
+			return;
 		}
 		const bool trouble = !problem.empty() || state == PSHX_CORE_FAILED || state == PSHX_CORE_STOPPED;
 		/* 0.0.2: no panel over a game's frozen last frame (its next XBE is starting), only trouble */

@@ -45,6 +45,32 @@ void (*s_log)(const char* line) = nullptr;
 std::atomic<uint64_t> s_bytes_read{0};
 std::atomic<uint64_t> s_backend_reads{0};
 
+/* OGBox 0.0.6: how long the reads under way have gone without one finishing (a share that stopped
+ * answering), for ps5vfs_stalled_seconds: the count of reads under way, and since when none finished. */
+static std::atomic<int> s_reads_under_way{0};
+static std::atomic<int64_t> s_read_progress_ms{0};
+
+static int64_t NowMs()
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+struct ReadUnderWay
+{
+  ReadUnderWay()
+  {
+    if (s_reads_under_way.fetch_add(1) == 0)
+      s_read_progress_ms.store(NowMs());
+  }
+  ~ReadUnderWay()
+  {
+    s_read_progress_ms.store(NowMs());
+    s_reads_under_way.fetch_sub(1);
+  }
+};
+
 struct MountPoint
 {
   std::string point; /* "/smb/nas": absolute, normalised, no trailing slash */
@@ -232,6 +258,7 @@ Block* GetBlock(VFile* file, int64_t offset)
   uint32_t have = 0;
   while (have < wanted)
   {
+    ReadUnderWay under_way;   // OGBox 0.0.6: a read that takes long is said on the screen
     const int64_t got = file->file->Read(victim->data.get() + have, wanted - have, block_offset + have);
     s_backend_reads.fetch_add(1, std::memory_order_relaxed);
     if (got < 0)
@@ -1469,6 +1496,13 @@ FILE* DiscStream(int fd)
       return s_disc_fp[i];
   return nullptr;
 }
+}
+
+extern "C" double ps5vfs_stalled_seconds(void)
+{
+  if (s_reads_under_way.load() <= 0)
+    return 0.0;
+  return static_cast<double>(NowMs() - s_read_progress_ms.load()) / 1000.0;
 }
 
 extern "C" int ps5vfs_disc_open(const char* path)
