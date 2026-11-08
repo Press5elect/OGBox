@@ -173,10 +173,10 @@ native core's work tree (oldest first; author: subject):
   3b19aef07f Claude: apu: full DSP runs the GP and the EP until they halt, as xemu does
   663a4ff00a Claude: apu: hakuX-lr's frame limit back
   838ebe1857 Claude: apu: Fast by default, as xemu
-  8074e5bef8 Claude: apu: the MCPX voice processor as measured on a retail console (xemu PR #3105 by
+  4be639e7c8 Claude: apu: the MCPX voice processor as measured on a retail console (xemu PR #3105 by
              raddad772, LGPL-2.1-or-later, by way of CallistoNTG's hakuX port): HRIR taps, HRTF
              ramps, ear routes, filters, the 8-point Lagrange resampler, envelopes, LFOs, mix rounding
-  3ec54ec2c7 Claude: io: an overlay file (a patched XBE, a mod's file) shows the disc file's start sector in its
+  ba59feaf5f Claude: io: an overlay file (a patched XBE, a mod's file) shows the disc file's start sector in its
              control block (TOCA Race Driver 3's archive check against default.xbe)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
