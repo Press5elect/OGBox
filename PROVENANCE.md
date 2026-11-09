@@ -20,7 +20,32 @@ The following components contain OGBox's own PS5 implementation work, written by
 - **Graphics and texture tracking**: the presenter and its shaders (`ps5/src/ogbox_main.cpp`,
   `shaders/glsl/ogbox/`), and the texture and surface tracking of the HLE GPU in the patch.
 
+- **Frame generation in the presenter** (0.0.7): its integration and pacing on OGBox's presenter
+  (`ps5/src/ogbox_framegen.cpp`, `ogbox_framegen.h`, the frame ring and the picture's hand-over in
+  `ogbox_main.cpp`), and its host test (`ps5/tests/framegen-ogbox/`). The methods themselves are
+  Crux2's (also by Press5elect) and third parties' (below).
+- **Display modes** (0.0.7): the 120 Hz and variable refresh requests (`ps5/src/ogbox_display.cpp`).
+- **Settings in a running game and the quick menu** (0.0.7): live settings, Apply Changes Now
+  (a state saved and the game restarted from it), the quick menu's chosen entries and order, and
+  settings written as the menus close (`ps5/src/ogbox_main.cpp`, `ps5/src/ogbox_settings.cpp`).
+- **The boot log kept in memory** (0.0.7): written only when something goes wrong
+  (`ps5/src/platform/ps5_bootlog.cpp`, on Crux2's and Kelvin's platform code).
+- **The start screen** (0.0.7): the logo's fade and light sweep (`shaders/glsl/ogbox/logo.frag`).
+- **Game mods** (`ps5/mods/`): byte patches found by reading each game's own executable, with how
+  each was found written in its `mod.txt` (frame rate and picture mods for title IDs `54540082` and
+  `545400A4`, among others).
+
 Each file names its authors in its header. OGBox's own files carry "OGBox by Press5elect".
+
+## What is not OGBox's own
+
+OGBox also carries other people's work, under their licences, credited in `NOTICE`,
+`ps5/notices/components.json` and the title folder's `licenses/`. Among it: hakuX (its authors),
+xemu's MCPX work (pull request #3105 by raddad772), Crux2's platform code and frame generation
+(Press5elect, under Crux2's own attribution term), MihawkGen (Mihawk, GPL-3.0-or-later), the AMD
+FidelityFX SDK and FSR 1 (AMD, MIT), NVIDIA Image Scaling (NVIDIA, MIT), SMAA (its authors, MIT),
+and the PS5 Vulkan Template, PS5_Vulkan and PS5_Mesa foundation (Mihawk). This file claims none of
+it.
 
 ## What this file is, and what binds
 
