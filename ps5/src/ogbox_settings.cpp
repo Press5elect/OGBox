@@ -447,6 +447,7 @@ std::string gameSettingsPath(const std::string &key)
 
 void Settings::load(const std::string &key)
 {
+	flush();   // 0.0.7: what was changed, kept before reading again
 	gameKey = key;
 	readFile(kSettingsFile, globalValues);
 	gameValues.clear();
@@ -497,7 +498,7 @@ void Settings::setGlobal(const std::string &key, const std::string &v)
 	} else {
 		globalValues[key] = v;
 	}
-	saveGlobal();
+	dirtyGlobal = true;
 	pshakux_log("settings: %s = %s", key.c_str(), v.c_str());
 }
 
@@ -512,14 +513,26 @@ void Settings::setOverride(const std::string &key, const std::string &v)
 	} else {
 		gameValues[key] = v;
 	}
-	saveGame();
+	dirtyGame = true;
 	pshakux_log("settings: %s: %s = %s", gameKey.c_str(), key.c_str(), v.empty() ? "(the app's)" : v.c_str());
 }
 
 void Settings::clearOverrides()
 {
 	gameValues.clear();
-	saveGame();
+	dirtyGame = true;
+}
+
+void Settings::flush()
+{
+	if (dirtyGlobal) {
+		saveGlobal();
+		dirtyGlobal = false;
+	}
+	if (dirtyGame) {
+		saveGame();
+		dirtyGame = false;
+	}
 }
 
 void Settings::saveGlobal() const

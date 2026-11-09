@@ -1476,6 +1476,7 @@ public:
 			openPopup("Close OGBox?", "Are you sure?", { "No", "Yes, close it" }, [this](int i) {
 				if (i == 1) {
 					pshakux_log("library: Quit OGBox (CIRCLE, confirmed)");
+					prefs.flush();   // 0.0.7: settings not yet written
 					quit = true;
 				}
 			});
@@ -1514,6 +1515,7 @@ public:
 		}
 		case LibraryEntry::Quit:
 			pshakux_log("library: Quit OGBox");
+			prefs.flush();   // 0.0.7: settings not yet written
 			quit = true;
 			break;
 		case LibraryEntry::Settings:
@@ -1618,6 +1620,7 @@ public:
 	 * console most times (0.1.24, Burnout 3: the log stopped before the exit's own lines). */
 	void quiesceForExit()
 	{
+		prefs.flush();   // 0.0.7: settings changed and not yet written
 		syncLog();
 		pshx_core_quiesce();
 		syncLog();
@@ -1665,6 +1668,7 @@ public:
 		quiesceForExit();
 		const int r = pshakux_relaunch(args);
 		pshakux_log("ogbox: the relaunch was refused (%#x): quitting", static_cast<unsigned>(r));
+		prefs.flush();   // 0.0.7: settings not yet written
 		quit = true;
 	}
 
@@ -4396,6 +4400,7 @@ public:
 		const ogbox::Option *o = ogbox::option("quick_layout");
 		if (o) {
 			prefs.setGlobal("quick_layout", s == kQuickDefault ? std::string() : s);
+			prefs.flush();
 		}
 		qm.edit = false;
 		qm.sel = 0;
@@ -4525,6 +4530,7 @@ public:
 		}
 		qm.open = false;
 		qm.sub = Quick::Sub::None;
+		prefs.flush();   // 0.0.7: the quick menu's setting rows, written as it closes
 		pshx_core_pause(false);
 		pshakux_log("quick menu: closed (the game goes on)");
 	}
@@ -6827,6 +6833,7 @@ public:
 			prefs.load(runKey);
 			return;
 		}
+		prefs.flush();   // 0.0.7: written as the settings close
 		screen = Screen::Library;
 		screenSince = now_seconds();
 		reopenGamePage();

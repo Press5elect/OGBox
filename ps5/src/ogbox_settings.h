@@ -68,6 +68,9 @@ public:
 	/* "" back to the app's */
 	void setOverride(const std::string &key, const std::string &v);
 	void clearOverrides();
+	/* 0.0.7: the changes into the files: set, set for a game and clear only change memory (no writing to the
+	 * drive at each step); the menus call this as they close, and load() does it first */
+	void flush();
 	int overrides() const { return static_cast<int>(gameValues.size()); }
 
 	/* The label of a value ("4:3", "On", "2x"). */
@@ -81,6 +84,7 @@ public:
 private:
 	std::string gameKey;
 	std::map<std::string, std::string> globalValues, gameValues;
+	bool dirtyGlobal{ false }, dirtyGame{ false };
 	void saveGlobal() const;
 	void saveGame() const;
 };
