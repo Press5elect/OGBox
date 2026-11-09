@@ -2588,7 +2588,16 @@ public:
 		}
 		/* the own method and optical flow search on a reduced picture (only the last pass is full size); the
 		 * neural network and the blend work at full size */
-		const uint64_t most = (fgWanted == ogbox::FgMethod::Own || fgWanted == ogbox::FgMethod::Flow) ? 12000000ull : 4200000ull;
+		auto mostFor = [](ogbox::FgMethod m) {
+			return (m == ogbox::FgMethod::Own || m == ogbox::FgMethod::Flow) ? 12000000ull : 4200000ull;
+		};
+		if ((fgWanted == ogbox::FgMethod::Neural || fgWanted == ogbox::FgMethod::Blend) && uint64_t(w) * h > mostFor(fgWanted) &&
+			uint64_t(w) * h <= mostFor(ogbox::FgMethod::Own)) {
+			pshakux_log("framegen: frames of %ux%u are too large for MihawkGen (the most is 4.2 million pixels): Crux2's own "
+				"method makes them instead", w, h);
+			fgWanted = ogbox::FgMethod::Own;
+		}
+		const uint64_t most = mostFor(fgWanted);
 		if (uint64_t(w) * h > most) {
 			pshakux_log("framegen: frames of %ux%u are too large for this method (the most is %.1f million pixels): off", w, h,
 				static_cast<double>(most) / 1e6);
@@ -2611,6 +2620,20 @@ public:
 		fgPacer.Reset();
 		fgMade = false;
 		return true;
+	}
+
+	/* 0.0.7: the quick menu changes the method or the quality of a running game's frame generation at once */
+	void refreshFrameGen(const std::string &key)
+	{
+		if (key != "framegen" && key != "framegen_quality") {
+			return;
+		}
+		fgWanted = ogbox::fgMethodFromSetting(prefs.value("framegen"));
+		fgQuality = static_cast<uint32_t>(std::max(0, std::min(2, prefs.number("framegen_quality"))));
+		fgFailed = false;
+		fgMade = false;
+		frameGen.destroy();
+		pshakux_log("framegen: %s", fgWanted == ogbox::FgMethod::Off ? "off" : "changed in the quick menu");
 	}
 
 	/* 0.0.7: what this refresh shows: the pacer counts the game's pictures per refresh (a game at 30 fps on
@@ -5963,7 +5986,7 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "aniso", "sharpen", "dither", "crop_overscan", "show_fps" } } };
+			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "framegen", "aniso", "sharpen", "dither", "crop_overscan", "show_fps" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
@@ -6038,9 +6061,11 @@ public:
 			if (o.section == ogbox::Section::Controller) {
 				loadPadMap();
 			}
+			refreshFrameGen(key);
 			return;
 		}
 		prefs.setGlobal(key, next);
+		refreshFrameGen(key);
 		if (key == "rain") {
 			rainOn = next == "1";
 		} else if (key == "theme") {
