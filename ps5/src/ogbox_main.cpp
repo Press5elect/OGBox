@@ -796,6 +796,10 @@ public:
 	bool fgPush{ false };        // ... and this frame's staging buffer is copied into the ring
 	bool fgShow{ false };        // the picture is replaced by the ring's (generated, or the newest)
 	bool fgMade{ false };        // the picture now is a generated one
+	uint64_t fgShownCount{ 0 }, fgMadeCount{ 0 };   // pictures put on the screen / of them made, since the start
+	uint64_t fgShownMark{ 0 }, fgShownMark2{ 0 }, fgMadeMark{ 0 }, fgPicMark{ 0 };
+	double fgLogAt{ 0.0 }, fgRateAt{ 0.0 };
+	float fgShownFps{ 0.0f };    // the pictures a second the screen was given (0: frame generation is not running)
 	float fgTime{ 1.0f };
 	bool pictureChanged{ false };   // upload or fgShow: the picture has new content this frame
 	// OGBox 0.1.6: until the game's first frame the screen shows OGBox's logo (assets/ogbox-logo.png,
@@ -2656,6 +2660,30 @@ public:
 			fgTime = made ? t : 1.0f;
 		}
 		fgMade = made;
+		if (fgShow) {
+			fgShownCount++;
+			fgMadeCount += made ? 1 : 0;
+		}
+		/* each half second: the rate shown; each 10 s: a line in the boot log */
+		const double now = now_seconds();
+		if (fgRateAt == 0.0) {
+			fgRateAt = fgLogAt = now;
+		} else if (now - fgRateAt >= 0.5) {
+			fgShownFps = static_cast<float>(static_cast<double>(fgShownCount - fgShownMark) / (now - fgRateAt));
+			fgShownMark = fgShownCount;
+			fgRateAt = now;
+		}
+		if (now - fgLogAt >= 10.0) {
+			pshakux_log("framegen: in %.0f s the screen was given %llu pictures, %llu of them made; the game gave %llu "
+				"(the pacer takes each to stay %u refreshes)", now - fgLogAt,
+				static_cast<unsigned long long>(fgShownCount - fgShownMark2),
+				static_cast<unsigned long long>(fgMadeCount - fgMadeMark),
+				static_cast<unsigned long long>(picturesTaken - fgPicMark), fgPacer.period);
+			fgShownMark2 = fgShownCount;
+			fgMadeMark = fgMadeCount;
+			fgPicMark = picturesTaken;
+			fgLogAt = now;
+		}
 	}
 
 	/* The shape the frame is shown at: its own, 16:9 for a 4:3-sized frame of a console set to
@@ -3754,6 +3782,7 @@ public:
 			v.fpsCorner = 1;   // (the status panel's corner)
 		}
 		v.fps = fps;
+		v.shownFps = frameGen.ready() && fgShownFps > 0.5f ? fgShownFps : 0.0f;
 		if (now <= ledUntil) {
 			const int phase = static_cast<int>(now * 4.0) & 3;
 			const bool g = (ledSeq >> phase) & 1, r = (ledSeq >> (4 + phase)) & 1;

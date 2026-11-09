@@ -479,6 +479,7 @@ struct HudView {
 	bool showFps{ false };
 	int fpsCorner{ 1 };           // 0.0.6: 0 top left, 1 top right, 2 bottom left, 3 bottom right
 	float fps{ 0.0f };
+	float shownFps{ 0.0f };       // 0.0.7: with frame generation, the pictures a second the screen is given
 	bool showLed{ false };
 	float ledAlpha{ 1.0f };
 	ImU32 ledColour{ 0 };         // 0: off

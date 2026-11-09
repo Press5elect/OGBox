@@ -220,7 +220,11 @@ void drawHud(ImDrawList *dl, ImVec2 S, const HudView &v)
 	if (v.showFps) {
 		const std::string n = std::to_string(static_cast<int>(std::lround(v.fps)));
 		char ms[32];
-		std::snprintf(ms, sizeof(ms), "FPS  %.1f ms", v.fps > 0.5f ? 1000.0f / v.fps : 0.0f);
+		if (v.shownFps > 0.5f) {
+			std::snprintf(ms, sizeof(ms), "FPS  >  %d with frame generation", static_cast<int>(std::lround(v.shownFps)));
+		} else {
+			std::snprintf(ms, sizeof(ms), "FPS  %.1f ms", v.fps > 0.5f ? 1000.0f / v.fps : 0.0f);
+		}
 		const float nfs = px(30.0f), sfs = px(15.0f);
 		const float nw = measure(F::Title, nfs, n.c_str()).x, sw = measure(F::Small, sfs, ms).x;
 		const float w = px(20.0f) + nw + px(12.0f) + sw + px(20.0f), h = px(52.0f);
