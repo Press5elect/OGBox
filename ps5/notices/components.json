@@ -715,6 +715,76 @@
    "texts": {
     "MPL-2.0.txt": "/usr/share/common-licenses/MPL-2.0"
    }
+  },
+  {
+   "id": "crux2-framegen",
+   "name": "Crux2's frame generation: its own motion search (shaders/glsl/ogbox/framegen.glsl, ogbox_framegen.cpp's passes), the optical flow composite and compute passes (ps5/src/framegen/ps5_compute_fx.*, third_party/fidelityfx/crux2), and the pacer (ps5_framegen_pacer.h)",
+   "licence": "GPL-3.0-or-later, with Crux2's attribution term (GPL-3.0 section 7(b): keep \"Crux2 by Press5elect\"; NOTICE.txt)",
+   "copyright": "Copyright (C) 2026 Press5elect (Crux2 by Press5elect, OGBox by Press5elect)",
+   "modifications": "OGBox 0.0.7: the own method's passes run on OGBox's presenter (dynamic rendering) instead of PCSX2's utility pipelines",
+   "texts": {
+    "GPL-3.0.txt": "ps5/licenses/GPL-3.0.txt"
+   },
+   "artifacts": [
+    "eboot.bin",
+    "shaders/"
+   ],
+   "source": {
+    "url": "https://github.com/Press5elect/Crux2",
+    "revision": "main"
+   }
+  },
+  {
+   "id": "amd-fidelityfx-sdk",
+   "name": "AMD FidelityFX SDK 2.3.0 (FSR 3 optical flow, SPD and frame interpolation shader headers, third_party/fidelityfx/gpu) and SDK 1.1.4 (GLSL core header and callbacks)",
+   "licence": "MIT",
+   "copyright": "Copyright (c) Advanced Micro Devices, Inc. All rights reserved.",
+   "modifications": "none to the files under third_party/fidelityfx/gpu; compiled to SPIR-V into ps5_compute_fx_spirv.inc",
+   "texts": {
+    "FidelityFX-SDK-LICENSE.txt": "ps5/licenses/FidelityFX-SDK-LICENSE.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK",
+    "revision": "v2.3.0 (60f4ea81909200d8542eca14dccb2628b763a9a3); v1.1.4 (c6efa6bf7f2027b3ec94f28578bb5965eabb9e55)"
+   }
+  },
+  {
+   "id": "nvidia-image-scaling",
+   "name": "NVIDIA Image Scaling v1.0.3 (third_party/nis), built into Crux2's compute passes (not used by OGBox's presenter)",
+   "licence": "MIT",
+   "copyright": "Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
+   "modifications": "none",
+   "texts": {
+    "NVIDIA-NIS-LICENSE.txt": "ps5/licenses/NVIDIA-NIS-LICENSE.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/NVIDIAGameWorks/NVIDIAImageScaling",
+    "revision": "v1.0.3"
+   }
+  },
+  {
+   "id": "mihawkgen",
+   "name": "MihawkGen (PS5_FrameGen): the frame generator and its trained network (third_party/mihawkgen, ps5/src/framegen/ps5_mihawkgen_model.cpp)",
+   "licence": "GPL-3.0-or-later",
+   "copyright": "Copyright (C) 2026 Mihawk",
+   "modifications": "none to the files as vendored (third_party/mihawkgen/SOURCE.txt)",
+   "texts": {
+    "MihawkGen-LICENSE.md": "ps5/licenses/MihawkGen-LICENSE.md",
+    "GPL-3.0.txt": "ps5/licenses/GPL-3.0.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/mihawk-99/PS5_MihawkGen",
+    "revision": "c57232a9f16bcb6df5fe07c9bb631518f2b1cc0e"
+   }
   }
  ]
 }

@@ -111,6 +111,8 @@
 #include "core/ogbox_patches.h"
 #include "core/ogbox_trainers.h"
 #include "ogbox_settings.h"
+#include "ogbox_framegen.h"
+#include "framegen/ps5_framegen_pacer.h"
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
@@ -783,6 +785,19 @@ public:
 	uint64_t frameSeen{ 0 };
 	bool upload{ false };       // this frame copies a new picture in
 	bool havePicture{ false };  // a picture has been shown: it stays until a newer one
+	// OGBox 0.0.7: frame generation (ogbox_framegen.h): the game's frames go into its ring, and the
+	// picture is the newest of them or one made between the last two, as the pacer says
+	ogbox::FrameGen frameGen;
+	ogbox::FgMethod fgWanted{ ogbox::FgMethod::Off };
+	uint32_t fgQuality{ 1 };
+	PS5FrameGen::Pacer fgPacer;
+	bool fgFailed{ false };      // it could not be made (or failed): the frames go straight to the picture
+	bool fgFresh{ false };       // a new game frame was taken this refresh
+	bool fgPush{ false };        // ... and this frame's staging buffer is copied into the ring
+	bool fgShow{ false };        // the picture is replaced by the ring's (generated, or the newest)
+	bool fgMade{ false };        // the picture now is a generated one
+	float fgTime{ 1.0f };
+	bool pictureChanged{ false };   // upload or fgShow: the picture has new content this frame
 	// OGBox 0.1.6: until the game's first frame the screen shows OGBox's logo (assets/ogbox-logo.png,
 	// ps5/art/ogbox-logo.png as it is), letterboxed on black at its own shape.
 	std::vector<uint8_t> logoPixels;
@@ -1885,6 +1900,8 @@ public:
 		ssaaOn = prefs.value("fxaa") == "ssaa";
 		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
 		sharpOn = prefs.value("upscale") == "sharp";
+		fgWanted = ogbox::fgMethodFromSetting(prefs.value("framegen"));
+		fgQuality = static_cast<uint32_t>(std::max(0, std::min(2, prefs.number("framegen_quality"))));
 		showFps = prefs.value("show_fps") != "0";
 		fpsCorner = prefs.value("show_fps");
 		loadPadMap();
@@ -1963,6 +1980,7 @@ public:
 		}
 		checkInstanceTable("quit");
 		vkDeviceWaitIdle(device);
+		frameGen.destroy();
 		destroyPicture();
 		for (auto &s : staging) {
 			destroyStaging(s);
@@ -2428,7 +2446,7 @@ public:
 	void recordSmaa(VkCommandBuffer cmd)
 	{
 		ensureSmaa();
-		if (smaaValid && !upload) {
+		if (smaaValid && !pictureChanged) {
 			return;
 		}
 		smaaPass(cmd, smaaEdges, smaaEdge, smaaEdgeSet);
@@ -2521,6 +2539,7 @@ public:
 	void fetchPicture()
 	{
 		upload = false;
+		fgFresh = fgPush = fgShow = false;
 		if (fetchLogo()) {
 			upload = true;
 			return;
@@ -2539,7 +2558,9 @@ public:
 			return;
 		}
 		ensurePicture(fw, fh);
-		upload = true;
+		fgFresh = true;
+		fgPush = frameGenFor(fw, fh);
+		upload = !fgPush;
 		havePicture = true;
 		pictureBuffer = static_cast<int>(currentBuffer);   // 0.1.53: a save state's picture comes from it
 		showingLogo = false;
@@ -2549,6 +2570,65 @@ public:
 				static_cast<unsigned long long>(framesDrawn));
 			checkInstanceTable("the first frame (the HLE GPU's instance made)");
 		}
+	}
+
+	/* 0.0.7: frame generation for frames of w x h: made (again) when the size or the method asks; false
+	 * when it is off or cannot be, and the frames then go straight to the picture. */
+	bool frameGenFor(uint32_t w, uint32_t h)
+	{
+		if (fgWanted == ogbox::FgMethod::Off || fgFailed) {
+			return false;
+		}
+		if (frameGen.ready() && frameGen.width() == w && frameGen.height() == h) {
+			return true;
+		}
+		if (frameGen.width() && !frameGen.ready()) {
+			fgFailed = true;   // it failed while running (frameGen said why)
+			return false;
+		}
+		if (uint64_t(w) * h > 4200000ull) {
+			pshakux_log("framegen: frames of %ux%u are too large for it (the most is 4.2 million pixels): off", w, h);
+			fgFailed = true;
+			return false;
+		}
+		ogbox::FrameGen::Init in;
+		in.physical = vulkanDevice->physicalDevice;
+		in.device = device;
+		in.cache = pipelineCache;
+		in.linear = sampler;
+		in.shaderDir = getShadersPath();
+		in.slots = static_cast<uint32_t>(drawCmdBuffers.size());
+		in.quality = fgQuality;
+		if (!frameGen.create(in, fgWanted, w, h)) {
+			pshakux_log("framegen: could not be made (%s): off", frameGen.error().c_str());
+			fgFailed = true;
+			return false;
+		}
+		fgPacer.Reset();
+		fgMade = false;
+		return true;
+	}
+
+	/* 0.0.7: what this refresh shows: the pacer counts the game's pictures per refresh (a game at 30 fps on
+	 * a 60 Hz screen: a new one every second refresh); when one arrives the picture between it and the one
+	 * before is shown, the refresh after it the new one itself (Crux2's ps5_framegen_pacer.h). */
+	void frameGenPlan()
+	{
+		fgShow = false;
+		if (library || !frameGen.ready() || !havePicture || showingLogo || !frameGen.width()) {
+			return;
+		}
+		fgPacer.Vsync(fgFresh);
+		float t = 1.0f;
+		if (fgPacer.Makes(1)) {
+			t = fgPacer.Time(0, 1);
+		}
+		const bool made = t < 1.0f && frameGen.havePair();
+		if (fgFresh || made || fgMade) {
+			fgShow = true;
+			fgTime = made ? t : 1.0f;
+		}
+		fgMade = made;
 	}
 
 	/* The shape the frame is shown at: its own, 16:9 for a 4:3-sized frame of a console set to
@@ -2581,6 +2661,14 @@ public:
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 		VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuffer, &cmdBufInfo));
 		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		pictureChanged = upload || fgShow;
+		if (fgPush) {
+			frameGen.push(cmdBuffer, staging[currentBuffer].buffer);
+		}
+		if (fgShow) {
+			frameGen.show(cmdBuffer, currentBuffer, fgTime, picture.image, picture.layout);
+			picture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		}
 		if (upload) {
 			vks::tools::insertImageMemoryBarrier(cmdBuffer, picture.image,
 				picture.layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -3358,6 +3446,7 @@ public:
 		VulkanExampleBase::prepareFrame();
 		pshx_core_display_vsync();    // 0.0.4: the display let the loop go (FIFO: once a refresh)
 		fetchPicture();
+		frameGenPlan();
 		probeStall(state);
 		if (shotWanted && upload && havePicture) {
 			shotWanted = false;

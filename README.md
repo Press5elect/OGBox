@@ -242,6 +242,9 @@ The source history of OGBox's own PS5 work, and the attribution it requires, are
   and the high-base link.
 - **PS5 Vulkan Template, PS5_Vulkan, PS5_Mesa and the payload SDK fork** by Mihawk: the
   foundation, RADV on the console and the platform layer.
+- **Crux2's frame generation** (Press5elect; GPL-3.0-or-later), with **AMD FidelityFX** (FSR 3 optical
+  flow; MIT), **MihawkGen** (Mihawk; GPL-3.0-or-later) and NVIDIA Image Scaling (MIT, carried in the
+  compute passes but not used by OGBox): Settings > Frame generation.
 - **hakuX-lr** (PortareOS and its contributors; GPL-3.0-or-later): graphics, audio, disc and kernel
   improvements taken into the core.
 - **libchdr** (Romain Tisserand; BSD-3-Clause), with the LZMA SDK, zstd and dr_flac: CHD images.
@@ -267,6 +270,19 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### Next release (in the repository, not released yet)
+
+Added
+- Settings > Picture and sound > Frame generation: makes extra frames between the game's own, so
+  that a game at 30 fps looks like 60 (and, at 120 Hz, a game at 60 like 120). Off by default. It
+  adds about one refresh of delay. Four methods, all from Crux2: Crux2's own motion search,
+  AMD FidelityFX FSR 3 optical flow, MihawkGen's neural network (by Mihawk) and its Blend. Nothing is
+  made for a game that already draws a frame every refresh. Best at 1x or 2x internal resolution.
+  Tested here on a software Vulkan driver only; how fast each runs on the console is not measured yet.
+- Settings > Picture and sound > Display refresh rate (60 Hz, or 120 Hz for a TV that takes it) and
+  Variable refresh rate (at 120 Hz). They take effect at the next start of OGBox; the boot log's
+  `display:` lines say what was asked. The game itself keeps its speed at 120 Hz.
 
 ### 0.0.6
 

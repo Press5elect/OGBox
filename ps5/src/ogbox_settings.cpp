@@ -57,6 +57,26 @@ std::vector<Option> makeOptions()
 		{ { "bilinear", "Bilinear" }, { "sharp", "Bilinear (Sharp)" }, { "fsr", "FSR1" } }, "bilinear", true });
 	/* 0.0.1: the depth vertex programs store, exactly their screen-space z (hakuX-native's
 	 * shader/ff.h HLE_ZEXACT_IN_GLSL); off: the GPU's own, with its early depth test */
+	/* 0.0.7: the display's mode, asked of the driver at the title's start (Crux2's switches) */
+	o.push_back({ "output_refresh", Section::Graphics, "Display refresh rate",
+		"60 Hz: the default. 120 Hz: the console's display is put into its 119.88 Hz mode; each frame of a 60 fps game is "
+		"shown twice, the game itself keeps its speed. Needs a TV that accepts 120 Hz. Takes effect at the next start of OGBox.",
+		{ { "60", "60 Hz" }, { "120", "120 Hz" } }, "60", false });
+	o.push_back({ "vrr", Section::Graphics, "Variable refresh rate (VRR)",
+		"At 120 Hz only: lets the TV follow the frames the console sends. Needs a TV with VRR. Takes effect at the next "
+		"start of OGBox.", kOnOff, "0", false });
+	/* 0.0.7: frame generation (Crux2's three methods): a picture made between two of the game's, shown on the
+	 * refresh a new one arrives; a game that draws 30 a second looks like 60 */
+	o.push_back({ "framegen", Section::Graphics, "Frame generation",
+		"Makes extra frames between the game's own, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
+		"Adds about one refresh of delay. Crux2's own: the lightest. FSR 3 optical flow: AMD's motion finder. MihawkGen: "
+		"a small neural network, the heaviest; its Blend is a plain mix of the two frames. Best at 1x or 2x internal "
+		"resolution. Nothing is made for a game that already draws a frame every refresh.",
+		{ { "off", "Off" }, { "own", "Crux2 (own motion search)" }, { "flow", "FSR 3 optical flow" },
+			{ "neural", "MihawkGen (neural network)" }, { "blend", "MihawkGen (blend)" } }, "off", true });
+	o.push_back({ "framegen_quality", Section::Graphics, "Optical flow quality",
+		"For FSR 3 optical flow: the picture the motion is found on (at most 540, 720 or 1080 lines).",
+		{ { "0", "Performance" }, { "1", "Balanced" }, { "2", "Best" } }, "1", true });
 	o.push_back({ "exact_depth", Section::Graphics, "Exact depth",
 		"Helps games that struggle with flickering textures.", kOnOff, "1", true });
 	/* 0.0.3: dithering into 16-bit targets (hakuX's vk/draw.c NC_HLE_DITHER); 0.0.6: with Force 32-bit
