@@ -212,6 +212,11 @@ The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_c
 
 ## Credits
 
+The source history of OGBox's own PS5 work, and the attribution it requires, are in
+[`PROVENANCE.md`](PROVENANCE.md). The legal terms are in [`NOTICE`](NOTICE).
+
+
+
 - **hakuX** by rfandango and its contributors (GPL-3.0-or-later): the emulator. Its MCPX APU is
   xemu's (LGPL-2.1-or-later), with Hatari's DSP56300 emulation (GPL-2.0-or-later); its kernel
   export table is nxdk's (CC0). The voice processor's measured behaviour is from raddad772's
