@@ -260,11 +260,19 @@ std::vector<Option> makeOptions()
 		Option qm{ "quick_menu", Section::Interface, "Quick menu button",
 			"The button that opens the quick menu in a game. OPTIONS: the Xbox's Start and Back are the touch pad's right "
 			"and left halves. OPTIONS held: a short press is Start, held half a second it opens the menu. With a "
-			"combination, OPTIONS is the Xbox's Start and the touch pad its Back (Settings > Controller can change both).",
+			"combination, OPTIONS is the Xbox's Start and the touch pad its Back (Settings > Controller can change both). "
+			"TRIANGLE in the quick menu chooses what it shows and in what order.",
 			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" }, { "combo", "L1+L2+R1+R2+OPTIONS" },
 				{ "touch_hold", "Touch pad held" }, { "l3r3", "L3+R3" } }, "options", false };
 		qm.now = true;
 		o.push_back(qm);
+		/* 0.0.7: what the quick menu shows, in its order (TRIANGLE in the menu edits it): "resume", "save",
+		 * "load", "settings", "mods", "drawlog", "restart", "quit" and "opt:<setting>", by commas; "": the default */
+		Option layout{ "quick_layout", Section::Interface, "Quick menu layout",
+			"What the quick menu shows and in what order. Press TRIANGLE in the quick menu to change it.", {}, "", false };
+		layout.text = true;
+		layout.now = true;
+		o.push_back(layout);
 	}
 	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
 	{

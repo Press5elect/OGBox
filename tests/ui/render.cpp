@@ -464,21 +464,34 @@ int main(int argc, char **argv)
 	{
 		using R = ui::ListRow;
 		R r;
-		r.key = "resume"; r.title = "Resume"; r.icon = ui::Icon::Play; qv.rows.push_back(r);
+		r.key = "apply"; r.title = "Apply Changes Now"; r.right = "restarts the game here"; r.icon = ui::Icon::Restart; r.accent = true; qv.rows.push_back(r);
+		r = {}; r.key = "resume"; r.title = "Resume"; r.icon = ui::Icon::Play; qv.rows.push_back(r);
 		r = {}; r.key = "save"; r.title = "Save State"; r.right = "\xE2\x86\x90 slot 3 \xE2\x86\x92"; r.icon = ui::Icon::Save; qv.rows.push_back(r);
 		r = {}; r.key = "load"; r.title = "Load State"; r.right = "\xE2\x86\x90 slot 3 \xE2\x86\x92"; r.icon = ui::Icon::Load; qv.rows.push_back(r);
-		r = {}; r.key = "set"; r.title = "Game Settings"; r.right = "next start"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
+		r = {}; r.key = "opt:render_scale"; r.title = "Internal resolution"; r.right = "\xE2\x86\x90 3x \xE2\x86\x92"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
+		r = {}; r.key = "opt:framegen"; r.title = "Frame generation"; r.right = "\xE2\x86\x90 FSR 3 optical flow \xE2\x86\x92"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
+		r = {}; r.key = "set"; r.title = "Game Settings"; r.icon = ui::Icon::Gear; qv.rows.push_back(r);
 		r = {}; r.key = "mods"; r.title = "Patches"; r.right = "next start"; r.icon = ui::Icon::Puzzle; qv.rows.push_back(r);
 		r = {}; r.key = "log"; r.title = "Log What the GPU Draws"; r.right = "debugging only"; r.icon = ui::Icon::Info; qv.rows.push_back(r);
 		r = {}; r.key = "restart"; r.title = "Restart the Game"; r.icon = ui::Icon::Restart; qv.rows.push_back(r);
 		r = {}; r.key = "quit"; r.title = "Quit the Game"; r.icon = ui::Icon::Power; r.danger = true; qv.rows.push_back(r);
 	}
-	qv.sel = 1;
+	qv.sel = 2;
 	qv.showSlot = true;
 	qv.slot.picture = fakeCover(300, 320, 180);
 	qv.slot.title = "Slot 3";
 	qv.slot.text = "Saved yesterday, 21:14";
-	qv.footer = { { "X", "Choose" }, { "LR", "Slot" }, { "O", "Resume" } };
+	qv.footer = { { "X", "Choose" }, { "LR", "Slot" }, { "T", "Edit menu" }, { "O", "Resume" } };
+	ui::QuickView qe = qv;
+	qe.status = "Editing the menu";
+	qe.showSlot = false;
+	qe.rows.erase(qe.rows.begin());
+	for (auto &r : qe.rows) { r.right.clear(); r.danger = false; r.toggle = 1; }
+	qe.rows.front().toggle = -1; qe.rows.front().right = "always shown";
+	qe.rows.back().toggle = -1; qe.rows.back().right = "always shown";
+	{ ui::ListRow r; r.key = "opt:dither"; r.title = "16-bit dithering"; r.icon = ui::Icon::Gear; r.toggle = 0; qe.rows.push_back(r); }
+	qe.sel = 3;
+	qe.footer = { { "X", "Show / hide" }, { "LR", "Move up / down" }, { "S", "Default" }, { "T", "Done" } };
 
 	ui::NoticeView notice;
 	notice.kicker = "Experimental build";
@@ -624,6 +637,11 @@ int main(int argc, char **argv)
 			dl->AddImage(shot.id, ImVec2(0, 0), S);
 			ui::drawHud(dl, S, ui::HudView{});
 			ui::drawQuickMenu(dl, S, qv, 1.0f);
+		} },
+		{ "quick-edit", [&](ImDrawList *dl, ImVec2 S) {
+			ui::Tex shot = fakeCover(31, 640, 360);
+			dl->AddImage(shot.id, ImVec2(0, 0), S);
+			ui::drawQuickMenu(dl, S, qe, 1.0f);
 		} },
 		{ "notice", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "notice", { 0.5f, 0.3f }, 0.5f });

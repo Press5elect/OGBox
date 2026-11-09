@@ -997,10 +997,14 @@ public:
 		std::string busy;                     // "Saving..." while a save runs
 		std::shared_ptr<std::atomic<int>> result;   // 0 running, 1 saved, 2 failed
 		std::shared_ptr<std::string> why;
-		enum class After { Resume, Library } after{ After::Resume };
+		enum class After { Resume, Library, Apply } after{ After::Resume };
 		int busySlot{ 1 };
 		std::string pendingLoad;              // a state to start the game with, next frame
 		bool pendingRestart{ false };
+		bool applyPending{ false };           // 0.0.7: a setting changed that takes the game's next start
+		bool edit{ false };                   // 0.0.7: TRIANGLE: choosing what the menu shows, and its order
+		std::vector<std::pair<std::string, bool>> editList;   // every entry, shown or not, in its order
+		std::string applyPath;                // the state the game restarts from to apply settings
 	} qm;
 	bool touchBack[PAD_PLAYERS]{};            // a touch pad click began on its left half (Back)
 	bool touchWas[PAD_PLAYERS]{};
@@ -1896,18 +1900,9 @@ public:
 		/* 0.0.1: the GPU's threads on cores of their own (on by default), before the core starts them */
 		pshakux_priority_gpu_pin(prefs.on("gpu_cores") ? 1 : 0);
 		themeCode = prefs.global("theme") == "code";   // 0.1.52: the in-game panels too
-		aspectMode = prefs.value("aspect");
-		cropOn = prefs.on("crop_overscan");   // 0.1.59
-		/* 0.1.58: "fxaa" is the anti-aliasing: 0 off, 1 FXAA (as before), smaa, ssaa */
-		fxaaOn = prefs.on("fxaa");
-		smaaOn = prefs.value("fxaa") == "smaa";
-		ssaaOn = prefs.value("fxaa") == "ssaa";
-		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
-		sharpOn = prefs.value("upscale") == "sharp";
+		readPictureSettings();
 		fgWanted = ogbox::fgMethodFromSetting(prefs.value("framegen"));
 		fgQuality = static_cast<uint32_t>(std::max(0, std::min(2, prefs.number("framegen_quality"))));
-		showFps = prefs.value("show_fps") != "0";
-		fpsCorner = prefs.value("show_fps");
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
@@ -4236,7 +4231,210 @@ public:
 
 	/* 0.0.6: the rows shown, in order; the state slot (LEFT and RIGHT on Save State and Load State choose it)
 	 * and "Where you left off" (the game's start offers it) aren't rows any more */
-	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT, QR_COUNT, QR_SLOT, QR_LEFT };
+	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT, QR_COUNT, QR_SLOT, QR_LEFT,
+		QR_APPLY, QR_OPT };
+	/* 0.0.7: the quick menu's entries: its actions (by QuickRow) and settings, as Settings > Interface >
+	 * Quick menu layout ("quick_layout") orders them; "Apply changes now" first while a change waits */
+	static constexpr const char *kQuickActions[QR_COUNT] = { "resume", "save", "load", "settings", "mods", "drawlog", "restart", "quit" };
+	static constexpr const char *kQuickDefault =
+		"resume,save,load,opt:render_scale,opt:framegen,opt:fxaa,opt:upscale,settings,mods,drawlog,restart,quit";
+	struct QuickEntry {
+		std::string id;
+		int action{ QR_OPT };
+		const ogbox::Option *opt{ nullptr };
+	};
+
+	static bool quickOptAllowed(const ogbox::Option *o)
+	{
+		return o && o->perGame && !o->text && !o->choices.empty() &&
+			(o->section == ogbox::Section::Graphics || o->section == ogbox::Section::Performance ||
+				o->section == ogbox::Section::Audio || o->section == ogbox::Section::Console || o->section == ogbox::Section::Video);
+	}
+
+	static QuickEntry quickEntry(const std::string &id)
+	{
+		QuickEntry e;
+		e.id = id;
+		for (int i = 0; i < QR_COUNT; i++) {
+			if (id == kQuickActions[i]) {
+				e.action = i;
+				return e;
+			}
+		}
+		if (id.rfind("opt:", 0) == 0) {
+			const ogbox::Option *o = ogbox::option(id.substr(4));
+			if (quickOptAllowed(o)) {
+				e.opt = o;
+				return e;
+			}
+		}
+		e.action = -1;   // (not one: left out)
+		return e;
+	}
+
+	/* The ids shown, in order: the setting's, its unknown ones left out; Resume and Quit always there. */
+	std::vector<std::string> quickLayout() const
+	{
+		std::string s = prefs.global("quick_layout");
+		if (s.empty()) {
+			s = kQuickDefault;
+		}
+		std::vector<std::string> ids;
+		size_t at = 0;
+		while (at <= s.size()) {
+			const size_t comma = s.find(',', at);
+			std::string id = s.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+			id.erase(std::remove(id.begin(), id.end(), ' '), id.end());
+			if (!id.empty() && quickEntry(id).action != -1 && std::find(ids.begin(), ids.end(), id) == ids.end()) {
+				ids.push_back(id);
+			}
+			if (comma == std::string::npos) {
+				break;
+			}
+			at = comma + 1;
+		}
+		if (std::find(ids.begin(), ids.end(), "resume") == ids.end()) {
+			ids.insert(ids.begin(), "resume");
+		}
+		if (std::find(ids.begin(), ids.end(), "quit") == ids.end()) {
+			ids.push_back("quit");
+		}
+		return ids;
+	}
+
+	std::vector<QuickEntry> quickEntries() const
+	{
+		std::vector<QuickEntry> v;
+		if (qm.applyPending) {
+			QuickEntry e;
+			e.id = "apply";
+			e.action = QR_APPLY;
+			v.push_back(e);
+		}
+		for (const std::string &id : quickLayout()) {
+			v.push_back(quickEntry(id));
+		}
+		return v;
+	}
+
+	/* TRIANGLE: every entry there can be, the shown ones first in their order */
+	void quickEditOpen()
+	{
+		qm.edit = true;
+		qm.editList.clear();
+		for (const std::string &id : quickLayout()) {
+			qm.editList.push_back({ id, true });
+		}
+		auto have = [this](const std::string &id) {
+			return std::any_of(qm.editList.begin(), qm.editList.end(), [&](const auto &e) { return e.first == id; });
+		};
+		for (int i = 0; i < QR_COUNT; i++) {
+			if (!have(kQuickActions[i])) {
+				qm.editList.push_back({ kQuickActions[i], false });
+			}
+		}
+		for (const ogbox::Option &o : ogbox::options()) {
+			const std::string id = std::string("opt:") + o.key;
+			if (quickOptAllowed(&o) && !have(id)) {
+				qm.editList.push_back({ id, false });
+			}
+		}
+		qm.sel = 0;
+	}
+
+	void quickEditSave()
+	{
+		std::string s;
+		for (const auto &e : qm.editList) {
+			if (e.second) {
+				s += (s.empty() ? "" : ",") + e.first;
+			}
+		}
+		const ogbox::Option *o = ogbox::option("quick_layout");
+		if (o) {
+			prefs.setGlobal("quick_layout", s == kQuickDefault ? std::string() : s);
+		}
+		qm.edit = false;
+		qm.sel = 0;
+	}
+
+	void quickEditInput(uint32_t pressed)
+	{
+		const int n = static_cast<int>(qm.editList.size());
+		if (pressed & (PAD_TRIANGLE | PAD_CIRCLE)) {
+			quickEditSave();
+			return;
+		}
+		if (pressed & PAD_UP) {
+			qm.sel = (qm.sel + n - 1) % n;
+		}
+		if (pressed & PAD_DOWN) {
+			qm.sel = (qm.sel + 1) % n;
+		}
+		auto &cur = qm.editList[static_cast<size_t>(qm.sel)];
+		if (pressed & PAD_CROSS) {
+			if (cur.first != "resume" && cur.first != "quit") {
+				cur.second = !cur.second;
+			}
+		}
+		/* LEFT / RIGHT (or L1 / R1): the entry one place up or down */
+		if ((pressed & (PAD_LEFT | PAD_L1)) && qm.sel > 0) {
+			std::swap(qm.editList[static_cast<size_t>(qm.sel)], qm.editList[static_cast<size_t>(qm.sel - 1)]);
+			qm.sel--;
+		} else if ((pressed & (PAD_RIGHT | PAD_R1)) && qm.sel + 1 < n) {
+			std::swap(qm.editList[static_cast<size_t>(qm.sel)], qm.editList[static_cast<size_t>(qm.sel + 1)]);
+			qm.sel++;
+		}
+		if (pressed & PAD_SQUARE) {   // the default layout
+			const ogbox::Option *o = ogbox::option("quick_layout");
+			if (o) {
+				prefs.setGlobal("quick_layout", std::string());
+			}
+			quickEditOpen();
+		}
+	}
+
+	/* A setting's row: its value one step on (by -1 or +1), the game's own (as Game Settings sets it) */
+	void quickStepOption(const ogbox::Option &o, int by)
+	{
+		const std::string next = ogbox::Settings::step(o, prefs.value(o.key), by);
+		prefs.setOverride(o.key, next == prefs.global(o.key) ? std::string() : next);
+		afterGameChange(o);
+	}
+
+	/* "Apply changes now": a state saved where the game is, and the game started again from it. */
+	void quickApply()
+	{
+		if (!qm.busy.empty()) {
+			return;
+		}
+		if (runKey.empty()) {
+			qm.pendingRestart = true;
+			qm.busy = "Restarting";
+			return;
+		}
+		mkdir(ogbox::storagePath("states").c_str(), 0777);
+		mkdir(ogbox::stateFolder(runKey).c_str(), 0777);
+		qm.applyPath = ogbox::stateFolder(runKey) + "/apply.state";
+		qm.busy = "Applying: the game restarts here";
+		qm.after = Quick::After::Apply;
+		qm.result = std::make_shared<std::atomic<int>>(0);
+		qm.why = std::make_shared<std::string>();
+		auto result = qm.result;
+		auto why = qm.why;
+		const std::string path = qm.applyPath, tmp = path + ".part";
+		std::thread([result, why, tmp, path]() {
+			char err[256] = "";
+			const bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			if (ok) {
+				std::rename(tmp.c_str(), path.c_str());
+			} else {
+				std::remove(tmp.c_str());
+				*why = err;
+			}
+			result->store(ok ? 1 : 2);
+		}).detach();
+	}
 	/* 0.0.2: the quick menu's "Log what the GPU draws": this many draws (a few frames of a game),
 	 * from this long after it closes (time to bring the problem on screen) */
 	static constexpr int kDrawLogDraws = 5000;
@@ -4492,6 +4690,14 @@ public:
 			const bool ok = qm.result->load() == 1;
 			const int slot = qm.busySlot;
 			qm.busy.clear();
+			if (qm.after == Quick::After::Apply) {
+				if (ok) {
+					quickLoad(qm.applyPath);
+				} else {
+					showToast("Not applied (" + *qm.why + "): restart the game to apply the changes");
+				}
+				return;
+			}
 			if (qm.after == Quick::After::Library) {
 				if (!ok) {
 					pshakux_log("quick menu: the state wasn't saved (%s): back to the game list anyway", qm.why->c_str());
@@ -4615,13 +4821,34 @@ public:
 			quickClose();
 			return;
 		}
+		if (qm.edit) {
+			quickEditInput(pressed);
+			return;
+		}
+		if (pressed & PAD_TRIANGLE) {
+			quickEditOpen();
+			return;
+		}
+		const std::vector<QuickEntry> entries = quickEntries();
+		const int count = static_cast<int>(entries.size());
+		qm.sel = std::max(0, std::min(qm.sel, count - 1));
 		if (pressed & PAD_UP) {
-			qm.sel = (qm.sel + QR_COUNT - 1) % QR_COUNT;
+			qm.sel = (qm.sel + count - 1) % count;
 		}
 		if (pressed & PAD_DOWN) {
-			qm.sel = (qm.sel + 1) % QR_COUNT;
+			qm.sel = (qm.sel + 1) % count;
 		}
-		if (qm.sel == QR_SLOT || qm.sel == QR_SAVE || qm.sel == QR_LOAD) {
+		const QuickEntry &entry = entries[static_cast<size_t>(qm.sel)];
+		const int action = entry.action;
+		if (entry.opt) {
+			if (pressed & PAD_LEFT) {
+				quickStepOption(*entry.opt, -1);
+			} else if (pressed & (PAD_RIGHT | PAD_CROSS)) {
+				quickStepOption(*entry.opt, 1);
+			}
+			return;
+		}
+		if (action == QR_SLOT || action == QR_SAVE || action == QR_LOAD) {
 			if (pressed & PAD_LEFT) {
 				qm.slot = qm.slot <= 1 ? ogbox::kStateSlots : qm.slot - 1;
 			}
@@ -4632,7 +4859,10 @@ public:
 		if (!(pressed & PAD_CROSS)) {
 			return;
 		}
-		switch (qm.sel) {
+		switch (action) {
+		case QR_APPLY:
+			quickApply();
+			break;
 		case QR_RESUME:
 			quickClose();
 			break;
@@ -4725,26 +4955,63 @@ public:
 			{ "save", "Save State", slotText, ui::Icon::Save, runKey.empty() },
 			{ "load", "Load State", slot.used ? slotText : "\xE2\x86\x90 slot " + std::to_string(qm.slot) + " is empty \xE2\x86\x92",
 				ui::Icon::Load, !slot.used },
-			{ "settings", "Game Settings", "next start", ui::Icon::Gear, runKey.empty() },
+			{ "settings", "Game Settings", "", ui::Icon::Gear, runKey.empty() },
 			{ "mods", "Patches", "next start", ui::Icon::Puzzle, runKey.empty() },
 			{ "drawlog", "Log What the GPU Draws", "debugging only", ui::Icon::Info, false },
 			{ "restart", restartArmed ? "Restart: press again" : "Restart the Game", "", ui::Icon::Restart, false },
 			{ "quit", "Quit the Game", "", ui::Icon::Power, false },
 		};
-		for (int i = 0; i < QR_COUNT; i++) {
+		/* 0.0.7: TRIANGLE: every entry, shown or not, to choose them and their order */
+		auto entryRow = [&](const QuickEntry &e) {
 			ui::ListRow r;
-			r.key = rows[i].key;
-			r.title = rows[i].text;
-			r.right = rows[i].note;
-			r.icon = rows[i].icon;
-			r.dim = rows[i].dim;
-			r.danger = i == QR_QUIT || (i == QR_RESTART && restartArmed);
-			v.rows.push_back(r);
+			r.key = e.id;
+			if (e.action == QR_APPLY) {
+				r.title = "Apply Changes Now";
+				r.right = "restarts the game here";
+				r.icon = ui::Icon::Restart;
+				r.accent = true;
+			} else if (e.opt) {
+				r.title = e.opt->label;
+				r.icon = ui::Icon::Gear;
+				r.right = "\xE2\x86\x90 " + ogbox::Settings::label(*e.opt, prefs.value(e.opt->key)) + " \xE2\x86\x92";
+			} else if (e.action >= 0 && e.action < QR_COUNT) {
+				const RowText &rt = rows[e.action];
+				r.title = rt.text;
+				r.right = rt.note;
+				r.icon = rt.icon;
+				r.dim = rt.dim;
+				r.danger = e.action == QR_QUIT || (e.action == QR_RESTART && restartArmed);
+			}
+			return r;
+		};
+		int action = -1;
+		if (qm.edit) {
+			v.status = "Editing the menu";
+			for (const auto &it : qm.editList) {
+				ui::ListRow r = entryRow(quickEntry(it.first));
+				r.right.clear();
+				r.danger = false;
+				r.dim = false;
+				r.accent = false;
+				r.toggle = it.second ? 1 : 0;
+				if (it.first == "resume" || it.first == "quit") {
+					r.right = "always shown";
+					r.toggle = -1;
+				}
+				v.rows.push_back(r);
+			}
+			v.sel = std::max(0, std::min(qm.sel, static_cast<int>(v.rows.size()) - 1));
+		} else {
+			const std::vector<QuickEntry> entries = quickEntries();
+			for (const QuickEntry &e : entries) {
+				v.rows.push_back(entryRow(e));
+			}
+			v.sel = std::max(0, std::min(qm.sel, static_cast<int>(v.rows.size()) - 1));
+			action = entries.empty() ? -1 : entries[static_cast<size_t>(v.sel)].action;
 		}
-		v.sel = qm.sel;
 		// the slot's card, beside the panel, for the state rows
-		if (qm.sel == QR_SAVE || qm.sel == QR_LOAD || qm.sel == QR_SLOT || qm.sel == QR_LEFT) {
-			const ogbox::StateSlot &st = qm.sel == QR_LEFT ? left : slot;
+		if (action == QR_SAVE || action == QR_LOAD || action == QR_SLOT || action == QR_LEFT) {
+			const ogbox::StateSlot &st = action == QR_LEFT ? left : slot;
 			v.showSlot = true;
 			if (st.used) {
 				float tw = 0.0f, th = 0.0f;
@@ -4754,15 +5021,23 @@ public:
 				}
 			}
 			v.slot.pictureEmpty = st.used ? "(no picture)" : "Empty slot";
-			v.slot.title = qm.sel == QR_LEFT ? std::string("Where you left off") : "Slot " + std::to_string(st.slot);
-			v.slot.text = st.used ? "Saved " + ogbox::dateText(st.mtime) : std::string(qm.sel == QR_SAVE ? "Saving here keeps where you are now." : "");
+			v.slot.title = action == QR_LEFT ? std::string("Where you left off") : "Slot " + std::to_string(st.slot);
+			v.slot.text = st.used ? "Saved " + ogbox::dateText(st.mtime) : std::string(action == QR_SAVE ? "Saving here keeps where you are now." : "");
 		}
 		v.busy = qm.busy;
-		v.footer = { { "X", "Choose" } };
-		if (qm.sel == QR_SAVE || qm.sel == QR_LOAD || qm.sel == QR_SLOT) {
-			v.footer.push_back({ "LR", "Slot" });
+		if (qm.edit) {
+			v.footer = { { "X", "Show / hide" }, { "LR", "Move up / down" }, { "S", "Default" }, { "T", "Done" } };
+		} else {
+			const bool optRow = !v.rows.empty() && v.rows[static_cast<size_t>(v.sel)].key.rfind("opt:", 0) == 0;
+			v.footer = { { "X", "Choose" } };
+			if (action == QR_SAVE || action == QR_LOAD || action == QR_SLOT) {
+				v.footer.push_back({ "LR", "Slot" });
+			} else if (optRow) {
+				v.footer = { { "LR", "Change" } };
+			}
+			v.footer.push_back({ "T", "Edit menu" });
+			v.footer.push_back({ "O", "Resume" });
 		}
-		v.footer.push_back({ "O", "Resume" });
 		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - qm.openedAt) / 0.18));
 		ImDrawList *dl = beginUiScreen("##quick", Ground::None);
 		ui::drawQuickMenu(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v, appear);
@@ -6038,7 +6313,7 @@ public:
 				const std::string k = o.key;
 				// 0.0.4: "audio_dsp" (full DSP) is hidden: experimental, as in xemu (some games' EP
 				// programs never finish a frame); the code stays, Fast is what runs
-				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp") {
+				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp" && k != "quick_layout") {
 					other.push_back(k);
 				}
 			}
@@ -6075,6 +6350,60 @@ public:
 		rumblePercent = r.empty() ? 100 : std::max(0, std::min(100, std::atoi(r.c_str())));
 	}
 
+	/* The presenter's own settings (the picture's shape, anti-aliasing, upscaling, the FPS counter): read at
+	 * the start and, 0.0.7, again whenever one changes in a game (they take effect at once). */
+	void readPictureSettings()
+	{
+		aspectMode = prefs.value("aspect");
+		cropOn = prefs.on("crop_overscan");   // 0.1.59
+		/* 0.1.58: "fxaa" is the anti-aliasing: 0 off, 1 FXAA (as before), smaa, ssaa */
+		fxaaOn = prefs.on("fxaa");
+		smaaOn = prefs.value("fxaa") == "smaa";
+		ssaaOn = prefs.value("fxaa") == "ssaa";
+		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
+		sharpOn = prefs.value("upscale") == "sharp";
+		showFps = prefs.value("show_fps") != "0";
+		fpsCorner = prefs.value("show_fps");
+	}
+
+	/* 0.0.7: what a change in a running game does: the presenter's settings and frame generation at once;
+	 * what the core (or the display) reads at its start waits for "Apply changes now" in the quick menu,
+	 * which restarts the game from a state saved where it is. */
+	static bool liveKey(const std::string &k)
+	{
+		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality" };
+		for (const char *x : keys) {
+			if (k == x) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void afterGameChange(const ogbox::Option &o)
+	{
+		if (library) {
+			return;
+		}
+		const std::string k = o.key;
+		if (liveKey(k)) {
+			const bool ssaaWas = ssaaOn;
+			readPictureSettings();
+			refreshFrameGen(k);
+			if (ssaaOn != ssaaWas && !qm.applyPending) {
+				qm.applyPending = true;   // (SSAA also raises the internal resolution, at the game's start)
+			}
+			return;
+		}
+		const bool core = o.section == ogbox::Section::Graphics || o.section == ogbox::Section::Performance ||
+			o.section == ogbox::Section::Audio || o.section == ogbox::Section::Console || o.section == ogbox::Section::Video ||
+			o.section == ogbox::Section::Network;
+		if (core && !qm.applyPending) {
+			qm.applyPending = true;
+			pshakux_log("settings: %s changes at the game's next start: the quick menu offers to apply it now", k.c_str());
+		}
+	}
+
 	/* A value set from the settings, with what follows from it at once. */
 	void setValue(const ogbox::Option &o, const std::string &next)
 	{
@@ -6090,11 +6419,11 @@ public:
 			if (o.section == ogbox::Section::Controller) {
 				loadPadMap();
 			}
-			refreshFrameGen(key);
+			afterGameChange(o);
 			return;
 		}
 		prefs.setGlobal(key, next);
-		refreshFrameGen(key);
+		afterGameChange(o);
 		if (key == "rain") {
 			rainOn = next == "1";
 		} else if (key == "theme") {
