@@ -1,0 +1,11 @@
+name: 120 fps
+description: The game at 120 frames a second, for a 120 Hz screen (Settings > Graphics > Display refresh rate: 120 Hz). The game keeps its normal speed; it needs a lot more of the console, so lower the internal resolution if it can't keep up. Turn the 60 fps mod off to use it.
+author: Press5elect
+refresh: 120
+
+# GTA San Andreas (USA, 54540082 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The 60 fps mod's patch (one vblank a frame, see its mod.txt) with the console's vblank at
+# 120 Hz: a frame each vblank. The game's clock is real time, so its speed stays.
+[default.xbe]
+0x00273691: 39 0D 34 25 5F 00 74 ED -> 39 0D 34 25 5F 00 90 90
