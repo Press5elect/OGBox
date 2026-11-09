@@ -1,9 +1,21 @@
+<p align="center">
+  <img src="ps5/art/ogbox-logo.png" width="240" alt="OGBox logo">
+</p>
+
 # OGBox
 
 **The original Xbox, on your PS5.** OGBox is an unofficial port of
 [hakuX](https://github.com/rfandango/hakuX), an emulator for Microsoft's 2001 console, made into
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
+
+**What's new in 0.0.6:**
+- The Xbox's own sound chip emulation, tuned from tests on a real console (xemu pull request #3105).
+- Menus tidied: Internal, USB and Network tabs; Game Details with Load State and Game Patches; a
+  drawn Xbox controller with rumble strength; Settings reworded and regrouped.
+- Upscaling: Bilinear (Sharp) and FSR1, in place of Snapdragon GSR.
+- Network shares: a game waits for its share instead of failing, with the seconds on screen.
+- A fix for games that check their disc against a patched default.xbe.
 
 **Latest release: [v0.0.6](https://github.com/Press5elect/OGBox/releases/tag/v0.0.6).** Download
 `OGBox-v0.0.6.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
@@ -60,7 +72,8 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
    - **CROSS** opens a folder or starts a game, **SQUARE** starts it from the beginning, **CIRCLE**
      goes back.
    - **L2 / R2** jump a letter back or forward.
-   - **TRIANGLE** opens a game's page: its cover, description, save states, settings and mods.
+   - **TRIANGLE** opens a game's Game Details: its cover, description, Load State, settings,
+     patches and saves.
    - **OPTIONS** opens Settings.
    - A USB keyboard works too.
 5. **Play.** Press **OPTIONS** in a game for the **quick menu**. The game pauses and a panel slides
@@ -107,7 +120,7 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   compiling shaders in the background, and building cached shaders at start.
 - **Audio:** the resampler (Normal, Sinc or Linear). Sound is mixed the fast way, as xemu does by default.
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
-  when such a patch is on), drive timing and the clock.
+  when such a patch is on), Fast disc drive and the clock.
 - **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
 - **Network:** off, LAN, XLink Kai or Insignia.
 - **Game list:** which places show, covers, layout (list or a grid of covers), names, sort order,
@@ -211,6 +224,11 @@ What the PS5 needs in place of hakuX's Android parts lives in `ps5/hakux/`:
 The front end talks to the emulator only through the Core (`ps5/src/core/ogbox_core.h`).
 
 ## Credits
+
+The source history of OGBox's own PS5 work, and the attribution it requires, are in
+[`PROVENANCE.md`](PROVENANCE.md). The legal terms are in [`NOTICE`](NOTICE).
+
+
 
 - **hakuX** by rfandango and its contributors (GPL-3.0-or-later): the emulator. Its MCPX APU is
   xemu's (LGPL-2.1-or-later), with Hatari's DSP56300 emulation (GPL-2.0-or-later); its kernel
