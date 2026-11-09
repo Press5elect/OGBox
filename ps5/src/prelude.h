@@ -78,6 +78,8 @@
 #include "ogbox_ui.h"         // OGBox 0.0.3: the menus' look
 #include "ogbox_shares.h"     // ... the network shares the settings edit
 #include "ogbox_pad.h"        // the DualSense as an Xbox controller (Settings > Controller)
+#include "ogbox_framegen.h"   // OGBox 0.0.7: frame generation
+#include "framegen/ps5_framegen_pacer.h"
 #include "platform/ps5_keyboard.h"
 // OGBox 0.0.1: the updater (Crux2's), at file scope too
 #include "platform/ps5_update.h"

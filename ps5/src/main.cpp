@@ -28,6 +28,7 @@
 #include "platform/ps5_bootlog.h"
 #include "platform/ps5_relaunch.h"
 #include "platform/ps5_takeover.h"
+#include "ogbox_display.h"
 
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -451,6 +452,7 @@ int main(int argc, char **argv)
 		}
 	}
 	platform_init(PS5_TITLE_NAME);
+	ogbox::configureDisplay();   // 0.0.7: 120 Hz / variable refresh, before the display opens
 	// The samples report on std::cout and std::cerr: both reach klog
 	std::cout.rdbuf(std::cerr.rdbuf());
 	pad_open();

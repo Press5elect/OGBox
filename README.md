@@ -9,16 +9,17 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 0.0.6:**
-- The Xbox's own sound chip emulation, tuned from tests on a real console (xemu pull request #3105).
-- Menus tidied: Internal, USB and Network tabs; Game Details with Load State and Game Patches; a
-  drawn Xbox controller with rumble strength; Settings reworded and regrouped.
-- Upscaling: Bilinear (Sharp) and FSR1, in place of Snapdragon GSR.
-- Network shares: a game waits for its share instead of failing, with the seconds on screen.
-- A fix for games that check their disc against a patched default.xbe.
+**What's new in 0.0.7:**
+- Frame generation (Crux2's three methods: its own motion search, AMD FSR 3 optical flow and
+  MihawkGen): a game at 30 fps looks like 60, or 120 at 120 Hz.
+- 120 Hz output and variable refresh rate.
+- Settings change during a game; the quick menu shows what you choose, in your order.
+- The log is kept in memory and written only when something goes wrong; settings are written as
+  the menus close.
+- A new start screen, and 60/120 fps and picture mods for one more game.
 
-**Latest release: [v0.0.6](https://github.com/Press5elect/OGBox/releases/tag/v0.0.6).** Download
-`OGBox-v0.0.6.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v0.0.7](https://github.com/Press5elect/OGBox/releases/tag/v0.0.7).** Download
+`OGBox-v0.0.7.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -34,10 +35,9 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 0.0.6 is the sixth public release, after a long run of
+This is **experimental** software. 0.0.7 is the seventh public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
-partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen, and
-OGBox says so the first time each version starts.
+partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
 If you're curious how it works: the Xbox's own x86 code runs directly on the PS5's processor, in
 its compatibility mode, instead of being translated. Calls into the Xbox kernel go through a gate
@@ -242,6 +242,9 @@ The source history of OGBox's own PS5 work, and the attribution it requires, are
   and the high-base link.
 - **PS5 Vulkan Template, PS5_Vulkan, PS5_Mesa and the payload SDK fork** by Mihawk: the
   foundation, RADV on the console and the platform layer.
+- **Crux2's frame generation** (Press5elect; GPL-3.0-or-later), with **AMD FidelityFX** (FSR 3 optical
+  flow; MIT), **MihawkGen** (Mihawk; GPL-3.0-or-later) and NVIDIA Image Scaling (MIT, carried in the
+  compute passes but not used by OGBox): Settings > Frame generation.
 - **hakuX-lr** (PortareOS and its contributors; GPL-3.0-or-later): graphics, audio, disc and kernel
   improvements taken into the core.
 - **libchdr** (Romain Tisserand; BSD-3-Clause), with the LZMA SDK, zstd and dr_flac: CHD images.
@@ -267,6 +270,34 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.7
+
+Added
+- Settings > Picture and sound > Frame generation: makes extra frames between the game's own, so
+  that a game at 30 fps looks like 60 (and, at 120 Hz, a game at 60 like 120). Off by default. It
+  adds about one refresh of delay. Four methods, all from Crux2: Crux2's own motion search,
+  AMD FidelityFX FSR 3 optical flow, MihawkGen's neural network (by Mihawk) and its Blend. Nothing is
+  made for a game that already draws a frame every refresh. MihawkGen works up to 4x internal
+  resolution, the other two up to 6x. With it on, the FPS counter also shows the pictures a second
+  the screen is given.
+- Settings > Picture and sound > Display refresh rate (60 Hz, or 120 Hz for a TV that takes it) and
+  Variable refresh rate (at 120 Hz). They take effect at the next start of OGBox; the boot log's
+  `display:` lines say what was asked. The game itself keeps its speed at 120 Hz.
+- Settings change during a game: the picture's (aspect, anti-aliasing, upscaling, FPS counter, frame
+  generation) at once; the others (internal resolution, dithering, ...) put Apply Changes Now at the
+  top of the quick menu, which restarts the game from where it is with them.
+- The quick menu shows what you choose, in your order: TRIANGLE in it shows or hides each entry
+  (any game setting too, changed with left and right) and moves it.
+- Settings > Advanced > Boot log: kept in memory and written to `ogbox-boot.log` only when something
+  goes wrong (a crash, a failed game, 15 s without a new frame, or the quick menu's Save the Log),
+  the default; or always written, as before.
+- Mods for the game with title ID 54540082 (version 2) and 545400A4 (version 1): 60 fps, 120 fps,
+  no heat haze, no colour filter, no speed blur; draw distance x2 (54540082 only).
+
+Changed
+- The start screen: the logo fades in and a light crosses it, "by Press5elect" under it; the start
+  notice is gone.
 
 ### 0.0.6
 

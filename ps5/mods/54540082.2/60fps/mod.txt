@@ -1,0 +1,13 @@
+name: 60 fps
+description: The game at 60 frames a second instead of 30. Its clock already measures each frame's real time (as on PC), so it keeps its normal speed. Like the PC game above 30 fps, a few things may act differently (some physics and animations); turn it off if something goes wrong.
+author: Press5elect
+
+# GTA San Andreas (USA, 54540082 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The frame limiter (0x273678, before each flip while the game is playing, state 7) waits
+# until the vblank count (0x5F2534, set by the vblank callback 0x273898) is two past the
+# last flip's (0x5F4A28): 30 fps. Its second wait (count == last + 1) goes, so one vblank
+# is enough. CTimer::Update (0x11044F) takes the frame's time from the CPU's counter
+# (733333 ticks a ms) and the step as ms x 0.05, clamped (0x11058D): nothing is per frame.
+[default.xbe]
+0x00273691: 39 0D 34 25 5F 00 74 ED -> 39 0D 34 25 5F 00 90 90

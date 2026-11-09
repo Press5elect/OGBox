@@ -1,0 +1,13 @@
+name: 60 fps
+description: The game at 60 frames a second instead of 30 (50 instead of 25 in 50 Hz; turn PAL 60 Hz on in Settings > Video for 60). Its clock already measures each frame's real time (as on PC), so it keeps its normal speed. Like the PC game above 30 fps, a few things may act differently (some physics and animations); turn it off if something goes wrong.
+author: Press5elect
+
+# GTA San Andreas (Europe Rev 1, 545400A4 v1). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The frame limiter (0x2738A3, before each flip while the game is playing, state 7) waits
+# until the vblank count (0x5F27D4) is two past the count at the
+# last flip: 30 fps (25 in 50 Hz). Its second wait (count == last + 1) goes, so one vblank
+# is enough. CTimer::Update takes the frame's time from the CPU's counter
+# (733333 ticks a ms) and the step as ms x 0.05, clamped: nothing is per frame.
+[default.xbe]
+0x002738BC: 39 0D D4 27 5F 00 74 ED -> 39 0D D4 27 5F 00 90 90

@@ -1,0 +1,11 @@
+name: No heat haze
+description: Removes the shimmering, wavy blur the game draws over the picture in hot weather (the desert, Los Santos at midday).
+author: Press5elect
+
+# GTA San Andreas (USA, 54540082 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# CPostEffects::Render: heat haze runs when it is forced on or the time cycle's heat is over
+# its threshold; both jumps to it go, so it is always skipped (its strength set to 0).
+[default.xbe]
+0x0024CBD8: 3D E3 48 5F 00 00 75 21 -> 3D E3 48 5F 00 00 90 90
+0x0024CBE9: 2F 05 C4 E5 3C 00 73 10 -> 2F 05 C4 E5 3C 00 90 90

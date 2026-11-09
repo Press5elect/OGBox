@@ -57,6 +57,26 @@ std::vector<Option> makeOptions()
 		{ { "bilinear", "Bilinear" }, { "sharp", "Bilinear (Sharp)" }, { "fsr", "FSR1" } }, "bilinear", true });
 	/* 0.0.1: the depth vertex programs store, exactly their screen-space z (hakuX-native's
 	 * shader/ff.h HLE_ZEXACT_IN_GLSL); off: the GPU's own, with its early depth test */
+	/* 0.0.7: the display's mode, asked of the driver at the title's start (Crux2's switches) */
+	o.push_back({ "output_refresh", Section::Graphics, "Display refresh rate",
+		"60 Hz: the default. 120 Hz: the console's display is put into its 119.88 Hz mode; each frame of a 60 fps game is "
+		"shown twice, the game itself keeps its speed. Needs a TV that accepts 120 Hz. Takes effect at the next start of OGBox.",
+		{ { "60", "60 Hz" }, { "120", "120 Hz" } }, "60", false });
+	o.push_back({ "vrr", Section::Graphics, "Variable refresh rate (VRR)",
+		"At 120 Hz only: lets the TV follow the frames the console sends. Needs a TV with VRR. Takes effect at the next "
+		"start of OGBox.", kOnOff, "0", false });
+	/* 0.0.7: frame generation (Crux2's three methods): a picture made between two of the game's, shown on the
+	 * refresh a new one arrives; a game that draws 30 a second looks like 60 */
+	o.push_back({ "framegen", Section::Graphics, "Frame generation",
+		"Makes extra frames between the game's own, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
+		"Adds about one refresh of delay. Crux2's own: the lightest. FSR 3 optical flow: AMD's motion finder. MihawkGen: "
+		"a small neural network, the heaviest; its Blend is a plain mix of the two frames. Best up to 4x internal "
+		"resolution. Nothing is made for a game that already draws a frame every refresh.",
+		{ { "off", "Off" }, { "own", "Crux2 (own motion search)" }, { "flow", "FSR 3 optical flow" },
+			{ "neural", "MihawkGen (neural network)" }, { "blend", "MihawkGen (blend)" } }, "off", true });
+	o.push_back({ "framegen_quality", Section::Graphics, "Optical flow quality",
+		"For FSR 3 optical flow: the picture the motion is found on (at most 540, 720 or 1080 lines).",
+		{ { "0", "Performance" }, { "1", "Balanced" }, { "2", "Best" } }, "1", true });
 	o.push_back({ "exact_depth", Section::Graphics, "Exact depth",
 		"Helps games that struggle with flickering textures.", kOnOff, "1", true });
 	/* 0.0.3: dithering into 16-bit targets (hakuX's vk/draw.c NC_HLE_DITHER); 0.0.6: with Force 32-bit
@@ -108,6 +128,12 @@ std::vector<Option> makeOptions()
 			{ "fr", "Fran\xC3\xA7" "ais" }, { "es", "Espa\xC3\xB1ol" }, { "it", "Italiano" }, { "ko", "Korean" },
 			{ "zh", "Chinese" }, { "pt", "Portugu\xC3\xAAs" } },
 		"auto", true });
+	/* 0.0.7: the boot log kept in memory, written only when something goes wrong (ps5_bootlog.cpp) */
+	o.push_back({ "log_mode", Section::Performance, "Boot log",
+		"Only when something goes wrong: the log is kept in memory and written to ogbox-boot.log only after a crash, a "
+		"failed game, 15 s without a new frame, or the quick menu's Save the Log (no writing to the drive otherwise). "
+		"Always written: every line goes to the file as it happens. Takes effect at the next start of OGBox.",
+		{ { "problems", "Only when something goes wrong" }, { "always", "Always written" } }, "problems", false });
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 128 MB only when a patch needs it to run. 64 MB: the Xbox's default.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
@@ -240,11 +266,19 @@ std::vector<Option> makeOptions()
 		Option qm{ "quick_menu", Section::Interface, "Quick menu button",
 			"The button that opens the quick menu in a game. OPTIONS: the Xbox's Start and Back are the touch pad's right "
 			"and left halves. OPTIONS held: a short press is Start, held half a second it opens the menu. With a "
-			"combination, OPTIONS is the Xbox's Start and the touch pad its Back (Settings > Controller can change both).",
+			"combination, OPTIONS is the Xbox's Start and the touch pad its Back (Settings > Controller can change both). "
+			"TRIANGLE in the quick menu chooses what it shows and in what order.",
 			{ { "options", "OPTIONS" }, { "options_hold", "OPTIONS held" }, { "combo", "L1+L2+R1+R2+OPTIONS" },
 				{ "touch_hold", "Touch pad held" }, { "l3r3", "L3+R3" } }, "options", false };
 		qm.now = true;
 		o.push_back(qm);
+		/* 0.0.7: what the quick menu shows, in its order (TRIANGLE in the menu edits it): "resume", "save",
+		 * "load", "settings", "mods", "drawlog", "restart", "quit" and "opt:<setting>", by commas; "": the default */
+		Option layout{ "quick_layout", Section::Interface, "Quick menu layout",
+			"What the quick menu shows and in what order. Press TRIANGLE in the quick menu to change it.", {}, "", false };
+		layout.text = true;
+		layout.now = true;
+		o.push_back(layout);
 	}
 	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
 	{
@@ -413,6 +447,7 @@ std::string gameSettingsPath(const std::string &key)
 
 void Settings::load(const std::string &key)
 {
+	flush();   // 0.0.7: what was changed, kept before reading again
 	gameKey = key;
 	readFile(kSettingsFile, globalValues);
 	gameValues.clear();
@@ -463,7 +498,7 @@ void Settings::setGlobal(const std::string &key, const std::string &v)
 	} else {
 		globalValues[key] = v;
 	}
-	saveGlobal();
+	dirtyGlobal = true;
 	pshakux_log("settings: %s = %s", key.c_str(), v.c_str());
 }
 
@@ -478,14 +513,26 @@ void Settings::setOverride(const std::string &key, const std::string &v)
 	} else {
 		gameValues[key] = v;
 	}
-	saveGame();
+	dirtyGame = true;
 	pshakux_log("settings: %s: %s = %s", gameKey.c_str(), key.c_str(), v.empty() ? "(the app's)" : v.c_str());
 }
 
 void Settings::clearOverrides()
 {
 	gameValues.clear();
-	saveGame();
+	dirtyGame = true;
+}
+
+void Settings::flush()
+{
+	if (dirtyGlobal) {
+		saveGlobal();
+		dirtyGlobal = false;
+	}
+	if (dirtyGame) {
+		saveGame();
+		dirtyGame = false;
+	}
 }
 
 void Settings::saveGlobal() const

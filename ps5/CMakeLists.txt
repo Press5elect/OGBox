@@ -134,6 +134,15 @@ add_library(samples OBJECT
 	src/samples.cpp
 	src/example_ps5.cpp
 	src/ogbox_settings.cpp
+	src/ogbox_display.cpp
+	# 0.0.7: frame generation, Crux2's three methods (src/framegen, third_party/{fidelityfx,mihawkgen,nis})
+	src/framegen/ps5_compute_fx.cpp
+	src/framegen/ps5_mihawkgen_model.cpp
+	third_party/mihawkgen/src/fg_common.cpp
+	third_party/mihawkgen/src/fg_vulkan.cpp
+	third_party/mihawkgen/src/fg_neural.cpp
+	third_party/mihawkgen/src/fg_splat.cpp
+	src/ogbox_framegen.cpp
 	src/ogbox_library.cpp
 	src/ogbox_storage.cpp
 	src/ogbox_saves.cpp
@@ -163,7 +172,13 @@ target_include_directories(samples PRIVATE
 	${ROOT}/external/ktx/other_include
 	${ROOT}/base
 	third_party/volk
+	third_party/mihawkgen/include
+	third_party/mihawkgen/src
+	${CMAKE_CURRENT_SOURCE_DIR}
+	src/framegen
 	src)
+set_source_files_properties(src/framegen/ps5_mihawkgen_model.cpp PROPERTIES
+	COMPILE_DEFINITIONS "MIHAWKGEN_MODEL_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/model/network.fgw\"")
 set_target_properties(samples PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON C_STANDARD 11)
 # Every unit sees volk's declarations first: the Vulkan commands are volk's pointers, filled from
 # the RADV linked into the title. -fno-omit-frame-pointer: the crash backtraces are frame walks.

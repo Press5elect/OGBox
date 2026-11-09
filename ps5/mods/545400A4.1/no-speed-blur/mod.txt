@@ -1,0 +1,10 @@
+name: No speed blur
+description: Removes the motion blur the game adds when driving fast.
+author: Press5elect
+
+# GTA San Andreas (Europe Rev 1, 545400A4 v1). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The speed effect is armed each frame when the vehicle's speed is over its threshold; it is
+# never armed now, so its strength stays at 0 and nothing is drawn.
+[default.xbe]
+0x0024BE3B: C6 05 81 4B 5F 00 01 -> C6 05 81 4B 5F 00 00

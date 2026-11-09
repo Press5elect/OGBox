@@ -1,0 +1,10 @@
+name: No colour filter
+description: Removes the colour filter pass, which blends a copy of the whole picture over it (the PS2 look): a sharper, more neutral picture. The time of day and weather tints go with it.
+author: Press5elect
+
+# GTA San Andreas (USA, 54540082 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# CPostEffects::Render calls ColourFilter (the screen drawn over itself, its colour from
+# the time cycle) once a frame; the call goes (its arguments are still pushed and popped).
+[default.xbe]
+0x0024C820: FF 75 F8 FF 75 FC E8 0D 25 00 00 -> FF 75 F8 FF 75 FC 90 90 90 90 90

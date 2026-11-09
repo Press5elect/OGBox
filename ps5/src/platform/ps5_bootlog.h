@@ -48,6 +48,11 @@ void pshakux_log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 int pshakux_log_fd(void);
 /* 0.0.3: the lines still in memory into the file (the crash report, first; never waits) */
 void pshakux_log_drain_crash(void);
+/* OGBox 0.0.7: kept in memory (Settings > Advanced > Boot log): the session's log into the file now
+ * (why: what went wrong, said at its top), and to the file from then on; 1 if it was in memory. */
+int pshakux_log_keep(const char *why);
+/* 1 while the log is kept in memory */
+int pshakux_log_in_memory(void);
 
 /// Seconds since pshakux_diag_start, from the monotonic clock.
 double pshakux_uptime(void);
