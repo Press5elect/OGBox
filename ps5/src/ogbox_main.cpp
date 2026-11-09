@@ -2586,8 +2586,12 @@ public:
 			fgFailed = true;   // it failed while running (frameGen said why)
 			return false;
 		}
-		if (uint64_t(w) * h > 4200000ull) {
-			pshakux_log("framegen: frames of %ux%u are too large for it (the most is 4.2 million pixels): off", w, h);
+		/* the own method and optical flow search on a reduced picture (only the last pass is full size); the
+		 * neural network and the blend work at full size */
+		const uint64_t most = (fgWanted == ogbox::FgMethod::Own || fgWanted == ogbox::FgMethod::Flow) ? 12000000ull : 4200000ull;
+		if (uint64_t(w) * h > most) {
+			pshakux_log("framegen: frames of %ux%u are too large for this method (the most is %.1f million pixels): off", w, h,
+				static_cast<double>(most) / 1e6);
 			fgFailed = true;
 			return false;
 		}
