@@ -70,7 +70,7 @@ std::vector<Option> makeOptions()
 	o.push_back({ "framegen", Section::Graphics, "Frame generation",
 		"Makes extra frames between the game's own, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
 		"Adds about one refresh of delay. Crux2's own: the lightest. FSR 3 optical flow: AMD's motion finder. MihawkGen: "
-		"a small neural network, the heaviest; its Blend is a plain mix of the two frames. Best at 1x or 2x internal "
+		"a small neural network, the heaviest; its Blend is a plain mix of the two frames. Best up to 4x internal "
 		"resolution. Nothing is made for a game that already draws a frame every refresh.",
 		{ { "off", "Off" }, { "own", "Crux2 (own motion search)" }, { "flow", "FSR 3 optical flow" },
 			{ "neural", "MihawkGen (neural network)" }, { "blend", "MihawkGen (blend)" } }, "off", true });

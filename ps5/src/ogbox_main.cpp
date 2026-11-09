@@ -2589,11 +2589,11 @@ public:
 		/* the own method and optical flow search on a reduced picture (only the last pass is full size); the
 		 * neural network and the blend work at full size */
 		auto mostFor = [](ogbox::FgMethod m) {
-			return (m == ogbox::FgMethod::Own || m == ogbox::FgMethod::Flow) ? 12000000ull : 4200000ull;
+			return (m == ogbox::FgMethod::Own || m == ogbox::FgMethod::Flow) ? 12000000ull : 5000000ull;
 		};
 		if ((fgWanted == ogbox::FgMethod::Neural || fgWanted == ogbox::FgMethod::Blend) && uint64_t(w) * h > mostFor(fgWanted) &&
 			uint64_t(w) * h <= mostFor(ogbox::FgMethod::Own)) {
-			pshakux_log("framegen: frames of %ux%u are too large for MihawkGen (the most is 4.2 million pixels): Crux2's own "
+			pshakux_log("framegen: frames of %ux%u are too large for MihawkGen (the most is 5 million pixels, 4x): Crux2's own "
 				"method makes them instead", w, h);
 			fgWanted = ogbox::FgMethod::Own;
 		}
