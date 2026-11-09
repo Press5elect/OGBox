@@ -93,6 +93,79 @@ std::atomic<bool> s_writer_up{false};
 bool s_writer_busy = false;                 // a chunk taken out, being written
 int s_pipe_read = -1;                       // standard error's pipe (its reader thread)
 
+// OGBox 0.0.7: the log kept in memory (Settings > Advanced > Boot log: "Only when something goes
+// wrong", the default): the writer thread puts the lines here instead of the file, the session's
+// first HEAD bytes kept whole and its last HIST bytes after them, and the file gets them only when
+// something goes wrong (pshakux_log_keep: a crash, a failed game, a long freeze, the quick menu's
+// "Save the Log"); from then on the session's lines go to the file as before. Fixed storage: the
+// crash report writes it out from a signal handler.
+std::atomic<bool> s_memory{false};
+constexpr size_t LOG_HEAD = size_t(512) << 10;
+constexpr size_t LOG_HIST = size_t(8) << 20;
+char s_head[LOG_HEAD];
+size_t s_head_len = 0;
+char s_hist[LOG_HIST];
+size_t s_hist_head = 0, s_hist_len = 0;     // the oldest byte kept, and how many
+unsigned long long s_hist_lost = 0;          // bytes between the head and the history, let go
+
+// Into the memory log (the caller holds s_ring_lock, or is the only thread).
+void HistPut(const char* data, size_t n)
+{
+  if (s_head_len < LOG_HEAD)
+  {
+    const size_t k = std::min(n, LOG_HEAD - s_head_len);
+    std::memcpy(s_head + s_head_len, data, k);
+    s_head_len += k;
+    data += k;
+    n -= k;
+  }
+  if (n > LOG_HIST)
+  {
+    s_hist_lost += n - LOG_HIST;
+    data += n - LOG_HIST;
+    n = LOG_HIST;
+  }
+  if (s_hist_len + n > LOG_HIST)
+  {
+    const size_t drop = s_hist_len + n - LOG_HIST;
+    s_hist_head = (s_hist_head + drop) % LOG_HIST;
+    s_hist_len -= drop;
+    s_hist_lost += drop;
+  }
+  size_t at = (s_hist_head + s_hist_len) % LOG_HIST;
+  for (size_t done = 0; done < n;)
+  {
+    const size_t k = std::min(n - done, LOG_HIST - at);
+    std::memcpy(s_hist + at, data + done, k);
+    done += k;
+    at = (at + k) % LOG_HIST;
+  }
+  s_hist_len += n;
+}
+
+// The memory log into the file (async-signal-safe but for snprintf, as the crash report is).
+void HistWriteOut(int fd, const char* why)
+{
+  if (fd < 0)
+    return;
+  char note[256];
+  int k = std::snprintf(note, sizeof(note), "[log: kept in memory until now, written because %s]\n", why ? why : "asked");
+  if (k > 0)
+    (void)!write(fd, note, std::min(static_cast<size_t>(k), sizeof(note) - 1));
+  (void)!write(fd, s_head, s_head_len);
+  if (s_hist_lost)
+  {
+    k = std::snprintf(note, sizeof(note), "[log: %llu bytes of lines from the middle of the session not kept]\n", s_hist_lost);
+    if (k > 0)
+      (void)!write(fd, note, std::min(static_cast<size_t>(k), sizeof(note) - 1));
+  }
+  const size_t first = std::min(s_hist_len, LOG_HIST - s_hist_head);
+  (void)!write(fd, s_hist + s_hist_head, first);
+  (void)!write(fd, s_hist, s_hist_len - first);
+  s_head_len = s_hist_len = 0;
+  s_hist_lost = 0;
+}
+
 void RingPut(const char* data, size_t n)
 {
   pthread_mutex_lock(&s_ring_lock);
@@ -123,6 +196,12 @@ void LogWrite(const char* data, size_t n)
     return;
   if (s_writer_up.load(std::memory_order_acquire))
     RingPut(data, n);
+  else if (s_memory.load(std::memory_order_acquire))
+  {
+    pthread_mutex_lock(&s_ring_lock);
+    HistPut(data, n);
+    pthread_mutex_unlock(&s_ring_lock);
+  }
   else
     (void)!write(s_log_fd, data, n);
 }
@@ -131,6 +210,14 @@ void LogWrite(const char* data, size_t n)
 void RingWriteOut()
 {
   static char chunk[256 * 1024];
+  // OGBox 0.0.7: kept in memory: a copy, under the lock (no file system to wait for)
+  while (s_ring_len && s_memory.load(std::memory_order_acquire))
+  {
+    const size_t n = std::min(s_ring_len, LOG_RING - s_ring_head);
+    HistPut(s_ring + s_ring_head, n);
+    s_ring_head = (s_ring_head + n) % LOG_RING;
+    s_ring_len -= n;
+  }
   while (s_ring_len)
   {
     const size_t n = std::min({s_ring_len, sizeof(chunk), LOG_RING - s_ring_head});
@@ -185,7 +272,7 @@ void* LogWriterMain(void*)
     // on the disk every 2 s (a console that crashes whole loses what the cache held): here, off
     // every other thread's way
     const double now = Since(s_start);
-    if (now - last_sync >= 2.0 && s_log_fd >= 0)
+    if (now - last_sync >= 2.0 && s_log_fd >= 0 && !s_memory.load(std::memory_order_acquire))
     {
       last_sync = now;
       pthread_mutex_unlock(&s_ring_lock);
@@ -677,7 +764,27 @@ extern "C" void pshakux_log(const char* format, ...)
 // (written straight to the file), unless another thread holds the ring (a signal handler can't wait).
 extern "C" void pshakux_log_drain_crash(void)
 {
-  if (s_log_fd < 0 || pthread_mutex_trylock(&s_ring_lock) != 0)
+  if (s_log_fd < 0)
+    return;
+  if (s_memory.load(std::memory_order_acquire))
+  {
+    // 0.0.7: the memory log first, then the ring's newest lines (if no other thread holds it)
+    const bool locked = pthread_mutex_trylock(&s_ring_lock) == 0;
+    s_memory.store(false, std::memory_order_release);
+    HistWriteOut(s_log_fd, "OGBox stopped (the crash report follows)");
+    if (!locked)
+      return;
+    while (s_ring_len)
+    {
+      const size_t n = std::min(s_ring_len, LOG_RING - s_ring_head);
+      (void)!write(s_log_fd, s_ring + s_ring_head, n);
+      s_ring_head = (s_ring_head + n) % LOG_RING;
+      s_ring_len -= n;
+    }
+    pthread_mutex_unlock(&s_ring_lock);
+    return;
+  }
+  if (pthread_mutex_trylock(&s_ring_lock) != 0)
     return;
   while (s_ring_len)
   {
@@ -780,6 +887,25 @@ extern "C" void pshakux_diag_start(const char* title_name)
   std::snprintf(log_path, sizeof(log_path), "%s/ogbox-boot.log", s_title_dir);
   std::snprintf(previous_path, sizeof(previous_path), "%s/ogbox-boot.previous.log", s_title_dir);
   struct stat log_st;
+  // 0.0.7: Settings > Advanced > Boot log ("log_mode": "always", or kept in memory, the default);
+  // boot.txt's env OGBOX_LOG=file writes it whatever the setting
+  {
+    bool always = false;
+    if (FILE* f = std::fopen("/data/ogbox/settings.txt", "r"))
+    {
+      char l[256];
+      while (std::fgets(l, sizeof(l), f))
+      {
+        if (std::strncmp(l, "log_mode=always", 15) == 0)
+          always = true;
+      }
+      std::fclose(f);
+    }
+    const char* e = std::getenv("OGBOX_LOG");
+    if (e && std::strcmp(e, "file") == 0)
+      always = true;
+    s_memory.store(!always, std::memory_order_release);
+  }
   s_continued = s_continue && stat(log_path, &log_st) == 0 && log_st.st_size < LOG_CONTINUE_MAX;
   if (s_continued)
   {
@@ -864,6 +990,15 @@ extern "C" void pshakux_diag_start(const char* title_name)
   s_getthreadid = reinterpret_cast<ThreadIdFn>(PS5SystemModules::FindFunction("libkernel", "pthread_getthreadid_np", "3eqs37G74-s"));
 #endif
 
+  // 0.0.7: kept in memory: one line in the file says so (the rest only if something goes wrong)
+  if (s_log_fd >= 0 && s_memory.load(std::memory_order_acquire))
+  {
+    char note[200];
+    const int k = std::snprintf(note, sizeof(note), "[log: this session's log is kept in memory and written here only if "
+                                "something goes wrong (Settings > Advanced > Boot log)]\n");
+    if (k > 0)
+      (void)!write(s_log_fd, note, static_cast<size_t>(k));
+  }
   LogHeader();
   if (s_log_fd < 0)
     pshakux_log("boot log: %s cannot be written (%s): klog only", log_path, std::strerror(errno));
@@ -922,4 +1057,27 @@ extern "C" void pshakux_diag_session_end(int status)
   Forward(0.5);
   if (s_log_fd >= 0)
     fsync(s_log_fd);
+}
+
+// OGBox 0.0.7: the memory log into the file now, and the session's lines to the file from here on.
+extern "C" int pshakux_log_keep(const char* why)
+{
+  if (s_log_fd < 0 || !s_memory.load(std::memory_order_acquire))
+    return 0;
+  pthread_mutex_lock(&s_ring_lock);
+  if (s_memory.load(std::memory_order_acquire))
+  {
+    RingWriteOut();   // (the ring's lines into the memory log)
+    s_memory.store(false, std::memory_order_release);
+    HistWriteOut(s_log_fd, why);
+  }
+  pthread_mutex_unlock(&s_ring_lock);
+  fsync(s_log_fd);
+  pshakux_log("boot log: written to the file from here on (%s)", why ? why : "asked");
+  return 1;
+}
+
+extern "C" int pshakux_log_in_memory(void)
+{
+  return s_memory.load(std::memory_order_acquire) ? 1 : 0;
 }

@@ -283,6 +283,20 @@ Added
 - Settings > Picture and sound > Display refresh rate (60 Hz, or 120 Hz for a TV that takes it) and
   Variable refresh rate (at 120 Hz). They take effect at the next start of OGBox; the boot log's
   `display:` lines say what was asked. The game itself keeps its speed at 120 Hz.
+- Settings change during a game: the picture's (aspect, anti-aliasing, upscaling, FPS counter, frame
+  generation) at once; the others (internal resolution, dithering, ...) put Apply Changes Now at the
+  top of the quick menu, which restarts the game from where it is with them.
+- The quick menu shows what you choose, in your order: TRIANGLE in it shows or hides each entry
+  (any game setting too, changed with left and right) and moves it.
+- Settings > Advanced > Boot log: kept in memory and written to `ogbox-boot.log` only when something
+  goes wrong (a crash, a failed game, 15 s without a new frame, or the quick menu's Save the Log),
+  the default; or always written, as before.
+- GTA San Andreas mods: 60 fps, 120 fps, no heat haze, no colour filter, no speed blur (USA and
+  Europe Rev 1), draw distance x2 (USA).
+
+Changed
+- The start screen: the logo fades in and a light crosses it, "by Press5elect" under it; the start
+  notice is gone.
 
 ### 0.0.6
 

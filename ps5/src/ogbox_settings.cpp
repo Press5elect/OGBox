@@ -128,6 +128,12 @@ std::vector<Option> makeOptions()
 			{ "fr", "Fran\xC3\xA7" "ais" }, { "es", "Espa\xC3\xB1ol" }, { "it", "Italiano" }, { "ko", "Korean" },
 			{ "zh", "Chinese" }, { "pt", "Portugu\xC3\xAAs" } },
 		"auto", true });
+	/* 0.0.7: the boot log kept in memory, written only when something goes wrong (ps5_bootlog.cpp) */
+	o.push_back({ "log_mode", Section::Performance, "Boot log",
+		"Only when something goes wrong: the log is kept in memory and written to ogbox-boot.log only after a crash, a "
+		"failed game, 15 s without a new frame, or the quick menu's Save the Log (no writing to the drive otherwise). "
+		"Always written: every line goes to the file as it happens. Takes effect at the next start of OGBox.",
+		{ { "problems", "Only when something goes wrong" }, { "always", "Always written" } }, "problems", false });
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 128 MB only when a patch needs it to run. 64 MB: the Xbox's default.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });

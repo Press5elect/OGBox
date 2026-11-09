@@ -3495,6 +3495,9 @@ public:
 			lastState = state;
 			pshakux_log("ogbox: core %s%s%s", stateName(state), pshx_core_message()[0] ? ": " : "",
 				pshx_core_message());
+			if (state == PSHX_CORE_FAILED) {
+				pshakux_log_keep("the game failed");   // 0.0.7: a log kept in memory goes to the file
+			}
 		}
 		if (!relaunchAsked && pshx_core_relaunch_wanted()) {
 			relaunchForGuest();
@@ -3534,6 +3537,16 @@ public:
 			}
 			probeThisStall = 0;
 			return;
+		}
+		/* 0.0.7: the menu pauses the game: no frames is no stall then */
+		if (qm.open || qm.sub != Quick::Sub::None) {
+			probeLastFrame = now;
+			return;
+		}
+		/* 0.0.7: a log kept in memory goes to the file after 15 s with no new frame (a freeze) */
+		if (havePicture && state == PSHX_CORE_RUNNING && probeLastFrame >= 0.0 && now - probeLastFrame > 15.0 &&
+			pshakux_log_in_memory()) {
+			pshakux_log_keep("the game gave no new frame for 15 s (frozen?)");
 		}
 		if (!probeWanted || !havePicture || state != PSHX_CORE_RUNNING || probeLastFrame < 0.0 ||
 			now - probeLastFrame < 0.4 || now < probeNext || probeThisStall >= 8 || probeTotal >= 400) {
@@ -4260,13 +4273,14 @@ public:
 
 	/* 0.0.6: the rows shown, in order; the state slot (LEFT and RIGHT on Save State and Load State choose it)
 	 * and "Where you left off" (the game's start offers it) aren't rows any more */
-	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT, QR_COUNT, QR_SLOT, QR_LEFT,
+	enum QuickRow { QR_RESUME, QR_SAVE, QR_LOAD, QR_SETTINGS, QR_MODS, QR_DRAWLOG, QR_RESTART, QR_QUIT, QR_SAVELOG, QR_COUNT, QR_SLOT, QR_LEFT,
 		QR_APPLY, QR_OPT };
 	/* 0.0.7: the quick menu's entries: its actions (by QuickRow) and settings, as Settings > Interface >
 	 * Quick menu layout ("quick_layout") orders them; "Apply changes now" first while a change waits */
-	static constexpr const char *kQuickActions[QR_COUNT] = { "resume", "save", "load", "settings", "mods", "drawlog", "restart", "quit" };
+	static constexpr const char *kQuickActions[QR_COUNT] = { "resume", "save", "load", "settings", "mods", "drawlog", "restart", "quit",
+		"savelog" };
 	static constexpr const char *kQuickDefault =
-		"resume,save,load,opt:render_scale,opt:framegen,opt:fxaa,opt:upscale,settings,mods,drawlog,restart,quit";
+		"resume,save,load,opt:render_scale,opt:framegen,opt:fxaa,opt:upscale,settings,mods,savelog,restart,quit";
 	struct QuickEntry {
 		std::string id;
 		int action{ QR_OPT };
@@ -4476,6 +4490,7 @@ public:
 		}
 		qm.open = true;
 		qm.sel = QR_RESUME;
+		qm.edit = false;   // 0.0.7: it opens as the menu, never in its editing
 		qm.openedAt = now_seconds();
 		qm.optionsDown = false;
 		qm.restartArmed = 0.0;
@@ -4504,6 +4519,9 @@ public:
 	{
 		if (!qm.open) {
 			return;
+		}
+		if (qm.edit) {
+			quickEditSave();   // 0.0.7: closed while editing: the layout kept, the editing over
 		}
 		qm.open = false;
 		qm.sub = Quick::Sub::None;
@@ -4841,6 +4859,15 @@ public:
 			modsInput(navPressed());   // CIRCLE back to the quick menu
 			return;
 		}
+		/* 0.0.7: editing the menu: CIRCLE, TRIANGLE or OPTIONS keep the layout and go back to the menu */
+		if (qm.edit) {
+			if (pressed & PAD_OPTIONS) {
+				quickEditSave();
+				return;
+			}
+			quickEditInput(pressed);
+			return;
+		}
 		/* OPTIONS closes it when pressed in it; CIRCLE too */
 		if (pressed & PAD_OPTIONS) {
 			qm.optionsDown = true;
@@ -4848,10 +4875,6 @@ public:
 		if ((qm.optionsDown && !(held & PAD_OPTIONS) && !(pressed & PAD_OPTIONS)) || (pressed & PAD_CIRCLE)) {
 			qm.optionsDown = false;
 			quickClose();
-			return;
-		}
-		if (qm.edit) {
-			quickEditInput(pressed);
 			return;
 		}
 		if (pressed & PAD_TRIANGLE) {
@@ -4891,6 +4914,10 @@ public:
 		switch (action) {
 		case QR_APPLY:
 			quickApply();
+			break;
+		case QR_SAVELOG:   // 0.0.7: the log kept in memory, into ogbox-boot.log
+			showToast(pshakux_log_keep("asked for in the quick menu") ? "The log is saved: ogbox-boot.log in OGBox's folder"
+			                                                          : "The log is already being written: ogbox-boot.log");
 			break;
 		case QR_RESUME:
 			quickClose();
@@ -4989,6 +5016,7 @@ public:
 			{ "drawlog", "Log What the GPU Draws", "debugging only", ui::Icon::Info, false },
 			{ "restart", restartArmed ? "Restart: press again" : "Restart the Game", "", ui::Icon::Restart, false },
 			{ "quit", "Quit the Game", "", ui::Icon::Power, false },
+			{ "savelog", "Save the Log", pshakux_log_in_memory() ? "for a problem report" : "being written", ui::Icon::Info, false },
 		};
 		/* 0.0.7: TRIANGLE: every entry, shown or not, to choose them and their order */
 		auto entryRow = [&](const QuickEntry &e) {
@@ -6325,7 +6353,7 @@ public:
 				{ "Clock", { "clock_days", "clock_hours" } } };
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
-				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth",
+				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
 					"audio_resampler", "console_ram" } },
 			};
 			std::vector<std::string> other;
@@ -6419,8 +6447,8 @@ public:
 			const bool ssaaWas = ssaaOn;
 			readPictureSettings();
 			refreshFrameGen(k);
-			if (ssaaOn != ssaaWas && !qm.applyPending) {
-				qm.applyPending = true;   // (SSAA also raises the internal resolution, at the game's start)
+			if (ssaaOn != ssaaWas) {
+				markApply();   // (SSAA also raises the internal resolution, at the game's start)
 			}
 			return;
 		}
@@ -6428,8 +6456,20 @@ public:
 			o.section == ogbox::Section::Audio || o.section == ogbox::Section::Console || o.section == ogbox::Section::Video ||
 			o.section == ogbox::Section::Network;
 		if (core && !qm.applyPending) {
-			qm.applyPending = true;
+			markApply();
 			pshakux_log("settings: %s changes at the game's next start: the quick menu offers to apply it now", k.c_str());
+		}
+	}
+
+	/* "Apply Changes Now" comes in at the top of the quick menu: the cursor stays on the entry it was on */
+	void markApply()
+	{
+		if (qm.applyPending) {
+			return;
+		}
+		qm.applyPending = true;
+		if (!qm.edit) {
+			qm.sel++;
 		}
 	}
 
