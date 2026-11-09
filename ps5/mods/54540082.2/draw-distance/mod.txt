@@ -1,0 +1,8 @@
+name: Draw distance x2
+description: The world is drawn twice as far before it fades into the haze (the time cycle's far clip and fog start doubled, at most 2000). Distant hills and buildings show from much further away. Heavier on the console in the open.
+author: Press5elect
+
+# GTA San Andreas (USA, 54540082 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# files/data/timecyc.dat: the disc's, with each time and weather's FarClp and FogSt (the
+# 28th and 29th numbers of its lines) doubled; nothing else changed.
