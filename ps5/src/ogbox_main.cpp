@@ -1076,6 +1076,7 @@ public:
 	// a run's picture and overlay (the settings' Graphics and Interface)
 	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };   // (0.0.6: FSR1's EASU in SGSR's place)
 	VkPipeline pipelineSharp{ VK_NULL_HANDLE };                                  // 0.0.6: Bilinear (Sharp)
+	VkPipeline pipelineLogo{ VK_NULL_HANDLE };                                   // 0.0.7: the start's logo, faded and shining
 	std::string aspectMode{ "auto" };
 	bool fxaaOn{ false }, sgsrOn{ false }, showFps{ true }, rainOn{ true };
 	std::string fpsCorner{ "1" };   // 0.0.6: Settings' FPS counter: "tl", "1" (top right), "bl", "br"
@@ -1838,7 +1839,7 @@ public:
 			 * splash (or the first start's question) */
 			/* 0.0.6: only once a version (a fresh install, or after an update): the version it was read
 			 * for is kept in /data/ogbox/notice-seen.txt */
-			if (!boot.back && noticeSeenFor() != pshakux_build_label()) {
+			if (false && !boot.back && noticeSeenFor() != pshakux_build_label()) {   // 0.0.7: no notice (Press5elect)
 				afterNotice = screen;
 				screen = Screen::Notice;
 				screenSince = now_seconds();
@@ -1989,6 +1990,7 @@ public:
 		vkDestroyPipeline(device, pipelineFxaa, nullptr);
 		vkDestroyPipeline(device, pipelineSgsr, nullptr);
 		vkDestroyPipeline(device, pipelineSharp, nullptr);
+		vkDestroyPipeline(device, pipelineLogo, nullptr);
 		destroySmaa();
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -2209,7 +2211,7 @@ public:
 		const struct {
 			const char *file;
 			VkPipeline *out;
-		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp },
+		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp }, { "ogbox/logo.frag.spv", &pipelineLogo },
 			{ "ogbox/ssaa.frag.spv", &pipelineSsaa } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -2754,7 +2756,7 @@ public:
 				h = std::floor(w / aspect + 0.5f);
 			}
 			const float x = std::floor((static_cast<float>(width) - w) * 0.5f);
-			const float y = splash ? std::floor(static_cast<float>(height) * 0.12f) : std::floor((static_cast<float>(height) - h) * 0.5f);
+			const float y = splash ? std::floor(static_cast<float>(height) * kSplashTop) : std::floor((static_cast<float>(height) - h) * 0.5f);
 			VkViewport viewport{ x, y, w, h, 0.0f, 1.0f };
 			if (cropOn && ((havePicture && !showingLogo) || showingFrozen)) {
 				/* the overscan cropped: the picture drawn 1 / (1 - 2 * 3/80) larger about its
@@ -2783,9 +2785,16 @@ public:
 					chosen = pipelineSsaa;   // averaged down over every texel a pixel covers
 				}
 			}
+			if (splash && pipelineLogo != VK_NULL_HANDLE) {
+				chosen = pipelineLogo;
+			}
 			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
 			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
-			if (chosen == pipelineSsaa || chosen == pipelineSharp) {
+			if (chosen == pipelineLogo) {
+				const SplashTimes st = splashTimes(static_cast<float>(now_seconds() - screenSince));
+				const float params[4] = { st.logo, st.shine, 0.0f, 0.0f };
+				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params), params);
+			} else if (chosen == pipelineSsaa || chosen == pipelineSharp) {
 				const float metrics[4] = { 0.0f, 0.0f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			}
@@ -2962,7 +2971,7 @@ public:
 		switch (screen) {
 		case Screen::Boot:
 			/* CROSS or CIRCLE skips the splash (0.0.1: no longer said on it) */
-			if ((pressed & (PAD_CROSS | PAD_CIRCLE)) || now_seconds() - screenSince > 3.2) {
+			if ((pressed & (PAD_CROSS | PAD_CIRCLE)) || now_seconds() - screenSince > kSplashLength) {
 				screen = Screen::Library;
 				screenSince = now_seconds();
 			}
@@ -3614,19 +3623,39 @@ public:
 		}
 	}
 
-	/* The boot screen: the logo (the presenter's), a bar filling, the start's lines typed. */
+	/* 0.0.7: the start: the logo fades in, a light crosses it from left to right, "by Press5elect" fades in
+	 * under it, and all of it fades out into the game list (kSplashLength; CROSS or CIRCLE sooner). */
+	static constexpr float kSplashTop = 0.17f;      // the logo's box from the top, in screen heights
+	static constexpr float kSplashLength = 3.4f;    // seconds
+	struct SplashTimes {
+		float logo, shine, byline;
+	};
+	static float ease(float a, float b, float t)   // 0 before a, 1 after b, smooth between
+	{
+		const float x = std::max(0.0f, std::min(1.0f, (t - a) / (b - a)));
+		return x * x * (3.0f - 2.0f * x);
+	}
+	static SplashTimes splashTimes(float t)
+	{
+		const float out = 1.0f - ease(kSplashLength - 0.5f, kSplashLength, t);
+		SplashTimes s;
+		s.logo = ease(0.0f, 1.0f, t) * out;
+		s.shine = -0.35f + 1.75f * ease(0.6f, 2.0f, t);   // from left of the logo to right of it
+		s.byline = ease(1.3f, 2.1f, t) * out;
+		return s;
+	}
+
+	/* The boot screen: the logo (the presenter's, logo.frag) and Press5elect's name under it. */
 	void drawBoot()
 	{
 		const float W = static_cast<float>(width), H = static_cast<float>(height);
 		const float aspect = logoWidth && logoHeight ? static_cast<float>(logoWidth) / static_cast<float>(logoHeight) : 1.5f;
 		const float logoH = H * 0.46f, logoW = std::min(W, logoH * aspect);
 		ui::BootView v;
-		v.logoBox = ImVec4((W - logoW) * 0.5f, H * 0.12f, logoW, logoH);   // as buildCommandBuffer places it
+		v.logoBox = ImVec4((W - logoW) * 0.5f, H * kSplashTop, logoW, logoH);   // as buildCommandBuffer places it
 		v.elapsed = static_cast<float>(now_seconds() - screenSince);
-		v.progress = std::min(1.0f, v.elapsed / 2.6f);
-		v.left = "Starting the Xbox";
-		v.right = std::string("OGBox ") + pshakux_build_label();
-		v.lines = bootLines;
+		v.progress = splashTimes(v.elapsed).byline;   // (the byline's opacity)
+		v.right = "by Press5elect";
 		ImDrawList *dl = beginUiScreen("##boot", Ground::None);
 		if (themeCode) {
 			drawRain(dl, 0.9f, v.logoBox);

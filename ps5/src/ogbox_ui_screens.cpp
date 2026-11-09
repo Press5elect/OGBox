@@ -176,37 +176,23 @@ void drawNotice(ImDrawList *dl, ImVec2 S, const NoticeView &v)
 
 void drawBoot(ImDrawList *dl, ImVec2 S, const BootView &v)
 {
+	/* 0.0.7: only the byline (v.right) under the logo, its opacity v.progress, its letters spaced */
 	const Palette &p = P();
-	const float bw = S.x * 0.30f, bh = px(6.0f);
-	const float bx = (S.x - bw) * 0.5f;
-	const float by = v.logoBox.w > 0.0f ? v.logoBox.y + v.logoBox.w + px(56.0f) : S.y * 0.62f;
-	const float fs = px(15.0f);
-	label(dl, px(13.0f), ImVec2(bx, by - px(32.0f)), p.textFaint, v.left);
-	if (!v.right.empty()) {
-		const ImVec2 ts = measure(F::Small, fs, v.right.c_str());
-		text(dl, F::Small, fs, ImVec2(bx + bw - ts.x, by - px(34.0f)), p.textFaint, v.right.c_str());
+	if (v.right.empty() || v.progress <= 0.0f) {
+		return;
 	}
-	progress(dl, ImVec2(bx, by), ImVec2(bx + bw, by + bh), v.progress);
-	// the start's lines, typed one after another, at the foot
-	const float lfs = px(15.5f), lh = lfs * 1.55f;
-	float y = S.y - px(64.0f) - lh * static_cast<float>(v.lines.size());
-	double start = 0.15;
-	for (const std::string &line : v.lines) {
-		const double shown = (static_cast<double>(v.elapsed) - start) * 110.0;   // characters a second
-		start += static_cast<double>(line.size()) / 110.0 + 0.06;
-		if (shown <= 0.0) {
-			break;
-		}
-		const size_t n = std::min(line.size(), static_cast<size_t>(shown));
-		text(dl, F::Small, lfs, ImVec2(px(grid::margin), y), p.textFaint, line.c_str(), line.c_str() + n);
-		if (n < line.size()) {
-			const float cx = px(grid::margin) + measure(F::Small, lfs, line.c_str(), line.c_str() + n).x + px(2.0f);
-			if (std::fmod(now(), 1.0) < 0.6) {
-				dl->AddRectFilled(ImVec2(cx, y + px(2.0f)), ImVec2(cx + px(9.0f), y + lfs), p.accent);
-			}
-			break;
-		}
-		y += lh;
+	const float fs = px(26.0f), gap = px(5.0f);
+	float w = 0.0f;
+	for (const char *c = v.right.c_str(); *c; c++) {
+		w += measure(F::Body, fs, c, c + 1).x + gap;
+	}
+	w -= gap;
+	const float top = v.logoBox.w > 0.0f ? v.logoBox.y + v.logoBox.w + px(28.0f) : S.y * 0.7f;
+	float x = (S.x - w) * 0.5f;
+	const float rise = (1.0f - v.progress) * px(10.0f);
+	for (const char *c = v.right.c_str(); *c; c++) {
+		text(dl, F::Body, fs, ImVec2(x, top + rise), alpha(p.textDim, v.progress), c, c + 1);
+		x += measure(F::Body, fs, c, c + 1).x + gap;
 	}
 }
 
