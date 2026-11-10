@@ -68,3 +68,5 @@ disc). OGBox checks what it can against the disc before a mod or a cheat can be 
 ## The mods
 
 - `45410083.2/60fps-test`: BLACK (USA), the 60 fps test without injected code (Press5elect).
+- `4D530051.2/orphan-free-fix`: Conker: Live and Reloaded (v2), a game fix: a texture release that no
+  heap owns is skipped instead of crashing the game (Press5elect).
