@@ -201,6 +201,8 @@ native core's work tree (oldest first; author: subject):
   fbeab56d28 Claude: nv2a: the vblank thread no longer says its next rise to the idle wait (nc_irq_expect off)
   71908e9b8e Claude: apu: a multichannel buffer voice's ring once a second, and the zeros it played
   3e8d27efa1 Claude: apu: the DLS2 filter's damping at most 1.0, a filter that runs away restarts from rest (NFS Carbon's sound)
+  f9cfcd1ead Claude: disc: CSO images (Stellar's) and an extracted game's folder read as a disc
+  5561ce2e61 Claude: disc: folder.c's open files' limit under a name of its own (the PS5's libc has OPEN_MAX)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -7405,7 +7407,7 @@ index 0000000000000000000000000000000000000000..e5d466cce97405df7bef1d7d1e273aab
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
 diff --git a/native/CMakeLists.txt b/native/CMakeLists.txt
-index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2e351d1ef 100644
+index 99fbd3e94af86343dc77732de34a68caf3cac117..e4740b6daedee99fdcc8bdbeb0b6243c45cd874c 100644
 --- a/native/CMakeLists.txt
 +++ b/native/CMakeLists.txt
 @@ -24,8 +24,44 @@ if(HAKUX_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -7454,7 +7456,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
  
  # libslirp (NC_DEPS/libslirp, 4.7.0, unmodified): the NAT backend's TCP/IP
  # stack (net/nat.c), on the GLib subset plus net/slirp/glib.h. Its public
-@@ -52,16 +88,22 @@ target_include_directories(nc_slirp BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
+@@ -52,16 +88,23 @@ target_include_directories(nc_slirp BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
  target_include_directories(nc_slirp PUBLIC "${CMAKE_BINARY_DIR}/slirp")
  target_link_libraries(nc_slirp PRIVATE nc_glib)
  target_compile_options(nc_slirp PRIVATE -w)
@@ -7468,6 +7470,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
    core/vm.c
    core/xdvdfs.c
 +  core/pack.c
++  core/folder.c
 +  core/chd.c
    core/xbe_load.c
    core/mods.c
@@ -7477,7 +7480,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
    core/memscan.c
    core/core.c
    core/mmio.c
-@@ -90,6 +132,7 @@ add_library(hakux_native STATIC
+@@ -90,6 +133,7 @@ add_library(hakux_native STATIC
    kernel/seh.c
    kernel/fixups.c
    kernel/x86mmio.c
@@ -7485,7 +7488,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
    kernel/timer.c
    kernel/intr.c
    kernel/apc.c
-@@ -101,24 +144,42 @@ add_library(hakux_native STATIC
+@@ -101,24 +145,42 @@ add_library(hakux_native STATIC
    state/vm_state.c
    state/save.c
    state/cache.c
@@ -8381,6 +8384,598 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7f564294286b37fb033291336e904078
          return fault_report(c, pc, va, "the title doesn't handle it");
      }
      nc_cpu_fault_resume(c->cpu, ucontext);
+diff --git a/native/core/folder.c b/native/core/folder.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f45e1143370a66c81a2fe71945dda45dcc6d9d9d
+--- /dev/null
++++ b/native/core/folder.c
+@@ -0,0 +1,555 @@
++/*
++ * hakuX native core — an extracted game's folder read as a disc (folder.h).
++ *
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
++ *
++ * The image is made as it is read, as an XISO of the folder would be laid out: the volume
++ * descriptor at sector 32, then each folder's table and each file on sectors of their own, handed
++ * out in the order they become known. A folder is listed when its parent's table is made (its own
++ * table's size is its entries'), and its table is made when it is first read, so a game's boot
++ * lists only what it opens (and the disc's folder cache, xdvdfs.c, the rest on its thread). A
++ * table's entries are sorted as the Xbox compares names (case-insensitive), each one's right child
++ * the next: a tree the console's search and hakuX's walk both read. Files are read from the host
++ * as their sectors are; at most FOLDER_OPEN_MAX of them open at once (a share's layer gives 16).
++ */
++#include "native/core/folder.h"
++#include "native/core/nc.h"
++
++#include <ctype.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#define SECTOR 2048u
++#define VD_SECTOR 32u
++#define FIRST_SECTOR 34u            /* the root's table: after the volume descriptor */
++#define ENTRY_MAX_OFF (0xFFFFu * 4u)  /* a child's offset is a u16 of dwords */
++#define FOLDER_OPEN_MAX 8
++
++typedef struct Node {
++    char *name;                     /* on the disc */
++    char *host;                     /* on the host */
++    uint64_t size;                  /* a file's bytes; a folder's table's */
++    uint32_t sector;
++    uint32_t first, count;          /* a folder's children, once listed */
++    bool dir, listed, placed;
++    uint8_t *table;                 /* a folder's, once made */
++} Node;
++
++typedef struct Extent {
++    uint32_t sector, count, node;
++} Extent;
++
++typedef struct OpenFile {
++    uint32_t node;
++    int fd;
++    uint64_t used;
++} OpenFile;
++
++struct NcFolder {
++    const NcFolderIo *io;
++    pthread_mutex_t lock;
++    Node *n;
++    uint32_t nn, ncap;
++    Extent *x;
++    uint32_t nx, xcap;
++    uint32_t next;                  /* the next free sector */
++    OpenFile open[FOLDER_OPEN_MAX];
++    uint64_t tick;
++    char *alias;                    /* the XBE to boot, there as default.xbe; NULL: default.xbe itself */
++    uint8_t vd[SECTOR];
++};
++
++typedef struct Found {
++    char *name;
++    bool dir;
++    uint64_t size;
++} Found;
++
++typedef struct Gather {
++    Found *e;
++    size_t n, cap;
++    bool nomem;
++} Gather;
++
++static void gather(void *ctx, const char *name, bool is_dir, uint64_t size)
++{
++    Gather *g = ctx;
++    const size_t len = strlen(name);
++    if (!len || len > 255 || !strcmp(name, ".") || !strcmp(name, "..")) {
++        return;
++    }
++    for (size_t i = 0; i < len; i++) {
++        if ((unsigned char)name[i] < 0x20) {
++            return;
++        }
++    }
++    if (g->n == g->cap) {
++        const size_t cap = g->cap ? g->cap * 2 : 64;
++        Found *e = realloc(g->e, cap * sizeof(*e));
++        if (!e) {
++            g->nomem = true;
++            return;
++        }
++        g->e = e;
++        g->cap = cap;
++    }
++    if (!(g->e[g->n].name = strdup(name))) {
++        g->nomem = true;
++        return;
++    }
++    g->e[g->n].dir = is_dir;
++    g->e[g->n].size = size;
++    g->n++;
++}
++
++/* The Xbox's order of names: byte by byte, letters as capitals. */
++static int name_cmp(const char *a, const char *b)
++{
++    for (;; a++, b++) {
++        const int x = toupper((unsigned char)*a), y = toupper((unsigned char)*b);
++        if (x != y || !x) {
++            return x - y;
++        }
++    }
++}
++
++static int found_cmp(const void *a, const void *b)
++{
++    return name_cmp(((const Found *)a)->name, ((const Found *)b)->name);
++}
++
++static char *join(const char *folder, const char *name)
++{
++    const size_t a = strlen(folder), b = strlen(name);
++    char *p = malloc(a + b + 2);
++    if (p) {
++        memcpy(p, folder, a);
++        p[a] = '/';
++        memcpy(p + a + 1, name, b + 1);
++    }
++    return p;
++}
++
++static uint32_t entry_len(const char *name)
++{
++    return (14u + (uint32_t)strlen(name) + 3u) & ~3u;
++}
++
++/* A table's size for these names in this order, and each entry's offset (offs may be NULL). */
++static uint32_t table_layout(const Node *n, uint32_t first, uint32_t count, uint32_t *offs)
++{
++    uint32_t off = 0;
++    for (uint32_t k = 0; k < count; k++) {
++        const uint32_t len = entry_len(n[first + k].name);
++        if (off % SECTOR + len > SECTOR) {
++            off = (off + SECTOR - 1) / SECTOR * SECTOR;    /* an entry stays in its sector */
++        }
++        if (offs) {
++            offs[k] = off;
++        }
++        off += len;
++    }
++    const uint32_t size = (off + SECTOR - 1) / SECTOR * SECTOR;
++    return size ? size : SECTOR;    /* an empty folder: a sector of padding, as extract-xiso writes */
++}
++
++static bool grow_nodes(NcFolder *f, uint32_t more)
++{
++    if (f->nn + more <= f->ncap) {
++        return true;
++    }
++    uint32_t cap = f->ncap ? f->ncap : 256;
++    while (cap < f->nn + more) {
++        cap *= 2;
++    }
++    Node *n = realloc(f->n, cap * sizeof(*n));
++    if (!n) {
++        return false;
++    }
++    f->n = n;
++    f->ncap = cap;
++    return true;
++}
++
++/* A folder's children (its table's size with them). In the root, the XBE to boot is there as
++ * default.xbe too, in the place of the folder's own default.xbe. */
++static bool node_list(NcFolder *f, uint32_t i)
++{
++    if (f->n[i].listed) {
++        return true;
++    }
++    f->n[i].listed = true;
++    f->n[i].size = SECTOR;
++    Gather g = {0};
++    const bool ok = f->io->list(f->n[i].host, gather, &g) && !g.nomem;
++    if (!ok) {
++        nc_log("hakuX-native", "disc: the folder %s can't be listed: read as empty", f->n[i].host);
++    }
++    if (ok && i == 0 && f->alias) {
++        const char *source = NULL;
++        uint64_t size = 0;
++        for (size_t k = 0; k < g.n; k++) {
++            if (!g.e[k].dir && !name_cmp(g.e[k].name, f->alias)) {
++                source = g.e[k].name;
++                size = g.e[k].size;
++            }
++        }
++        if (source) {
++            for (size_t k = 0; k < g.n; k++) {
++                if (!name_cmp(g.e[k].name, "default.xbe")) {
++                    free(g.e[k].name);
++                    g.e[k] = g.e[--g.n];
++                    break;
++                }
++            }
++            /* the host name of the XBE, as default.xbe: its node's host path is fixed below */
++            gather(&g, "default.xbe", false, size);
++        }
++    }
++    if (g.n) {
++        qsort(g.e, g.n, sizeof(*g.e), found_cmp);
++    }
++    uint32_t count = 0;
++    if (!grow_nodes(f, (uint32_t)g.n)) {
++        g.n = 0;
++    }
++    const uint32_t first = f->nn;
++    uint32_t off = 0;
++    for (size_t k = 0; k < g.n; k++) {
++        if (count && !name_cmp(g.e[k].name, f->n[first + count - 1].name)) {
++            continue;                   /* the same name but for its case (a case-sensitive host) */
++        }
++        if (!g.e[k].dir && g.e[k].size > 0xFFFFFFFFull) {
++            nc_log("hakuX-native", "disc: %s/%s is over 4 GiB: left out", f->n[i].host, g.e[k].name);
++            continue;
++        }
++        const uint32_t len = entry_len(g.e[k].name);
++        if (off % SECTOR + len > SECTOR) {
++            off = (off + SECTOR - 1) / SECTOR * SECTOR;
++        }
++        if (off > ENTRY_MAX_OFF) {
++            nc_log("hakuX-native", "disc: %s has more entries than a disc's folder holds: the rest left out",
++                   f->n[i].host);
++            break;
++        }
++        off += len;
++        Node *c = &f->n[first + count];
++        memset(c, 0, sizeof(*c));
++        const bool alias = i == 0 && f->alias && !name_cmp(g.e[k].name, "default.xbe");
++        c->name = strdup(alias ? "default.xbe" : g.e[k].name);
++        c->host = join(f->n[i].host, alias ? f->alias : g.e[k].name);
++        if (!c->name || !c->host) {
++            free(c->name);
++            free(c->host);
++            break;
++        }
++        c->dir = g.e[k].dir;
++        c->size = c->dir ? 0 : g.e[k].size;
++        count++;
++    }
++    for (size_t k = 0; k < g.n; k++) {
++        free(g.e[k].name);
++    }
++    free(g.e);
++    f->nn = first + count;
++    f->n[i].first = first;
++    f->n[i].count = count;
++    f->n[i].size = table_layout(f->n, first, count, NULL);
++    return ok;
++}
++
++/* The node's sectors handed out (a folder listed first: its table's size). */
++static bool node_place(NcFolder *f, uint32_t i)
++{
++    Node *n = &f->n[i];
++    if (n->placed) {
++        return true;
++    }
++    const uint64_t count = (n->size + SECTOR - 1) / SECTOR;
++    if (!count) {
++        n->placed = true;           /* an empty file: sector 0, nothing to read */
++        return true;
++    }
++    if ((uint64_t)f->next + count > 0xFFFFFFFFull) {
++        return false;
++    }
++    if (f->nx == f->xcap) {
++        const uint32_t cap = f->xcap ? f->xcap * 2 : 256;
++        Extent *x = realloc(f->x, cap * sizeof(*x));
++        if (!x) {
++            return false;
++        }
++        f->x = x;
++        f->xcap = cap;
++    }
++    n->sector = f->next;
++    n->placed = true;
++    f->x[f->nx++] = (Extent){f->next, (uint32_t)count, i};
++    f->next += (uint32_t)count;
++    return true;
++}
++
++static void wr16(uint8_t *p, uint32_t v)
++{
++    p[0] = (uint8_t)v;
++    p[1] = (uint8_t)(v >> 8);
++}
++
++static void wr32(uint8_t *p, uint32_t v)
++{
++    wr16(p, v);
++    wr16(p + 2, v >> 16);
++}
++
++/* A folder's table: its children placed (its folders listed for their tables' sizes), then their
++ * entries. */
++static bool node_build(NcFolder *f, uint32_t i)
++{
++    if (f->n[i].table) {
++        return true;
++    }
++    const uint32_t first = f->n[i].first, count = f->n[i].count;
++    for (uint32_t k = 0; k < count; k++) {
++        if (f->n[first + k].dir) {
++            node_list(f, first + k);
++        }
++        if (!node_place(f, first + k)) {
++            return false;
++        }
++    }
++    const uint32_t size = (uint32_t)f->n[i].size;
++    uint8_t *t = malloc(size);
++    uint32_t *offs = malloc((count ? count : 1) * sizeof(*offs));
++    if (!t || !offs) {
++        free(t);
++        free(offs);
++        return false;
++    }
++    memset(t, 0xFF, size);
++    table_layout(f->n, first, count, offs);
++    for (uint32_t k = 0; k < count; k++) {
++        const Node *c = &f->n[first + k];
++        uint8_t *e = t + offs[k];
++        const size_t len = strlen(c->name);
++        wr16(e, 0);
++        wr16(e + 2, k + 1 < count ? offs[k + 1] / 4u : 0);
++        wr32(e + 4, c->sector);
++        wr32(e + 8, (uint32_t)c->size);
++        e[12] = c->dir ? 0x10 : 0x20;
++        e[13] = (uint8_t)len;
++        memcpy(e + 14, c->name, len);
++    }
++    free(offs);
++    f->n[i].table = t;
++    return true;
++}
++
++static const Extent *extent_at(const NcFolder *f, uint32_t sector)
++{
++    uint32_t lo = 0, hi = f->nx;
++    while (lo < hi) {
++        const uint32_t mid = (lo + hi) / 2;
++        if (f->x[mid].sector <= sector) {
++            lo = mid + 1;
++        } else {
++            hi = mid;
++        }
++    }
++    if (!lo) {
++        return NULL;
++    }
++    const Extent *e = &f->x[lo - 1];
++    return sector < e->sector + e->count ? e : NULL;
++}
++
++/* A file's descriptor: kept open, the least used of FOLDER_OPEN_MAX closed for it. */
++static int file_fd(NcFolder *f, uint32_t node)
++{
++    OpenFile *spare = &f->open[0];
++    for (unsigned k = 0; k < FOLDER_OPEN_MAX; k++) {
++        OpenFile *o = &f->open[k];
++        if (o->fd >= 0 && o->node == node) {
++            o->used = ++f->tick;
++            return o->fd;
++        }
++        if (o->fd < 0 || (spare->fd >= 0 && o->used < spare->used)) {
++            spare = o;
++        }
++    }
++    if (spare->fd >= 0) {
++        f->io->close(spare->fd);
++        spare->fd = -1;
++    }
++    const int fd = f->io->open(f->n[node].host);
++    if (fd < 0) {
++        nc_log("hakuX-native", "disc: %s can't be opened", f->n[node].host);
++        return -1;
++    }
++    *spare = (OpenFile){node, fd, ++f->tick};
++    return fd;
++}
++
++static bool pread_all(int fd, uint8_t *p, size_t len, uint64_t off)
++{
++    while (len) {
++        const ssize_t n = pread(fd, p, len, (off_t)off);
++        if (n <= 0) {
++            return false;
++        }
++        p += n;
++        len -= (size_t)n;
++        off += (uint64_t)n;
++    }
++    return true;
++}
++
++bool nc_folder_read(NcFolder *f, void *buf, size_t len, uint64_t off)
++{
++    uint8_t *out = buf;
++    bool ok = true;
++    pthread_mutex_lock(&f->lock);
++    while (len && ok) {
++        const uint64_t sector64 = off / SECTOR;
++        const uint32_t in = (uint32_t)(off % SECTOR);
++        size_t n = SECTOR - in < len ? SECTOR - in : len;
++        if (sector64 < FIRST_SECTOR || sector64 > 0xFFFFFFFFull) {
++            if (sector64 == VD_SECTOR) {
++                memcpy(out, f->vd + in, n);
++            } else {
++                memset(out, 0, n);
++            }
++        } else {
++            const uint32_t sector = (uint32_t)sector64;
++            const Extent *e = extent_at(f, sector);
++            if (!e) {
++                memset(out, 0, n);      /* past what is handed out */
++            } else {
++                const uint64_t at = (uint64_t)(sector - e->sector) * SECTOR + in;
++                const uint64_t room = (uint64_t)e->count * SECTOR - at;
++                n = room < len ? (size_t)room : len;
++                const uint32_t node = e->node;
++                if (f->n[node].dir) {
++                    ok = node_build(f, node);
++                    if (ok) {
++                        memcpy(out, f->n[node].table + at, n);
++                    }
++                } else {
++                    const uint64_t size = f->n[node].size;
++                    const size_t data = at < size ? (size - at < n ? (size_t)(size - at) : n) : 0;
++                    if (data) {
++                        const int fd = file_fd(f, node);
++                        ok = fd >= 0 && pread_all(fd, out, data, at);
++                    }
++                    memset(out + data, 0, n - data);
++                }
++            }
++        }
++        out += n;
++        off += n;
++        len -= n;
++    }
++    pthread_mutex_unlock(&f->lock);
++    return ok;
++}
++
++static int posix_open(const char *path)
++{
++    return open(path, O_RDONLY | O_CLOEXEC);
++}
++
++static void posix_close(int fd)
++{
++    close(fd);
++}
++
++static bool posix_list(const char *path, void (*fn)(void *, const char *, bool, uint64_t), void *ctx)
++{
++    DIR *d = opendir(path);
++    if (!d) {
++        return false;
++    }
++    for (struct dirent *e; (e = readdir(d));) {
++        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) {
++            continue;
++        }
++        char *p = join(path, e->d_name);
++        struct stat st;
++        if (p && stat(p, &st) == 0) {
++            fn(ctx, e->d_name, S_ISDIR(st.st_mode), S_ISREG(st.st_mode) ? (uint64_t)st.st_size : 0);
++        }
++        free(p);
++    }
++    closedir(d);
++    return true;
++}
++
++const NcFolderIo nc_folder_posix_io = {posix_open, posix_close, posix_list};
++
++NcFolder *nc_folder_open(const char *folder, const char *xbe, const NcFolderIo *io)
++{
++    NcFolder *f = calloc(1, sizeof(*f));
++    if (!f) {
++        return NULL;
++    }
++    f->io = io ? io : &nc_folder_posix_io;
++    pthread_mutex_init(&f->lock, NULL);
++    for (unsigned k = 0; k < FOLDER_OPEN_MAX; k++) {
++        f->open[k].fd = -1;
++    }
++    f->next = FIRST_SECTOR;
++    if (xbe && *xbe && name_cmp(xbe, "default.xbe")) {
++        f->alias = strdup(xbe);
++    }
++    if (!grow_nodes(f, 1)) {
++        nc_folder_close(f);
++        return NULL;
++    }
++    Node *root = &f->n[0];
++    memset(root, 0, sizeof(*root));
++    root->name = strdup("");
++    root->host = strdup(folder);
++    root->dir = true;
++    f->nn = 1;
++    if (!root->name || !root->host || !node_list(f, 0) || !node_place(f, 0)) {
++        nc_folder_close(f);
++        return NULL;
++    }
++    static const char magic[] = "MICROSOFT*XBOX*MEDIA";
++    memcpy(f->vd, magic, 20);
++    wr32(f->vd + 20, f->n[0].sector);
++    wr32(f->vd + 24, (uint32_t)f->n[0].size);
++    memcpy(f->vd + 0x7EC, magic, 20);
++    nc_log("hakuX-native", "disc: the folder %s read as a disc (%u entries at its root%s%s)", folder,
++           f->n[0].count, f->alias ? ", booting " : "", f->alias ? f->alias : "");
++    return f;
++}
++
++void nc_folder_close(NcFolder *f)
++{
++    if (!f) {
++        return;
++    }
++    for (unsigned k = 0; k < FOLDER_OPEN_MAX; k++) {
++        if (f->open[k].fd >= 0) {
++            f->io->close(f->open[k].fd);
++        }
++    }
++    for (uint32_t i = 0; i < f->nn; i++) {
++        free(f->n[i].name);
++        free(f->n[i].host);
++        free(f->n[i].table);
++    }
++    free(f->n);
++    free(f->x);
++    free(f->alias);
++    pthread_mutex_destroy(&f->lock);
++    free(f);
++}
+diff --git a/native/core/folder.h b/native/core/folder.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..193969311abbc007f1bfab90f834e5979a9db249
+--- /dev/null
++++ b/native/core/folder.h
+@@ -0,0 +1,25 @@
++/*
++ * hakuX native core — an extracted game's folder read as a disc (OGBox 0.0.8).
++ *
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
++ *
++ * The bytes of an XDVDFS image of the folder (as an XISO of it would hold them), made as they are
++ * read: pack.c's reader for a folder registered with nc_pack_register_folder.
++ */
++#ifndef NC_FOLDER_H
++#define NC_FOLDER_H
++
++#include "native/core/pack.h"
++
++typedef struct NcFolder NcFolder;
++
++/* The folder's root listed (NULL: it can't be). xbe: the file to boot, there as default.xbe. */
++NcFolder *nc_folder_open(const char *folder, const char *xbe, const NcFolderIo *io);
++bool nc_folder_read(NcFolder *f, void *buf, size_t len, uint64_t off);
++void nc_folder_close(NcFolder *f);
++/* POSIX open, close, opendir and stat: the default file access */
++extern const NcFolderIo nc_folder_posix_io;
++
++#endif
 diff --git a/native/core/irq.c b/native/core/irq.c
 index 7a128a71c5da784985ae12348b0f30cf795e0548..499c8069c7ced22a8c2080add952cabedef2dbeb 100644
 --- a/native/core/irq.c
@@ -9557,10 +10152,10 @@ index 1b8956f16c2e490b25f9fad8365480f9fbc1169c..9bdce05333541b0d75a0ba39e3650552
          nc_log("hakuX-app", "render scale %sx", v);
 diff --git a/native/core/pack.c b/native/core/pack.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f155ff5a74b
+index 0000000000000000000000000000000000000000..13c0dbe032f425f19d7f0068b3612b13e014a94e
 --- /dev/null
 +++ b/native/core/pack.c
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,673 @@
 +/*
 + * hakuX native core — packed and split disc images (pack.h).
 + *
@@ -9574,8 +10169,17 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 + * more, each its place >> alignment, bit 31 when LZ4-compressed; a sector's size is the next one's
 + * place less its own. A compressed sector (or one not 2048 bytes long) starts with a byte, the
 + * padding at its end; the rest is an LZ4 block.
++ *
++ * OGBox 0.0.8: the CSO layout, as MakeMHz's ciso.py (stellar-cso) writes it: "CISO", the header's
++ * size (24), the image's size (u64), the block size (2048), the version (2), the index's alignment
++ * (2), then the index: a u32 a block and one more, each its place >> alignment, bit 31 when the
++ * block is compressed. A compressed block is a block of an LZ4 frame: its size (u32, bit 31 when
++ * stored), then that many bytes (an LZ4 block); a plain one its 2048 bytes. Past 4 GiB the rest
++ * goes in game.2.cso, its places from 0 again: the index is the first file's, and a place lower
++ * than the one before is the next file's first block.
 + */
 +#include "native/core/pack.h"
++#include "native/core/folder.h"
 +#include "native/core/nc.h"
 +
 +#include <pthread.h>
@@ -9591,9 +10195,10 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +typedef struct Slice {
 +    int fd;
 +    uint64_t start, size;   /* its place in the image, its size uncompressed */
-+    uint32_t *index;        /* a CCI's (sectors + 1 entries), NULL a plain part */
++    uint32_t *index;        /* a CCI's or a CSO's (sectors + 1 entries), NULL a plain part */
 +    uint32_t sectors;
 +    unsigned align;
++    bool cso;               /* OGBox 0.0.8: the CSO's (its parts below) */
 +} Slice;
 +
 +struct NcPack {
@@ -9606,12 +10211,25 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    unsigned next;
 +    uint8_t *raw;           /* a run's compressed bytes */
 +    size_t raw_cap;
++    /* OGBox 0.0.8: a CSO's files (the index is the first's; part_first[k] the first block in the
++     * k-th, part_first[nparts] the blocks), or a folder read as a disc */
++    int cso_fd[MAX_SLICES];
++    uint64_t cso_size[MAX_SLICES];
++    uint32_t part_first[MAX_SLICES + 1];
++    int nparts;
++    NcFolder *folder;
 +};
 +
 +static struct {
 +    int first, n;
 +    int fds[MAX_SLICES - 1];
 +} g_reg[8];
++/* OGBox 0.0.8: the folders registered as discs, by their XBE's descriptor */
++static struct {
++    int fd;
++    char *folder, *xbe;
++} g_folders[8];
++static const NcFolderIo *g_folder_io;
 +static pthread_mutex_t g_reg_lock = PTHREAD_MUTEX_INITIALIZER;
 +static void (*g_close)(int);
 +
@@ -9648,10 +10266,60 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +
 +static void part_close(int fd);
 +
++void nc_pack_set_folder_io(const NcFolderIo *io)
++{
++    g_folder_io = io;
++}
++
++const NcFolderIo *nc_pack_folder_io(void)
++{
++    return g_folder_io ? g_folder_io : &nc_folder_posix_io;
++}
++
++void nc_pack_register_folder(int fd, const char *folder, const char *xbe)
++{
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_folders) / sizeof(g_folders[0]); i++) {
++        if (!g_folders[i].folder || g_folders[i].fd == fd) {
++            free(g_folders[i].folder);
++            free(g_folders[i].xbe);
++            g_folders[i].fd = fd;
++            g_folders[i].folder = strdup(folder);
++            g_folders[i].xbe = strdup(xbe ? xbe : "default.xbe");
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++}
++
++/* The folder registered for fd (copies the caller frees), or false. */
++static bool take_folder(int fd, char **folder, char **xbe)
++{
++    bool found = false;
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_folders) / sizeof(g_folders[0]); i++) {
++        if (g_folders[i].folder && g_folders[i].fd == fd) {
++            *folder = strdup(g_folders[i].folder);
++            *xbe = strdup(g_folders[i].xbe);
++            found = *folder && *xbe;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++    return found;
++}
++
 +void nc_pack_unregister(int first_fd)
 +{
 +    int fds[MAX_SLICES - 1], n = 0;
 +    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_folders) / sizeof(g_folders[0]); i++) {
++        if (g_folders[i].folder && g_folders[i].fd == first_fd) {
++            free(g_folders[i].folder);
++            free(g_folders[i].xbe);
++            g_folders[i].folder = g_folders[i].xbe = NULL;
++        }
++    }
 +    for (unsigned i = 0; i < sizeof(g_reg) / sizeof(g_reg[0]); i++) {
 +        if (g_reg[i].n && g_reg[i].first == first_fd) {
 +            n = g_reg[i].n;
@@ -9762,6 +10430,158 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    return (int)(op - dst);
 +}
 +
++/* ---- OGBox 0.0.8: a CSO ---- */
++
++static uint64_t cso_pos(const Slice *s, uint32_t b)
++{
++    return (uint64_t)(s->index[b] & 0x7FFFFFFFu) << s->align;
++}
++
++/* a CSO: its header and index (the first file's), its files' sizes and first blocks */
++static bool cso_open(NcPack *p, int fd, const int *more, int nmore)
++{
++    uint8_t h[24];
++    if (!pread_all(fd, h, sizeof(h), 0)) {
++        return false;
++    }
++    const uint64_t size = rd64(h + 8);
++    const uint32_t block = rd32(h + 16);
++    const unsigned version = h[20], align = h[21];
++    if (block != SECTOR || version != 2 || align > 8 || size < SECTOR || size / SECTOR > (1u << 24)) {
++        nc_log("hakuX-native", "disc: a CSO whose header this doesn't take (block %u, version %u, alignment %u)%s",
++               block, version, align, version == 1 ? ": version 1 is the PSP's, deflate-compressed" : "");
++        return false;
++    }
++    Slice *s = &p->s[0];
++    memset(s, 0, sizeof(*s));
++    s->fd = fd;
++    s->sectors = (uint32_t)(size / SECTOR);
++    s->size = (uint64_t)s->sectors * SECTOR;
++    s->align = align;
++    s->cso = true;
++    p->n = 1;
++    const size_t n = (size_t)s->sectors + 1;
++    uint8_t *raw = malloc(n * 4);
++    s->index = malloc(n * sizeof(uint32_t));
++    if (!raw || !s->index || !pread_all(fd, raw, n * 4, sizeof(h))) {
++        free(raw);
++        return false;
++    }
++    for (size_t i = 0; i < n; i++) {
++        s->index[i] = rd32(raw + 4 * i);
++    }
++    free(raw);
++    const int nfiles = 1 + nmore;
++    for (int k = 0; k < nfiles; k++) {
++        struct stat st;
++        p->cso_fd[k] = k ? more[k - 1] : fd;
++        if (fstat(p->cso_fd[k], &st) != 0) {
++            return false;
++        }
++        p->cso_size[k] = (uint64_t)st.st_size;
++    }
++    int parts = 1;
++    p->part_first[0] = 0;
++    for (uint32_t b = 1; b < s->sectors; b++) {
++        if (cso_pos(s, b) < cso_pos(s, b - 1)) {
++            if (parts == MAX_SLICES) {
++                return false;
++            }
++            p->part_first[parts++] = b;
++        }
++    }
++    p->part_first[parts] = s->sectors;
++    if (parts > nfiles) {
++        nc_log("hakuX-native", "disc: the CSO is in %d files and %d %s here (game.%d.cso is missing)", parts, nfiles,
++               nfiles == 1 ? "is" : "are", nfiles + 1);
++        return false;
++    }
++    p->nparts = parts;
++    return true;
++}
++
++/* One block's 2048 bytes: a plain one's, else its LZ4 frame block's (or a bare LZ4 block's, the
++ * padding after it up to the next block's alignment left out). */
++static bool cso_block(const uint8_t *src, size_t size, bool compressed, uint8_t *out)
++{
++    if (!compressed) {
++        if (size < SECTOR) {
++            return false;
++        }
++        memcpy(out, src, SECTOR);
++        return true;
++    }
++    if (size >= 4) {
++        const uint32_t h = rd32(src), n = h & 0x7FFFFFFFu;
++        if (n && n <= size - 4) {
++            if (h & 0x80000000u) {
++                const size_t c = n < SECTOR ? n : SECTOR;
++                memcpy(out, src + 4, c);
++                memset(out + c, 0, SECTOR - c);
++                return true;
++            }
++            const int got = nc_lz4_decode(src + 4, (int)n, out, SECTOR);
++            if (got > 0) {
++                memset(out + got, 0, SECTOR - (size_t)got);
++                return true;
++            }
++        }
++    }
++    for (size_t trim = 0; trim < 4 && trim < size; trim++) {
++        if (nc_lz4_decode(src, (int)(size - trim), out, SECTOR) == (int)SECTOR) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/* a CSO's blocks [first, first + count) into dst, under the lock: each file's runs in one read */
++static bool cso_read(NcPack *p, Slice *s, uint32_t first, uint32_t count, uint8_t *dst)
++{
++    while (count) {
++        int k = 0;
++        while (k + 1 < p->nparts && first >= p->part_first[k + 1]) {
++            k++;
++        }
++        const uint32_t end = p->part_first[k + 1];
++        uint32_t run = count < 64 ? count : 64;
++        if (first + run > end) {
++            run = end - first;
++        }
++        const uint64_t lo = cso_pos(s, first);
++        const uint64_t hi = first + run < end ? cso_pos(s, first + run) : p->cso_size[k];
++        if (!run || hi < lo || hi - lo > (64u << 20)) {
++            return false;
++        }
++        const size_t len = (size_t)(hi - lo);
++        if (len > p->raw_cap) {
++            uint8_t *r = realloc(p->raw, len);
++            if (!r) {
++                return false;
++            }
++            p->raw = r;
++            p->raw_cap = len;
++        }
++        if (!pread_all(p->cso_fd[k], p->raw, len, lo)) {
++            return false;
++        }
++        for (uint32_t j = 0; j < run; j++) {
++            const uint32_t b = first + j;
++            const uint64_t a = cso_pos(s, b) - lo;
++            const uint64_t z = (b + 1 < end ? cso_pos(s, b + 1) : p->cso_size[k]) - lo;
++            if (z < a || z > len || !cso_block(p->raw + a, (size_t)(z - a), s->index[b] & 0x80000000u,
++                                               dst + (size_t)j * SECTOR)) {
++                nc_log("hakuX-native", "disc: the CSO's block %u can't be read", b);
++                return false;
++            }
++        }
++        first += run;
++        count -= run;
++        dst += (size_t)run * SECTOR;
++    }
++    return true;
++}
++
 +/* a part: a CCI's header and index, or a plain part's size */
 +static bool slice_open(Slice *s, int fd, bool *cci)
 +{
@@ -9806,11 +10626,32 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +NcPack *nc_pack_open(int fd, bool *is_pack)
 +{
 +    *is_pack = false;
++    char *folder = NULL, *xbe = NULL;
++    if (take_folder(fd, &folder, &xbe)) {
++        /* OGBox 0.0.8: an extracted game's folder */
++        *is_pack = true;
++        NcPack *p = calloc(1, sizeof(*p));
++        if (p) {
++            pthread_mutex_init(&p->lock, NULL);
++            p->folder = nc_folder_open(folder, xbe, nc_pack_folder_io());
++            if (!p->folder) {
++                nc_pack_close(p);
++                p = NULL;
++            }
++        }
++        free(folder);
++        free(xbe);
++        return p;
++    }
++    free(folder);
++    free(xbe);
 +    int more[MAX_SLICES - 1];
 +    const int nmore = take_slices(fd, more);
 +    uint8_t magic[4];
-+    const bool cci = pread_all(fd, magic, 4, 0) && !memcmp(magic, "MCCI", 4);
-+    if (!nmore && !cci) {
++    const bool magic_read = pread_all(fd, magic, 4, 0);
++    const bool cci = magic_read && !memcmp(magic, "MCCI", 4);
++    const bool cso = magic_read && !memcmp(magic, "CISO", 4);
++    if (!nmore && !cci && !cso) {
 +        return NULL;
 +    }
 +    *is_pack = true;
@@ -9820,6 +10661,16 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    }
 +    pthread_mutex_init(&p->lock, NULL);
 +    memset(p->cached, 0xFF, sizeof(p->cached));
++    if (cso) {
++        if (!cso_open(p, fd, more, nmore)) {
++            nc_log("hakuX-native", "disc: the CSO can't be read");
++            nc_pack_close(p);
++            return NULL;
++        }
++        nc_log("hakuX-native", "disc: a CSO (compressed) in %d file%s, %llu MiB", p->nparts, p->nparts == 1 ? "" : "s",
++               (unsigned long long)(p->s[0].size >> 20));
++        return p;
++    }
 +    uint64_t at = 0;
 +    unsigned ccis = 0;
 +    for (int i = 0; i <= nmore; i++) {
@@ -9850,6 +10701,7 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +        free(p->s[i].index);
 +
 +    }
++    nc_folder_close(p->folder);
 +    free(p->raw);
 +    pthread_mutex_destroy(&p->lock);
 +    free(p);
@@ -9909,8 +10761,17 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    return true;
 +}
 +
++/* a compressed part's sectors, under the lock */
++static bool sectors_read(NcPack *p, Slice *s, uint32_t first, uint32_t count, uint8_t *dst)
++{
++    return s->cso ? cso_read(p, s, first, count, dst) : cci_read(p, s, first, count, dst);
++}
++
 +bool nc_pack_read(NcPack *p, void *buf, size_t len, uint64_t off)
 +{
++    if (p->folder) {
++        return nc_folder_read(p->folder, buf, len, off);
++    }
 +    uint8_t *out = buf;
 +    while (len) {
 +        int i = 0;
@@ -9942,7 +10803,7 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +                }
 +                if (c < 0) {
 +                    c = (int)(p->next++ & 7);
-+                    ok = cci_read(p, s, first, 1, p->cache[c]);
++                    ok = sectors_read(p, s, first, 1, p->cache[c]);
 +                    p->cached[c] = ok ? key : UINT64_MAX;
 +                }
 +                if (n > SECTOR - skip) {
@@ -9955,7 +10816,7 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +                /* whole sectors straight into the buffer */
 +                const uint32_t count = (uint32_t)(n / SECTOR);
 +                n = (size_t)count * SECTOR;
-+                ok = first + count <= s->sectors && cci_read(p, s, first, count, out);
++                ok = first + count <= s->sectors && sectors_read(p, s, first, count, out);
 +            }
 +            pthread_mutex_unlock(&p->lock);
 +            if (!ok) {
@@ -9970,10 +10831,10 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +}
 diff --git a/native/core/pack.h b/native/core/pack.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a863572648626996
+index 0000000000000000000000000000000000000000..f8be8a3aea80827df2b5b3dc9b4a395b5f81aaf3
 --- /dev/null
 +++ b/native/core/pack.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,61 @@
 +/*
 + * hakuX native core — packed and split disc images (OGBox 0.0.3).
 + *
@@ -9986,6 +10847,11 @@ index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a8635726
 + * image, Team Resurgent's format: "MCCI", a 32-byte header, then 2048-byte sectors each stored or
 + * LZ4-compressed, an index of their places at the end), one file or split the same way. The
 + * xdvdfs reader reads through it as through a CHD.
++ *
++ * OGBox 0.0.8: a CSO (MakeMHz's Stellar format, the original console's ODE and Repackinator write
++ * it: "CISO", version 2, 2048-byte blocks each stored or an LZ4 frame's block, game.1.cso and
++ * game.2.cso past 4 GiB with one index in the first), and an extracted game's folder read as a
++ * disc (folder.c: its default.xbe and the files beside it, an XDVDFS image made as it is read).
 + */
 +#ifndef NC_PACK_H
 +#define NC_PACK_H
@@ -10011,6 +10877,20 @@ index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a8635726
 +/* How a part's descriptor is closed (an opener's own descriptors: a share's virtual ones); close()
 + * when not set. */
 +void nc_pack_set_closer(void (*close_fd)(int fd));
++
++/* OGBox 0.0.8: an extracted game (folder.c). The host's file access for it (a share's through its
++ * own layer): open a file to read with pread (-1: it can't be), close it, and list a folder (fn
++ * for each entry; false: it can't be listed). The default: POSIX open, close, opendir and stat. */
++typedef struct NcFolderIo {
++    int (*open)(const char *path);
++    void (*close)(int fd);
++    bool (*list)(const char *path, void (*fn)(void *ctx, const char *name, bool is_dir, uint64_t size), void *ctx);
++} NcFolderIo;
++void nc_pack_set_folder_io(const NcFolderIo *io);
++const NcFolderIo *nc_pack_folder_io(void);
++/* fd is the XBE's to boot (what nc_pack_open is then given), in folder: the game's files read as a
++ * disc, the XBE there as \default.xbe, until nc_pack_unregister(fd). */
++void nc_pack_register_folder(int fd, const char *folder, const char *xbe);
 +
 +/* The LZ4 block format decoded: the bytes written, or -1. */
 +int nc_lz4_decode(const uint8_t *src, int src_len, uint8_t *dst, int dst_cap);
@@ -30779,7 +31659,7 @@ index 0000000000000000000000000000000000000000..813c5f30688d49bb12548256ebd8a433
 +
 +#endif
 diff --git a/tests/hle/CMakeLists.txt b/tests/hle/CMakeLists.txt
-index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac55093f58d0b7 100644
+index d58451fa6cba42d371542ead3f1f971c07589630..2ad394731d8acc4120dfbc2aa2efb853e70bcf9c 100644
 --- a/tests/hle/CMakeLists.txt
 +++ b/tests/hle/CMakeLists.txt
 @@ -28,6 +28,8 @@ set(HLE_PURE_SOURCES
@@ -30791,7 +31671,7 @@ index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac5509
    ${REPO_ROOT}/native/core/cheats.c
    ${NC_DEPS}/root/subprojects/nv2a_vsh_cpu/src/nv2a_vsh_disassembler.c
  )
-@@ -46,18 +48,48 @@ hle_test(test_ring)
+@@ -46,18 +48,52 @@ hle_test(test_ring)
  hle_test(test_arena)
  hle_test(test_pageuse)
  hle_test(test_pusher)
@@ -30834,6 +31714,10 @@ index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac5509
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
 +audio_test(test_apu_simd ${REPO_ROOT}/native/dev/apu/vp/resample.c
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
++# OGBox 0.0.8: an extracted game's folder, CSOs (one file and split) through the disc reader
++audio_test(test_disc_images ${REPO_ROOT}/native/core/xdvdfs.c ${REPO_ROOT}/native/core/pack.c
++           ${REPO_ROOT}/native/core/folder.c)
++target_compile_definitions(test_disc_images PRIVATE _GNU_SOURCE)
 +# the MCPX's measured curves and resampler (xemu PR #3105)
 +audio_test(test_apu_mcpx ${REPO_ROOT}/native/dev/apu/vp/resample.c
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
@@ -32943,6 +33827,468 @@ index 0000000000000000000000000000000000000000..0d821d1a7c471d1bac0deb154aa07d5d
 +int main(void)
 +{
 +    HT_RUN(test_every_command_wrapped);
++    HT_DONE();
++}
+diff --git a/tests/hle/test_disc_images.c b/tests/hle/test_disc_images.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb8e0a523790f8222cad636c1f4bfdafd0c0cbb0
+--- /dev/null
++++ b/tests/hle/test_disc_images.c
+@@ -0,0 +1,456 @@
++/* OGBox 0.0.8: the disc images hakuX reads besides an ISO, through the disc reader the core boots
++ * with (xdvdfs.c over pack.c): an extracted game's folder read as a disc (folder.c), that disc
++ * written out as an ISO and read back, and the ISO as a CSO in Stellar's layout (MakeMHz's
++ * ciso.py: LZ4 frame blocks and plain ones, one file or split in two with its places from 0
++ * again), with the variants a reader may meet (a frame block stored, bare LZ4 blocks). */
++#include "hle_test.h"
++
++#include <dirent.h>
++#include <fcntl.h>
++#include <stdarg.h>
++#include <stdlib.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "native/core/chd.h"
++#include "native/core/pack.h"
++#include "native/core/xdvdfs.h"
++
++/* the CHD reader and the log stood in */
++NcChd *nc_chd_open(int fd, bool *is_chd)
++{
++    (void)fd;
++    *is_chd = false;
++    return NULL;
++}
++bool nc_chd_read(NcChd *c, void *buf, size_t len, uint64_t off)
++{
++    (void)c, (void)buf, (void)len, (void)off;
++    return false;
++}
++void nc_chd_close(NcChd *c)
++{
++    (void)c;
++}
++void nc_log(const char *tag, const char *fmt, ...)
++{
++    if (!getenv("TEST_VERBOSE")) {
++        return;
++    }
++    va_list ap;
++    va_start(ap, fmt);
++    printf("%s: ", tag);
++    vprintf(fmt, ap);
++    printf("\n");
++    va_end(ap);
++}
++
++static char g_dir[256];
++
++static void put(const char *rel, const uint8_t *data, size_t len)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game/%s", g_dir, rel);
++    FILE *f = fopen(p, "wb");
++    HT_CHECK(f != NULL);
++    if (f) {
++        HT_CHECK(fwrite(data, 1, len, f) == len);
++        fclose(f);
++    }
++}
++
++static void mk(const char *rel)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game/%s", g_dir, rel);
++    mkdir(p, 0755);
++}
++
++static uint8_t *pattern(size_t len, unsigned seed)
++{
++    uint8_t *b = malloc(len ? len : 1);
++    uint32_t x = seed * 2654435761u + 1;
++    for (size_t i = 0; i < len; i++) {
++        x = x * 1103515245u + 12345u;
++        b[i] = (uint8_t)(x >> 16);
++    }
++    return b;
++}
++
++/* the game: its XBEs, files in folders, an empty folder and file, a folder of 300 entries (a table
++ * of several sectors), a 3 MiB file, a long name, and stretches of one byte (compressible) */
++static uint8_t *g_xbe, *g_other, *g_x, *g_big, *g_many[300], *g_long;
++#define BIG (3u * 1024 * 1024 + 123)
++static const char k_long[] =
++    "a_rather_long_file_name_that_goes_on_and_on_to_check_entries_that_do_not_fit_a_sector_s_end_"
++    "and_how_their_tables_place_them.bin";
++
++static void make_game(void)
++{
++    snprintf(g_dir, sizeof(g_dir), "/tmp/nc_disc_XXXXXX");
++    HT_CHECK(mkdtemp(g_dir) != NULL);
++    mk("");
++    mk("media");
++    mk("media/sub");
++    mk("empty");
++    mk("many");
++    g_xbe = pattern(10000, 1);
++    memcpy(g_xbe, "XBEH", 4);
++    put("default.xbe", g_xbe, 10000);
++    g_other = pattern(3000, 2);
++    memcpy(g_other, "XBEH", 4);
++    put("Launcher.xbe", g_other, 3000);
++    g_x = pattern(5000, 3);
++    put("media/sub/x.bin", g_x, 5000);
++    g_big = pattern(BIG, 4);
++    memset(g_big + 4096, 0x00, 64 * 2048);       /* blocks of zeros and of one other byte */
++    memset(g_big + 4096 + 64 * 2048, 0xAB, 16 * 2048);
++    put("media/big.bin", g_big, BIG);
++    put("zero.bin", (const uint8_t *)"", 0);
++    for (int i = 0; i < 300; i++) {
++        char n[64];
++        snprintf(n, sizeof(n), "many/F%03d.dat", i);
++        g_many[i] = pattern(100, 10 + (unsigned)i);
++        put(n, g_many[i], 100);
++    }
++    g_long = pattern(777, 5);
++    char n[300];
++    snprintf(n, sizeof(n), "many/%s", k_long);
++    put(n, g_long, 777);
++}
++
++static bool same(const NcDisc *d, const char *path, const uint8_t *want, size_t len)
++{
++    NcDiscFile f;
++    if (!nc_disc_find(d, path, &f) || f.size != len || (f.attr & 0x10)) {
++        printf("  %s: not found or its size %u, not %zu\n", path, f.size, len);
++        return false;
++    }
++    uint8_t *got = malloc(len ? len : 1);
++    const bool ok = nc_disc_read(d, &f, 0, got, len) && !memcmp(got, want, len);
++    /* and a read from inside it, across a sector's end */
++    bool part = true;
++    if (ok && len > 3000) {
++        part = nc_disc_read(d, &f, 2040, got, 20) && !memcmp(got, want + 2040, 20);
++    }
++    free(got);
++    if (!ok || !part) {
++        printf("  %s: its bytes differ\n", path);
++    }
++    return ok && part;
++}
++
++static bool count_entry(void *ctx, const uint8_t *e, uint32_t off)
++{
++    (void)e, (void)off;
++    (*(unsigned *)ctx)++;
++    return true;
++}
++
++static unsigned entries(const NcDisc *d, const char *path)
++{
++    NcDiscFile f;
++    unsigned n = 0;
++    if (!nc_disc_find(d, path, &f) || !(f.attr & 0x10)) {
++        return 0;
++    }
++    uint8_t *t = malloc(f.size);
++    if (nc_disc_read(d, &f, 0, t, f.size)) {
++        nc_xdvdfs_walk(t, f.size, count_entry, &n);
++    }
++    free(t);
++    return n;
++}
++
++/* every file of the game, as the disc d has it */
++static void check_game(const NcDisc *d, const uint8_t *xbe, size_t xbe_len)
++{
++    HT_CHECK(same(d, "\\default.xbe", xbe, xbe_len));
++    HT_CHECK(same(d, "Launcher.xbe", g_other, 3000));
++    HT_CHECK(same(d, "\\media\\sub\\x.bin", g_x, 5000));
++    HT_CHECK(same(d, "MEDIA/SUB/X.BIN", g_x, 5000));       /* the Xbox's names: any case */
++    HT_CHECK(same(d, "media\\big.bin", g_big, BIG));
++    HT_CHECK(same(d, "zero.bin", (const uint8_t *)"", 0));
++    bool all = true;
++    for (int i = 0; i < 300; i++) {
++        char n[64];
++        snprintf(n, sizeof(n), "\\many\\f%03d.DAT", i);
++        all &= same(d, n, g_many[i], 100);
++    }
++    HT_CHECK(all);
++    char n[300];
++    snprintf(n, sizeof(n), "many\\%s", k_long);
++    HT_CHECK(same(d, n, g_long, 777));
++    NcDiscFile f;
++    HT_CHECK(nc_disc_find(d, "empty", &f) && (f.attr & 0x10));
++    HT_EQ_INT(entries(d, "empty"), 0);
++    HT_EQ_INT(entries(d, "many"), 301);
++    HT_EQ_INT(entries(d, ""), 6);           /* default.xbe, empty, Launcher.xbe, many, media, zero.bin */
++    HT_CHECK(!nc_disc_find(d, "media\\nothing.bin", &f));
++}
++
++static int open_xbe(const char *name)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game/%s", g_dir, name);
++    return open(p, O_RDONLY);
++}
++
++static void test_folder(void)
++{
++    const int fd = open_xbe("default.xbe");
++    char game[512];
++    snprintf(game, sizeof(game), "%s/game", g_dir);
++    nc_pack_register_folder(fd, game, "default.xbe");
++    NcDisc d;
++    HT_CHECK(nc_disc_open(&d, fd));
++    check_game(&d, g_xbe, 10000);
++    nc_disc_close(&d);
++    nc_pack_unregister(fd);
++}
++
++/* another XBE of the folder booted: it is the disc's default.xbe */
++static void test_folder_other_xbe(void)
++{
++    const int fd = open_xbe("Launcher.xbe");
++    char game[512];
++    snprintf(game, sizeof(game), "%s/game", g_dir);
++    nc_pack_register_folder(fd, game, "Launcher.xbe");
++    NcDisc d;
++    HT_CHECK(nc_disc_open(&d, fd));
++    check_game(&d, g_other, 3000);
++    nc_disc_close(&d);
++    nc_pack_unregister(fd);
++}
++
++/* ---- the folder's disc written out: an ISO, then CSOs of it */
++
++static uint8_t *g_iso;
++static size_t g_iso_len;
++
++static bool end_entry(void *ctx, const uint8_t *e, uint32_t off)
++{
++    (void)off;
++    uint64_t *end = ctx;
++    const uint64_t at = (uint64_t)nc_rd32(e + 4) * 2048 + nc_rd32(e + 8);
++    *end = at > *end ? at : *end;
++    return true;
++}
++
++static void dump_tree(const NcDisc *d, uint32_t sector, uint32_t size, uint64_t *end)
++{
++    uint8_t *t = malloc(size);
++    NcDiscFile f = {sector, size, 0x10};
++    if (nc_disc_read(d, &f, 0, t, size)) {
++        nc_xdvdfs_walk(t, size, end_entry, end);
++    }
++    /* and the folders below */
++    for (uint32_t off = 0; off + 14 <= size;) {
++        const uint8_t *e = t + off;
++        if (nc_rd16(e) == 0xFFFF && nc_rd16(e + 2) == 0xFFFF) {
++            off = (off / 2048 + 1) * 2048;
++            continue;
++        }
++        if (e[12] & 0x10) {
++            dump_tree(d, nc_rd32(e + 4), nc_rd32(e + 8), end);
++        }
++        off += (14u + e[13] + 3u) & ~3u;
++    }
++    free(t);
++}
++
++static void test_folder_as_iso(void)
++{
++    const int fd = open_xbe("default.xbe");
++    char game[512];
++    snprintf(game, sizeof(game), "%s/game", g_dir);
++    nc_pack_register_folder(fd, game, "default.xbe");
++    NcDisc d;
++    HT_CHECK(nc_disc_open(&d, fd));
++    uint64_t end = (uint64_t)(d.root_sector + 1) * 2048;
++    dump_tree(&d, d.root_sector, d.root_size, &end);
++    g_iso_len = (size_t)((end + 2047) / 2048 * 2048);
++    g_iso = malloc(g_iso_len);
++    HT_CHECK(nc_pack_read(d.pack, g_iso, g_iso_len, 0));
++    nc_disc_close(&d);
++    nc_pack_unregister(fd);
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game.iso", g_dir);
++    FILE *f = fopen(p, "wb");
++    HT_CHECK(f && fwrite(g_iso, 1, g_iso_len, f) == g_iso_len);
++    fclose(f);
++    const int iso = open(p, O_RDONLY);
++    HT_CHECK(nc_disc_open(&d, iso));
++    check_game(&d, g_xbe, 10000);
++    nc_disc_close(&d);
++}
++
++/* A CSO of the ISO in ciso.py's layout. variant 0: as ciso.py (a compressed block an LZ4 frame's
++ * block: its size, then the LZ4 block; others plain); 1: some frame blocks stored (bit 31 of their
++ * size); 2: bare LZ4 blocks, no size before them. A run of one byte is the block compressed (an
++ * LZ4 block: a literal, a match of 2042 at distance 1, five literals). split_at: past this place
++ * the blocks go in .2.cso, their places from 0 again (ciso.py's 0xFFBF6000). */
++static size_t lz4_run(uint8_t byte, uint8_t *out)
++{
++    size_t n = 0;
++    out[n++] = (1 << 4) | 15;
++    out[n++] = byte;
++    out[n++] = 1, out[n++] = 0;
++    unsigned more = 2042 - 4 - 15;
++    while (more >= 255) {
++        out[n++] = 255;
++        more -= 255;
++    }
++    out[n++] = (uint8_t)more;
++    out[n++] = 5 << 4;
++    for (int i = 0; i < 5; i++) {
++        out[n++] = byte;
++    }
++    return n;
++}
++
++static bool one_byte(const uint8_t *b)
++{
++    for (int i = 1; i < 2048; i++) {
++        if (b[i] != b[0]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static void w32(FILE *f, uint32_t v)
++{
++    const uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
++    fwrite(b, 1, 4, f);
++}
++
++static void write_cso(const char *base, int variant, uint64_t split_at)
++{
++    const uint32_t blocks = (uint32_t)(g_iso_len / 2048);
++    char p1[512], p2[512];
++    snprintf(p1, sizeof(p1), "%s.1.cso", base);
++    snprintf(p2, sizeof(p2), "%s.2.cso", base);
++    FILE *f1 = fopen(p1, "wb"), *f2 = NULL, *out = f1;
++    uint32_t *index = calloc(blocks + 1, 4);
++    const uint8_t hdr[24] = {'C', 'I', 'S', 'O', 0x18, 0, 0, 0};
++    fwrite(hdr, 1, 24, f1);
++    for (uint32_t i = 0; i <= blocks; i++) {
++        w32(f1, 0);
++    }
++    uint64_t pos = 24 + 4ull * (blocks + 1);
++    for (uint32_t b = 0; b < blocks; b++) {
++        if (pos > split_at && !f2) {
++            f2 = fopen(p2, "wb");
++            out = f2;
++            pos = 0;
++        }
++        while (pos & 3) {
++            fputc(0, out);
++            pos++;
++        }
++        index[b] = (uint32_t)(pos >> 2);
++        const uint8_t *src = g_iso + (size_t)b * 2048;
++        uint8_t blk[64];
++        if (one_byte(src)) {
++            const size_t n = lz4_run(src[0], blk);
++            if (variant != 2) {
++                w32(out, (uint32_t)n);
++                pos += 4;
++            }
++            fwrite(blk, 1, n, out);
++            pos += n;
++            index[b] |= 0x80000000u;
++        } else if (variant == 1 && b % 7 == 3) {
++            w32(out, 0x80000000u | 2048);
++            fwrite(src, 1, 2048, out);
++            pos += 2052;
++            index[b] |= 0x80000000u;
++        } else {
++            fwrite(src, 1, 2048, out);
++            pos += 2048;
++        }
++    }
++    index[blocks] = (uint32_t)(pos >> 2);
++    for (FILE *f = f1; f; f = f == f1 ? f2 : NULL) {
++        fseek(f, 0, SEEK_END);
++        const long size = ftell(f);
++        for (long k = 0; k < 0x400 - (size & 0x3FF); k++) {
++            fputc(0, f);
++        }
++    }
++    /* the header's image size, block, version and alignment; the index */
++    fseek(f1, 8, SEEK_SET);
++    w32(f1, (uint32_t)g_iso_len);
++    w32(f1, (uint32_t)((uint64_t)g_iso_len >> 32));
++    w32(f1, 2048);
++    fputc(2, f1);
++    fputc(2, f1);
++    fseek(f1, 24, SEEK_SET);
++    for (uint32_t i = 0; i <= blocks; i++) {
++        w32(f1, index[i]);
++    }
++    free(index);
++    fclose(f1);
++    if (f2) {
++        fclose(f2);
++    }
++}
++
++static void read_cso(const char *base, bool split, bool second_there)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s.1.cso", base);
++    const int fd = open(p, O_RDONLY);
++    if (split && second_there) {
++        snprintf(p, sizeof(p), "%s.2.cso", base);
++        const int more = open(p, O_RDONLY);
++        nc_pack_register_slices(fd, &more, 1);
++    }
++    NcDisc d;
++    const bool opened = nc_disc_open(&d, fd);
++    HT_CHECK(opened == (!split || second_there));
++    if (opened) {
++        check_game(&d, g_xbe, 10000);
++        HT_CHECK(d.pack != NULL);
++        /* the whole image, as the ISO */
++        uint8_t *all = malloc(g_iso_len);
++        HT_CHECK(nc_pack_read(d.pack, all, g_iso_len, 0) && !memcmp(all, g_iso, g_iso_len));
++        free(all);
++        nc_disc_close(&d);
++    } else {
++        close(fd);
++    }
++    nc_pack_unregister(fd);
++}
++
++static void test_cso(void)
++{
++    char base[512];
++    for (int variant = 0; variant < 3; variant++) {
++        snprintf(base, sizeof(base), "%s/one%d", g_dir, variant);
++        write_cso(base, variant, UINT64_MAX);
++        read_cso(base, false, false);
++    }
++}
++
++static void test_cso_split(void)
++{
++    char base[512];
++    snprintf(base, sizeof(base), "%s/split", g_dir);
++    write_cso(base, 0, g_iso_len / 2);              /* about half in each file */
++    read_cso(base, true, true);
++    read_cso(base, true, false);                    /* game.2.cso missing: not read */
++}
++
++int main(void)
++{
++    make_game();
++    HT_RUN(test_folder);
++    HT_RUN(test_folder_other_xbe);
++    HT_RUN(test_folder_as_iso);
++    HT_RUN(test_cso);
++    HT_RUN(test_cso_split);
++    printf("(the folder and its images in %s)\n", g_dir);
 +    HT_DONE();
 +}
 diff --git a/tests/hle/test_ffgen.c b/tests/hle/test_ffgen.c

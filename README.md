@@ -50,9 +50,12 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
 ## Getting started
 
 1. **Install it.** Copy the `PPSA99251` folder from the ZIP to `/data/homebrew/` on the console.
-2. **Bring your games.** OGBox reads disc images as `.iso` or `.xiso`, compressed `.cci`, images
-   split in parts (`game.1.iso`, `game.2.iso`), and CHDs made with `chdman createdvd`. Put them
-   wherever suits you:
+2. **Bring your games.** OGBox reads disc images as `.iso` or `.xiso`, compressed `.cci` and `.cso`
+   (the original Xbox's: Cerbios's and Stellar's), images split in parts (`game.1.iso`, `game.2.iso`,
+   `game.1.cso`, `game.2.cso`), CHDs made with `chdman createdvd`, and extracted games: a folder with
+   its `default.xbe` shows as the game, and any other `.xbe` starts with its folder as the disc. So one
+   copy of your games serves both an original Xbox (CCI on Cerbios, CSO on Stellar, folders on any
+   modded console) and OGBox. Put them wherever suits you:
    - on the console's storage, under `/data/`;
    - on a USB drive or extended storage;
    - on a computer or NAS on your network. In OGBox, open the **Network** tab and pick
@@ -165,6 +168,15 @@ the Xbox.
 saves, newest first, and each save by name, date and size. You can copy saves out, move them,
 delete them, or bring them back in from the data folder's `backups/saves` or a USB drive's
 `OGBox/saves`. **Empty the cache drives** clears X:, Y: and Z:, which games simply fill again.
+
+**Saves in sync between consoles.** In the hard disk manager, **Keep saves in sync with...** picks a
+network share (or a USB drive). From then on your saves are kept the same both ways with
+`OGBox/Saves/UDATA` there: when OGBox starts, after each game, and with **Sync now**. Every PS5 that
+syncs with the same share has the same saves, as Crux2 does with its memory cards. The folder is
+laid out like the Xbox's own `E:\UDATA`, so an Xbox or another emulator can take saves from it. A
+save changed on both sides keeps the newer one, and the other goes to `OGBox/Saves/.older` (on the
+console, the data folder's `backups/older saves`), so nothing is lost. A save deleted on one side
+comes back from the other: delete it on both. Settings > Network turns it on or off.
 
 **The Xbox dashboard.** OGBox doesn't include it, but if your emulated hard disk has `xboxdash.xbe`
 on its C: drive (`hdd/Partition2` in the data folder), an **Xbox dashboard** entry appears on the

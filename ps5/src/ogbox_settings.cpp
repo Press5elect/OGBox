@@ -196,6 +196,21 @@ std::vector<Option> makeOptions()
 		dns.text = true;
 		o.push_back(dns);
 	}
+	// 0.0.8: the saves kept in sync with a share or a USB drive (ogbox_save_sync.h)
+	o.push_back({ "save_sync", Section::Network, "Keep saves in sync",
+		"The Xbox hard disk's saves (E:\\UDATA) kept the same both ways with OGBox/Saves on a network share or a USB "
+		"drive, as Crux2 keeps its memory cards: every console that syncs with the same share has the same saves. When "
+		"OGBox starts, after each game, and with Sync now in the hard disk manager, where the place is chosen. A save "
+		"changed on both sides: the newer is kept, the other put in OGBox/Saves/.older (on the console: backups/older saves).",
+		kOnOff, "0", false });
+	{
+		Option place{ "save_sync_place", Section::Network, "Saves kept in sync with",
+			"Chosen in the hard disk manager (Keep saves in sync with...), or save_sync_place=/smb/<share> in "
+			"/data/ogbox/settings.txt.",
+			{}, "", false };
+		place.text = true;
+		o.push_back(place);
+	}
 	// ---- Game list (OGBox 0.1.43): which places its left column shows
 	{
 		const auto place = [&o](const char *key, const char *label, const char *description,

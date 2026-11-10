@@ -99,7 +99,7 @@ target_compile_options(hakux_slirp PRIVATE -w)
 
 # ---- the native core (hakuX's hakux_native), without native/cpu/cpu.cpp (FEX)
 set(hakux_core_sources
-	core/log.c core/jmp.c core/vm.c core/xdvdfs.c core/pack.c core/chd.c core/xbe_load.c core/mods.c core/options.c
+	core/log.c core/jmp.c core/vm.c core/xdvdfs.c core/pack.c core/folder.c core/chd.c core/xbe_load.c core/mods.c core/options.c
 	core/cheats.c core/trainer.c core/memscan.c core/core.c core/mmio.c core/irq.c
 	dev/nv2a.c dev/ports.c dev/usb.c dev/usb_hub.c dev/xid.c dev/ohci.c dev/aci.c dev/nvnet.c
 	net/net.c net/lan.c net/kai.c net/nat.c

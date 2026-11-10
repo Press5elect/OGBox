@@ -146,6 +146,7 @@ add_library(samples OBJECT
 	src/ogbox_library.cpp
 	src/ogbox_storage.cpp
 	src/ogbox_saves.cpp
+	src/ogbox_save_sync.cpp
 	src/ogbox_theme.cpp
 	src/ogbox_ui.cpp
 	src/ogbox_ui_home.cpp
