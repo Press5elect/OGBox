@@ -178,6 +178,8 @@ native core's work tree (oldest first; author: subject):
              ramps, ear routes, filters, the 8-point Lagrange resampler, envelopes, LFOs, mix rounding
   ba59feaf5f Claude: io: an overlay file (a patched XBE, a mod's file) shows the disc file's start sector in its
              control block (TOCA Race Driver 3's archive check against default.xbe)
+  e2124c8b86 Claude: io: a cached overlapped write completes in the call (Breakdown's area copy to its
+             cache drive: WriteFile's ERROR_IO_PENDING was taken for a failure)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -24827,7 +24829,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489590d362a 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..a79277640a639a76888dabde16b9ec7bd20ae28d 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -25567,22 +25569,30 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          /* The FATX superblock: "FATX", volume id, sectors per cluster. */
          const uint8_t *sb = nc_vm_host(k->vm, a[5]);
          if (o == 0 && a[6] >= 12 && !memcmp(sb, "FATX", 4)) {
-@@ -1680,14 +2076,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1680,14 +2076,46 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
              regrow(nf, size, off); /* the gap a write past the end leaves */
          }
      }
 +    /* 0.0.2: on the reader thread, as a read of that size would be: an overlapped write, or a
-+     * synchronous one long enough that its thread waits while the others run */
-+    if (a[6] && (nf->async || (a[6] >= SYNC_LATER_MIN && can_block(k)))) {
++     * synchronous one long enough that its thread waits while the others run.
++     * OGBox 0.0.8: an overlapped write through the cache (no FILE_NO_INTERMEDIATE_BUFFERING)
++     * completes in the call, as the Xbox's FATX does and as the in-place path below always did:
++     * its thread waits for it (the others run) and NtWriteFile returns its status, the event set.
++     * Returned pending, Breakdown's copy of an area to its cache drive took WriteFile's FALSE
++     * (ERROR_IO_PENDING) for a failure after the first 16 KiB: the area's block stayed the zeros
++     * its pre-sized file held, the room was neither drawn nor solid, and the hero fell to his
++     * death after the first cutscene. An unbuffered overlapped write still pends. */
++    const bool pends = nf->async && nf->no_buffering;
++    if (a[6] && (pends || ((nf->async || a[6] >= SYNC_LATER_MIN) && can_block(k)))) {
 +        const IoRun run = {a[5], a[6]};
-+        if (disc_read_later(k, nf, a, &run, 1, off, a[6], !nf->async, 0, true)) {
++        if (disc_read_later(k, nf, a, &run, 1, off, a[6], !pends, 0, true)) {
 +            nf->wrote = true;
 +            io_moved(k, nf, a[7], off + a[6]);
 +            if (g_trace_io) {
 +                nc_log("hakuX-native-io", "write %s +%llx %u from %08x %s", nf->path, (unsigned long long)off, a[6],
-+                       a[5], nf->async ? "pending" : "waited for");
++                       a[5], pends ? "pending" : "waited for");
 +            }
-+            if (!nf->async) {
++            if (!pends) {
 +                nc_ke_block(k);         /* the write's status replaces this when it completes */
 +            }
 +            return STATUS_PENDING;
@@ -25608,7 +25618,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          }
          nc_log("hakuX-native-io", "write %s +%llx %u from %08x -> %08x [%02x%02x%02x%02x %02x%02x%02x%02x]", nf->path,
                 (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-@@ -1748,6 +2168,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
+@@ -1748,6 +2176,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
  /* NtQueryInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25616,7 +25626,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1808,14 +2229,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1808,14 +2237,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
      if (a[3] < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -25653,7 +25663,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1853,7 +2295,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2303,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -25663,7 +25673,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2304,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2312,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -25681,7 +25691,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2556,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2564,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -25724,7 +25734,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2608,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2616,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -25736,7 +25746,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              }
              free(dir);
          }
-@@ -2198,6 +2648,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2198,6 +2656,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
   * FileAttributes 0x38, FileNameLength 0x3C, FileName (ANSI) 0x40. */
  static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25744,7 +25754,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      NcFile *nf = file_of(k, a[0]);
      if (!nf || !nf->is_dir) {
          return nf ? STATUS_INVALID_DEVICE_REQUEST : NC_STATUS_INVALID_HANDLE;
-@@ -2282,6 +2733,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -2282,6 +2741,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  /* NtQueryFullAttributesFile(ObjectAttributes, FileInformation (FILE_NETWORK_OPEN_INFORMATION)) */
  static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25752,7 +25762,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      uint32_t h = 0, info = 0;
      uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info);
      if (st != NC_STATUS_SUCCESS) {
-@@ -2295,6 +2747,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
+@@ -2295,6 +2755,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
  /* NtDeleteFile(ObjectAttributes) */
  static uint64_t NtDeleteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25760,7 +25770,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      char name[512], path[512], host[512];
      ansi(k, nc_vm_rd32(k->vm, a[0] + 4), name, sizeof(name));
      if (!resolve_name(k, nc_vm_rd32(k->vm, a[0]), name, sizeof(name))) {
-@@ -2386,6 +2839,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2847,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -25810,7 +25820,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2902,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +2910,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -25820,7 +25830,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      } else {
          nc_log("hakuX-native-io", "scsi %02x (%u bytes): zeros", cdb[0], n);
      }
-@@ -2455,7 +2954,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
+@@ -2455,7 +2962,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
  {
      nc_log("hakuX-native-io", "device control %08x on device %08x (out %u)", a[0], a[1], a[5]);
      if (a[4] && a[5]) {
@@ -25829,7 +25839,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      }
      if (a[6]) {
          nc_vm_wr32(k->vm, a[6], 0);
-@@ -2525,7 +3024,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
+@@ -2525,7 +3032,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
      if (max < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -25838,7 +25848,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      *(uint16_t *)nc_vm_host(k->vm, a[1]) = len;
      return NC_STATUS_SUCCESS;
  }
-@@ -2779,7 +3278,7 @@ bool nc_file_state_save(NcBuf *b)
+@@ -2779,7 +3286,7 @@ bool nc_file_state_save(NcBuf *b)
  static void file_drop(NcFile *nf)
  {
      if (nf->used) {
