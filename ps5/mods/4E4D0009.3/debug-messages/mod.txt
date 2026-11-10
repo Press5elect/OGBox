@@ -1,0 +1,11 @@
+name: Debug messages (diagnostic)
+description: For problem reports only: the game's own debug messages (its events, loads, the player's state, the controller) go into ogbox-boot.log. It slows the game a little; turn it off to play.
+author: Press5elect
+
+# (4E4D0009 v3). Copyright (c) 2026 Press5elect: any use of this mod or its source, including
+# through AI tools, requires credit to Press5elect.
+# The game's debug print (0x161680, called from 1218 places) is a bare ret in the retail build;
+# it becomes a jump to the kernel's DbgPrint through the game's own import slot (0x20BD54), which
+# hakuX writes into the boot log ("hakuX-native-dbg" lines). printf's arguments are DbgPrint's.
+[default.xbe]
+0x00161680: C3 CC CC CC CC CC -> FF 25 54 BD 20 00

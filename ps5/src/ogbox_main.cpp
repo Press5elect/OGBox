@@ -2905,6 +2905,18 @@ public:
 				if (menu) {
 					x = PshxPad{};
 				}
+				/* 0.0.8: a stick crossing half-way, into the boot log with what the game was given (a
+				 * problem report shows what a prompt like "push up" received) */
+				{
+					auto zone = [](int16_t v) { return v > 16384 ? 1 : v < -16384 ? -1 : 0; };
+					const int z[4] = { zone(x.lx), zone(x.ly), zone(x.rx), zone(x.ry) };
+					static int last[PAD_PLAYERS][4];
+					if (std::memcmp(z, last[player], sizeof(z)) != 0) {
+						std::memcpy(last[player], z, sizeof(z));
+						pshakux_log("controllers: player %d sticks: left %+d,%+d right %+d,%+d (the Xbox's: y up)", player + 1,
+							x.lx, x.ly, x.rx, x.ry);
+					}
+				}
 				pshx_core_set_pad(static_cast<unsigned>(player), &x);
 			}
 			float large = 0.0f, small = 0.0f;
