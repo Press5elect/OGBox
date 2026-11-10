@@ -190,6 +190,7 @@ native core's work tree (oldest first; author: subject):
              idle-wait gaps, kick latency)
   7347a40ab2 Claude: ohci: the guest's waits for the controller's lock over 2 ms are said; irq: the
              CPU-time sample back behind NC_IRQ_SCHED
+  e02c0e1449 Claude: apu: the DirectSound mailbox wait spins (2 ms at most) instead of sleeping in usleep(1)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18158,7 +18159,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0648b8bc1 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320cd8dee758 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18516,7 +18517,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,10 +960,48 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,12 +960,50 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -18526,9 +18527,9 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
 +    g_apu_trace = getenv("NC_TRACE_APU") != NULL;
 +    if (g_apu_trace) {
 +        apu_thread_start(&g_apu_trace_thread, "apu.trace", apu_trace_thread, d, true);
-+    }
-+}
-+
+     }
+ }
+ 
 +void nc_dev_apu_stop(void)
 +{
 +    MCPXAPUState *d = g_state;
@@ -18553,7 +18554,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
 +    MCPXAPUState *d = g_state;
 +    if (!d) {
 +        return;
-     }
++    }
 +    dsp_destroy(d->gp.dsp);
 +    dsp_destroy(d->ep.dsp);
 +    pthread_mutex_destroy(&d->lock);
@@ -18565,9 +18566,37 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
 +    g_apu_ram_size = 0;
 +    g_apu_fifo_min = INT_MAX;
 +    g_apu_fifo_max = 0;
- }
- 
++}
++
  void nc_dev_apu_spin_wait(const uint32_t *word)
+ {
+     mcpx_apu_spin_wait(); /* GP frames run to completion meanwhile */
+@@ -782,8 +1026,23 @@ void nc_dev_apu_spin_wait(const uint32_t *word)
+         }
+     }
+ #else
+-    for (int i = 0; i < 1000 && __atomic_load_n(word, __ATOMIC_ACQUIRE); i++) {
+-        usleep(1);
++    /* OGBox 0.0.8: spun, 2 ms at most (three APU frames, run to completion now), not slept: a
++     * usleep(1) on the PS5 sleeps up to a scheduler tick, and this runs inside a kernel call, so
++     * the guest's interrupts waited it out. Breakdown's DirectSound waited here ~20 times a second,
++     * and now and then its USB interrupt and the vblank behind it came 8-18 ms late (a frame flipped
++     * a vblank late every few seconds at 60 fps). Not taken by then, the stub asks again, the
++     * interrupts taken in between. */
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    const uint64_t t0 = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++    for (unsigned i = 0; __atomic_load_n(word, __ATOMIC_ACQUIRE); i++) {
++        __builtin_ia32_pause();
++        if ((i & 63) == 63) {
++            clock_gettime(CLOCK_MONOTONIC, &ts);
++            if ((uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec - t0 > 2000000ull) {
++                break;
++            }
++        }
+     }
+ #endif
+ }
 diff --git a/native/dev/apu/apu_base.h b/native/dev/apu/apu_base.h
 index a4fc3d3d5b1643256eff5dddb7ece9b4fd329f68..4accc4c5735f1c0769921c437a2ac3a1c0bb254d 100644
 --- a/native/dev/apu/apu_base.h
