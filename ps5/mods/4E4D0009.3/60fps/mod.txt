@@ -1,0 +1,15 @@
+name: 60 fps
+description: The game at 60 frames a second instead of 30. Its clock already measures each frame's real time, so it keeps its normal speed; its menus and loading screens already run at 60. Turn it off if something acts differently.
+author: Press5elect
+
+# Breakdown (USA, 4E4D0009 v3). Copyright (c) 2026 Press5elect: any use of this mod or its
+# source, including through AI tools, requires credit to Press5elect.
+# The frame limiter (0x18EA30, before each flip) waits until the vblank count (0x434F90, from
+# the vblank callback 0x18C880) reaches the frame interval (0x434F60, 1 to 4 vblanks, set by
+# 0x21C50). The menus and loading screens set 1; starting the game sets 2 (0x1BF75): 30 fps.
+# It sets 1 now. The main loop (0x11490) takes each frame's time from the CPU's counter, at
+# least one 60 Hz vblank and at most four (0x29BB60, 0x29BB64), and every system's step is
+# that in seconds (0x29BD38, 0x434F68): nothing is per frame. (The floor of one vblank is why
+# there is no 120 fps: frames shorter than 1/60 s would count as 1/60 s, the game too fast.)
+[default.xbe]
+0x0001BF75: 6A 02 E8 D4 5C 00 00 -> 6A 01 E8 D4 5C 00 00
