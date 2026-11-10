@@ -197,6 +197,7 @@ native core's work tree (oldest first; author: subject):
   1de51819d7 Claude: Revert the vblank timer change (Breakdown's D3D doesn't use the alarm: it had no effect)
   e65ba02499 Claude: hitch: the GPU event trace of the first 8 ready-but-flipped-late stutters (the PS5)
   15005932f2 Claude: nv2a: the interrupt line worked out and set one thread at a time (a lost trap interrupt)
+  4beedfa7da Claude: apu: the sound's level at each stage once a second
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -18266,7 +18267,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320cd8dee758 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..78ec55683479109ec6f0f277dde9cdc3b3e4acde 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18345,7 +18346,68 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
      if (d) {
          apu_st(&d->gp_boost_until_us, apu_host_us() + GP_BOOST_US);
      }
-@@ -448,6 +479,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -415,6 +446,60 @@ static bool frames_stopped(MCPXAPUState *d)
+             (mode != NV_PAPU_FECTL_FEMETHMODE_TRAPPED || g_trap_park));
+ }
+ 
++/* OGBox 0.0.8: the sound's level at each stage, once a second (the session log): the voices'
++ * mix (the VP's mixbins, and which bins carry sound), the EP's output frame, and what goes to the
++ * console after the volume limit, with the blocks that were all zeros. Where a game goes silent
++ * (NFS Carbon in a race), the first stage at zero says which part stopped. */
++static struct {
++    float vp_peak;
++    uint32_t vp_bins;
++    int ep_peak, out_peak;
++    unsigned pushed, silent;
++    int64_t at_ms;
++} g_lvl;
++
++static void levels_vp(float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
++{
++    for (int b = 0; b < NUM_MIXBINS; b++) {
++        float m = 0;
++        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++            const float a = fabsf(mixbins[b][i]);
++            m = a > m ? a : m;
++        }
++        if (m > 1e-4f) {
++            g_lvl.vp_bins |= 1u << b;
++        }
++        g_lvl.vp_peak = m > g_lvl.vp_peak ? m : g_lvl.vp_peak;
++    }
++}
++
++static int frame_peak(const int16_t (*buf)[2])
++{
++    int m = 0;
++    for (int i = 0; i < 256; i++) {
++        const int l = abs(buf[i][0]), r = abs(buf[i][1]);
++        m = l > m ? l : m;
++        m = r > m ? r : m;
++    }
++    return m;
++}
++
++static void levels_log(int64_t now_ms)
++{
++    if (now_ms - g_lvl.at_ms < 1000) {
++        return;
++    }
++    if (g_lvl.at_ms) {
++        nc_log("hakuX-apu", "levels in 1 s: voices' mix peak %.4f (bins with sound %08x) | EP out peak %d | "
++                            "to the console peak %d, %u blocks, %u of them silent (volume limit %.2f)",
++               g_lvl.vp_peak, g_lvl.vp_bins, g_lvl.ep_peak, g_lvl.out_peak, g_lvl.pushed, g_lvl.silent,
++               (double)g_apu_config.volume_limit);
++    }
++    const int64_t at = now_ms;
++    memset(&g_lvl, 0, sizeof(g_lvl));
++    g_lvl.at_ms = at;
++}
++
+ static void se_frame(MCPXAPUState *d)
+ {
+     mcpx_apu_update_dsp_preference(d);
+@@ -448,6 +533,7 @@ static void se_frame(MCPXAPUState *d)
          d->sleep_acc_us = 0;
      }
      d->frame_count++;
@@ -18353,15 +18415,34 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
      if (g_apu_stats) {
          int used = apu_out_queued();
          g_apu_fifo_min = MIN(g_apu_fifo_min, used);
-@@ -471,6 +503,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -458,9 +544,13 @@ static void se_frame(MCPXAPUState *d)
+     float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME] = { 0 };
+ 
+     mcpx_apu_vp_frame(d, mixbins);
++    levels_vp(mixbins);
+     mcpx_apu_dsp_frame(d, mixbins);
++    levels_log(apu_host_ms());
+ 
+     if ((d->ep_frame_div + 1) % 8 == 0) {
++        const int ep = frame_peak(d->monitor.frame_buf);
++        g_lvl.ep_peak = ep > g_lvl.ep_peak ? ep : g_lvl.ep_peak;
+         if (0 <= g_apu_config.volume_limit && g_apu_config.volume_limit < 1) {
+             float f = pow(g_apu_config.volume_limit, M_E);
+             for (int i = 0; i < 256; i++) {
+@@ -470,7 +560,12 @@ static void se_frame(MCPXAPUState *d)
+         }
  
          if (d->monitor.fifo_capacity_bytes > 0) {
++            const int out = frame_peak(d->monitor.frame_buf);
++            g_lvl.out_peak = out > g_lvl.out_peak ? out : g_lvl.out_peak;
++            g_lvl.pushed++;
++            g_lvl.silent += out == 0;
              apu_out_push(d->monitor.frame_buf, sizeof(d->monitor.frame_buf));
 +            apu_inc(&g_diag.pushed);
          }
          memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
      }
-@@ -539,16 +572,14 @@ static void monitor_init(MCPXAPUState *d)
+@@ -539,16 +634,14 @@ static void monitor_init(MCPXAPUState *d)
  
  void mcpx_apu_reset(MCPXAPUState *d)
  {
@@ -18381,7 +18462,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
      apu_st(&d->set_irq, false);
      d->snapshot_just_loaded = false;
      d->next_frame_time_us = 0;
-@@ -588,6 +619,158 @@ void mcpx_apu_post_load(MCPXAPUState *d)
+@@ -588,6 +681,158 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      update_irq(d);
  }
  
@@ -18540,7 +18621,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = arg;
-@@ -608,6 +791,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -608,6 +853,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          int xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
          uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
@@ -18548,7 +18629,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
          if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
-@@ -617,6 +801,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -617,6 +863,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          /* taken and cleared at once: one the guest thread raises meanwhile
           * stays for the next frame (a plain clear after update_irq lost it) */
          if (apu_xchg(&d->set_irq, false)) {
@@ -18556,7 +18637,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
              if (d->snapshot_just_loaded) {
                  /* Swallow exactly the FIRST post-restore IRQ assert: a voice
                   * that was at completion when the snapshot was taken re-emits
-@@ -634,6 +819,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -634,6 +881,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          }
  
          if (frames_stopped(d)) {
@@ -18564,7 +18645,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
              nc_pause_idle(true);                /* stopped until the guest acts */
              /* timed: the guest's register writes signal without d->lock (its
               * thread never takes it), so one can come between the check and
-@@ -660,7 +846,10 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -660,7 +908,10 @@ static void *mcpx_apu_frame_thread(void *arg)
          if (nc_paused()) {
              continue;                           /* the throttle let go for the pause: no frame */
          }
@@ -18575,7 +18656,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
      }
      pthread_mutex_unlock(&d->lock);
      return NULL;
-@@ -670,10 +859,17 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -670,10 +921,17 @@ static void *mcpx_apu_frame_thread(void *arg)
   * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
   * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
   * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
@@ -18594,7 +18675,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
      g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
      g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
      g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
-@@ -684,7 +880,7 @@ static void config_init(void)
+@@ -684,7 +942,7 @@ static void config_init(void)
  static void *apu_trace_thread(void *arg)
  {
      MCPXAPUState *d = arg;
@@ -18603,7 +18684,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
          sleep(2);
          nc_log("hakuX-native-apu",
                 "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
-@@ -727,9 +923,19 @@ static void *apu_trace_thread(void *arg)
+@@ -727,9 +985,19 @@ static void *apu_trace_thread(void *arg)
      return NULL;
  }
  
@@ -18624,7 +18705,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,12 +960,50 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,10 +1022,48 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -18634,9 +18715,9 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
 +    g_apu_trace = getenv("NC_TRACE_APU") != NULL;
 +    if (g_apu_trace) {
 +        apu_thread_start(&g_apu_trace_thread, "apu.trace", apu_trace_thread, d, true);
-     }
- }
- 
++    }
++}
++
 +void nc_dev_apu_stop(void)
 +{
 +    MCPXAPUState *d = g_state;
@@ -18651,7 +18732,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
 +    if (g_apu_trace) {
 +        pthread_join(g_apu_trace_thread, NULL);     /* within its 2 s */
 +        g_apu_trace = false;
-+    }
+     }
 +    mcpx_apu_vp_finalize(d);            /* the voice workers */
 +    apu_out_close();
 +}
@@ -18673,12 +18754,10 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..1b089fcfea1a9c7490849281d3d1320c
 +    g_apu_ram_size = 0;
 +    g_apu_fifo_min = INT_MAX;
 +    g_apu_fifo_max = 0;
-+}
-+
+ }
+ 
  void nc_dev_apu_spin_wait(const uint32_t *word)
- {
-     mcpx_apu_spin_wait(); /* GP frames run to completion meanwhile */
-@@ -782,8 +1026,23 @@ void nc_dev_apu_spin_wait(const uint32_t *word)
+@@ -782,8 +1088,23 @@ void nc_dev_apu_spin_wait(const uint32_t *word)
          }
      }
  #else

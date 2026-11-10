@@ -106,11 +106,38 @@ static void *out_thread(void *arg)
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
     bool said = false;
+    /* OGBox 0.0.8: what goes to the console, once a second (the APU's "levels" line has the stages
+     * before): the peak, the grains, the silent ones and the failed calls */
+    struct timespec lv;
+    clock_gettime(CLOCK_MONOTONIC, &lv);
+    int lv_peak = 0;
+    unsigned lv_n = 0, lv_silent = 0, lv_failed = 0;
     for (;;) {
         fill(grain, (int)sizeof(grain));
+        {
+            const int16_t *smp = (const int16_t *)grain;
+            int m = 0;
+            for (int i = 0; i < OUT_GRAIN * 2; i++) {
+                const int a = smp[i] < 0 ? -smp[i] : smp[i];
+                m = a > m ? a : m;
+            }
+            lv_peak = m > lv_peak ? m : lv_peak;
+            lv_n++;
+            lv_silent += m == 0;
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec - lv.tv_sec >= 1) {
+                nc_log("hakuX-apu", "to sceAudioOut in 1 s: peak %d, %u grains, %u silent, %u calls failed", lv_peak,
+                       lv_n, lv_silent, lv_failed);
+                lv = now;
+                lv_peak = 0;
+                lv_n = lv_silent = lv_failed = 0;
+            }
+        }
         if (g_out.port >= 0 && sceAudioOutOutput(g_out.port, grain) >= 0) {
             continue;               /* the output blocked while the grain before played */
         }
+        lv_failed++;
         if (!said) {
             said = true;
             nc_log("hakuX-apu", "no sound output (sceAudioOut): draining without sound at 48 kHz");
