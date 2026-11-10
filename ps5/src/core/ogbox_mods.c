@@ -14,10 +14,12 @@
 #include "core/ogbox_xpr.h"
 
 #include "platform/ps5_bootlog.h"
+#include "platform/vfs/ps5_vfs.h"
 
 #include "native/core/mods.h"
 #include "native/core/xdvdfs.h"
 #include "native/core/pack.h"
+#include "native/core/folder.h"
 #include "native/core/chd.h"
 #include "hw/xbox/hle/core/xbe.h"
 
@@ -1021,15 +1023,48 @@ static int part_open(const char *path)
     return ps5vfs_is_virtual(path) ? ps5vfs_disc_open(path) : open(path, O_RDONLY | O_CLOEXEC);
 }
 
+/* 0.0.8: an extracted game's folder, on a share or not (native/core/folder.c): its files through
+ * the same descriptors as a share's disc image, its folders listed as the game list does */
+static bool folder_list(const char *path, void (*fn)(void *ctx, const char *name, bool is_dir, uint64_t size),
+                        void *ctx)
+{
+    if (ps5vfs_is_virtual(path)) {
+        ps5vfs_dir *d = ps5vfs_opendir(path);
+        if (!d) {
+            return false;
+        }
+        struct ps5vfs_dirent e;
+        while (ps5vfs_readdir(d, &e) == 1) {
+            fn(ctx, e.name, e.is_directory != 0, e.size > 0 ? (uint64_t)e.size : 0);
+        }
+        ps5vfs_closedir(d);
+        return true;
+    }
+    return nc_folder_posix_io.list(path, fn, ctx);
+}
+
+static const NcFolderIo k_folder_io = {part_open, ps5vfs_disc_close, folder_list};
+
 int ogbox_image_open(const char *image)
 {
     static bool closer;
     if (!closer) {
         closer = true;
         nc_pack_set_closer(ps5vfs_disc_close);
+        nc_pack_set_folder_io(&k_folder_io);
     }
     const int fd = part_open(image);
     if (fd < 0) {
+        return fd;
+    }
+    /* 0.0.8: an XBE: its folder is the disc, the XBE its default.xbe */
+    const size_t len = strlen(image);
+    if (len > 4 && !strcasecmp(image + len - 4, ".xbe")) {
+        const char *slash = strrchr(image, '/');
+        char folder[1024];
+        snprintf(folder, sizeof(folder), "%.*s", slash ? (int)(slash - image) : 1, slash ? image : ".");
+        nc_pack_register_folder(fd, folder[0] ? folder : "/", slash ? slash + 1 : image);
+        pshakux_log("disc: %s: its folder read as the disc", image);
         return fd;
     }
     /* "<stem>.1.<ext>": its parts .2, .3, ... while they are there */

@@ -18,6 +18,7 @@
 #define OGBOX_SAVES_H
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,30 @@ bool hddClearCaches(const std::string &hddRoot, std::string &why);
 bool hddExportSave(const HddTitle &title, const HddSave &save, const std::string &placePath, std::string &why);
 /* A copy brought in to UDATA\<title ID>\<folder> (the one there replaced when overwrite). */
 bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwrite, std::string &why);
+
+/* ---- 0.0.8: the saves kept in sync with a share or a USB drive (ogbox_save_sync.h) ---- */
+
+/* A place the saves can be kept in sync with: a network share's mount, a USB drive. */
+struct SyncPlace {
+	std::string name;       // "NAS" (a share), "USB drive 0"
+	std::string path;       // its root ("/smb/NAS", "/mnt/usb0"): the saves in <path>/OGBox/Saves
+};
+std::vector<SyncPlace> syncPlaces();
+/* The name of a place's path ("" when it is no place now). */
+std::string syncPlaceName(const std::string &path);
+/* What a sync did: its sentence (savesync::summary), whether the place answered, the saves copied. */
+struct SyncOutcome {
+	std::string summary;
+	bool listed{ false };
+	int sent{ 0 }, brought{ 0 }, failed{ 0 };
+};
+/* One sync of hddRoot's saves with the place, on a thread of its own (false: one is under way);
+ * done is called on that thread at its end. */
+bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::function<void(const SyncOutcome &)> done);
+bool saveSyncRunning();
+/* A game is about to start (the hard disk becomes its): a sync under way stops before its next save,
+ * and this waits for it (the save it was copying is whole). */
+void saveSyncFinish();
 
 std::string bytesText(uint64_t bytes);
 std::string dateText(int64_t mtime);

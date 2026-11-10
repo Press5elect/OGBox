@@ -365,13 +365,7 @@ bool pshx_core_configure(const PshxCoreConfig *config)
         return false;
     }
     if (strcmp(g_image, "none") != 0) {
-        const size_t n = strlen(g_image);
-        if (n > 4 && !strcasecmp(g_image + n - 4, ".xbe")) {
-            snprintf(g_message, sizeof(g_message),
-                     "%s is an XBE: hakuX boots the default.xbe of an Xbox disc image (an XISO).", g_image);
-            set_state(PSHX_CORE_FAILED);
-            return false;
-        }
+        /* 0.0.8: an XBE boots too: its folder is read as the disc (ogbox_image_open) */
         /* 0.1.14: an image on a network share (/smb/<share>/...) through the virtual file
          * layer: a descriptor whose pread and fstat it answers (ps5vfs_disc_open) */
         g_disc_fd = ogbox_image_open(g_image);   /* 0.0.3: with a split image's other parts */
@@ -422,6 +416,24 @@ static void *vcpu_thread(void *arg)
              : k->relaunch ? "The game started another XBE: the title starts again with it."
              : k->stop ? "The game stopped (see ogbox-boot.log)." : "The game ended.");
     pshakux_log("core: the run ended: %s", g_message);
+    /* 0.0.8: a game whose own crash handler restarts it (or leaves to the dashboard) just after an
+     * access violation went to its handlers has crashed, though OGBox saw no failure: a log kept in
+     * memory goes to the file (Conker restarted itself 0.4 s after one, and the log was lost). */
+    uint32_t fault_eip, fault_va;
+    bool fault_write;
+    uint64_t fault_ns;
+    if ((k->relaunch || k->quit) && nc_seh_last_fault(&fault_eip, &fault_va, &fault_write, &fault_ns)) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+        if (now_ns - fault_ns < 10000000000ull) {
+            char why[160];
+            snprintf(why, sizeof(why), "the game %s %.1f s after an access violation at %08x, %s %08x",
+                     k->relaunch ? "restarted itself" : "left", (double)(now_ns - fault_ns) / 1e9, fault_eip,
+                     fault_write ? "writing" : "reading", fault_va);
+            pshakux_log_keep(why);
+        }
+    }
     set_state(k->stop && !k->quit && !k->relaunch ? PSHX_CORE_FAILED : PSHX_CORE_STOPPED);
     pshakux_thread_gone();
     return NULL;

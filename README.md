@@ -9,17 +9,15 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 0.0.7:**
-- Frame generation (Crux2's three methods: its own motion search, AMD FSR 3 optical flow and
-  MihawkGen): a game at 30 fps looks like 60, or 120 at 120 Hz.
-- 120 Hz output and variable refresh rate.
-- Settings change during a game; the quick menu shows what you choose, in your order.
-- The log is kept in memory and written only when something goes wrong; settings are written as
-  the menus close.
-- A new start screen, and 60/120 fps and picture mods for one more game.
+**What's new in 0.0.8:**
+- Compressed `.cso` images (the original Xbox's, Stellar's) and extracted games (a folder with its
+  `default.xbe`, or any `.xbe`): the same copy of a game works on an original Xbox and in OGBox.
+- Saves kept in sync between consoles through a network share, as in Crux2.
+- Sound that cut in and out in a game that filters its sounds, frames shown twice at 60 fps, frame
+  drops, and fixes for two more games.
 
-**Latest release: [v0.0.7](https://github.com/Press5elect/OGBox/releases/tag/v0.0.7).** Download
-`OGBox-v0.0.7.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v0.0.8](https://github.com/Press5elect/OGBox/releases/tag/v0.0.8).** Download
+`OGBox-v0.0.8.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -35,7 +33,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 0.0.7 is the seventh public release, after a long run of
+This is **experimental** software. 0.0.8 is the eighth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
@@ -50,9 +48,12 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
 ## Getting started
 
 1. **Install it.** Copy the `PPSA99251` folder from the ZIP to `/data/homebrew/` on the console.
-2. **Bring your games.** OGBox reads disc images as `.iso` or `.xiso`, compressed `.cci`, images
-   split in parts (`game.1.iso`, `game.2.iso`), and CHDs made with `chdman createdvd`. Put them
-   wherever suits you:
+2. **Bring your games.** OGBox reads disc images as `.iso` or `.xiso`, compressed `.cci` and `.cso`
+   (the original Xbox's: Cerbios's and Stellar's), images split in parts (`game.1.iso`, `game.2.iso`,
+   `game.1.cso`, `game.2.cso`), CHDs made with `chdman createdvd`, and extracted games: a folder with
+   its `default.xbe` shows as the game, and any other `.xbe` starts with its folder as the disc. So one
+   copy of your games serves both an original Xbox (CCI on Cerbios, CSO on Stellar, folders on any
+   modded console) and OGBox. Put them wherever suits you:
    - on the console's storage, under `/data/`;
    - on a USB drive or extended storage;
    - on a computer or NAS on your network. In OGBox, open the **Network** tab and pick
@@ -166,6 +167,15 @@ saves, newest first, and each save by name, date and size. You can copy saves ou
 delete them, or bring them back in from the data folder's `backups/saves` or a USB drive's
 `OGBox/saves`. **Empty the cache drives** clears X:, Y: and Z:, which games simply fill again.
 
+**Saves in sync between consoles.** In the hard disk manager, **Keep saves in sync with...** picks a
+network share (or a USB drive). From then on your saves are kept the same both ways with
+`OGBox/Saves/UDATA` there: when OGBox starts, after each game, and with **Sync now**. Every PS5 that
+syncs with the same share has the same saves, as Crux2 does with its memory cards. The folder is
+laid out like the Xbox's own `E:\UDATA`, so an Xbox or another emulator can take saves from it. A
+save changed on both sides keeps the newer one, and the other goes to `OGBox/Saves/.older` (on the
+console, the data folder's `backups/older saves`), so nothing is lost. A save deleted on one side
+comes back from the other: delete it on both. Settings > Network turns it on or off.
+
 **The Xbox dashboard.** OGBox doesn't include it, but if your emulated hard disk has `xboxdash.xbe`
 on its C: drive (`hdd/Partition2` in the data folder), an **Xbox dashboard** entry appears on the
 left.
@@ -270,6 +280,37 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.8
+
+Added
+- Compressed `.cso` images: the original Xbox's CSO (Stellar's, as MakeMHz's `ciso.py` and
+  Repackinator make it), one file or split in two (`game.1.cso`, `game.2.cso`). With `.cci`
+  (Cerbios's), one copy of your games now works on an original Xbox and in OGBox.
+- Extracted games: a folder with its `default.xbe` is a game in the list, under the folder's name,
+  and any other `.xbe` starts with its folder as the disc; on the console, a USB drive or a network
+  share. Mods, title updates and a game's switch to another of its XBEs work as with an image.
+- Saves kept in sync between consoles: the hard disk manager's **Keep saves in sync with...** picks
+  a network share (or a USB drive); from then on the saves are kept the same both ways with
+  `OGBox/Saves/UDATA` there (laid out as the Xbox's `E:\UDATA`), when OGBox starts, after each game
+  and with **Sync now**, as Crux2 does with its memory cards. A save is copied whole; one changed on
+  both sides keeps the newer and puts the other in `OGBox/Saves/.older`. A save deleted on one side
+  comes back from the other: delete it on both. Settings > Network turns it on or off.
+- A 60 fps mod for the game with title ID `4E4D0009` (version 3).
+- A game fix for `4D530051` (version 2): its crash and restart a few minutes into a level.
+
+Fixed
+- Sound that cut in and out, in menus and races, in a game that filters its sounds (`4541009E`):
+  the voice filter's damping, as 0.0.6 took it from xemu's measured APU, made the filter unstable
+  at its open end; it overflowed within 30 ms and silenced the whole mix until the sound ended.
+  Capped as xemu had it before; a filter that still runs away restarts from rest.
+- Frames shown twice at 60 fps: a GPU interrupt lost when the game enabled interrupts just as one
+  was raised (in hakuX's interrupt line).
+- Frame drops while a game creates files, and late interrupts while it waits on DirectSound.
+- A game whose rooms went black and whose character fell through the floor (`4E4D0009`): a cached
+  overlapped write now completes in its call.
+- 100 ms GPU stalls in `4D530051`; the boot log is now written when a game restarts itself after a
+  crash.
 
 ### 0.0.7
 

@@ -1,0 +1,19 @@
+name: Texture release crash fix
+description: The game could crash and restart itself minutes into a level, when it released a dynamic texture whose memory none of its heaps owns. That release is now skipped (a few KB stay in use) instead of crashing.
+author: Press5elect
+gamefix: true
+
+# Conker: Live and Reloaded (4D530051 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The game's free (0x3E7080) finds the heap whose address range holds the block (0x3E1900 over
+# the heap list 0x819B84) and reads the heap's flags without checking it found one. Each frame
+# a cleanup pass (0x3F5A20) frees the dynamic textures it is done with, and their pixel buffers
+# come from the physical heap the game replaces at boot (0x2AF000: the 10 MB one freed, a
+# 33.9 MB one made in its place). A buffer that no heap's range holds (an access violation at
+# 0x3E70A0 reading 0000000C, from 0x3F5A53) is now left alone and the free returns, as it does
+# after any other free; one that a heap holds is freed as before.
+#   pop esi / mov esi,[esi]        the heap 0x3E1900 found (0: none)
+#   test esi,esi / je 0x3E70E9      none: the function's own return
+#   test byte [esi+0Ch],4 / je / sub edi,[74FB2Ch] / nop   as before
+[default.xbe]
+0x003E709C: 8B 74 24 18 8A 46 0C 83 C4 04 A8 04 74 06 2B 3D 2C FB 74 00 -> 5E 8B 36 85 F6 74 46 F6 46 0C 04 74 06 2B 3D 2C FB 74 00 90

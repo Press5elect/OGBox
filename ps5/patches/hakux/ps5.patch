@@ -178,6 +178,31 @@ native core's work tree (oldest first; author: subject):
              ramps, ear routes, filters, the 8-point Lagrange resampler, envelopes, LFOs, mix rounding
   ba59feaf5f Claude: io: an overlay file (a patched XBE, a mod's file) shows the disc file's start sector in its
              control block (TOCA Race Driver 3's archive check against default.xbe)
+  e2124c8b86 Claude: io: a cached overlapped write completes in the call (Breakdown's area copy to its
+             cache drive: WriteFile's ERROR_IO_PENDING was taken for a failure)
+  e224eab7d4 Claude: hle: a GPU wait for a value not yet submitted hurries it and waits in 1 ms slices;
+             the upload arena's kick is urgent (Conker's 100 ms "upload arena full" stalls)
+  8cd043ec9f Claude: seh: the last access violation given to the title's handlers (nc_seh_last_fault)
+  c64248649f Claude: irq: an idle wait is awake for the vblank that is due (nc_irq_expect)
+  9d5f274394 Claude: io: a file NtCreateFile creates or empties is opened on the reader thread, its
+             thread waiting (8-21 ms creates on the PS5's storage stopped every guest thread)
+  5759f845ca Claude: irq, cpu: where a late interrupt's time went (idle or busy at the rise, CPU time,
+             idle-wait gaps, kick latency)
+  7347a40ab2 Claude: ohci: the guest's waits for the controller's lock over 2 ms are said; irq: the
+             CPU-time sample back behind NC_IRQ_SCHED
+  e02c0e1449 Claude: apu: the DirectSound mailbox wait spins (2 ms at most) instead of sleeping in usleep(1)
+  5150a617f1 Claude: hle-pb: the decoder awake on its kick count up to 20 ms before it sleeps (the PS5)
+  2c4e3cd3dd Claude: nv2a: D3D's vblank timer (PTIMER alarms a frame apart) raised at the vblanks, locked to
+             the panel
+  1de51819d7 Claude: Revert the vblank timer change (Breakdown's D3D doesn't use the alarm: it had no effect)
+  e65ba02499 Claude: hitch: the GPU event trace of the first 8 ready-but-flipped-late stutters (the PS5)
+  15005932f2 Claude: nv2a: the interrupt line worked out and set one thread at a time (a lost trap interrupt)
+  4beedfa7da Claude: apu: the sound's level at each stage once a second
+  fbeab56d28 Claude: nv2a: the vblank thread no longer says its next rise to the idle wait (nc_irq_expect off)
+  71908e9b8e Claude: apu: a multichannel buffer voice's ring once a second, and the zeros it played
+  3e8d27efa1 Claude: apu: the DLS2 filter's damping at most 1.0, a filter that runs away restarts from rest (NFS Carbon's sound)
+  f9cfcd1ead Claude: disc: CSO images (Stellar's) and an extracted game's folder read as a disc
+  5561ce2e61 Claude: disc: folder.c's open files' limit under a name of its own (the PS5's libc has OPEN_MAX)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -388,7 +413,7 @@ index 7f4ab51838ed81040c3e68f872508463af4835e7..f3b79e784e0f40a83547f1ceef1d33cf
  
  #define HLE_DRAW_MAX_BIND 16
 diff --git a/hw/xbox/hle/hitch.c b/hw/xbox/hle/hitch.c
-index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be776ae901 100644
+index 430c42765eafd946cc748988eba368037da8e4e0..69cfdfdba0bbe5d1b79c9aab3a23b0c1b4c05935 100644
 --- a/hw/xbox/hle/hitch.c
 +++ b/hw/xbox/hle/hitch.c
 @@ -34,6 +34,7 @@ typedef struct Snap {
@@ -420,7 +445,21 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
  }
  
  static float vblank_ms(void)
-@@ -366,6 +374,21 @@ static void hang_snapshot(void)
+@@ -343,7 +351,13 @@ static void init_once(void)
+     e = getenv("HAKUX_HLE_HANG_MS");
+     g_h.hang_ms = e && atof(e) > 0 ? atof(e) : 500.0f;
+     e = getenv("HAKUX_HLE_HITCH_GTRACE");
++    /* OGBox 0.0.8: 8 by default on the PS5 (the first stutters whose frame was ready and flipped
++     * late): the vblanks, the guest's DPCs and its flips in order, which no line else has */
++#if defined(__PROSPERO__)
++    g_h.gtrace_left = e ? (unsigned)atoi(e) : 8;
++#else
+     g_h.gtrace_left = e ? (unsigned)atoi(e) : 0;
++#endif
+ }
+ 
+ /* ---- watchdog ------------------------------------------------------------------ */
+@@ -366,6 +380,21 @@ static void hang_snapshot(void)
      }
      HleCpu *env = cpu;
      uint32_t eip = (uint32_t)(env->eip);
@@ -442,7 +481,7 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
      uint32_t esp = (uint32_t)env->regs[R_ESP], fs = (uint32_t)env->fs_base;
      uint8_t irql = 0xFF, code[48] = { 0 };
      uint32_t stk[24] = { 0 };
-@@ -444,6 +467,14 @@ static void sample(Eip *e)
+@@ -444,6 +473,14 @@ static void sample(Eip *e)
      }
  }
  
@@ -457,7 +496,7 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
  static void *wd_thread(void *opaque)
  {
      bool sampling = false, paused = false;
-@@ -464,7 +495,20 @@ static void *wd_thread(void *opaque)
+@@ -464,7 +501,20 @@ static void *wd_thread(void *opaque)
          if (el >= g_h.hang_ms) {
              int64_t now_us = g_get_monotonic_time();
              bool first = !g_h.live;
@@ -479,7 +518,7 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
                  Snap b;
                  char det[960];
                  snap_take(&b);
-@@ -534,6 +578,52 @@ void hle_hitch_pause(void)
+@@ -534,6 +584,52 @@ void hle_hitch_pause(void)
      hle_mutex_unlock(&g_h.mx);
  }
  
@@ -532,7 +571,7 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
  /* Frame id's Swap (or flip): closes the open frame window, a stutter or a
   * hang when it ran long. */
  static void window(uint32_t id)
-@@ -545,6 +635,7 @@ static void window(uint32_t id)
+@@ -545,6 +641,7 @@ static void window(uint32_t id)
      hle_hitch_frame(id, HLE_FR_SWAP);
      Snap now;
      snap_take(&now);
@@ -540,7 +579,7 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
      hle_mutex_lock(&g_h.mx);
      Snap prev = g_h.win;
      Eip eip = g_h.eip;
-@@ -553,6 +644,8 @@ static void window(uint32_t id)
+@@ -553,6 +650,8 @@ static void window(uint32_t id)
      g_h.have_win = true;
      g_h.paused = false;
      g_h.live = false;
@@ -549,7 +588,7 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
      g_h.win_id++;
      memset(&g_h.eip, 0, sizeof(g_h.eip));
      double ms = t2ms(now.t - prev.t);
-@@ -565,6 +658,13 @@ static void window(uint32_t id)
+@@ -565,6 +664,13 @@ static void window(uint32_t id)
          return;
      }
      bool hang = ms >= g_h.hang_ms;
@@ -563,7 +602,20 @@ index 430c42765eafd946cc748988eba368037da8e4e0..5a047f2f1c80f71db3fa1478126392be
      GuestWin *gw = &g_h.gw_ring[g_h.gw_next++ % GW_RING];
      char *reason = gw->reason, *det = gw->det;
      explain(&prev, &now, &eip, ms, gw->reason, sizeof(gw->reason), gw->det, sizeof(gw->det));
-@@ -809,7 +909,7 @@ bool hle_hitch_overlay(char *buf, size_t n)
+@@ -756,9 +862,10 @@ static void display_eval(uint32_t id, const FrameT *f)
+             "%u dropped: %s | swap %+.1f write %+.1f ready %+.1f%s front %+.1f shown %+.1f ms "
+             "(vs the last front)%s%s%s", no, id, fint, exp, skipped, reason, ts, tw, tr, fl, tf,
+             tu, sk, g ? " | guest: " : "", g ? g->det : "");
+-    if (g_h.gtrace_left) {
++    if (g_h.gtrace_left && id > 1500 && !skipped && hl && tl > target + 1.0 && hr && tr <= target + 1.0) {
+         /* debug (HAKUX_HLE_HITCH_GTRACE=n): the vblanks, flips and the
+-         * guest's interrupt handling that led here */
++         * guest's interrupt handling that led here. 0.0.8: for a frame ready in time that the
++         * guest flipped late, past the first screens */
+         g_h.gtrace_left--;
+         char why[32];
+         snprintf(why, sizeof(why), "stutter #%u", no);
+@@ -809,7 +916,7 @@ bool hle_hitch_overlay(char *buf, size_t n)
      hle_mutex_lock(&g_h.mx);
      o += snprintf(buf + o, n - o, "stutters %u  |  hangs %u  |  dropped %u", g_h.stutters,
                    g_h.hangs, g_h.dropped);
@@ -2496,7 +2548,7 @@ index 195825563bf8d594be1f1eaab1d1d919caea7a35..81e5453dc10268f722f8e2dc7eedca6f
  void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks);
  /* debug (HAKUX_HLE_PB_NOVIS=1): no occlusion queries; visibility tests
 diff --git a/hw/xbox/hle/pb/pbmode.c b/hw/xbox/hle/pb/pbmode.c
-index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4039f4617 100644
+index 569f62694b0c5679db990b987ee01b72ecab4e40..1a39677800cc97ee00e9e1b03daa0a73b8ec9aab 100644
 --- a/hw/xbox/hle/pb/pbmode.c
 +++ b/hw/xbox/hle/pb/pbmode.c
 @@ -97,6 +97,8 @@ static struct {
@@ -2675,7 +2727,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
  }
  
  void hle_pb_pushed(uint32_t put)
-@@ -1334,6 +1418,30 @@ static bool kick_wait_brief(uint32_t seen)
+@@ -1334,6 +1418,89 @@ static bool kick_wait_brief(uint32_t seen)
              return false;
          }
      }
@@ -2703,10 +2755,69 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
 +            return false;
 +        }
 +    }
++#else
++    (void)seen;
++    return false;
++#endif
++}
++
++/* OGBox 0.0.8: before the decoder sleeps on its semaphore, awake on the kick count for up to
++ * HLE_KICK_SPIN_MS (the PS5: 20, a vblank and more; elsewhere 0, as before). Woken from the
++ * semaphore, it went on 8 to 19 ms after its kick now and then: Breakdown at 60 fps, its frame
++ * end a software trap and a FLIP_STALL, missed a vblank every few seconds ("decoder waited 14 ms
++ * on the guest's GPU interrupt handler", "... 15 ms for the flip") with every interrupt delivered
++ * on time. The decoder has processors 2-3 to itself ("GPU on separate cores"). */
++static uint64_t kick_spin_ticks(void)
++{
++    static uint64_t ticks = UINT64_MAX;
++    if (ticks == UINT64_MAX) {
++#if defined(__PROSPERO__)
++        long ms = 20;
++#else
++        long ms = 0;
++#endif
++        const char *e = getenv("HLE_KICK_SPIN_MS");
++        if (e && *e) {
++            ms = strtol(e, NULL, 10);
++        }
++        ticks = 0;
++#if defined(__x86_64__)
++        if (ms > 0) {
++            const uint64_t a = __builtin_ia32_rdtsc();
++            const int64_t n0 = hle_now_ns();
++            while (hle_now_ns() - n0 < 1000000) {
++                __builtin_ia32_pause();
++            }
++            ticks = (__builtin_ia32_rdtsc() - a) * (uint64_t)ms;
++        }
++#endif
++    }
++    return ticks;
++}
++
++static bool kick_spin(uint32_t seen)
++{
++#if defined(__x86_64__)
++    const uint64_t span = kick_spin_ticks();
++    if (!span) {
++        return false;
++    }
++    const uint64_t t0 = __builtin_ia32_rdtsc();
++    for (;;) {
++        for (unsigned i = 0; i < 64; i++) {
++            if (__atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE) != seen || g_pb.stop) {
++                return true;
++            }
++            __builtin_ia32_pause();
++        }
++        if (__builtin_ia32_rdtsc() - t0 > span) {
++            return false;
++        }
++    }
  #else
      (void)seen;
      return false;
-@@ -1463,6 +1571,7 @@ void hle_pb_state_set(const HlePbState *s)
+@@ -1463,6 +1630,7 @@ void hle_pb_state_set(const HlePbState *s)
      g_pb.flip_wait = s->flip_wait;
      g_pb.flip_wait_ns = hle_now_ns();
      g_pb.trap_wait = s->trap_wait;
@@ -2714,22 +2825,37 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
      g_trel.pending = false;                 /* the scout syncs again at the next PUT */
      g_sc.synced = false;
      memcpy(g_pb.sub_r, s->sub_r, sizeof(s->sub_r));
-@@ -1483,10 +1592,11 @@ static void *decode_thread(void *opaque)
+@@ -1481,19 +1649,24 @@ static void *decode_thread(void *opaque)
+ {
+     hle_hitch_thread(HLE_HT_DECODE);    /* the stutter / hang monitor's (hitch.h) */
      t_decoder = true;
++    uint32_t seen = __atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE);
      while (!g_pb.stop) {
          /* asleep until a kick: waiting for the guest, the flip it stalls on
 -         * (FLIP_STALL) or its interrupt handler (a trap); once a sleep, not
 -         * a method */
 +         * (FLIP_STALL), its interrupt handler (a trap) or the GPU (the frame
-+         * pace); once a sleep, not a method */
++         * pace); once a sleep, not a method. 0.0.8: awake for it a while
++         * first (kick_spin) */
          const uint32_t pa = hle_hitch_enter(g_pb.flip_wait ? HLE_ACT_FLIP :
 -                                            g_pb.trap_wait ? HLE_ACT_TRAP : HLE_ACT_IDLE);
+-        hle_sem_wait(&g_pb.kick);
 +                                            g_pb.trap_wait ? HLE_ACT_TRAP :
 +                                            g_pb.pace_wait ? HLE_ACT_GPU : HLE_ACT_IDLE);
-         hle_sem_wait(&g_pb.kick);
++        if (!kick_spin(seen)) {
++            hle_sem_wait(&g_pb.kick);
++        }
          hle_hitch_leave(pa);
          while (!g_pb.stop) {
-@@ -1557,7 +1667,7 @@ void hle_pb_start(void)
+             /* a pass reads the registers fresh: it covers every kick before it */
+             while (hle_sem_trywait(&g_pb.kick)) {
+             }
+-            const uint32_t seen = __atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE);
++            seen = __atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE);
+             consume();
+             if (park_due()) {
+                 park();
+@@ -1557,7 +1730,7 @@ void hle_pb_start(void)
          memset(&g_sc, 0, sizeof(g_sc));
          g_sc_gate = !(e && !strcmp(e, "0"));
          g_sc_on = false;                /* until the first GET_REPORT */
@@ -2738,7 +2864,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
      }
      hle_host_pb_mode(true);
      hle_log("hakuX-hle-pb", "push-buffer mode: the title's D3D runs; its push buffer is decoded");
-@@ -1573,7 +1683,7 @@ void hle_pb_stop(void)
+@@ -1573,7 +1746,7 @@ void hle_pb_stop(void)
      hle_barrier_set_catch_up(NULL);
      g_sc_gate = false;
      __atomic_store_n(&g_sc_on, false, __ATOMIC_RELEASE);
@@ -2747,7 +2873,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
      g_pb.stop = true;
      hle_sem_post(&g_pb.kick);
      hle_thread_join(&g_pb.th);
-@@ -1677,6 +1787,7 @@ void hle_pb_diag(void)
+@@ -1677,6 +1850,7 @@ void hle_pb_diag(void)
      /* where the decoder is: waiting for the ISR (trap), a flip, the FIFO
       * access, arena or ring space in a draw, or decoding */
      const char *ph = hle_pbd_phase(), *state = g_pb.trap_wait ? " (trap)" : g_pb.flip_wait ? " (flip stall)"
@@ -2755,7 +2881,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
                                                : !fifo_open()      ? " (fifo closed)"
                                                : ph && *ph == 'a'  ? " (arena wait)"
                                                : ph                ? " (ring wait)"
-@@ -1720,10 +1831,12 @@ void hle_pb_diag(void)
+@@ -1720,10 +1894,12 @@ void hle_pb_diag(void)
          prev_cu = cu;
          hle_log("hakuX-hle-pb", "catch-up: %llu stores waited for the decoder (caught up %llu; it "
                  "waited on the guest at a trap %llu, a flip stall %llu, the FIFO off %llu; for arena "
@@ -2770,7 +2896,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
                  (double)g_cu.ns / 1e6);
      }
      static uint64_t prev_coh;
-@@ -1738,13 +1851,15 @@ void hle_pb_diag(void)
+@@ -1738,13 +1914,15 @@ void hle_pb_diag(void)
                  (unsigned long long)nbr, (unsigned long long)hot);
      }
      static uint64_t prev_rw;
@@ -2812,10 +2938,20 @@ index dfcb98b4216a3f4596b21fc9b9194c27cd97f170..4ef4b7c8babf06d9be049610af4b71c5
  
  #endif
 diff --git a/hw/xbox/hle/pb/pbres.c b/hw/xbox/hle/pb/pbres.c
-index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805869d6cb5 100644
+index 86287136645455829468ff4bebdac9a2dc8ece26..595609f325c6c180979f4998305636cf1d4f2a7c 100644
 --- a/hw/xbox/hle/pb/pbres.c
 +++ b/hw/xbox/hle/pb/pbres.c
-@@ -159,14 +159,30 @@ static void dxt_volume(uint32_t xfmt, const uint8_t *s, uint32_t w, uint32_t h,
+@@ -39,6 +39,9 @@ static uint32_t ring_alloc(HleArena *a, uint32_t len, uint32_t align)
+             f->value = v;
+             hle_fe_commit();
+             kicks++;
++            /* OGBox 0.0.8: submitted at once, as a fence a guest waits on is
++             * (hle_pbd_boundary), not after the ring has stayed dry */
++            hle_back_urgent();
+         }
+         hle_tl_wait(v);
+         hle_hitch_leave(pa);
+@@ -159,14 +162,30 @@ static void dxt_volume(uint32_t xfmt, const uint8_t *s, uint32_t w, uint32_t h,
      }
  }
  
@@ -2853,7 +2989,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
      }
  }
  
-@@ -224,6 +240,7 @@ static bool yuv_define(uint32_t id, const uint32_t h5[5], const HleResDesc *d)
+@@ -224,6 +243,7 @@ static bool yuv_define(uint32_t id, const uint32_t h5[5], const HleResDesc *d)
      HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
      c->id = id;
      c->xfmt = HLE_XFMT_LIN_A8R8G8B8;
@@ -2861,7 +2997,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
      c->w = d->w;
      c->h = d->h;
      c->d = 1;
-@@ -240,7 +257,13 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
+@@ -240,7 +260,13 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
  {
      HleResDesc d;
      HleResInfo ri;
@@ -2876,7 +3012,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
          static unsigned s_logged;
          if (s_logged++ < 8) {
              hle_log("hakuX-hle-front", "texture header not understood: %08x %08x %08x %08x "
-@@ -267,14 +290,14 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
+@@ -267,14 +293,14 @@ static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
   * unswizzled or converted into the arena as object id's image (HLE_OP_TEX);
   * false if they can't be (format, memory, arena). */
  static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
@@ -2894,7 +3030,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
          static uint32_t s_seen[8];
          for (unsigned i = 0; i < 8; i++) {
              if (s_seen[i] == d.fmt + 1) {
-@@ -299,14 +322,14 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -299,14 +325,14 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
       * blocks in groups of four slices), depth halving per level */
      bool vol = d.kind == HLE_RK_VOLUME;
      bool dxtd = (fi->flags & HLE_FI_DXT) && (vol || !g_hvk.caps.bc);
@@ -2916,7 +3052,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
      uint32_t faces = d.kind == HLE_RK_CUBE ? 6 : 1, levels = MAX(ri.levels, 1u), total = 0;
      uint32_t depth = vol ? MAX(d.d, 1u) : 1;
      for (uint32_t l = 0; l < levels; l++) {
-@@ -332,13 +355,13 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -332,13 +358,13 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
              uint32_t sw, sh, bo;
              hle_res_level(&d, l, &sw, &sh, &bo);
              HleXgRect img = { bo, bo, w, h };
@@ -2935,7 +3071,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
              }
              if (dxtd && !vol) {
                  dxt_volume(d.fmt, s, w, h, 1, (uint32_t *)(dst + pos));
-@@ -368,12 +391,50 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -368,12 +394,50 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                      memcpy(out + y * orow, s + y * sp, orow);
                  }
              }
@@ -2988,7 +3124,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
      {   /* debug: HAKUX_HLE_TEXDUMP=<id>, that texture's linear texels once */
          static int64_t want = -2;
          if (want == -2) {
-@@ -401,6 +462,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -401,6 +465,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
      HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
      c->id = id;
      c->xfmt = oxfmt;
@@ -2996,7 +3132,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
      c->w = d.w;
      c->h = d.h;
      c->d = depth;
-@@ -408,6 +470,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
+@@ -408,6 +473,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
      c->faces = faces;
      c->arena_off = off;
      c->arena_len = total;
@@ -3004,7 +3140,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
      return true;
  }
  
-@@ -419,7 +482,7 @@ uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
+@@ -419,7 +485,7 @@ uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
  }
  
  uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *pal, uint32_t npal,
@@ -3013,7 +3149,7 @@ index 86287136645455829468ff4bebdac9a2dc8ece26..f677123e519524990c33618faf724805
  {
      HleResDesc d;
      HleResInfo ri;
-@@ -430,7 +493,7 @@ uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *
+@@ -430,7 +496,7 @@ uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *
      if (d.fmt == HLE_XFMT_YUY2 || d.fmt == HLE_XFMT_UYVY) {
          return yuv_define(id, h5, &d) ? id : 0;        /* movies: converted to A8R8G8B8 */
      }
@@ -6794,6 +6930,39 @@ index fb8d5a54f5395fb85bff2cbb182176427a35481f..ae46106014c94a759102934b7e59a1cf
      }
      if (!g_ps.surf) {
          return false;
+diff --git a/hw/xbox/hle/vk/timeline.c b/hw/xbox/hle/vk/timeline.c
+index d01aca2bd000519fd46f171050a1165b2d52cde0..239d0be0c89b91019ea4ec98d28bf9f744de39f8 100644
+--- a/hw/xbox/hle/vk/timeline.c
++++ b/hw/xbox/hle/vk/timeline.c
+@@ -410,14 +410,27 @@ void hle_tl_lose(void)
+     hle_event_set(&g_tl.ev);
+ }
+ 
++/* OGBox 0.0.8: a value not yet submitted (its kick or fence still on the
++ * render thread's way to the queue) is hurried there (hle_back_urgent), and
++ * waited for in 1 ms slices until it is: on the PS5 a host wait begun before
++ * the value's submit was seen to sit out its whole 100 ms though the GPU had
++ * reached it (Conker's "upload arena full (GPU)" stalls: 101-104 ms each,
++ * everything submitted already done, the render thread idle).
++ * A submitted value is waited for in 100 ms slices, as before. */
+ void hle_tl_wait(uint64_t value)
+ {
+     if (hle_tl_completed() >= value) {
+         return;
+     }
+     uint32_t pa = hle_hitch_enter(HLE_ACT_GPU);
++    bool hurried = false;
+     while (hle_tl_completed() < value) {
+-        const VkResult r = hle_tl_sem_wait(g_tl.sem, value, 100 * 1000 * 1000ull);
++        const bool queued = hle_atomic_read(&g_tl.submitted) >= value;
++        if (!queued && !hurried) {
++            hle_back_urgent();
++            hurried = true;
++        }
++        const VkResult r = hle_tl_sem_wait(g_tl.sem, value, queued ? 100 * 1000 * 1000ull : 1000 * 1000ull);
+         if (r != VK_SUCCESS && r != VK_TIMEOUT) {
+             wait_failed(r, "vkWaitSemaphores", value);  /* completed: all (hle_tl_lose) */
+         }
 diff --git a/hw/xbox/hle/vk/vkdev.c b/hw/xbox/hle/vk/vkdev.c
 index 63ad06ec947cca9c947f14d3fb9b9342160cc39a..374c227b45782a760a7c10b3835e2be0a8eac61d 100644
 --- a/hw/xbox/hle/vk/vkdev.c
@@ -7238,7 +7407,7 @@ index 0000000000000000000000000000000000000000..e5d466cce97405df7bef1d7d1e273aab
 +OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 +SOFTWARE.
 diff --git a/native/CMakeLists.txt b/native/CMakeLists.txt
-index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2e351d1ef 100644
+index 99fbd3e94af86343dc77732de34a68caf3cac117..e4740b6daedee99fdcc8bdbeb0b6243c45cd874c 100644
 --- a/native/CMakeLists.txt
 +++ b/native/CMakeLists.txt
 @@ -24,8 +24,44 @@ if(HAKUX_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -7287,7 +7456,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
  
  # libslirp (NC_DEPS/libslirp, 4.7.0, unmodified): the NAT backend's TCP/IP
  # stack (net/nat.c), on the GLib subset plus net/slirp/glib.h. Its public
-@@ -52,16 +88,22 @@ target_include_directories(nc_slirp BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
+@@ -52,16 +88,23 @@ target_include_directories(nc_slirp BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
  target_include_directories(nc_slirp PUBLIC "${CMAKE_BINARY_DIR}/slirp")
  target_link_libraries(nc_slirp PRIVATE nc_glib)
  target_compile_options(nc_slirp PRIVATE -w)
@@ -7301,6 +7470,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
    core/vm.c
    core/xdvdfs.c
 +  core/pack.c
++  core/folder.c
 +  core/chd.c
    core/xbe_load.c
    core/mods.c
@@ -7310,7 +7480,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
    core/memscan.c
    core/core.c
    core/mmio.c
-@@ -90,6 +132,7 @@ add_library(hakux_native STATIC
+@@ -90,6 +133,7 @@ add_library(hakux_native STATIC
    kernel/seh.c
    kernel/fixups.c
    kernel/x86mmio.c
@@ -7318,7 +7488,7 @@ index 99fbd3e94af86343dc77732de34a68caf3cac117..b094d5655f2bc220c961b0e3fda4a8d2
    kernel/timer.c
    kernel/intr.c
    kernel/apc.c
-@@ -101,24 +144,42 @@ add_library(hakux_native STATIC
+@@ -101,24 +145,42 @@ add_library(hakux_native STATIC
    state/vm_state.c
    state/save.c
    state/cache.c
@@ -8214,8 +8384,600 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7f564294286b37fb033291336e904078
          return fault_report(c, pc, va, "the title doesn't handle it");
      }
      nc_cpu_fault_resume(c->cpu, ucontext);
+diff --git a/native/core/folder.c b/native/core/folder.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f45e1143370a66c81a2fe71945dda45dcc6d9d9d
+--- /dev/null
++++ b/native/core/folder.c
+@@ -0,0 +1,555 @@
++/*
++ * hakuX native core — an extracted game's folder read as a disc (folder.h).
++ *
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
++ *
++ * The image is made as it is read, as an XISO of the folder would be laid out: the volume
++ * descriptor at sector 32, then each folder's table and each file on sectors of their own, handed
++ * out in the order they become known. A folder is listed when its parent's table is made (its own
++ * table's size is its entries'), and its table is made when it is first read, so a game's boot
++ * lists only what it opens (and the disc's folder cache, xdvdfs.c, the rest on its thread). A
++ * table's entries are sorted as the Xbox compares names (case-insensitive), each one's right child
++ * the next: a tree the console's search and hakuX's walk both read. Files are read from the host
++ * as their sectors are; at most FOLDER_OPEN_MAX of them open at once (a share's layer gives 16).
++ */
++#include "native/core/folder.h"
++#include "native/core/nc.h"
++
++#include <ctype.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#define SECTOR 2048u
++#define VD_SECTOR 32u
++#define FIRST_SECTOR 34u            /* the root's table: after the volume descriptor */
++#define ENTRY_MAX_OFF (0xFFFFu * 4u)  /* a child's offset is a u16 of dwords */
++#define FOLDER_OPEN_MAX 8
++
++typedef struct Node {
++    char *name;                     /* on the disc */
++    char *host;                     /* on the host */
++    uint64_t size;                  /* a file's bytes; a folder's table's */
++    uint32_t sector;
++    uint32_t first, count;          /* a folder's children, once listed */
++    bool dir, listed, placed;
++    uint8_t *table;                 /* a folder's, once made */
++} Node;
++
++typedef struct Extent {
++    uint32_t sector, count, node;
++} Extent;
++
++typedef struct OpenFile {
++    uint32_t node;
++    int fd;
++    uint64_t used;
++} OpenFile;
++
++struct NcFolder {
++    const NcFolderIo *io;
++    pthread_mutex_t lock;
++    Node *n;
++    uint32_t nn, ncap;
++    Extent *x;
++    uint32_t nx, xcap;
++    uint32_t next;                  /* the next free sector */
++    OpenFile open[FOLDER_OPEN_MAX];
++    uint64_t tick;
++    char *alias;                    /* the XBE to boot, there as default.xbe; NULL: default.xbe itself */
++    uint8_t vd[SECTOR];
++};
++
++typedef struct Found {
++    char *name;
++    bool dir;
++    uint64_t size;
++} Found;
++
++typedef struct Gather {
++    Found *e;
++    size_t n, cap;
++    bool nomem;
++} Gather;
++
++static void gather(void *ctx, const char *name, bool is_dir, uint64_t size)
++{
++    Gather *g = ctx;
++    const size_t len = strlen(name);
++    if (!len || len > 255 || !strcmp(name, ".") || !strcmp(name, "..")) {
++        return;
++    }
++    for (size_t i = 0; i < len; i++) {
++        if ((unsigned char)name[i] < 0x20) {
++            return;
++        }
++    }
++    if (g->n == g->cap) {
++        const size_t cap = g->cap ? g->cap * 2 : 64;
++        Found *e = realloc(g->e, cap * sizeof(*e));
++        if (!e) {
++            g->nomem = true;
++            return;
++        }
++        g->e = e;
++        g->cap = cap;
++    }
++    if (!(g->e[g->n].name = strdup(name))) {
++        g->nomem = true;
++        return;
++    }
++    g->e[g->n].dir = is_dir;
++    g->e[g->n].size = size;
++    g->n++;
++}
++
++/* The Xbox's order of names: byte by byte, letters as capitals. */
++static int name_cmp(const char *a, const char *b)
++{
++    for (;; a++, b++) {
++        const int x = toupper((unsigned char)*a), y = toupper((unsigned char)*b);
++        if (x != y || !x) {
++            return x - y;
++        }
++    }
++}
++
++static int found_cmp(const void *a, const void *b)
++{
++    return name_cmp(((const Found *)a)->name, ((const Found *)b)->name);
++}
++
++static char *join(const char *folder, const char *name)
++{
++    const size_t a = strlen(folder), b = strlen(name);
++    char *p = malloc(a + b + 2);
++    if (p) {
++        memcpy(p, folder, a);
++        p[a] = '/';
++        memcpy(p + a + 1, name, b + 1);
++    }
++    return p;
++}
++
++static uint32_t entry_len(const char *name)
++{
++    return (14u + (uint32_t)strlen(name) + 3u) & ~3u;
++}
++
++/* A table's size for these names in this order, and each entry's offset (offs may be NULL). */
++static uint32_t table_layout(const Node *n, uint32_t first, uint32_t count, uint32_t *offs)
++{
++    uint32_t off = 0;
++    for (uint32_t k = 0; k < count; k++) {
++        const uint32_t len = entry_len(n[first + k].name);
++        if (off % SECTOR + len > SECTOR) {
++            off = (off + SECTOR - 1) / SECTOR * SECTOR;    /* an entry stays in its sector */
++        }
++        if (offs) {
++            offs[k] = off;
++        }
++        off += len;
++    }
++    const uint32_t size = (off + SECTOR - 1) / SECTOR * SECTOR;
++    return size ? size : SECTOR;    /* an empty folder: a sector of padding, as extract-xiso writes */
++}
++
++static bool grow_nodes(NcFolder *f, uint32_t more)
++{
++    if (f->nn + more <= f->ncap) {
++        return true;
++    }
++    uint32_t cap = f->ncap ? f->ncap : 256;
++    while (cap < f->nn + more) {
++        cap *= 2;
++    }
++    Node *n = realloc(f->n, cap * sizeof(*n));
++    if (!n) {
++        return false;
++    }
++    f->n = n;
++    f->ncap = cap;
++    return true;
++}
++
++/* A folder's children (its table's size with them). In the root, the XBE to boot is there as
++ * default.xbe too, in the place of the folder's own default.xbe. */
++static bool node_list(NcFolder *f, uint32_t i)
++{
++    if (f->n[i].listed) {
++        return true;
++    }
++    f->n[i].listed = true;
++    f->n[i].size = SECTOR;
++    Gather g = {0};
++    const bool ok = f->io->list(f->n[i].host, gather, &g) && !g.nomem;
++    if (!ok) {
++        nc_log("hakuX-native", "disc: the folder %s can't be listed: read as empty", f->n[i].host);
++    }
++    if (ok && i == 0 && f->alias) {
++        const char *source = NULL;
++        uint64_t size = 0;
++        for (size_t k = 0; k < g.n; k++) {
++            if (!g.e[k].dir && !name_cmp(g.e[k].name, f->alias)) {
++                source = g.e[k].name;
++                size = g.e[k].size;
++            }
++        }
++        if (source) {
++            for (size_t k = 0; k < g.n; k++) {
++                if (!name_cmp(g.e[k].name, "default.xbe")) {
++                    free(g.e[k].name);
++                    g.e[k] = g.e[--g.n];
++                    break;
++                }
++            }
++            /* the host name of the XBE, as default.xbe: its node's host path is fixed below */
++            gather(&g, "default.xbe", false, size);
++        }
++    }
++    if (g.n) {
++        qsort(g.e, g.n, sizeof(*g.e), found_cmp);
++    }
++    uint32_t count = 0;
++    if (!grow_nodes(f, (uint32_t)g.n)) {
++        g.n = 0;
++    }
++    const uint32_t first = f->nn;
++    uint32_t off = 0;
++    for (size_t k = 0; k < g.n; k++) {
++        if (count && !name_cmp(g.e[k].name, f->n[first + count - 1].name)) {
++            continue;                   /* the same name but for its case (a case-sensitive host) */
++        }
++        if (!g.e[k].dir && g.e[k].size > 0xFFFFFFFFull) {
++            nc_log("hakuX-native", "disc: %s/%s is over 4 GiB: left out", f->n[i].host, g.e[k].name);
++            continue;
++        }
++        const uint32_t len = entry_len(g.e[k].name);
++        if (off % SECTOR + len > SECTOR) {
++            off = (off + SECTOR - 1) / SECTOR * SECTOR;
++        }
++        if (off > ENTRY_MAX_OFF) {
++            nc_log("hakuX-native", "disc: %s has more entries than a disc's folder holds: the rest left out",
++                   f->n[i].host);
++            break;
++        }
++        off += len;
++        Node *c = &f->n[first + count];
++        memset(c, 0, sizeof(*c));
++        const bool alias = i == 0 && f->alias && !name_cmp(g.e[k].name, "default.xbe");
++        c->name = strdup(alias ? "default.xbe" : g.e[k].name);
++        c->host = join(f->n[i].host, alias ? f->alias : g.e[k].name);
++        if (!c->name || !c->host) {
++            free(c->name);
++            free(c->host);
++            break;
++        }
++        c->dir = g.e[k].dir;
++        c->size = c->dir ? 0 : g.e[k].size;
++        count++;
++    }
++    for (size_t k = 0; k < g.n; k++) {
++        free(g.e[k].name);
++    }
++    free(g.e);
++    f->nn = first + count;
++    f->n[i].first = first;
++    f->n[i].count = count;
++    f->n[i].size = table_layout(f->n, first, count, NULL);
++    return ok;
++}
++
++/* The node's sectors handed out (a folder listed first: its table's size). */
++static bool node_place(NcFolder *f, uint32_t i)
++{
++    Node *n = &f->n[i];
++    if (n->placed) {
++        return true;
++    }
++    const uint64_t count = (n->size + SECTOR - 1) / SECTOR;
++    if (!count) {
++        n->placed = true;           /* an empty file: sector 0, nothing to read */
++        return true;
++    }
++    if ((uint64_t)f->next + count > 0xFFFFFFFFull) {
++        return false;
++    }
++    if (f->nx == f->xcap) {
++        const uint32_t cap = f->xcap ? f->xcap * 2 : 256;
++        Extent *x = realloc(f->x, cap * sizeof(*x));
++        if (!x) {
++            return false;
++        }
++        f->x = x;
++        f->xcap = cap;
++    }
++    n->sector = f->next;
++    n->placed = true;
++    f->x[f->nx++] = (Extent){f->next, (uint32_t)count, i};
++    f->next += (uint32_t)count;
++    return true;
++}
++
++static void wr16(uint8_t *p, uint32_t v)
++{
++    p[0] = (uint8_t)v;
++    p[1] = (uint8_t)(v >> 8);
++}
++
++static void wr32(uint8_t *p, uint32_t v)
++{
++    wr16(p, v);
++    wr16(p + 2, v >> 16);
++}
++
++/* A folder's table: its children placed (its folders listed for their tables' sizes), then their
++ * entries. */
++static bool node_build(NcFolder *f, uint32_t i)
++{
++    if (f->n[i].table) {
++        return true;
++    }
++    const uint32_t first = f->n[i].first, count = f->n[i].count;
++    for (uint32_t k = 0; k < count; k++) {
++        if (f->n[first + k].dir) {
++            node_list(f, first + k);
++        }
++        if (!node_place(f, first + k)) {
++            return false;
++        }
++    }
++    const uint32_t size = (uint32_t)f->n[i].size;
++    uint8_t *t = malloc(size);
++    uint32_t *offs = malloc((count ? count : 1) * sizeof(*offs));
++    if (!t || !offs) {
++        free(t);
++        free(offs);
++        return false;
++    }
++    memset(t, 0xFF, size);
++    table_layout(f->n, first, count, offs);
++    for (uint32_t k = 0; k < count; k++) {
++        const Node *c = &f->n[first + k];
++        uint8_t *e = t + offs[k];
++        const size_t len = strlen(c->name);
++        wr16(e, 0);
++        wr16(e + 2, k + 1 < count ? offs[k + 1] / 4u : 0);
++        wr32(e + 4, c->sector);
++        wr32(e + 8, (uint32_t)c->size);
++        e[12] = c->dir ? 0x10 : 0x20;
++        e[13] = (uint8_t)len;
++        memcpy(e + 14, c->name, len);
++    }
++    free(offs);
++    f->n[i].table = t;
++    return true;
++}
++
++static const Extent *extent_at(const NcFolder *f, uint32_t sector)
++{
++    uint32_t lo = 0, hi = f->nx;
++    while (lo < hi) {
++        const uint32_t mid = (lo + hi) / 2;
++        if (f->x[mid].sector <= sector) {
++            lo = mid + 1;
++        } else {
++            hi = mid;
++        }
++    }
++    if (!lo) {
++        return NULL;
++    }
++    const Extent *e = &f->x[lo - 1];
++    return sector < e->sector + e->count ? e : NULL;
++}
++
++/* A file's descriptor: kept open, the least used of FOLDER_OPEN_MAX closed for it. */
++static int file_fd(NcFolder *f, uint32_t node)
++{
++    OpenFile *spare = &f->open[0];
++    for (unsigned k = 0; k < FOLDER_OPEN_MAX; k++) {
++        OpenFile *o = &f->open[k];
++        if (o->fd >= 0 && o->node == node) {
++            o->used = ++f->tick;
++            return o->fd;
++        }
++        if (o->fd < 0 || (spare->fd >= 0 && o->used < spare->used)) {
++            spare = o;
++        }
++    }
++    if (spare->fd >= 0) {
++        f->io->close(spare->fd);
++        spare->fd = -1;
++    }
++    const int fd = f->io->open(f->n[node].host);
++    if (fd < 0) {
++        nc_log("hakuX-native", "disc: %s can't be opened", f->n[node].host);
++        return -1;
++    }
++    *spare = (OpenFile){node, fd, ++f->tick};
++    return fd;
++}
++
++static bool pread_all(int fd, uint8_t *p, size_t len, uint64_t off)
++{
++    while (len) {
++        const ssize_t n = pread(fd, p, len, (off_t)off);
++        if (n <= 0) {
++            return false;
++        }
++        p += n;
++        len -= (size_t)n;
++        off += (uint64_t)n;
++    }
++    return true;
++}
++
++bool nc_folder_read(NcFolder *f, void *buf, size_t len, uint64_t off)
++{
++    uint8_t *out = buf;
++    bool ok = true;
++    pthread_mutex_lock(&f->lock);
++    while (len && ok) {
++        const uint64_t sector64 = off / SECTOR;
++        const uint32_t in = (uint32_t)(off % SECTOR);
++        size_t n = SECTOR - in < len ? SECTOR - in : len;
++        if (sector64 < FIRST_SECTOR || sector64 > 0xFFFFFFFFull) {
++            if (sector64 == VD_SECTOR) {
++                memcpy(out, f->vd + in, n);
++            } else {
++                memset(out, 0, n);
++            }
++        } else {
++            const uint32_t sector = (uint32_t)sector64;
++            const Extent *e = extent_at(f, sector);
++            if (!e) {
++                memset(out, 0, n);      /* past what is handed out */
++            } else {
++                const uint64_t at = (uint64_t)(sector - e->sector) * SECTOR + in;
++                const uint64_t room = (uint64_t)e->count * SECTOR - at;
++                n = room < len ? (size_t)room : len;
++                const uint32_t node = e->node;
++                if (f->n[node].dir) {
++                    ok = node_build(f, node);
++                    if (ok) {
++                        memcpy(out, f->n[node].table + at, n);
++                    }
++                } else {
++                    const uint64_t size = f->n[node].size;
++                    const size_t data = at < size ? (size - at < n ? (size_t)(size - at) : n) : 0;
++                    if (data) {
++                        const int fd = file_fd(f, node);
++                        ok = fd >= 0 && pread_all(fd, out, data, at);
++                    }
++                    memset(out + data, 0, n - data);
++                }
++            }
++        }
++        out += n;
++        off += n;
++        len -= n;
++    }
++    pthread_mutex_unlock(&f->lock);
++    return ok;
++}
++
++static int posix_open(const char *path)
++{
++    return open(path, O_RDONLY | O_CLOEXEC);
++}
++
++static void posix_close(int fd)
++{
++    close(fd);
++}
++
++static bool posix_list(const char *path, void (*fn)(void *, const char *, bool, uint64_t), void *ctx)
++{
++    DIR *d = opendir(path);
++    if (!d) {
++        return false;
++    }
++    for (struct dirent *e; (e = readdir(d));) {
++        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) {
++            continue;
++        }
++        char *p = join(path, e->d_name);
++        struct stat st;
++        if (p && stat(p, &st) == 0) {
++            fn(ctx, e->d_name, S_ISDIR(st.st_mode), S_ISREG(st.st_mode) ? (uint64_t)st.st_size : 0);
++        }
++        free(p);
++    }
++    closedir(d);
++    return true;
++}
++
++const NcFolderIo nc_folder_posix_io = {posix_open, posix_close, posix_list};
++
++NcFolder *nc_folder_open(const char *folder, const char *xbe, const NcFolderIo *io)
++{
++    NcFolder *f = calloc(1, sizeof(*f));
++    if (!f) {
++        return NULL;
++    }
++    f->io = io ? io : &nc_folder_posix_io;
++    pthread_mutex_init(&f->lock, NULL);
++    for (unsigned k = 0; k < FOLDER_OPEN_MAX; k++) {
++        f->open[k].fd = -1;
++    }
++    f->next = FIRST_SECTOR;
++    if (xbe && *xbe && name_cmp(xbe, "default.xbe")) {
++        f->alias = strdup(xbe);
++    }
++    if (!grow_nodes(f, 1)) {
++        nc_folder_close(f);
++        return NULL;
++    }
++    Node *root = &f->n[0];
++    memset(root, 0, sizeof(*root));
++    root->name = strdup("");
++    root->host = strdup(folder);
++    root->dir = true;
++    f->nn = 1;
++    if (!root->name || !root->host || !node_list(f, 0) || !node_place(f, 0)) {
++        nc_folder_close(f);
++        return NULL;
++    }
++    static const char magic[] = "MICROSOFT*XBOX*MEDIA";
++    memcpy(f->vd, magic, 20);
++    wr32(f->vd + 20, f->n[0].sector);
++    wr32(f->vd + 24, (uint32_t)f->n[0].size);
++    memcpy(f->vd + 0x7EC, magic, 20);
++    nc_log("hakuX-native", "disc: the folder %s read as a disc (%u entries at its root%s%s)", folder,
++           f->n[0].count, f->alias ? ", booting " : "", f->alias ? f->alias : "");
++    return f;
++}
++
++void nc_folder_close(NcFolder *f)
++{
++    if (!f) {
++        return;
++    }
++    for (unsigned k = 0; k < FOLDER_OPEN_MAX; k++) {
++        if (f->open[k].fd >= 0) {
++            f->io->close(f->open[k].fd);
++        }
++    }
++    for (uint32_t i = 0; i < f->nn; i++) {
++        free(f->n[i].name);
++        free(f->n[i].host);
++        free(f->n[i].table);
++    }
++    free(f->n);
++    free(f->x);
++    free(f->alias);
++    pthread_mutex_destroy(&f->lock);
++    free(f);
++}
+diff --git a/native/core/folder.h b/native/core/folder.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..193969311abbc007f1bfab90f834e5979a9db249
+--- /dev/null
++++ b/native/core/folder.h
+@@ -0,0 +1,25 @@
++/*
++ * hakuX native core — an extracted game's folder read as a disc (OGBox 0.0.8).
++ *
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
++ *
++ * The bytes of an XDVDFS image of the folder (as an XISO of it would hold them), made as they are
++ * read: pack.c's reader for a folder registered with nc_pack_register_folder.
++ */
++#ifndef NC_FOLDER_H
++#define NC_FOLDER_H
++
++#include "native/core/pack.h"
++
++typedef struct NcFolder NcFolder;
++
++/* The folder's root listed (NULL: it can't be). xbe: the file to boot, there as default.xbe. */
++NcFolder *nc_folder_open(const char *folder, const char *xbe, const NcFolderIo *io);
++bool nc_folder_read(NcFolder *f, void *buf, size_t len, uint64_t off);
++void nc_folder_close(NcFolder *f);
++/* POSIX open, close, opendir and stat: the default file access */
++extern const NcFolderIo nc_folder_posix_io;
++
++#endif
 diff --git a/native/core/irq.c b/native/core/irq.c
-index 7a128a71c5da784985ae12348b0f30cf795e0548..30608718ff6f4e9614fe72af27b6bbfbe9ea3617 100644
+index 7a128a71c5da784985ae12348b0f30cf795e0548..499c8069c7ced22a8c2080add952cabedef2dbeb 100644
 --- a/native/core/irq.c
 +++ b/native/core/irq.c
 @@ -7,6 +7,7 @@
@@ -8226,7 +8988,36 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..30608718ff6f4e9614fe72af27b6bbfb
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -426,26 +427,68 @@ bool nc_irq_take_work(void)
+@@ -85,8 +86,15 @@ uint64_t nc_irq_rise_cpu_ns(unsigned line)
+  * time runnable but not running (schedstat's run delay) at each rise, so a
+  * late line tells a thread waiting for a host CPU from one blocked or
+  * sleeping. */
++extern volatile int g_nc_idle_waiting;
+ static int g_cpu_tid;
+ static uint64_t g_up_delay_ns[NC_IRQ_LINES];
++static uint8_t g_up_idle[NC_IRQ_LINES];  /* OGBox 0.0.8: the guest CPU in its idle wait at the rise */
++
++bool nc_irq_rise_idle(unsigned line)
++{
++    return line < NC_IRQ_LINES && __atomic_load_n(&g_up_idle[line], __ATOMIC_RELAXED);
++}
+ 
+ static bool sched_on(void)
+ {
+@@ -224,8 +232,12 @@ void nc_irq_set(unsigned line, bool level)
+      * for vblanks taken at once (PGR2's movies, many a second). */
+     /* the guest thread's CPU time at the rise, for the slow-delivery log
+      * (intr.c): a syscall a rise, so only with NC_IRQ_SCHED, as the delay */
++    /* OGBox 0.0.8: whether the guest CPU sat in its idle wait. Its thread's CPU time only with
++     * NC_IRQ_SCHED, as before: read on the PS5 from the rising thread, the guest CPU's clock gave
++     * that thread's time (a "22530 ms of" an 18 ms delay) */
+     __atomic_store_n(&g_up_cpu_ns[line], sched_on() ? nc_irq_cpu_ns() : 0, __ATOMIC_RELAXED);
+     __atomic_store_n(&g_up_delay_ns[line], nc_irq_delay_ns(), __ATOMIC_RELAXED);
++    __atomic_store_n(&g_up_idle[line], (uint8_t)__atomic_load_n(&g_nc_idle_waiting, __ATOMIC_RELAXED), __ATOMIC_RELAXED);
+     __atomic_store_n(&g_up_ns[line], mono_ns(), __ATOMIC_RELEASE);
+     if (__atomic_fetch_or(&g_lines, 1u << line, __ATOMIC_ACQ_REL) & (1u << line)) {
+         return; /* another device thread asserted it meanwhile */
+@@ -426,26 +438,113 @@ bool nc_irq_take_work(void)
      return __atomic_load_n(&g_work, __ATOMIC_ACQUIRE) && __atomic_exchange_n(&g_work, 0, __ATOMIC_ACQ_REL);
  }
  
@@ -8260,6 +9051,21 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..30608718ff6f4e9614fe72af27b6bbfb
 +    return ns;
 +}
 +
++/* OGBox 0.0.8: when a device's next rise is due (the vblank's, nv2a.c), so that an idle wait is
++ * awake for it. Woken from the condition wait instead, the guest's CPU took its vblank 8 to 19 ms
++ * late on the PS5, now and then: Breakdown at 60 fps, waiting for its vblank in the kernel,
++ * flipped a vblank late a few times a second (4-5 such late deliveries every 5 s; at 30 fps,
++ * spinning in its own code for the vblank count, 7 in two minutes). */
++static uint64_t g_expect_ns[NC_IRQ_LINES];
++#define EXPECT_SLACK_NS 2000000ull      /* how long past its time a rise is still waited for awake */
++
++void nc_irq_expect(unsigned line, uint64_t when_ns)
++{
++    if (line < NC_IRQ_LINES) {
++        __atomic_store_n(&g_expect_ns[line], when_ns, __ATOMIC_RELEASE);
++    }
++}
++
  uint32_t nc_irq_idle_wait(uint64_t deadline_ns, uint64_t max_ns)
  {
      pthread_once(&g_once, init_cv);
@@ -8272,6 +9078,15 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..30608718ff6f4e9614fe72af27b6bbfb
          until = deadline_ns;
      }
 -    const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
++    /* an unmasked line's rise that is due: the wait ends a little past it (the rise ends it
++     * earlier), so the spin below covers it */
++    const uint32_t enabled = __atomic_load_n(&g_enabled, __ATOMIC_ACQUIRE);
++    for (unsigned l = 0; l < NC_IRQ_LINES; l++) {
++        const uint64_t e = __atomic_load_n(&g_expect_ns[l], __ATOMIC_ACQUIRE);
++        if ((enabled & (1u << l)) && e && e + EXPECT_SLACK_NS > now_ns && e + EXPECT_SLACK_NS < until) {
++            until = e + EXPECT_SLACK_NS;
++        }
++    }
 +    const uint64_t spin = idle_spin_ns();
 +    /* the timed wait stops this far short of `until`; the rest is spun */
 +    const uint64_t sleep_until = until > spin ? until - spin : 0;
@@ -8295,7 +9110,28 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..30608718ff6f4e9614fe72af27b6bbfb
 +    }
 +    if (spin) {
 +        /* what is left of the wait, awake: a line or work ends it, as before */
-+        while (!nc_irq_lines() && !__atomic_load_n(&g_work, __ATOMIC_ACQUIRE) && mono_ns() < until) {
++        /* OGBox 0.0.8: a pass of this loop that took over 4 ms: the host gave the guest CPU's
++         * processor to another thread meanwhile (its sched_yield, or a preemption); said, a few a
++         * second, with how long */
++        uint64_t prev = mono_ns();
++        while (!nc_irq_lines() && !__atomic_load_n(&g_work, __ATOMIC_ACQUIRE)) {
++            const uint64_t t = mono_ns();
++            if (t - prev > 4000000ull) {
++                static uint64_t window;
++                static unsigned said;
++                if (t - window > 1000000000ull) {
++                    window = t;
++                    said = 0;
++                }
++                if (said++ < 4) {
++                    nc_log("hakuX-native-irq", "idle wait: the guest CPU's thread was off its processor %.1f ms",
++                           (t - prev) / 1e6);
++                }
++            }
++            prev = t;
++            if (t >= until) {
++                break;
++            }
 +            cpu_relax();
 +            sched_yield();
          }
@@ -8304,6 +9140,22 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..30608718ff6f4e9614fe72af27b6bbfb
      __atomic_store_n(&g_nc_idle_waiting, 0, __ATOMIC_RELAXED);
      return nc_irq_lines();
  }
+diff --git a/native/core/irq.h b/native/core/irq.h
+index 3e422fa7fbe116cafa9bb1a17838c84c49748e62..e1af7336094ae9345b2dc71e06c455151693758e 100644
+--- a/native/core/irq.h
++++ b/native/core/irq.h
+@@ -49,6 +49,11 @@ void nc_irq_enable(unsigned line, bool on);
+  * time reaches deadline_ns (0: wait for a line only, up to max_ns). Returns
+  * the lines. */
+ uint32_t nc_irq_idle_wait(uint64_t deadline_ns, uint64_t max_ns);
++/* OGBox 0.0.8: a device thread's next rise of line, due at when_ns (CLOCK_MONOTONIC): an idle
++ * wait then is awake for it (the spin of nc_irq_idle_wait) instead of asleep. */
++void nc_irq_expect(unsigned line, uint64_t when_ns);
++/* OGBox 0.0.8: whether the guest CPU sat in its idle wait when line last rose */
++bool nc_irq_rise_idle(unsigned line);
+ /* Work for the kernel from a host thread (a disc read done): rings the
+  * doorbell and wakes an idle wait as a line does, but delivers no interrupt.
+  * nc_irq_take_work says whether any was posted since it last asked. */
 diff --git a/native/core/jmp.c b/native/core/jmp.c
 index e334f4e9c9524320da3df19a0564fd9e8d2f78cb..94503c7aaed069f3008cab58393f0e4012a8e21b 100644
 --- a/native/core/jmp.c
@@ -9300,10 +10152,10 @@ index 1b8956f16c2e490b25f9fad8365480f9fbc1169c..9bdce05333541b0d75a0ba39e3650552
          nc_log("hakuX-app", "render scale %sx", v);
 diff --git a/native/core/pack.c b/native/core/pack.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f155ff5a74b
+index 0000000000000000000000000000000000000000..13c0dbe032f425f19d7f0068b3612b13e014a94e
 --- /dev/null
 +++ b/native/core/pack.c
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,673 @@
 +/*
 + * hakuX native core — packed and split disc images (pack.h).
 + *
@@ -9317,8 +10169,17 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 + * more, each its place >> alignment, bit 31 when LZ4-compressed; a sector's size is the next one's
 + * place less its own. A compressed sector (or one not 2048 bytes long) starts with a byte, the
 + * padding at its end; the rest is an LZ4 block.
++ *
++ * OGBox 0.0.8: the CSO layout, as MakeMHz's ciso.py (stellar-cso) writes it: "CISO", the header's
++ * size (24), the image's size (u64), the block size (2048), the version (2), the index's alignment
++ * (2), then the index: a u32 a block and one more, each its place >> alignment, bit 31 when the
++ * block is compressed. A compressed block is a block of an LZ4 frame: its size (u32, bit 31 when
++ * stored), then that many bytes (an LZ4 block); a plain one its 2048 bytes. Past 4 GiB the rest
++ * goes in game.2.cso, its places from 0 again: the index is the first file's, and a place lower
++ * than the one before is the next file's first block.
 + */
 +#include "native/core/pack.h"
++#include "native/core/folder.h"
 +#include "native/core/nc.h"
 +
 +#include <pthread.h>
@@ -9334,9 +10195,10 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +typedef struct Slice {
 +    int fd;
 +    uint64_t start, size;   /* its place in the image, its size uncompressed */
-+    uint32_t *index;        /* a CCI's (sectors + 1 entries), NULL a plain part */
++    uint32_t *index;        /* a CCI's or a CSO's (sectors + 1 entries), NULL a plain part */
 +    uint32_t sectors;
 +    unsigned align;
++    bool cso;               /* OGBox 0.0.8: the CSO's (its parts below) */
 +} Slice;
 +
 +struct NcPack {
@@ -9349,12 +10211,25 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    unsigned next;
 +    uint8_t *raw;           /* a run's compressed bytes */
 +    size_t raw_cap;
++    /* OGBox 0.0.8: a CSO's files (the index is the first's; part_first[k] the first block in the
++     * k-th, part_first[nparts] the blocks), or a folder read as a disc */
++    int cso_fd[MAX_SLICES];
++    uint64_t cso_size[MAX_SLICES];
++    uint32_t part_first[MAX_SLICES + 1];
++    int nparts;
++    NcFolder *folder;
 +};
 +
 +static struct {
 +    int first, n;
 +    int fds[MAX_SLICES - 1];
 +} g_reg[8];
++/* OGBox 0.0.8: the folders registered as discs, by their XBE's descriptor */
++static struct {
++    int fd;
++    char *folder, *xbe;
++} g_folders[8];
++static const NcFolderIo *g_folder_io;
 +static pthread_mutex_t g_reg_lock = PTHREAD_MUTEX_INITIALIZER;
 +static void (*g_close)(int);
 +
@@ -9391,10 +10266,60 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +
 +static void part_close(int fd);
 +
++void nc_pack_set_folder_io(const NcFolderIo *io)
++{
++    g_folder_io = io;
++}
++
++const NcFolderIo *nc_pack_folder_io(void)
++{
++    return g_folder_io ? g_folder_io : &nc_folder_posix_io;
++}
++
++void nc_pack_register_folder(int fd, const char *folder, const char *xbe)
++{
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_folders) / sizeof(g_folders[0]); i++) {
++        if (!g_folders[i].folder || g_folders[i].fd == fd) {
++            free(g_folders[i].folder);
++            free(g_folders[i].xbe);
++            g_folders[i].fd = fd;
++            g_folders[i].folder = strdup(folder);
++            g_folders[i].xbe = strdup(xbe ? xbe : "default.xbe");
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++}
++
++/* The folder registered for fd (copies the caller frees), or false. */
++static bool take_folder(int fd, char **folder, char **xbe)
++{
++    bool found = false;
++    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_folders) / sizeof(g_folders[0]); i++) {
++        if (g_folders[i].folder && g_folders[i].fd == fd) {
++            *folder = strdup(g_folders[i].folder);
++            *xbe = strdup(g_folders[i].xbe);
++            found = *folder && *xbe;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_reg_lock);
++    return found;
++}
++
 +void nc_pack_unregister(int first_fd)
 +{
 +    int fds[MAX_SLICES - 1], n = 0;
 +    pthread_mutex_lock(&g_reg_lock);
++    for (unsigned i = 0; i < sizeof(g_folders) / sizeof(g_folders[0]); i++) {
++        if (g_folders[i].folder && g_folders[i].fd == first_fd) {
++            free(g_folders[i].folder);
++            free(g_folders[i].xbe);
++            g_folders[i].folder = g_folders[i].xbe = NULL;
++        }
++    }
 +    for (unsigned i = 0; i < sizeof(g_reg) / sizeof(g_reg[0]); i++) {
 +        if (g_reg[i].n && g_reg[i].first == first_fd) {
 +            n = g_reg[i].n;
@@ -9505,6 +10430,158 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    return (int)(op - dst);
 +}
 +
++/* ---- OGBox 0.0.8: a CSO ---- */
++
++static uint64_t cso_pos(const Slice *s, uint32_t b)
++{
++    return (uint64_t)(s->index[b] & 0x7FFFFFFFu) << s->align;
++}
++
++/* a CSO: its header and index (the first file's), its files' sizes and first blocks */
++static bool cso_open(NcPack *p, int fd, const int *more, int nmore)
++{
++    uint8_t h[24];
++    if (!pread_all(fd, h, sizeof(h), 0)) {
++        return false;
++    }
++    const uint64_t size = rd64(h + 8);
++    const uint32_t block = rd32(h + 16);
++    const unsigned version = h[20], align = h[21];
++    if (block != SECTOR || version != 2 || align > 8 || size < SECTOR || size / SECTOR > (1u << 24)) {
++        nc_log("hakuX-native", "disc: a CSO whose header this doesn't take (block %u, version %u, alignment %u)%s",
++               block, version, align, version == 1 ? ": version 1 is the PSP's, deflate-compressed" : "");
++        return false;
++    }
++    Slice *s = &p->s[0];
++    memset(s, 0, sizeof(*s));
++    s->fd = fd;
++    s->sectors = (uint32_t)(size / SECTOR);
++    s->size = (uint64_t)s->sectors * SECTOR;
++    s->align = align;
++    s->cso = true;
++    p->n = 1;
++    const size_t n = (size_t)s->sectors + 1;
++    uint8_t *raw = malloc(n * 4);
++    s->index = malloc(n * sizeof(uint32_t));
++    if (!raw || !s->index || !pread_all(fd, raw, n * 4, sizeof(h))) {
++        free(raw);
++        return false;
++    }
++    for (size_t i = 0; i < n; i++) {
++        s->index[i] = rd32(raw + 4 * i);
++    }
++    free(raw);
++    const int nfiles = 1 + nmore;
++    for (int k = 0; k < nfiles; k++) {
++        struct stat st;
++        p->cso_fd[k] = k ? more[k - 1] : fd;
++        if (fstat(p->cso_fd[k], &st) != 0) {
++            return false;
++        }
++        p->cso_size[k] = (uint64_t)st.st_size;
++    }
++    int parts = 1;
++    p->part_first[0] = 0;
++    for (uint32_t b = 1; b < s->sectors; b++) {
++        if (cso_pos(s, b) < cso_pos(s, b - 1)) {
++            if (parts == MAX_SLICES) {
++                return false;
++            }
++            p->part_first[parts++] = b;
++        }
++    }
++    p->part_first[parts] = s->sectors;
++    if (parts > nfiles) {
++        nc_log("hakuX-native", "disc: the CSO is in %d files and %d %s here (game.%d.cso is missing)", parts, nfiles,
++               nfiles == 1 ? "is" : "are", nfiles + 1);
++        return false;
++    }
++    p->nparts = parts;
++    return true;
++}
++
++/* One block's 2048 bytes: a plain one's, else its LZ4 frame block's (or a bare LZ4 block's, the
++ * padding after it up to the next block's alignment left out). */
++static bool cso_block(const uint8_t *src, size_t size, bool compressed, uint8_t *out)
++{
++    if (!compressed) {
++        if (size < SECTOR) {
++            return false;
++        }
++        memcpy(out, src, SECTOR);
++        return true;
++    }
++    if (size >= 4) {
++        const uint32_t h = rd32(src), n = h & 0x7FFFFFFFu;
++        if (n && n <= size - 4) {
++            if (h & 0x80000000u) {
++                const size_t c = n < SECTOR ? n : SECTOR;
++                memcpy(out, src + 4, c);
++                memset(out + c, 0, SECTOR - c);
++                return true;
++            }
++            const int got = nc_lz4_decode(src + 4, (int)n, out, SECTOR);
++            if (got > 0) {
++                memset(out + got, 0, SECTOR - (size_t)got);
++                return true;
++            }
++        }
++    }
++    for (size_t trim = 0; trim < 4 && trim < size; trim++) {
++        if (nc_lz4_decode(src, (int)(size - trim), out, SECTOR) == (int)SECTOR) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/* a CSO's blocks [first, first + count) into dst, under the lock: each file's runs in one read */
++static bool cso_read(NcPack *p, Slice *s, uint32_t first, uint32_t count, uint8_t *dst)
++{
++    while (count) {
++        int k = 0;
++        while (k + 1 < p->nparts && first >= p->part_first[k + 1]) {
++            k++;
++        }
++        const uint32_t end = p->part_first[k + 1];
++        uint32_t run = count < 64 ? count : 64;
++        if (first + run > end) {
++            run = end - first;
++        }
++        const uint64_t lo = cso_pos(s, first);
++        const uint64_t hi = first + run < end ? cso_pos(s, first + run) : p->cso_size[k];
++        if (!run || hi < lo || hi - lo > (64u << 20)) {
++            return false;
++        }
++        const size_t len = (size_t)(hi - lo);
++        if (len > p->raw_cap) {
++            uint8_t *r = realloc(p->raw, len);
++            if (!r) {
++                return false;
++            }
++            p->raw = r;
++            p->raw_cap = len;
++        }
++        if (!pread_all(p->cso_fd[k], p->raw, len, lo)) {
++            return false;
++        }
++        for (uint32_t j = 0; j < run; j++) {
++            const uint32_t b = first + j;
++            const uint64_t a = cso_pos(s, b) - lo;
++            const uint64_t z = (b + 1 < end ? cso_pos(s, b + 1) : p->cso_size[k]) - lo;
++            if (z < a || z > len || !cso_block(p->raw + a, (size_t)(z - a), s->index[b] & 0x80000000u,
++                                               dst + (size_t)j * SECTOR)) {
++                nc_log("hakuX-native", "disc: the CSO's block %u can't be read", b);
++                return false;
++            }
++        }
++        first += run;
++        count -= run;
++        dst += (size_t)run * SECTOR;
++    }
++    return true;
++}
++
 +/* a part: a CCI's header and index, or a plain part's size */
 +static bool slice_open(Slice *s, int fd, bool *cci)
 +{
@@ -9549,11 +10626,32 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +NcPack *nc_pack_open(int fd, bool *is_pack)
 +{
 +    *is_pack = false;
++    char *folder = NULL, *xbe = NULL;
++    if (take_folder(fd, &folder, &xbe)) {
++        /* OGBox 0.0.8: an extracted game's folder */
++        *is_pack = true;
++        NcPack *p = calloc(1, sizeof(*p));
++        if (p) {
++            pthread_mutex_init(&p->lock, NULL);
++            p->folder = nc_folder_open(folder, xbe, nc_pack_folder_io());
++            if (!p->folder) {
++                nc_pack_close(p);
++                p = NULL;
++            }
++        }
++        free(folder);
++        free(xbe);
++        return p;
++    }
++    free(folder);
++    free(xbe);
 +    int more[MAX_SLICES - 1];
 +    const int nmore = take_slices(fd, more);
 +    uint8_t magic[4];
-+    const bool cci = pread_all(fd, magic, 4, 0) && !memcmp(magic, "MCCI", 4);
-+    if (!nmore && !cci) {
++    const bool magic_read = pread_all(fd, magic, 4, 0);
++    const bool cci = magic_read && !memcmp(magic, "MCCI", 4);
++    const bool cso = magic_read && !memcmp(magic, "CISO", 4);
++    if (!nmore && !cci && !cso) {
 +        return NULL;
 +    }
 +    *is_pack = true;
@@ -9563,6 +10661,16 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    }
 +    pthread_mutex_init(&p->lock, NULL);
 +    memset(p->cached, 0xFF, sizeof(p->cached));
++    if (cso) {
++        if (!cso_open(p, fd, more, nmore)) {
++            nc_log("hakuX-native", "disc: the CSO can't be read");
++            nc_pack_close(p);
++            return NULL;
++        }
++        nc_log("hakuX-native", "disc: a CSO (compressed) in %d file%s, %llu MiB", p->nparts, p->nparts == 1 ? "" : "s",
++               (unsigned long long)(p->s[0].size >> 20));
++        return p;
++    }
 +    uint64_t at = 0;
 +    unsigned ccis = 0;
 +    for (int i = 0; i <= nmore; i++) {
@@ -9593,6 +10701,7 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +        free(p->s[i].index);
 +
 +    }
++    nc_folder_close(p->folder);
 +    free(p->raw);
 +    pthread_mutex_destroy(&p->lock);
 +    free(p);
@@ -9652,8 +10761,17 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +    return true;
 +}
 +
++/* a compressed part's sectors, under the lock */
++static bool sectors_read(NcPack *p, Slice *s, uint32_t first, uint32_t count, uint8_t *dst)
++{
++    return s->cso ? cso_read(p, s, first, count, dst) : cci_read(p, s, first, count, dst);
++}
++
 +bool nc_pack_read(NcPack *p, void *buf, size_t len, uint64_t off)
 +{
++    if (p->folder) {
++        return nc_folder_read(p->folder, buf, len, off);
++    }
 +    uint8_t *out = buf;
 +    while (len) {
 +        int i = 0;
@@ -9685,7 +10803,7 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +                }
 +                if (c < 0) {
 +                    c = (int)(p->next++ & 7);
-+                    ok = cci_read(p, s, first, 1, p->cache[c]);
++                    ok = sectors_read(p, s, first, 1, p->cache[c]);
 +                    p->cached[c] = ok ? key : UINT64_MAX;
 +                }
 +                if (n > SECTOR - skip) {
@@ -9698,7 +10816,7 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +                /* whole sectors straight into the buffer */
 +                const uint32_t count = (uint32_t)(n / SECTOR);
 +                n = (size_t)count * SECTOR;
-+                ok = first + count <= s->sectors && cci_read(p, s, first, count, out);
++                ok = first + count <= s->sectors && sectors_read(p, s, first, count, out);
 +            }
 +            pthread_mutex_unlock(&p->lock);
 +            if (!ok) {
@@ -9713,10 +10831,10 @@ index 0000000000000000000000000000000000000000..1e42c506c9eb927838d564d90b1b5f15
 +}
 diff --git a/native/core/pack.h b/native/core/pack.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a863572648626996
+index 0000000000000000000000000000000000000000..f8be8a3aea80827df2b5b3dc9b4a395b5f81aaf3
 --- /dev/null
 +++ b/native/core/pack.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,61 @@
 +/*
 + * hakuX native core — packed and split disc images (OGBox 0.0.3).
 + *
@@ -9729,6 +10847,11 @@ index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a8635726
 + * image, Team Resurgent's format: "MCCI", a 32-byte header, then 2048-byte sectors each stored or
 + * LZ4-compressed, an index of their places at the end), one file or split the same way. The
 + * xdvdfs reader reads through it as through a CHD.
++ *
++ * OGBox 0.0.8: a CSO (MakeMHz's Stellar format, the original console's ODE and Repackinator write
++ * it: "CISO", version 2, 2048-byte blocks each stored or an LZ4 frame's block, game.1.cso and
++ * game.2.cso past 4 GiB with one index in the first), and an extracted game's folder read as a
++ * disc (folder.c: its default.xbe and the files beside it, an XDVDFS image made as it is read).
 + */
 +#ifndef NC_PACK_H
 +#define NC_PACK_H
@@ -9754,6 +10877,20 @@ index 0000000000000000000000000000000000000000..e6ab027558131ca631ac8761a8635726
 +/* How a part's descriptor is closed (an opener's own descriptors: a share's virtual ones); close()
 + * when not set. */
 +void nc_pack_set_closer(void (*close_fd)(int fd));
++
++/* OGBox 0.0.8: an extracted game (folder.c). The host's file access for it (a share's through its
++ * own layer): open a file to read with pread (-1: it can't be), close it, and list a folder (fn
++ * for each entry; false: it can't be listed). The default: POSIX open, close, opendir and stat. */
++typedef struct NcFolderIo {
++    int (*open)(const char *path);
++    void (*close)(int fd);
++    bool (*list)(const char *path, void (*fn)(void *ctx, const char *name, bool is_dir, uint64_t size), void *ctx);
++} NcFolderIo;
++void nc_pack_set_folder_io(const NcFolderIo *io);
++const NcFolderIo *nc_pack_folder_io(void);
++/* fd is the XBE's to boot (what nc_pack_open is then given), in folder: the game's files read as a
++ * disc, the XBE there as \default.xbe, until nc_pack_unregister(fd). */
++void nc_pack_register_folder(int fd, const char *folder, const char *xbe);
 +
 +/* The LZ4 block format decoded: the bytes written, or -1. */
 +int nc_lz4_decode(const uint8_t *src, int src_len, uint8_t *dst, int dst_cap);
@@ -13515,10 +14652,10 @@ index 4bab37d21f33284fec257dae3647f097920f331d..b4278eb541f8c095a11e85b692309028
  /* A SIGBUS (si_code code) in translated guest code: an atomic access the host
 diff --git a/native/cpu/cpu_native.c b/native/cpu/cpu_native.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24aa70c6c07
+index 0000000000000000000000000000000000000000..9a7f4e48dcfe089da91d575cca14e5e49c754855
 --- /dev/null
 +++ b/native/cpu/cpu_native.c
-@@ -0,0 +1,1816 @@
+@@ -0,0 +1,1834 @@
 +/*
 + * hakuX native core — the guest CPU on an x86-64 host: the title's code runs
 + * natively in 32-bit compatibility mode (cpu.h, cpu_native.h).
@@ -13715,6 +14852,8 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +    volatile int smp_where;     /* NC_SAMPLE_GUEST / _GATE / _HOST */
 +    int pending;                /* an interrupt was requested */
 +    int kicked;                 /* a kick signal is on its way */
++    volatile uint64_t kick_sent; /* OGBox 0.0.8: the TSC when it was sent (its handler's latency) */
++    uint64_t kick_lat_max, kick_late, kick_n; /* since the last stats line: the longest, over 4 ms, all */
 +    bool stepping;              /* TF set to leave a no-interrupt range */
 +    bool cpuid_faults;          /* Linux's CPUID faulting is on for the vCPU thread */
 +    bool gate_step;             /* TF set in the gate's exit for a request it missed */
@@ -14122,6 +15261,14 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +           (unsigned long long)cpu->st.steps, (unsigned long long)cpu->st.rdtsc, (unsigned long long)cpu->st.cpuid,
 +           (unsigned long long)cpu->st.flags_insns, (unsigned long long)cpu->st.fs_rewrites,
 +           (double)(__atomic_load_n(&cpu->st.seg_faults, __ATOMIC_RELAXED) - cpu->st_seg0) / s);
++    /* OGBox 0.0.8: how long the kicks took to reach their handler (an interrupt for the guest's
++     * code waits that long) */
++    if (cpu->kick_n) {
++        nc_log("hakuX-native-cpu", "kicks to their handler: %llu, the longest %.2f ms, %llu over 4 ms",
++               (unsigned long long)cpu->kick_n, (double)cpu->kick_lat_max * 1000.0 / (double)g_tsc_hz,
++               (unsigned long long)cpu->kick_late);
++        cpu->kick_n = cpu->kick_late = cpu->kick_lat_max = 0;
++    }
 +    cpu->st_seg0 = __atomic_load_n(&cpu->st.seg_faults, __ATOMIC_RELAXED);
 +    cpu->st_t0 = now;
 +    cpu->st_sysops0 = cpu->st.sysops;
@@ -14712,6 +15859,13 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +    const int saved = errno;
 +    __atomic_store_n(&cpu->kicked, 0, __ATOMIC_RELEASE);
 +    if (pthread_equal(cpu->thread, pthread_self())) {
++        const uint64_t sent = __atomic_exchange_n(&cpu->kick_sent, 0, __ATOMIC_ACQ_REL);
++        if (sent) {
++            const uint64_t lat = rdtsc() - sent;
++            cpu->kick_n++;
++            cpu->kick_late += lat > g_tsc_hz / 250;
++            cpu->kick_lat_max = lat > cpu->kick_lat_max ? lat : cpu->kick_lat_max;
++        }
 +        if (in_guest(u)) {
 +            cpu->last_eip = (uint32_t)C_RIP(u);
 +        }
@@ -14768,6 +15922,7 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +        return;                         /* the system op's end takes it */
 +    }
 +    if (!__atomic_exchange_n(&cpu->kicked, 1, __ATOMIC_ACQ_REL)) {
++        __atomic_store_n(&cpu->kick_sent, rdtsc(), __ATOMIC_RELEASE);
 +        pthread_kill(cpu->thread, NC_KICK_SIGNAL);
 +    }
 +}
@@ -17995,7 +19150,7 @@ index 0000000000000000000000000000000000000000..47abf4854f7dea1f974d96a7e3b279af
 +
 +#endif
 diff --git a/native/dev/apu/apu.c b/native/dev/apu/apu.c
-index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0648b8bc1 100644
+index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..78ec55683479109ec6f0f277dde9cdc3b3e4acde 100644
 --- a/native/dev/apu/apu.c
 +++ b/native/dev/apu/apu.c
 @@ -21,6 +21,7 @@
@@ -18074,7 +19229,68 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      if (d) {
          apu_st(&d->gp_boost_until_us, apu_host_us() + GP_BOOST_US);
      }
-@@ -448,6 +479,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -415,6 +446,60 @@ static bool frames_stopped(MCPXAPUState *d)
+             (mode != NV_PAPU_FECTL_FEMETHMODE_TRAPPED || g_trap_park));
+ }
+ 
++/* OGBox 0.0.8: the sound's level at each stage, once a second (the session log): the voices'
++ * mix (the VP's mixbins, and which bins carry sound), the EP's output frame, and what goes to the
++ * console after the volume limit, with the blocks that were all zeros. Where a game goes silent
++ * (NFS Carbon in a race), the first stage at zero says which part stopped. */
++static struct {
++    float vp_peak;
++    uint32_t vp_bins;
++    int ep_peak, out_peak;
++    unsigned pushed, silent;
++    int64_t at_ms;
++} g_lvl;
++
++static void levels_vp(float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
++{
++    for (int b = 0; b < NUM_MIXBINS; b++) {
++        float m = 0;
++        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++            const float a = fabsf(mixbins[b][i]);
++            m = a > m ? a : m;
++        }
++        if (m > 1e-4f) {
++            g_lvl.vp_bins |= 1u << b;
++        }
++        g_lvl.vp_peak = m > g_lvl.vp_peak ? m : g_lvl.vp_peak;
++    }
++}
++
++static int frame_peak(const int16_t (*buf)[2])
++{
++    int m = 0;
++    for (int i = 0; i < 256; i++) {
++        const int l = abs(buf[i][0]), r = abs(buf[i][1]);
++        m = l > m ? l : m;
++        m = r > m ? r : m;
++    }
++    return m;
++}
++
++static void levels_log(int64_t now_ms)
++{
++    if (now_ms - g_lvl.at_ms < 1000) {
++        return;
++    }
++    if (g_lvl.at_ms) {
++        nc_log("hakuX-apu", "levels in 1 s: voices' mix peak %.4f (bins with sound %08x) | EP out peak %d | "
++                            "to the console peak %d, %u blocks, %u of them silent (volume limit %.2f)",
++               g_lvl.vp_peak, g_lvl.vp_bins, g_lvl.ep_peak, g_lvl.out_peak, g_lvl.pushed, g_lvl.silent,
++               (double)g_apu_config.volume_limit);
++    }
++    const int64_t at = now_ms;
++    memset(&g_lvl, 0, sizeof(g_lvl));
++    g_lvl.at_ms = at;
++}
++
+ static void se_frame(MCPXAPUState *d)
+ {
+     mcpx_apu_update_dsp_preference(d);
+@@ -448,6 +533,7 @@ static void se_frame(MCPXAPUState *d)
          d->sleep_acc_us = 0;
      }
      d->frame_count++;
@@ -18082,15 +19298,34 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      if (g_apu_stats) {
          int used = apu_out_queued();
          g_apu_fifo_min = MIN(g_apu_fifo_min, used);
-@@ -471,6 +503,7 @@ static void se_frame(MCPXAPUState *d)
+@@ -458,9 +544,13 @@ static void se_frame(MCPXAPUState *d)
+     float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME] = { 0 };
+ 
+     mcpx_apu_vp_frame(d, mixbins);
++    levels_vp(mixbins);
+     mcpx_apu_dsp_frame(d, mixbins);
++    levels_log(apu_host_ms());
+ 
+     if ((d->ep_frame_div + 1) % 8 == 0) {
++        const int ep = frame_peak(d->monitor.frame_buf);
++        g_lvl.ep_peak = ep > g_lvl.ep_peak ? ep : g_lvl.ep_peak;
+         if (0 <= g_apu_config.volume_limit && g_apu_config.volume_limit < 1) {
+             float f = pow(g_apu_config.volume_limit, M_E);
+             for (int i = 0; i < 256; i++) {
+@@ -470,7 +560,12 @@ static void se_frame(MCPXAPUState *d)
+         }
  
          if (d->monitor.fifo_capacity_bytes > 0) {
++            const int out = frame_peak(d->monitor.frame_buf);
++            g_lvl.out_peak = out > g_lvl.out_peak ? out : g_lvl.out_peak;
++            g_lvl.pushed++;
++            g_lvl.silent += out == 0;
              apu_out_push(d->monitor.frame_buf, sizeof(d->monitor.frame_buf));
 +            apu_inc(&g_diag.pushed);
          }
          memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
      }
-@@ -539,16 +572,14 @@ static void monitor_init(MCPXAPUState *d)
+@@ -539,16 +634,14 @@ static void monitor_init(MCPXAPUState *d)
  
  void mcpx_apu_reset(MCPXAPUState *d)
  {
@@ -18110,7 +19345,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      apu_st(&d->set_irq, false);
      d->snapshot_just_loaded = false;
      d->next_frame_time_us = 0;
-@@ -588,6 +619,158 @@ void mcpx_apu_post_load(MCPXAPUState *d)
+@@ -588,6 +681,158 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      update_irq(d);
  }
  
@@ -18269,7 +19504,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = arg;
-@@ -608,6 +791,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -608,6 +853,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          int xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
                                  NV_PAPU_SECTL_XCNTMODE);
          uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
@@ -18277,7 +19512,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
          if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
              (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
-@@ -617,6 +801,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -617,6 +863,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          /* taken and cleared at once: one the guest thread raises meanwhile
           * stays for the next frame (a plain clear after update_irq lost it) */
          if (apu_xchg(&d->set_irq, false)) {
@@ -18285,7 +19520,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
              if (d->snapshot_just_loaded) {
                  /* Swallow exactly the FIRST post-restore IRQ assert: a voice
                   * that was at completion when the snapshot was taken re-emits
-@@ -634,6 +819,7 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -634,6 +881,7 @@ static void *mcpx_apu_frame_thread(void *arg)
          }
  
          if (frames_stopped(d)) {
@@ -18293,7 +19528,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
              nc_pause_idle(true);                /* stopped until the guest acts */
              /* timed: the guest's register writes signal without d->lock (its
               * thread never takes it), so one can come between the check and
-@@ -660,7 +846,10 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -660,7 +908,10 @@ static void *mcpx_apu_frame_thread(void *arg)
          if (nc_paused()) {
              continue;                           /* the throttle let go for the pause: no frame */
          }
@@ -18304,7 +19539,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      }
      pthread_mutex_unlock(&d->lock);
      return NULL;
-@@ -670,10 +859,17 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -670,10 +921,17 @@ static void *mcpx_apu_frame_thread(void *arg)
   * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
   * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
   * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
@@ -18323,7 +19558,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
      g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
      g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
-@@ -684,7 +880,7 @@ static void config_init(void)
+@@ -684,7 +942,7 @@ static void config_init(void)
  static void *apu_trace_thread(void *arg)
  {
      MCPXAPUState *d = arg;
@@ -18332,7 +19567,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
          sleep(2);
          nc_log("hakuX-native-apu",
                 "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
-@@ -727,9 +923,19 @@ static void *apu_trace_thread(void *arg)
+@@ -727,9 +985,19 @@ static void *apu_trace_thread(void *arg)
      return NULL;
  }
  
@@ -18353,7 +19588,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
      g_state = d;
      g_apu_ram = vm->phys;
      g_apu_ram_size = (uint32_t)vm->ram_size;
-@@ -754,10 +960,48 @@ void nc_dev_apu_init(NcVm *vm)
+@@ -754,10 +1022,48 @@ void nc_dev_apu_init(NcVm *vm)
      mcpx_apu_reset(d);
  
      apu_thread_start(&d->apu_thread, "apu.frame", mcpx_apu_frame_thread, d, true);
@@ -18380,7 +19615,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
 +    if (g_apu_trace) {
 +        pthread_join(g_apu_trace_thread, NULL);     /* within its 2 s */
 +        g_apu_trace = false;
-+    }
+     }
 +    mcpx_apu_vp_finalize(d);            /* the voice workers */
 +    apu_out_close();
 +}
@@ -18390,7 +19625,7 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
 +    MCPXAPUState *d = g_state;
 +    if (!d) {
 +        return;
-     }
++    }
 +    dsp_destroy(d->gp.dsp);
 +    dsp_destroy(d->ep.dsp);
 +    pthread_mutex_destroy(&d->lock);
@@ -18405,6 +19640,32 @@ index c013db30d4d3514bbdc8198cb8fd92c357d0ea01..711a8f096d4dcff4440b1285f0138af0
  }
  
  void nc_dev_apu_spin_wait(const uint32_t *word)
+@@ -782,8 +1088,23 @@ void nc_dev_apu_spin_wait(const uint32_t *word)
+         }
+     }
+ #else
+-    for (int i = 0; i < 1000 && __atomic_load_n(word, __ATOMIC_ACQUIRE); i++) {
+-        usleep(1);
++    /* OGBox 0.0.8: spun, 2 ms at most (three APU frames, run to completion now), not slept: a
++     * usleep(1) on the PS5 sleeps up to a scheduler tick, and this runs inside a kernel call, so
++     * the guest's interrupts waited it out. Breakdown's DirectSound waited here ~20 times a second,
++     * and now and then its USB interrupt and the vblank behind it came 8-18 ms late (a frame flipped
++     * a vblank late every few seconds at 60 fps). Not taken by then, the stub asks again, the
++     * interrupts taken in between. */
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    const uint64_t t0 = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++    for (unsigned i = 0; __atomic_load_n(word, __ATOMIC_ACQUIRE); i++) {
++        __builtin_ia32_pause();
++        if ((i & 63) == 63) {
++            clock_gettime(CLOCK_MONOTONIC, &ts);
++            if ((uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec - t0 > 2000000ull) {
++                break;
++            }
++        }
+     }
+ #endif
+ }
 diff --git a/native/dev/apu/apu_base.h b/native/dev/apu/apu_base.h
 index a4fc3d3d5b1643256eff5dddb7ece9b4fd329f68..4accc4c5735f1c0769921c437a2ac3a1c0bb254d 100644
 --- a/native/dev/apu/apu_base.h
@@ -20500,10 +21761,10 @@ index 7ac0592f5d9a373c82a5f84cf0323af4f0309fa6..6edcb0631984915cef5e083af6114bc1
  #endif
 diff --git a/native/dev/apu/vp/mcpx_curves.h b/native/dev/apu/vp/mcpx_curves.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..537a9b6e43938da8792506d1b8f5fe26a48b74f4
+index 0000000000000000000000000000000000000000..299458e52091d1b2304ab1a998672235d3998100
 --- /dev/null
 +++ b/native/dev/apu/vp/mcpx_curves.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,72 @@
 +/*
 + * hakuX native core — the MCPX voice processor's measured curves, from
 + * raddad772's tests on a retail console (xemu PR #3105,
@@ -20564,6 +21825,15 @@ index 0000000000000000000000000000000000000000..537a9b6e43938da8792506d1b8f5fe26
 +    const int octave = (int)floor(k / 1024.0);
 +    const double c = ldexp(exp2((k - octave * 1024) / 1024.0) * 65536.0, octave);
 +    return (float)(fmin(fmax(floor(c + 0.5), 0.0), 65535.0) / 65536.0);
++}
++
++/* OGBox 0.0.8: the DLS2 filter's damping for FC1 (TAR_FCA's high half; FCB's for a stereo voice's
++ * second channel): FC1 / 32768 as PR b323e32 measured (FC1 0 self-oscillated on the console), at
++ * most 1.0 as xemu had it before the PR. Past 1.0 the state-variable recurrence is unstable from f
++ * 0.83 up (at f 1.0 a pole at -1.618 with FC1 FFFFh, NFS Carbon's DirectSound filter). */
++static inline float mcpx_dls2_damping(uint16_t fc1)
++{
++    return fminf((float)fc1 / 32768.0f, 1.0f);
 +}
 +
 +#endif
@@ -22148,7 +23418,7 @@ index a02b561f0f33fa4955418ee3e89e02de0d56794d..e6ec13330b7abf312bab68800e4cf3dc
  
  #endif
 diff --git a/native/dev/apu/vp/vp.c b/native/dev/apu/vp/vp.c
-index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c536a68399 100644
+index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..87a6f9156becf5ce3ae3b0ca9859b540a9758a6a 100644
 --- a/native/dev/apu/vp/vp.c
 +++ b/native/dev/apu/vp/vp.c
 @@ -22,6 +22,8 @@
@@ -22160,7 +23430,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #include "native/core/mmio.h"   /* nc_mmio_retry */
  
  /* -------------------------------------------------------------------------
-@@ -123,6 +125,65 @@ static const struct {
+@@ -123,6 +125,73 @@ static const struct {
      { NV_PAPU_TVLMP, NV_PAPU_CVLMP, NV_PAPU_NVLMP }, // MP
  };
  
@@ -22177,7 +23447,15 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +static uint32_t g_idle_traps;
 +static uint32_t g_v_samples[MCPX_HW_MAX_VOICES], g_v_segments[MCPX_HW_MAX_VOICES],
 +    g_v_ssls[MCPX_HW_MAX_VOICES], g_v_notified[MCPX_HW_MAX_VOICES], g_v_ends[MCPX_HW_MAX_VOICES];
++/* OGBox 0.0.8: a buffer voice's samples played that were zero on every channel (ring_watch) */
++static uint32_t g_v_zero[MCPX_HW_MAX_VOICES], g_v_played[MCPX_HW_MAX_VOICES];
 +#define DIAG_ADD(p, n) ((void)__atomic_fetch_add(p, n, __ATOMIC_RELAXED))
++/* OGBox 0.0.8: the voices' DLS2 and ParaEQ filters (filter_watch): the frames each ran, by voice
++ * the times its filter ran away (filter_check) and its loudest output, in full scales. Written by
++ * the thread that processes the voice, read by the frame thread once the frame's voices are done. */
++static uint32_t g_f_dls2_frames, g_f_peq_frames;
++static uint32_t g_f_runaway[MCPX_HW_MAX_VOICES];
++static float g_f_peak[MCPX_HW_MAX_VOICES];
 +
 +/* The event log: the guest's methods that start, stop, pause or place a
 + * voice's data (not its volumes, pitch or filters, which come by the
@@ -22226,7 +23504,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
                                int status)
  {
-@@ -131,6 +192,25 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -131,6 +200,25 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
                             v * MCPX_HW_NOTIFIER_COUNT + notifier);
      notify_offset += 15; // Final byte is status, same for all notifiers
  
@@ -22252,7 +23530,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      // FIXME: Check notify enable
      // FIXME: Set NV1BA0_NOTIFICATION_STATUS_IN_PROGRESS when appropriate
      apu_ram_st8(notify_offset, status);
-@@ -144,34 +224,53 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -144,34 +232,81 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
      apu_st(&d->set_irq, true);
  }
  
@@ -22267,14 +23545,6 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 -    if (d->vp.filters[v].resampler) {
 -        src_reset(d->vp.filters[v].resampler);
 -    }
--}
--
--static float clampf(float v, float min, float max)
--{
--    if (v < min) {
--        return min;
--    } else if (v > max) {
--        return max;
 +    memset(&d->vp.filters[v].paraeq, 0, sizeof(d->vp.filters[v].paraeq));
 +    memset(&d->vp.filters[v].i3dl2_state, 0,
 +           sizeof(d->vp.filters[v].i3dl2_state));
@@ -22290,9 +23560,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +    d->vp.route[v] = VP_ROUTE_UNDECIDED;
 +    if (f->resampler) {
 +        vp_resample_reset(f->resampler);
-     } else {
--        return v;
--    }
++    } else {
 +        /* the voice's first sound: its resampler made now, at the guest's
 +         * VOICE_ON, not in a frame (the sinc converter is 4 KB; made for
 +         * the voices a title uses, not all 256), kept for its later
@@ -22307,10 +23575,45 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +    f->hrtf.target_initialised = false;
  }
  
+-static float clampf(float v, float min, float max)
++
++
++/* OGBox 0.0.8: a state-variable filter's history past this many full scales, or not finite, has
++ * run away. The console's filters are fixed point: a value of theirs is never infinite, and a
++ * NaN here would have silenced every voice in the mix with it (the VP's sum, and the DSP's input
++ * in its mode), until the voice's next VOICE_ON. */
++#define FILTER_LIMIT 64.0
++
++/* One channel's filter after a frame through it: a history that ran away restarts from rest and
++ * the frame's samples of the channel are silence (counted, filter_watch); else the frame's
++ * loudest output is noted. */
++static void filter_check(uint16_t v, sv_filter *s, float samples[NUM_SAMPLES_PER_FRAME][2],
++                         unsigned ch)
+ {
+-    if (v < min) {
+-        return min;
+-    } else if (v > max) {
+-        return max;
+-    } else {
+-        return v;
++    if (!(fabs(s->l) <= FILTER_LIMIT && fabs(s->b) <= FILTER_LIMIT && fabs(s->h) <= FILTER_LIMIT)) {
++        s->h = s->b = s->l = s->p = s->n = 0;
++        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++            samples[i][ch] = 0;
++        }
++        g_f_runaway[v]++;
++        return;
+     }
++    float m = g_f_peak[v];
++    for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
++        const float a = fabsf(samples[i][ch]);
++        m = a > m ? a : m;
++    }
++    g_f_peak[v] = m;
+ }
+ 
 -/* attenuate()'s values for the 4096 volumes, computed once (the same
 - * expression: a voice asks for 16 a frame) */
-+
-+
 +/* the curve's 4096 values as gains, computed once (a voice asks for 16 a frame) */
  static float g_attenuation[0x1000];
  
@@ -22323,7 +23626,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
  }
  
-@@ -472,6 +571,8 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
+@@ -472,6 +607,8 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
          for (unsigned i = 1;; i++) {
  #if defined(__aarch64__)
              __asm__ __volatile__("yield" ::: "memory");
@@ -22332,7 +23635,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #endif
              if (!__atomic_load_n(&d->vp.voice_spinlocks[v].v, __ATOMIC_RELAXED) &&
                  apu_spin_trylock(&d->vp.voice_spinlocks[v])) {
-@@ -518,11 +619,13 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
+@@ -518,11 +655,13 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
      return (apu_ld(&d->vp.voice_locked[v / 64]) & mask) != 0;
  }
  
@@ -22347,7 +23650,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  }
  
  static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
-@@ -600,7 +703,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -600,7 +739,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                                 NV_PAVS_VOICE_CFG_ENV0_EA_DELAYTIME);
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EACOUNT, delay_time * 16);
@@ -22357,7 +23660,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EACOUNT, 0);
          } else if (ea_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD) {
-@@ -621,7 +725,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -621,7 +761,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                                 NV_PAVS_VOICE_CFG_ENV0_EA_DELAYTIME);
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EFCOUNT, delay_time * 16);
@@ -22367,7 +23670,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EFCOUNT, 0);
          } else if (ef_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD) {
-@@ -634,6 +739,20 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -634,6 +775,20 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          // FIXME: Will count be overwritten in other cases too?
  
          voice_reset_filters(d, selected_handle);
@@ -22388,7 +23691,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          voice_set_mask(d, selected_handle, NV_PAVS_VOICE_PAR_STATE,
                         NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE, 1);
          break;
-@@ -740,10 +859,18 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -740,10 +895,18 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_VOLC,
                         0xFFFFFFFF, argument);
          break;
@@ -22407,7 +23710,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      case NV1BA0_PIO_SET_VOICE_TAR_FCA:
          voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_FCA,
                         0xFFFFFFFF, argument);
-@@ -839,18 +966,15 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -839,18 +1002,15 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
              argument & NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_HANDLE;
          break;
      case NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET: {
@@ -22435,7 +23738,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                  argument & NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET_PARAMETER);
          break;
      }
-@@ -928,6 +1052,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -928,6 +1088,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          break;
      case SE2FE_IDLE_VOICE:
          if (d->regs[NV_PAPU_FETFORCE1] & NV_PAPU_FETFORCE1_SE2FE_IDLE_VOICE) {
@@ -22448,7 +23751,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FEMETHMODE;
              d->regs[NV_PAPU_FECTL] |= NV_PAPU_FECTL_FEMETHMODE_TRAPPED;
              d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FETRAPREASON;
-@@ -970,6 +1100,11 @@ uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
+@@ -970,6 +1136,11 @@ uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
      DPRINTF("mcpx apu VP: read [0x%" PRIx64 "] (%s)\n", addr,
              get_method_str(addr));
  
@@ -22460,7 +23763,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      switch (addr) {
      case NV1BA0_PIO_FREE:
          /* we don't simulate the queue for now,
-@@ -988,6 +1123,18 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -988,6 +1159,18 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  
      DPRINTF("mcpx apu VP: [0x%" PRIx64 "] %s = 0x%lx\n", addr,
              get_method_str(addr), val);
@@ -22479,7 +23782,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  
      switch (addr) {
      case NV1BA0_PIO_SET_ANTECEDENT_VOICE:
-@@ -1009,7 +1156,9 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -1009,7 +1192,9 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
      case NV1BA0_PIO_SET_VOICE_TAR_VOLA:
      case NV1BA0_PIO_SET_VOICE_TAR_VOLB:
      case NV1BA0_PIO_SET_VOICE_TAR_VOLC:
@@ -22489,7 +23792,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      case NV1BA0_PIO_SET_VOICE_TAR_FCA:
      case NV1BA0_PIO_SET_VOICE_TAR_FCB:
      case NV1BA0_PIO_SET_VOICE_TAR_PITCH:
-@@ -1109,165 +1258,146 @@ static uint64_t get_data_ptr(MCPXAPUState *d, uint64_t sge_base,
+@@ -1109,165 +1294,146 @@ static uint64_t get_data_ptr(MCPXAPUState *d, uint64_t sge_base,
      return prd_address + addr % APU_PAGE_SIZE;
  }
  
@@ -22775,7 +24078,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                         float samples[][2],
                         int num_samples_requested)
-@@ -1368,7 +1498,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1368,7 +1534,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
              d->vp.ssl[v].ssl_seg = 0;
              if (!persist) {
                  d->vp.ssl[v].ssl_index = 0;
@@ -22784,7 +24087,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              } else {
                  set_notify_status(
                      d, v, MCPX_HW_NOTIFIER_SSLA_DONE + d->vp.ssl[v].ssl_index,
-@@ -1391,7 +1521,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1391,7 +1557,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                  segment_length = apu_ram_ld32(addr + 4);
              }
          }
@@ -22797,7 +24100,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          assert(segment_length != 0);
          seg_len = (segment_length >> 0) & 0xffff;
          seg_cs = (segment_length >> 16) & 3;
-@@ -1399,7 +1533,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1399,7 +1569,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
          seg_s = (segment_length >> 23) & 1;
          assert(seg_cs == container_size_index);
          assert((seg_spb + 1) == samples_per_block);
@@ -22810,8 +24113,14 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          container_size_index = seg_cs;
          if (seg_cs == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
              sample_size = NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24;
-@@ -1555,13 +1693,16 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1553,15 +1727,22 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+         if (!stereo) {
+             samples[sample_count][1] = samples[sample_count][0];
          }
++        if (!stream && !adpcm) {
++            g_v_played[v]++;
++            g_v_zero[v] += samples[sample_count][0] == 0.0f && samples[sample_count][1] == 0.0f;
++        }
      }
  
 +    DIAG_ADD(&g_v_samples[v], (uint32_t)sample_count);
@@ -22827,7 +24136,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                  int next_index = (ssl_index + 1) % 2;
                  DPRINTF("SSL%c\n", 'A' + next_index);
                  d->vp.ssl[v].ssl_index = next_index;
-@@ -1574,7 +1715,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1574,7 +1755,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                  cbo = lbo;
              } else {
                  cbo = ebo;
@@ -22837,7 +24146,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                  DPRINTF("end of buffer!\n");
              }
          }
-@@ -1595,7 +1737,7 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1595,7 +1777,7 @@ static long voice_resample_callback(void *cb_data, float **data)
      uint8_t *c = filter->cb_voice_cache;
  
      int sample_count = 0;
@@ -22846,7 +24155,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          int active = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                      NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE);
          if (!active) {
-@@ -1614,6 +1756,9 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1614,6 +1796,9 @@ static long voice_resample_callback(void *cb_data, float **data)
          /* Starvation causes SRC hang on repeated calls. Provide silence. */
          memset(&filter->resample_buf[2*sample_count], 0,
              2*(NUM_SAMPLES_PER_FRAME-sample_count)*sizeof(float));
@@ -22856,7 +24165,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          sample_count = NUM_SAMPLES_PER_FRAME;
      }
  
-@@ -1621,49 +1766,32 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1621,49 +1806,32 @@ static long voice_resample_callback(void *cb_data, float **data)
      return sample_count;
  }
  
@@ -22921,7 +24230,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  }
  
  static int peek_ahead_multipass_bin(MCPXAPUState *d, uint8_t *c,
-@@ -1711,9 +1839,28 @@ static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
+@@ -1711,9 +1879,28 @@ static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
      int mp_bin = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                  NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
  
@@ -22952,7 +24261,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
  
      // DirectSound sets clear mix to true
-@@ -1732,7 +1879,12 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1732,7 +1919,12 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
      assert(v < MCPX_HW_MAX_VOICES);
      bool stereo = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                   NV_PAVS_VOICE_CFG_FMT_STEREO);
@@ -22966,7 +24275,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      bool paused = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                   NV_PAVS_VOICE_PAR_STATE_PAUSED);
  
-@@ -1751,7 +1903,23 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1751,7 +1943,23 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
                                 NV_PAVS_VOICE_TAR_PITCH_LINK_PITCH);
      int8_t ps = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_ENV0,
                                 NV_PAVS_VOICE_CFG_ENV0_EF_PITCHSCALE);
@@ -22991,7 +24300,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  
      float ea_value = voice_step_envelope(
          d, c, v, NV_PAVS_VOICE_CFG_ENV0, NV_PAVS_VOICE_CFG_ENVA,
-@@ -1769,6 +1937,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1769,6 +1977,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * bit-exactly (the loop trip count and num_samples_requested are value-
       * independent of the decoded samples; we only null the sample VALUES). */
      bool skip_muted = voice_all_vols_maxed(d, c, v);
@@ -23006,7 +24315,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #endif
  
      float samples[NUM_SAMPLES_PER_FRAME][2] = { 0 };
-@@ -1779,7 +1955,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1779,7 +1995,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
  #if !defined(HAKUX_AUDIO_NO_PROCESS) || !HAKUX_AUDIO_NO_PROCESS
  #if HAKUX_AUDIO_SKIP_MUTED
      /* Thread the per-voice skip decision into voice_get_samples (reached via
@@ -23015,7 +24324,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
       * only for the synchronous duration of the resample loop below, same
       * lifetime contract as cb_voice_cache. Multipass voices have no decode
       * loop, so this is consumed only on the non-multipass path. */
-@@ -1796,7 +1972,8 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1796,7 +2012,8 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
              }
              int count =
                  voice_resample(d, c, v, &samples[sample_count],
@@ -23025,7 +24334,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              if (count < 0) {
                  break;
              }
-@@ -1809,6 +1986,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1809,6 +2026,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
      if (!active) {
          return;
      }
@@ -23040,7 +24349,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #else
      /* HAKUX_AUDIO_NO_PROCESS=1: skip the expensive sample-production +
       * mixing path. Envelopes above still advance guest-observable
-@@ -1825,7 +2010,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1825,7 +2050,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * (void)multipass; (void)rate; (void)mixbins; */
      (void)samples;
      (void)multipass;
@@ -23049,7 +24358,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      (void)mixbins;
      return;
  #endif
-@@ -1941,61 +2126,144 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1941,61 +2166,152 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * muted-frame input -- exactly the decode we skipped.) */
      if (d->vp.filters[v].muted_prev) {
          memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
@@ -23134,13 +24443,19 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +                float f = mcpx_filter_frequency((int16_t)(word & 0xFFFFu)+fc_bend);
 +                float f0 = vf->previous_dls2_valid ? vf->previous_dls2_f[ch] : f;
 +                vf->previous_dls2_f[ch]=f;
-+                float q = (float)(word >> 16) / 32768.0f;
++                /* OGBox 0.0.8: the damping at most 1.0 (mcpx_dls2_damping). NFS Carbon's
++                 * DirectSound filter is DLS2 with FC1 FFFFh at every cutoff of its table (game
++                 * code at 0x315A12): at f 1.0, its table's open end, FC1 / 32768 alone put a pole
++                 * at -1.618, the history overflowed in 1456 samples and was then NaN, the whole
++                 * mix silent in a race. */
++                float q = mcpx_dls2_damping((uint16_t)(word >> 16));
 +                sv_filter *filter = &vf->svf[ch];
 +                setup_svf(filter, f, q, F_LP);
 +                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
 +                    filter->f = f0 + (f-f0)*(i/32.0f);
 +                    samples[i][ch] = run_svf(filter, samples[i][ch]);
 +                }
++                filter_check(v, filter, samples, ch);
 +            }
 +            if (peq) {
 +                /* On 3D use FCA; on 2D mono FCB; on stereo FCA/FCB. */
@@ -23159,8 +24474,10 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +                    filter->f = f0 + (f-f0)*(i/32.0f);
 +                    samples[i][ch] = run_para_eq(filter, samples[i][ch], gain);
 +                }
++                filter_check(v, filter, samples, ch);
              }
          }
++        DIAG_ADD(dls2 ? &g_f_dls2_frames : &g_f_peq_frames, 1);
      }
 +    vf->previous_dls2_valid=dls2;
 +    vf->previous_paraeq_valid=peq;
@@ -23234,7 +24551,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
          channel_buf[0][i] = samples[i][0];
      }
-@@ -2004,31 +2272,103 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -2004,31 +2320,103 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
              channel_buf[1][i] = samples[i][1];
          }
      }
@@ -23349,7 +24666,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
           *
           * If the current voice belongs to a multipass sub-voice group we must
           * skip it here to avoid mixing it in twice because the sub-voices are
-@@ -2057,10 +2397,16 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -2057,10 +2445,16 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
          }
          g *= ea_value;
          for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
@@ -23368,7 +24685,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  }
  
  static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
-@@ -2077,9 +2423,9 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+@@ -2077,9 +2471,9 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
                                      NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
          bool clear_mix = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                          NV_PAVS_VOICE_CFG_FMT_CLEAR_MIX);
@@ -23380,7 +24697,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          }
      }
  
-@@ -2109,7 +2455,7 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+@@ -2109,7 +2503,7 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
                              NV_PAVS_VOICE_CFG_FMT_V7BIN);
  
      for (int i = 0; i < 8; i++) {
@@ -23389,7 +24706,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
  
      if (src) {
-@@ -2195,6 +2541,7 @@ static void *voice_worker_thread(void *arg)
+@@ -2195,6 +2589,7 @@ static void *voice_worker_thread(void *arg)
          pthread_cond_wait(&self->cond, &vwd->lock);
      } while (!vwd->workers_should_exit);
  
@@ -23397,7 +24714,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      return NULL;
  }
  
-@@ -2251,6 +2598,8 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
+@@ -2251,6 +2646,8 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
                  } else if (us < HELD_SPIN_US) {
  #if defined(__aarch64__)
                      __asm__ __volatile__("yield" ::: "memory");
@@ -23406,7 +24723,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #endif
                  } else {
                      usleep(HELD_NAP_US);
-@@ -2320,16 +2669,45 @@ static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
+@@ -2320,16 +2717,45 @@ static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
      bool group = false;
      uint32_t dirty = 0;
  
@@ -23420,9 +24737,9 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +     */
 +    bool unusual_multipass = false;
 +    uint32_t check_dirty = 0;
-+    for (int i = 0; i < vwd->queue_len; i++) {
-+        uint32_t src, dst, clr;
-+        get_voice_bin_src_dst(d, c, vwd->queue[i].voice, &src, &dst, &clr);
+     for (int i = 0; i < vwd->queue_len; i++) {
+         uint32_t src, dst, clr;
+         get_voice_bin_src_dst(d, c, vwd->queue[i].voice, &src, &dst, &clr);
 +        if ((src && (src != MULTIPASS_BIN_MASK ||
 +                     clr != MULTIPASS_BIN_MASK)) ||
 +            (!src && !(dst & MULTIPASS_BIN_MASK) &&
@@ -23442,10 +24759,6 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +        }
 +        return;
 +    }
-+
-     for (int i = 0; i < vwd->queue_len; i++) {
-         uint32_t src, dst, clr;
-         get_voice_bin_src_dst(d, c, vwd->queue[i].voice, &src, &dst, &clr);
  
 -        // TODO: To simplify submix scheduling, we make a few assumptions based
 -        // on Xbox software observations. However, the configurability of
@@ -23453,12 +24766,16 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 -        // defer making this more robust for now.
 -        //
 -        // We currently assume that:
++    for (int i = 0; i < vwd->queue_len; i++) {
++        uint32_t src, dst, clr;
++        get_voice_bin_src_dst(d, c, vwd->queue[i].voice, &src, &dst, &clr);
++
 +        // Checked above: the normal parallel path uses DirectSound's layout.
 +        // The uncommon layouts were sent to the ordered worker-0 fallback:
          //
          // - MP bin is constant
          assert(!src || (src == MULTIPASS_BIN_MASK));
-@@ -2484,6 +2862,21 @@ static void voice_work_finalize(MCPXAPUState *d)
+@@ -2484,6 +2910,21 @@ static void voice_work_finalize(MCPXAPUState *d)
   * to stop playing; with its first voice reported every frame and ignored,
   * the group was never released and the game spun in GetStatus, loading,
   * where the guest turned the three off within one frame (the Odin 3). */
@@ -23480,7 +24797,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
  {
      unsigned k = 0;
-@@ -2501,9 +2894,23 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
+@@ -2501,13 +2942,132 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
       * holds the voice locks of its batch, which a guest write may be waiting
       * on (a voice not reported now is in a later frame: it stays listed) */
      if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
@@ -23507,7 +24824,125 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
      apu_spin_unlock(&d->vp.fe_spin);
  }
-@@ -2591,7 +2998,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
+ 
++/* OGBox 0.0.8: once a second, each active looping PCM buffer voice of three or more samples a
++ * block (a game's multichannel mix ring: NFS Carbon's 5.1 music, 2400 frames): the ring in 32
++ * slices, '#' a slice with sound on the voice's channels, '.' all zeros, '^' where the VP plays
++ * (CBO), and how much of what it played in the second was zeros. A silent stretch just ahead of
++ * the CBO: the game writes behind the VP; zeros played with sound at the CBO: the VP reads wrong. */
++static void ring_watch(MCPXAPUState *d)
++{
++    static int64_t at_ms;
++    const int64_t now = apu_host_ms();
++    if (now - at_ms < 1000) {
++        return;
++    }
++    at_ms = now;
++    unsigned logged = 0;
++    for (uint16_t v = 0; v < MCPX_HW_MAX_VOICES && logged < 4; v++) {
++        const uint32_t state = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE, 0xFFFFFFFF);
++        const uint32_t fmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFF);
++        const unsigned spb = 1 + GET_MASK(fmt, NV_PAVS_VOICE_CFG_FMT_SAMPLES_PER_BLOCK);
++        const unsigned cs_i = GET_MASK(fmt, NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE);
++        if (!(state & NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE) || (fmt & NV_PAVS_VOICE_CFG_FMT_DATA_TYPE) ||
++            !(fmt & NV_PAVS_VOICE_CFG_FMT_LOOP) || spb < 3 || cs_i == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
++            continue;
++        }
++        static const unsigned k_cs[4] = {1, 2, 0, 4};
++        const unsigned cs = k_cs[cs_i], channels = (fmt & NV_PAVS_VOICE_CFG_FMT_STEREO) ? 2 : 1;
++        const uint32_t block = cs * spb;
++        const uint32_t ebo = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_NEXT, NV_PAVS_VOICE_PAR_NEXT_EBO);
++        const uint32_t cbo = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_OFFSET, NV_PAVS_VOICE_PAR_OFFSET_CBO);
++        const uint32_t ba = voice_get_mask(d, v, NV_PAVS_VOICE_CUR_PSL_START, NV_PAVS_VOICE_CUR_PSL_START_BA);
++        const uint32_t frames = ebo + 1;
++        char map[33];
++        for (unsigned sl = 0; sl < 32; sl++) {
++            const uint32_t f0 = frames * sl / 32, f1 = frames * (sl + 1) / 32;
++            bool sound = false;
++            for (uint32_t f = f0; f < f1 && !sound; f++) {
++                const uint32_t lin = ba + f * block;
++                const uint64_t addr = get_data_ptr(d, d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
++                                                   lin & ~(uint32_t)(APU_PAGE_SIZE - 1)) + lin % APU_PAGE_SIZE;
++                const uint8_t *src = &d->ram_ptr[vp_ram_addr(d, addr, (size_t)cs * channels)];
++                for (unsigned c = 0; c < cs * channels; c++) {
++                    sound |= src[c] != 0;
++                }
++            }
++            map[sl] = sound ? '#' : '.';
++        }
++        map[32] = 0;
++        const unsigned at = frames ? (unsigned)((uint64_t)cbo * 32 / frames) : 0;
++        if (at < 32) {
++            map[at] = map[at] == '#' ? '^' : 'v';
++        }
++        const uint32_t played = apu_xchg(&g_v_played[v], 0), zero = apu_xchg(&g_v_zero[v], 0);
++        nc_log("hakuX-apu", "ring voice %02x (%u per block, %u frames): [%s] cbo %u | in 1 s: %u played, %u zero (%.0f%%)",
++               v, spb, frames, map, cbo, played, zero, played ? 100.0 * zero / played : 0.0);
++        logged++;
++    }
++}
++
++/* OGBox 0.0.8: the voices' filters every 5 s (the session log): the frames DLS2 and ParaEQ ran,
++ * the times one ran away (filter_check) and the loudest output, and each voice that ran away or
++ * went past twice full scale, with its filter's registers. */
++static void filter_watch(MCPXAPUState *d)
++{
++    static int64_t at_ms;
++    const int64_t now = apu_host_ms();
++    if (now - at_ms < 5000) {
++        return;
++    }
++    at_ms = now;
++    uint32_t runaways = 0;
++    float loudest = 0;
++    uint16_t loudest_v = 0;
++    uint16_t odd[4];
++    unsigned nodd = 0;
++    for (uint16_t v = 0; v < MCPX_HW_MAX_VOICES; v++) {
++        runaways += g_f_runaway[v];
++        if (g_f_peak[v] > loudest) {
++            loudest = g_f_peak[v];
++            loudest_v = v;
++        }
++        if ((g_f_runaway[v] || g_f_peak[v] > 2.0f) && nodd < ARRAY_SIZE(odd)) {
++            odd[nodd++] = v;
++        }
++    }
++    const uint32_t dls2 = apu_xchg(&g_f_dls2_frames, 0), peq = apu_xchg(&g_f_peq_frames, 0);
++    if (dls2 || peq || runaways) {
++        nc_log("hakuX-apu", "filters in 5 s: DLS2 %u voice frames, ParaEQ %u | ran away %u times "
++                            "(restarted from rest), the loudest output %.2f full scale (voice %02x)",
++               dls2, peq, runaways, loudest, loudest_v);
++    }
++    for (unsigned i = 0; i < nodd; i++) {
++        const uint16_t v = odd[i];
++        const uint32_t fmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFF);
++        const uint32_t misc = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_MISC, 0xFFFFFFFF);
++        nc_log("hakuX-apu", "  filter voice %02x (%s, %s): ran away %u times, peak %.2f full scale | "
++                            "fmode %u, FCA %08x FCB %08x MISC %08x",
++               v, v < MCPX_HW_MAX_3D_VOICES ? "3d" : "2d",
++               (fmt & NV_PAVS_VOICE_CFG_FMT_STEREO) ? "stereo" : "mono", g_f_runaway[v], g_f_peak[v],
++               GET_MASK(misc, NV_PAVS_VOICE_CFG_MISC_FMODE),
++               voice_get_mask(d, v, NV_PAVS_VOICE_TAR_FCA, 0xFFFFFFFF),
++               voice_get_mask(d, v, NV_PAVS_VOICE_TAR_FCB, 0xFFFFFFFF), misc);
++    }
++    memset(g_f_runaway, 0, sizeof(g_f_runaway));
++    memset(g_f_peak, 0, sizeof(g_f_peak));
++}
++
+ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+ {
+     memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
+@@ -2584,6 +3144,8 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
+         }
+     }
+     voice_work_dispatch(d, c, mixbins);
++    ring_watch(d);                      /* OGBox 0.0.8: a multichannel ring, once a second */
++    filter_watch(d);                    /* OGBox 0.0.8: the voices' filters, every 5 s */
+     if (c) {
+         report_written_voices(d, c);
+     }
+@@ -2591,7 +3153,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
      if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
          /* Mix all voices together to hear any audible voice */
          int16_t isamp[NUM_SAMPLES_PER_FRAME * 2];
@@ -23516,7 +24951,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                                   NUM_SAMPLES_PER_FRAME * 2);
          int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
          for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
-@@ -2615,12 +3022,31 @@ void mcpx_apu_vp_init(MCPXAPUState *d)
+@@ -2615,12 +3177,31 @@ void mcpx_apu_vp_init(MCPXAPUState *d)
      d->vp.voice_cache = NULL;
      d->vp.ssl_cache = NULL;
  
@@ -23548,7 +24983,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  
      d->vp.voice_cache = NULL;
      d->vp.ssl_cache = NULL;
-@@ -2640,7 +3066,26 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
+@@ -2640,7 +3221,26 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
      g_idle_last = 0xFFFF;
      for (int v = 0; v < ARRAY_SIZE(d->vp.filters); v++) {
          hrtf_filter_init(&d->vp.filters[v].hrtf);
@@ -23576,7 +25011,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      refresh_table(&d->vp.voice_cache, 0, 0);
      refresh_table(&d->vp.ssl_cache, 0, 0);
  }
-@@ -2674,3 +3119,181 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
+@@ -2674,3 +3274,181 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
      nc_log("hakuX-native-state", "apu: %u 3D voices' HRTF filters set again (%u entries hold coefficients)", set,
             entries);
  }
@@ -23833,7 +25268,7 @@ index bc96610e9f894eebce6568da853649b93b18c2df..97e38bf1bf5bdeb27a8d681f177156b6
  void mcpx_apu_vp_reset(MCPXAPUState *d);
  void mcpx_apu_vp_refresh_voice_cache(MCPXAPUState *d, uint32_t new_base);
 diff --git a/native/dev/nv2a.c b/native/dev/nv2a.c
-index a1c3a46edc58f44edd3f232bb86ce5b403498322..b63a3c2d00242e98b205c7afad37875ee0dec853 100644
+index a1c3a46edc58f44edd3f232bb86ce5b403498322..e1f0fb7a34bb0b3c974d48f227846cfc4e7b9ac4 100644
 --- a/native/dev/nv2a.c
 +++ b/native/dev/nv2a.c
 @@ -36,7 +36,9 @@
@@ -23855,7 +25290,28 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..b63a3c2d00242e98b205c7afad37875e
  #define NV_PFIFO_CACHE1_DMA_PUT  0x003240u
  #define NV_PFIFO_CACHE1_DMA_GET  0x003244u
  #define NV_PFIFO_CACHE1_REF      0x003248u
-@@ -395,6 +399,11 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
+@@ -277,9 +281,20 @@ static uint32_t pmc_intr(void)
+     return v;
+ }
+ 
++/* OGBox 0.0.8: one at a time. The line is worked out from the registers and then set, by the
++ * guest's CPU (its register writes), the push-buffer decoder (a trap), the vblank and the ptimer
++ * threads; two at once could set it in the other order, the older answer last. Breakdown at 60 fps:
++ * D3D's DPC enabled the interrupts again (PMC_INTR_EN 1) as the decoder raised the next software
++ * trap, the line was left low with the trap pending, and nothing looked again until the next
++ * vblank: the decoder stood 16 ms mid-frame, the frame's swap came a vblank late, and a frame was
++ * shown twice (8 of 8 GPU traces of such stutters: "pmc-en 1, trap 8", then nothing to the vblank). */
++static pthread_mutex_t g_irq_mu = PTHREAD_MUTEX_INITIALIZER;
++
+ static void update_irq(void)
+ {
++    pthread_mutex_lock(&g_irq_mu);
+     nc_irq_set(NV2A_IRQ, (ld(NV_PMC_INTR_EN_0) & 1) && pmc_intr());
++    pthread_mutex_unlock(&g_irq_mu);
+ }
+ 
+ /* ---- PTIMER's alarm ---- */
+@@ -395,6 +410,11 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
          case NV_PFIFO_CACHE1_DMA_PUSH:
              v = fifo_empty() ? ld(word) & ~PFIFO_DMA_BUSY : ld(word) | PFIFO_DMA_BUSY;
              break;
@@ -23867,7 +25323,16 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..b63a3c2d00242e98b205c7afad37875e
          case NV_USER_DMA_PUT:
          case NV_USER_DMA_GET:
          case NV_USER_REF:
-@@ -774,7 +783,18 @@ void nc_dev_nv2a_init(void)
+@@ -753,6 +773,8 @@ static void *vblank_thread(void *arg)
+             next = now_ns();
+         }
+         const uint64_t due = next_vblank(next);
++        /* (OGBox 0.0.8 tried nc_irq_expect here: an idle guest CPU awake for the vblank. Off again:
++         * never shown to help, and NFS Carbon's sound broke in the builds that had it) */
+         next = wait_vblank(due, next);
+         __atomic_store_n(&g_last_vblank_ns, next, __ATOMIC_RELEASE);
+         __atomic_fetch_or(reg(NV_PCRTC_INTR_0), PCRTC_VBLANK, __ATOMIC_ACQ_REL);
+@@ -774,7 +796,18 @@ void nc_dev_nv2a_init(void)
  {
      g_regs = calloc(1, NV2A_SIZE); /* pages are touched only where the guest writes */
      nc_wr32(g_regs + NV_PMC_BOOT_0, 0x02A000A1u);
@@ -23888,7 +25353,7 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..b63a3c2d00242e98b205c7afad37875e
      hle_prop_get("debug.hakux.nvcensus", v);
      const char *e = getenv("NC_NV2A_CENSUS");
 diff --git a/native/dev/ohci.c b/native/dev/ohci.c
-index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..eb1c7a9bcce8dee5aa849ba4f8d79bd3c20d0272 100644
+index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..7fb73904eef88a0d1d2dcf312780768de56f8d51 100644
 --- a/native/dev/ohci.c
 +++ b/native/dev/ohci.c
 @@ -15,8 +15,12 @@
@@ -23973,6 +25438,53 @@ index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..eb1c7a9bcce8dee5aa849ba4f8d79bd3
          }
      }
  }
+@@ -553,11 +583,36 @@ static void *frame_thread(void *arg)
+ 
+ /* ------------------------------------------------------------ registers */
+ 
++/* OGBox 0.0.8: the registers' lock, taken by the guest's CPU: a wait over 2 ms is said (a few a
++ * second), the frame thread having held it that long (preempted with it held: the guest CPU stood
++ * still, its interrupts waiting) */
++static void reg_lock(Ohci *o, uint32_t off, bool write)
++{
++    if (pthread_mutex_trylock(&o->lock) == 0) {
++        return;
++    }
++    const uint64_t t0 = now_ns();
++    pthread_mutex_lock(&o->lock);
++    const uint64_t waited = now_ns() - t0;
++    if (waited > 2000000ull) {
++        static uint64_t window;
++        static unsigned said;
++        if (t0 - window > 1000000000ull) {
++            window = t0;
++            said = 0;
++        }
++        if (said++ < 4) {
++            nc_log("hakuX-native-usb", "ohci: the guest's %s of +%x waited %.1f ms for the controller's lock",
++                   write ? "write" : "read", off, waited / 1e6);
++        }
++    }
++}
++
+ static uint64_t ohci_read(void *opaque, uint32_t off, unsigned size)
+ {
+     Ohci *o = opaque;
+     uint32_t v = 0;
+-    pthread_mutex_lock(&o->lock);
++    reg_lock(o, off, false);
+     switch (off & ~3u) {
+     case 0x00: v = 0x10; break;
+     case 0x04: v = o->ctl; break;
+@@ -599,7 +654,7 @@ static void ohci_write(void *opaque, uint32_t off, uint64_t value, unsigned size
+ {
+     Ohci *o = opaque;
+     const uint32_t v = (uint32_t)value;
+-    pthread_mutex_lock(&o->lock);
++    reg_lock(o, off, true);
+     switch (off) {
+     case 0x04: {
+         const uint32_t old = o->ctl & CTL_HCFS;
 diff --git a/native/dev/ports.c b/native/dev/ports.c
 index cc048c04457bc243803770826d23aef562322ff9..8ad1676027b2a64ae6e4d4844b3302055119a758 100644
 --- a/native/dev/ports.c
@@ -24705,7 +26217,7 @@ index cfded0584aab0739e62c447ef9d785260876fb78..5d60d1b7b7bfb74fba65a0aad8b8f6e8
          }
      }
 diff --git a/native/kernel/intr.c b/native/kernel/intr.c
-index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd7cf2aae4 100644
+index 956ec2f699bf124abdb16ef6c6099d4428c4c314..b780016e8bfafa4310a42f4e0d512db5ecccd9f0 100644
 --- a/native/kernel/intr.c
 +++ b/native/kernel/intr.c
 @@ -112,6 +112,7 @@ static struct {
@@ -24818,7 +26330,37 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          if (!g_hold[l].refusals++) {
              g_hold[l].why = why;
              g_hold[l].irql = *irql(k);
-@@ -219,6 +308,7 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
+@@ -162,16 +251,24 @@ static void hold_report(unsigned l)
+             const bool same = g_hold[l].rise == rise && g_hold[l].refusals;
+             const uint64_t c0 = nc_irq_rise_cpu_ns(l), c1 = c0 ? nc_irq_cpu_ns() : 0;
+             const uint64_t d0 = nc_irq_rise_delay_ns(l), d1 = d0 ? nc_irq_delay_ns() : 0;
+-            char dl[48] = "";
++            char dl[48] = "", ran[48];
+             if (d1 > d0) {
+                 snprintf(dl, sizeof(dl), ", waited for a host CPU %.1f ms", (d1 - d0) / 1e6);
+             }
+-            nc_log("hakuX-native-irq", "line %u delivered %.1f ms after it rose: %u refusals, first %s "
+-                   "(IRQL %u, ISR line %d, thread t%u); the guest CPU's thread ran %.1f ms of it%s",
+-                   l, lat / 1e6, same ? g_hold[l].refusals : 0,
++            /* 0.0.8: its CPU time over the delay: about all of it, on its processor (spinning, or
++             * the guest's code past a late kick); about none, off it */
++            if (c0) {
++                snprintf(ran, sizeof(ran), "ran %.1f ms of it", c1 > c0 ? (c1 - c0) / 1e6 : 0.0);
++            } else {
++                snprintf(ran, sizeof(ran), "CPU time unknown");
++            }
++            nc_log("hakuX-native-irq", "line %u delivered %.1f ms after it rose (%s at the rise): %u refusals, first %s "
++                   "(IRQL %u, ISR line %d, thread t%u); the guest CPU's thread %s%s",
++                   l, lat / 1e6, nc_irq_rise_idle(l) ? "the guest CPU idle" : "the guest CPU busy",
++                   same ? g_hold[l].refusals : 0,
+                    same ? k_hold[g_hold[l].why] : "none: no kernel entry meanwhile", same ? g_hold[l].irql : 0,
+                    same && g_hold[l].isr_line != 0xFF ? (int)g_hold[l].isr_line : -1,
+-                   same ? g_hold[l].thread : 0, c1 > c0 ? (c1 - c0) / 1e6 : 0.0, dl);
++                   same ? g_hold[l].thread : 0, ran, dl);
+         }
+     }
+     memset(&g_hold[l], 0, sizeof(g_hold[l]));
+@@ -219,6 +316,7 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
          t->state = NC_T_READY;
  
          k->in_isr = true;
@@ -24827,7 +26369,7 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          k->isr_interrupted = k->current && k->current != t ? k->current : NULL;
          *irql(k) = level_irql;
 diff --git a/native/kernel/io.c b/native/kernel/io.c
-index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489590d362a 100644
+index ef5ca342859cce52277d40626f9e3ea46dffade1..d421a5d49992f56d1d71891e88420b9435b15448 100644
 --- a/native/kernel/io.c
 +++ b/native/kernel/io.c
 @@ -12,6 +12,7 @@
@@ -24993,7 +26535,26 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              close_later(nf);
          } else {
              if (nf->fd >= 0) {
-@@ -714,7 +808,10 @@ typedef struct DiscJob {
+@@ -695,6 +789,18 @@ typedef struct IoRun {
+     uint32_t va, len;
+ } IoRun;
+ 
++/* OGBox 0.0.8: a host file created (or emptied) for NtCreateFile on the reader thread, its guest
++ * thread waiting meanwhile (open_later, open_done): the open(2) with O_CREAT took 8 to 21 ms on
++ * the PS5's storage, and done on the guest CPU's thread it stopped every guest thread for it
++ * (Breakdown's copy of each area block to its cache partition: a dropped frame a block). */
++typedef struct OpenJob {
++    char host[512], path[512], old_path[320];
++    uint64_t old_size;
++    int flags, fd, err, dev;
++    uint32_t access, options, disposition, attrs, info;
++    uint32_t handle_out, iosb;       /* NtCreateFile's FileHandle and IoStatusBlock */
++} OpenJob;
++
+ typedef struct DiscJob {
+     const NcDisc *disc;
+     NcDiscFile file;
+@@ -714,7 +820,11 @@ typedef struct DiscJob {
      bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
      bool ok;
      int err;
@@ -25002,10 +26563,11 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
 +    uint64_t queued_ns;      /* when it was queued (the reader's state) */
 +    char path[64]; /* for the log (the path's end) */
 +    bool write;    /* OGBox 0.0.2: a write to a host file (the guest's buffer to the file) */
++    OpenJob *open; /* OGBox 0.0.8: a host file's open instead (no buffer) */
  } DiscJob;
  
  static struct {
-@@ -727,7 +824,30 @@ static struct {
+@@ -727,7 +837,30 @@ static struct {
      unsigned busy;           /* queued, reading or done: at most DISC_JOBS */
      bool started;
      bool hurry;              /* a savestate's drain: no drive time left to wait (atomic) */
@@ -25037,7 +26599,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  
  static uint64_t mono_ns(void)
  {
-@@ -758,25 +878,70 @@ static void *reader_thread(void *arg)
+@@ -758,25 +891,74 @@ static void *reader_thread(void *arg)
          DiscJob j = g_reader.q[g_reader.head];
          g_reader.head = (g_reader.head + 1) % DISC_JOBS;
          g_reader.n--;
@@ -25054,6 +26616,10 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
 +        __atomic_store_n(&g_reader.cur_stage, 2, __ATOMIC_RELAXED);
          errno = 0;
          j.ok = true;
++        if (j.open) {
++            j.open->fd = open(j.open->host, j.open->flags, 0664);
++            j.open->err = j.open->fd < 0 ? errno : 0;
++        }
          uint64_t o = j.off;
 -        for (unsigned i = 0; j.ok && i < j.nseg; i++) {
 +        /* OGBox 0.0.3: one transfer a request. The buffer's physical runs are 16 KiB blocks at most
@@ -25110,7 +26676,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          g_reader.done[g_reader.ndone++] = j;
          pthread_mutex_unlock(&g_reader.mu);
          nc_irq_post_work();
-@@ -799,11 +964,13 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
+@@ -799,11 +981,13 @@ static void pin_buffer(NcKernel *k, const DiscJob *j, int lock)
      }
  }
  
@@ -25125,7 +26691,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  {
      static int in_place = -1; /* NC_DISC_SYNC: every disc read in place, as before */
      if (in_place < 0) {
-@@ -827,8 +994,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -827,8 +1011,10 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = run[0].va, .n = n,
                   .dev_us = dev_us, .iosb = a[4], .event = event, .apc = a[2], .apc_ctx = a[3],
@@ -25138,7 +26704,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      size_t segs = 0;
      for (unsigned r = 0; r < nrun; r++) {
          segs += run[r].len / NC_PAGE + 2;
-@@ -873,6 +1042,8 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+@@ -873,6 +1059,8 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
      }
      const bool queued = g_reader.started && g_reader.busy < DISC_JOBS;
      if (queued) {
@@ -25147,7 +26713,44 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          pin_buffer(k, &j, 1);
          g_reader.q[(g_reader.head + g_reader.n++) % DISC_JOBS] = j;
          g_reader.busy++;
-@@ -896,7 +1067,7 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
+@@ -891,12 +1079,44 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
+     return queued;
+ }
+ 
++/* OGBox 0.0.8: an open's job for the reader thread (an OpenJob, its own afterwards): false if it
++ * can't be queued (do it in place). The calling thread waits for it; open_done finishes it. */
++static bool open_later(NcKernel *k, OpenJob *o)
++{
++    DiscJob j = {.fd = -1, .thread = k->current, .thread_id = k->current ? k->current->id : 0, .sync = true,
++                 .queued_ns = mono_ns(), .open = o};
++    snprintf(j.path, sizeof(j.path), "%s", path_tail(o->path, sizeof(j.path) - 1));
++    pthread_mutex_lock(&g_reader.mu);
++    if (!g_reader.started) {
++        pthread_t t;
++        g_reader.started = pthread_create(&t, NULL, reader_thread, NULL) == 0;
++        if (g_reader.started) {
++            pthread_detach(t);
++        }
++    }
++    const bool queued = g_reader.started && g_reader.busy < DISC_JOBS;
++    if (queued) {
++        g_reader.queued_total++;
++        g_reader.q[(g_reader.head + g_reader.n++) % DISC_JOBS] = j;
++        g_reader.busy++;
++        pthread_cond_signal(&g_reader.cv);
++    }
++    pthread_mutex_unlock(&g_reader.mu);
++    return queued;
++}
++
++static void open_done(NcKernel *k, const DiscJob *j);
++
+ static void disc_read_done(NcKernel *k, const DiscJob *j)
+ {
++    if (j->open) {
++        open_done(k, j);
++        return;
++    }
      pin_buffer(k, j, -1);
      const bool ok = j->ok;
      const int err = j->err;
@@ -25156,7 +26759,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          if (nc_vm_dma.wrote) {
              nc_vm_dma.wrote(j->seg[i].pa, j->seg[i].len);    /* what a guest store would mark */
          }
-@@ -907,12 +1078,24 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
+@@ -907,12 +1127,24 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
      }
      uint32_t st = NC_STATUS_SUCCESS, n = j->n;
      if (!ok) {
@@ -25184,7 +26787,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      if (j->event) {
          nc_ke_set_event(k, j->event);
      }
-@@ -943,6 +1126,34 @@ void nc_io_poll(NcKernel *k)
+@@ -943,6 +1175,34 @@ void nc_io_poll(NcKernel *k)
      }
  }
  
@@ -25219,7 +26822,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  /* ---------------------------------------------------------------- open */
  
  static void remove_tree(const char *path, bool self);
-@@ -972,6 +1183,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
+@@ -972,6 +1232,31 @@ static bool set_aside(const char *host, char *old_path, size_t len)
      return true;
  }
  
@@ -25251,7 +26854,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  /* An overwritten file growing into [from, to): FATX shows what its clusters
   * held, the old contents (NcFile.old_path). */
  static void regrow(NcFile *nf, uint64_t from, uint64_t to)
-@@ -1031,9 +1267,32 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
+@@ -1031,9 +1316,58 @@ static uint32_t dir_mismatch(const char *path, uint32_t options, uint32_t st)
      return st;
  }
  
@@ -25277,14 +26880,41 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
 +    }
 +}
 +
++static bool can_block(const NcKernel *k);
++
++/* An open's end: the file object's handle, said in the log (do_open, open_done). */
++static uint32_t open_tail(NcKernel *k, NcFile *nf, const char *path, uint32_t options, uint32_t access,
++                          uint32_t info, uint32_t *handle)
++{
++    snprintf(nf->path, sizeof(nf->path), "%s", path);
++    nf->async = !(options & FILE_SYNCHRONOUS_IO);
++    nf->no_buffering = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
++    nf->can_write = (access & ACCESS_WRITES) != 0;
++    nc_kernel_trace_trigger(path);
++    *handle = file_handle(k, nf);
++    /* OGBox 0.0.4: the first 2000 opens (the dashboard opened ~19,000 files in half a minute, most
++     * of its log); failures are logged as before */
++    static unsigned s_opens;
++    if (++s_opens <= 2000) {
++        nc_log("hakuX-native-io", "open %s -> %s%s%s", path, nf->is_dir ? "dir " : "",
++               info == 2 ? "(created)" : info == 3 ? "(overwritten)" : info == 0 ? "(superseded)" : "",
++               s_opens == 2000 ? " (the last open logged: files opened from here on aren't)" : "");
++    }
++    return *handle ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
++}
++
++/* later: NtCreateFile's {FileHandle, IoStatusBlock} when its thread can wait (NULL: in place): a
++ * host file to create or empty is then opened on the reader thread (STATUS_PENDING: the caller
++ * blocks the thread; open_done ends the call). */
  static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t disposition, uint32_t options,
-                         uint32_t *handle, uint32_t *info)
+-                        uint32_t *handle, uint32_t *info)
++                        uint32_t *handle, uint32_t *info, const uint32_t *later)
  {
 +    writes_drain();   /* 0.0.2: after the queued writes */
      char name[512], path[512];
      ansi(k, nc_vm_rd32(k->vm, attrs + 4), name, sizeof(name));
      const uint32_t root = nc_vm_rd32(k->vm, attrs);
-@@ -1110,6 +1369,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1110,6 +1444,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          if (exists < 0) {
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "open %s: path not found", path);
@@ -25293,7 +26923,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              }
              return STATUS_OBJECT_PATH_NOT_FOUND;
          }
-@@ -1125,9 +1386,34 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1125,9 +1461,34 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          if (exists && disposition == FILE_CREATE) {
              return STATUS_OBJECT_NAME_COLLISION;
          }
@@ -25328,41 +26958,56 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              }
              return STATUS_OBJECT_NAME_NOT_FOUND;
          }
-@@ -1163,7 +1449,11 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1163,7 +1524,33 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
              } else {
                  *info = 1;
              }
 -            fd = open(host, flags, 0664);
 +            /* 0.0.2: an open of a file already open shares its descriptor */
 +            fd = flags == (O_RDWR | O_CLOEXEC) ? shared_fd_for(host) : -1;
++            /* OGBox 0.0.8: a file to create or empty, on the reader thread (OpenJob) */
++            OpenJob *o = fd < 0 && later && (flags & O_CREAT) ? calloc(1, sizeof(*o)) : NULL;
++            if (o) {
++                snprintf(o->host, sizeof(o->host), "%s", host);
++                snprintf(o->path, sizeof(o->path), "%s", path);
++                snprintf(o->old_path, sizeof(o->old_path), "%s", old_path);
++                o->old_size = old_size;
++                o->flags = flags;
++                o->fd = -1;
++                o->dev = dev;
++                o->access = access;
++                o->options = options;
++                o->disposition = disposition;
++                o->attrs = attrs;
++                o->info = *info;
++                o->handle_out = later[0];
++                o->iosb = later[1];
++                if (open_later(k, o)) {
++                    return STATUS_PENDING;
++                }
++                free(o);
++            }
 +            if (fd < 0) {
 +                fd = open(host, flags, 0664);
 +            }
              if (fd < 0) {
                  nc_log("hakuX-native-io", "open %s (%s): %s", path, host, strerror(errno));
                  if (old_path[0]) {
-@@ -1192,23 +1482,59 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
+@@ -1192,23 +1579,98 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
          nf->old_size = old_size;
          snprintf(nf->host, sizeof(nf->host), "%s", host);
      }
-+opened:
-     snprintf(nf->path, sizeof(nf->path), "%s", path);
-     nf->async = !(options & FILE_SYNCHRONOUS_IO);
-     nf->no_buffering = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
-     nf->can_write = (access & ACCESS_WRITES) != 0;
-     nc_kernel_trace_trigger(path);
-     *handle = file_handle(k, nf);
+-    snprintf(nf->path, sizeof(nf->path), "%s", path);
+-    nf->async = !(options & FILE_SYNCHRONOUS_IO);
+-    nf->no_buffering = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
+-    nf->can_write = (access & ACCESS_WRITES) != 0;
+-    nc_kernel_trace_trigger(path);
+-    *handle = file_handle(k, nf);
 -    nc_log("hakuX-native-io", "open %s -> %s%s", path, nf->is_dir ? "dir " : "",
 -           *info == 2 ? "(created)" : *info == 3 ? "(overwritten)" : *info == 0 ? "(superseded)" : "");
-+    /* OGBox 0.0.4: the first 2000 opens (the dashboard opened ~19,000 files in half a minute, most
-+     * of its log); failures are logged as before */
-+    static unsigned s_opens;
-+    if (++s_opens <= 2000) {
-+        nc_log("hakuX-native-io", "open %s -> %s%s%s", path, nf->is_dir ? "dir " : "",
-+               *info == 2 ? "(created)" : *info == 3 ? "(overwritten)" : *info == 0 ? "(superseded)" : "",
-+               s_opens == 2000 ? " (the last open logged: files opened from here on aren't)" : "");
-+    }
-     return *handle ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
+-    return *handle ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
++opened:
++    return open_tail(k, nf, path, options, access, *info, handle);
  }
  
  /* NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
@@ -25393,27 +27038,83 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
 +    }
 +}
 +
++/* OGBox 0.0.8: an open the reader thread did (open_later): the file object, the handle and the
++ * IoStatusBlock as NtCreateFile would have made them, and its thread goes on with the status. */
++static void open_done(NcKernel *k, const DiscJob *j)
++{
++    OpenJob *o = j->open;
++    uint32_t st, h = 0;
++    if (o->fd < 0) {
++        nc_log("hakuX-native-io", "open %s (%s): %s", o->path, o->host, strerror(o->err));
++        if (o->old_path[0]) {
++            rename(o->old_path, o->host);   /* the file as it was */
++        }
++        st = STATUS_ACCESS_DENIED;
++    } else {
++        NcFile *nf = file_new();
++        if (!nf) {
++            close(o->fd);
++            if (o->old_path[0]) {
++                rename(o->old_path, o->host);
++            }
++            st = NC_STATUS_INSUFFICIENT_RESOURCES;
++        } else {
++            nf->kind = F_HOST;
++            nf->partition = o->dev;
++            nf->fd = o->fd;
++            nf->is_dir = false;
++            snprintf(nf->old_path, sizeof(nf->old_path), "%s", o->old_path);
++            nf->old_size = o->old_size;
++            snprintf(nf->host, sizeof(nf->host), "%s", o->host);
++            st = open_tail(k, nf, o->path, o->options, o->access, o->info, &h);
++        }
++    }
++    if (st >= 0xC0000000u) {
++        open_failed(k, "NtCreateFile", o->attrs, o->access, o->disposition, o->options, st);
++    }
++    io_status(k, o->iosb, st, o->info);
++    if (st == NC_STATUS_SUCCESS) {
++        nc_vm_wr32(k->vm, o->handle_out, h);
++    }
++    if (g_trace_io) {
++        nc_log("hakuX-native-io", "open %s on the reader thread: %08x after %.1f ms", o->path, st,
++               (double)(mono_ns() - j->queued_ns) / 1e6);
++    }
++    if (j->thread && j->thread->id == j->thread_id && j->thread->state == NC_T_WAITING) {
++        nc_ke_wake(k, j->thread, st);   /* its NtCreateFile returns now */
++    }
++    free(o);
++}
++
  static uint64_t NtCreateFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
      uint32_t h = 0, info = 0;
-     uint32_t st = do_open(k, a[1], a[2], a[7], a[8], &h, &info);
+-    uint32_t st = do_open(k, a[1], a[2], a[7], a[8], &h, &info);
++    const uint32_t later[2] = {a[0], a[3]};
++    uint32_t st = do_open(k, a[1], a[2], a[7], a[8], &h, &info, can_block(k) ? later : NULL);
++    if (st == STATUS_PENDING) {
++        nc_ke_block(k);     /* open_done's status replaces this */
++        return STATUS_PENDING;
++    }
 +    if (st >= 0xC0000000u) {
 +        open_failed(k, "NtCreateFile", a[2], a[1], a[7], a[8], st);
 +    }
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1221,6 +1547,9 @@ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1220,7 +1682,10 @@ static uint64_t NtCreateFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+ static uint64_t NtOpenFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
      uint32_t h = 0, info = 0;
-     uint32_t st = do_open(k, a[1], a[2], FILE_OPEN, a[5], &h, &info);
+-    uint32_t st = do_open(k, a[1], a[2], FILE_OPEN, a[5], &h, &info);
++    uint32_t st = do_open(k, a[1], a[2], FILE_OPEN, a[5], &h, &info, NULL);
 +    if (st >= 0xC0000000u) {
 +        open_failed(k, "NtOpenFile", a[2], a[1], FILE_OPEN, a[5], st);
 +    }
      io_status(k, a[3], st, info);
      if (st == NC_STATUS_SUCCESS) {
          nc_vm_wr32(k->vm, a[0], h);
-@@ -1236,6 +1565,9 @@ static uint64_t file_size(const NcFile *nf)
+@@ -1236,6 +1701,9 @@ static uint64_t file_size(const NcFile *nf)
          return nf->disc.size;
      }
      struct stat st;
@@ -25423,7 +27124,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      return nf->fd >= 0 && fstat(nf->fd, &st) == 0 ? (uint64_t)st.st_size : 0;
  }
  
-@@ -1427,6 +1759,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
+@@ -1427,6 +1895,62 @@ static bool runs_resident(NcKernel *k, const IoRun *run, unsigned nrun)
      return true;
  }
  
@@ -25486,7 +27187,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  /* NtReadFile's work for a buffer of runs (len bytes in all): a[] as
   * NtReadFile takes it, its Buffer and Length aside. */
  static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned nrun, uint32_t len)
-@@ -1447,7 +1835,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1447,7 +1971,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          uint64_t o = off;
          for (unsigned i = 0; i < nrun; i++) {
              nc_vm_will_write(run[i].va, run[i].len);
@@ -25495,7 +27196,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              o += run[i].len;
          }
          io_moved(k, nf, a[7], off + len);
-@@ -1469,6 +1857,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1469,6 +1993,7 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
      }
      const uint64_t size = file_size(nf);
      const bool async = nf->async && !disc_cached(nf, off, len);
@@ -25503,7 +27204,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      uint32_t st = NC_STATUS_SUCCESS, n = 0;
      if (!len) {
          /* Zero bytes succeed, past the end too, as the file systems check
-@@ -1486,9 +1875,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1486,9 +2011,16 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          const bool drive = g_devtime && !async && can_block(k) && !fs_cache_holds(nf, off, n);
          const bool later = async || drive || (n >= SYNC_LATER_MIN && can_block(k));
          const uint32_t dev_us = async ? device_us(nf, n) : drive ? device_us(nf, fs_cache_fill(nf, off, n)) : 0;
@@ -25521,7 +27222,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "read %s +%llx %u into %08x%s %s%s%s", nf->path, (unsigned long long)off,
                         n, va0, nrun > 1 ? " (scattered)" : "", async ? "pending" : "waited for",
-@@ -1502,10 +1898,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1502,10 +2034,9 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
          bool ok = true;
          uint64_t o = off;
          for (unsigned i = 0; ok && i < nrun; i++) {
@@ -25534,7 +27235,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              o += run[i].len;
          }
          if (!ok) {
-@@ -1515,11 +1910,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
+@@ -1515,11 +2046,12 @@ static uint64_t read_runs(NcKernel *k, const uint32_t *a, IoRun *run, unsigned n
              n = 0;
          }
      }
@@ -25549,7 +27250,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          }
          nc_log("hakuX-native-io", "read %s +%llx %u into %08x -> %08x n=%u%s%s [%02x%02x%02x%02x %02x%02x%02x%02x]",
                 nf->path, (unsigned long long)off, len, va0, st, n, a[1] ? " event" : "", a[2] ? " apc" : "",
-@@ -1635,7 +2031,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1635,7 +2167,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
          if (nf->partition == 0) {
              const uint64_t off = io_offset(k, nf, a[7]);
              nc_vm_will_read(a[5], a[6]);
@@ -25558,7 +27259,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              io_moved(k, nf, a[7], off + a[6]);
              if (g_trace_io) {
                  nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
-@@ -1649,7 +2045,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1649,7 +2181,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
          const uint64_t o = io_offset(k, nf, a[7]);
          io_moved(k, nf, a[7], o + a[6]);
          nc_vm_will_read(a[5], a[6]);
@@ -25567,22 +27268,30 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          /* The FATX superblock: "FATX", volume id, sectors per cluster. */
          const uint8_t *sb = nc_vm_host(k->vm, a[5]);
          if (o == 0 && a[6] >= 12 && !memcmp(sb, "FATX", 4)) {
-@@ -1680,14 +2076,38 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1680,14 +2212,46 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
              regrow(nf, size, off); /* the gap a write past the end leaves */
          }
      }
 +    /* 0.0.2: on the reader thread, as a read of that size would be: an overlapped write, or a
-+     * synchronous one long enough that its thread waits while the others run */
-+    if (a[6] && (nf->async || (a[6] >= SYNC_LATER_MIN && can_block(k)))) {
++     * synchronous one long enough that its thread waits while the others run.
++     * OGBox 0.0.8: an overlapped write through the cache (no FILE_NO_INTERMEDIATE_BUFFERING)
++     * completes in the call, as the Xbox's FATX does and as the in-place path below always did:
++     * its thread waits for it (the others run) and NtWriteFile returns its status, the event set.
++     * Returned pending, Breakdown's copy of an area to its cache drive took WriteFile's FALSE
++     * (ERROR_IO_PENDING) for a failure after the first 16 KiB: the area's block stayed the zeros
++     * its pre-sized file held, the room was neither drawn nor solid, and the hero fell to his
++     * death after the first cutscene. An unbuffered overlapped write still pends. */
++    const bool pends = nf->async && nf->no_buffering;
++    if (a[6] && (pends || ((nf->async || a[6] >= SYNC_LATER_MIN) && can_block(k)))) {
 +        const IoRun run = {a[5], a[6]};
-+        if (disc_read_later(k, nf, a, &run, 1, off, a[6], !nf->async, 0, true)) {
++        if (disc_read_later(k, nf, a, &run, 1, off, a[6], !pends, 0, true)) {
 +            nf->wrote = true;
 +            io_moved(k, nf, a[7], off + a[6]);
 +            if (g_trace_io) {
 +                nc_log("hakuX-native-io", "write %s +%llx %u from %08x %s", nf->path, (unsigned long long)off, a[6],
-+                       a[5], nf->async ? "pending" : "waited for");
++                       a[5], pends ? "pending" : "waited for");
 +            }
-+            if (!nf->async) {
++            if (!pends) {
 +                nc_ke_block(k);         /* the write's status replaces this when it completes */
 +            }
 +            return STATUS_PENDING;
@@ -25608,7 +27317,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          }
          nc_log("hakuX-native-io", "write %s +%llx %u from %08x -> %08x [%02x%02x%02x%02x %02x%02x%02x%02x]", nf->path,
                 (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-@@ -1748,6 +2168,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
+@@ -1748,6 +2312,7 @@ static void network_open_info(const NcFile *nf, uint8_t *o)
  /* NtQueryInformationFile(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass) */
  static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25616,7 +27325,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1808,14 +2229,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
+@@ -1808,14 +2373,35 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
      if (a[3] < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -25653,7 +27362,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      NcFile *nf = file_of(k, a[0]);
      if (!nf) {
          return NC_STATUS_INVALID_HANDLE;
-@@ -1853,7 +2295,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1853,7 +2439,8 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                      ts[i].tv_nsec = UTIME_OMIT;
                  }
              }
@@ -25663,7 +27372,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
                  nc_log("hakuX-native-io", "set times on %s: %s", nf->path, strerror(errno));
              }
          }
-@@ -1861,6 +2304,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -1861,6 +2448,17 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
      case 20: { /* FileEndOfFileInformation */
          memcpy(&v, in, 8);
          const uint64_t was = file_size(nf);
@@ -25681,7 +27390,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
          if (nf->kind != F_HOST || nf->fd < 0 || !handle_can_write(nf, "end of file of") ||
              ftruncate(nf->fd, (off_t)v) != 0) {
              st = STATUS_ACCESS_DENIED;
-@@ -2102,31 +2556,24 @@ typedef struct DirEntry {
+@@ -2102,31 +2700,24 @@ typedef struct DirEntry {
      bool dir;
  } DirEntry;
  
@@ -25724,7 +27433,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  }
  
  /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
-@@ -2161,7 +2608,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2161,7 +2752,10 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
          if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
              uint8_t *dir = malloc(nf->disc.size);
              if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
@@ -25736,7 +27445,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
              }
              free(dir);
          }
-@@ -2198,6 +2648,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
+@@ -2198,6 +2792,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned
   * FileAttributes 0x38, FileNameLength 0x3C, FileName (ANSI) 0x40. */
  static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25744,15 +27453,18 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      NcFile *nf = file_of(k, a[0]);
      if (!nf || !nf->is_dir) {
          return nf ? STATUS_INVALID_DEVICE_REQUEST : NC_STATUS_INVALID_HANDLE;
-@@ -2282,6 +2733,7 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -2282,8 +2877,9 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  /* NtQueryFullAttributesFile(ObjectAttributes, FileInformation (FILE_NETWORK_OPEN_INFORMATION)) */
  static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
 +    writes_drain();   /* 0.0.2: after the queued writes */
      uint32_t h = 0, info = 0;
-     uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info);
+-    uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info);
++    uint32_t st = do_open(k, 0, a[0], FILE_OPEN, 0, &h, &info, NULL);
      if (st != NC_STATUS_SUCCESS) {
-@@ -2295,6 +2747,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
+         return st;
+     }
+@@ -2295,6 +2891,7 @@ static uint64_t NtQueryFullAttributesFile(NcKernel *k, NcFrame *f, const uint32_
  /* NtDeleteFile(ObjectAttributes) */
  static uint64_t NtDeleteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
  {
@@ -25760,7 +27472,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      char name[512], path[512], host[512];
      ansi(k, nc_vm_rd32(k->vm, a[0] + 4), name, sizeof(name));
      if (!resolve_name(k, nc_vm_rd32(k->vm, a[0]), name, sizeof(name))) {
-@@ -2386,6 +2839,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
+@@ -2386,6 +2983,49 @@ static uint32_t disk_ioctl(const NcFile *nf, uint32_t code, uint8_t *out, uint32
   * read zeros. */
  #define IOCTL_SCSI_PASS_THROUGH_DIRECT 0x4D014u
  
@@ -25810,7 +27522,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
  static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
  {
      if (!sptd || len < 0x2C) {
-@@ -2406,6 +2902,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
+@@ -2406,6 +3046,9 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
          d[10] = 1;                             /* CDFValid */
          d[11] = 1;                             /* PartitionArea: the Xbox partition */
          d[12] = 1;                             /* Authentication */
@@ -25820,7 +27532,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      } else {
          nc_log("hakuX-native-io", "scsi %02x (%u bytes): zeros", cdb[0], n);
      }
-@@ -2455,7 +2954,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
+@@ -2455,7 +3098,7 @@ static uint64_t IoSynchronousDeviceIoControlRequest(NcKernel *k, NcFrame *f, con
  {
      nc_log("hakuX-native-io", "device control %08x on device %08x (out %u)", a[0], a[1], a[5]);
      if (a[4] && a[5]) {
@@ -25829,7 +27541,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      }
      if (a[6]) {
          nc_vm_wr32(k->vm, a[6], 0);
-@@ -2525,7 +3024,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
+@@ -2525,7 +3168,7 @@ static uint64_t NtQuerySymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_
      if (max < len) {
          return STATUS_BUFFER_TOO_SMALL;
      }
@@ -25838,7 +27550,7 @@ index ef5ca342859cce52277d40626f9e3ea46dffade1..6f3863c095a3178cae3cc25f47913489
      *(uint16_t *)nc_vm_host(k->vm, a[1]) = len;
      return NC_STATUS_SUCCESS;
  }
-@@ -2779,7 +3278,7 @@ bool nc_file_state_save(NcBuf *b)
+@@ -2779,7 +3422,7 @@ bool nc_file_state_save(NcBuf *b)
  static void file_drop(NcFile *nf)
  {
      if (nf->used) {
@@ -26769,7 +28481,7 @@ index 801f0ffc80a504ef0d0188461ee03a6e184f8f35..90d5111bd230845060c51f7203d13552
          nc_kernel_request_stop(k, f, "system op %d at %08x (%02x %02x %02x)", (int)op, eip,
                                 insn[0], insn[1], insn[2]);
 diff --git a/native/kernel/kernel.h b/native/kernel/kernel.h
-index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79165c1fb6 100644
+index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..9d0827041121a58b246e6581078e8aa99b58f8b2 100644
 --- a/native/kernel/kernel.h
 +++ b/native/kernel/kernel.h
 @@ -23,8 +23,21 @@
@@ -26895,7 +28607,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79
  
  /* ex.c: the console's video settings, as the dashboard keeps them: the
   * EEPROM's video flags (XC_VIDEO_FLAGS: NC_VIDEO_*) and the AV pack the
-@@ -407,6 +455,16 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
+@@ -407,6 +455,20 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
  /* seh.c: RtlRaiseException and RtlUnwind, and their stubs. */
  void nc_seh_register(NcKernel *k);
  void nc_seh_stub(NcKernel *k, NcFrame *f, unsigned ordinal);
@@ -26907,12 +28619,16 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79
 + * guest. */
 +bool nc_seh_access_violation(NcKernel *k, NcFrame *f, uint32_t va, bool write);
 +bool nc_seh_breakpoint(NcKernel *k, NcFrame *f, uint32_t eip);
++/* OGBox 0.0.8: the last access violation given to the title's handlers: its instruction, the
++ * address it touched, whether it wrote, and when (CLOCK_MONOTONIC, ns); false if none yet. A
++ * title that restarts itself just after one (its crash handler's reboot) has crashed. */
++bool nc_seh_last_fault(uint32_t *eip, uint32_t *va, bool *write, uint64_t *mono_ns);
 +/* intr.c: the kernel's flight recorder (diagnostics of ISR holds) */
 +void nc_fr_note(char kind, unsigned a, unsigned b, uint32_t eip, uint32_t x);
  /* After the XBE is loaded: what the kernel exposes about the title. xbe_fd:
   * the XBE's host file when it isn't on the disc (else -1). */
  void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct NcDiscFile *xbe, int xbe_fd,
-@@ -447,6 +505,11 @@ uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size);
+@@ -447,6 +509,11 @@ uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size);
  void nc_ke_register(NcKernel *k);
  /* KeSetEvent on a guest event object; returns the previous state. */
  uint32_t nc_ke_set_event(NcKernel *k, uint32_t event);
@@ -26924,7 +28640,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79
  /* KeClearEvent. */
  void nc_ke_clear_event(NcKernel *k, uint32_t event);
  /* KeInitializeEvent: type 0 notification, 1 synchronization. */
-@@ -583,6 +646,8 @@ void nc_io_close(NcKernel *k, uint32_t object);
+@@ -583,6 +650,8 @@ void nc_io_close(NcKernel *k, uint32_t object);
  /* Completes the overlapped disc reads the reader thread finished (cheap when
   * none did): on every kernel entry and in the scheduler's loop. */
  void nc_io_poll(NcKernel *k);
@@ -26933,7 +28649,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79
  
  /* What a kernel thunk-table entry for ordinal resolves to, or 0. */
  uint32_t nc_kernel_resolve(const NcKernel *k, unsigned ordinal);
-@@ -621,6 +686,8 @@ void nc_intr_return(NcKernel *k);
+@@ -621,6 +690,8 @@ void nc_intr_return(NcKernel *k);
  void nc_kernel_dump_recent(int fd);
  /* Every guest thread: state, wait objects, top of stack (ps.c). */
  void nc_kernel_dump_threads(NcKernel *k, int fd);
@@ -26942,7 +28658,7 @@ index 68d2c9fb346c1e353c053d0073c8ee7ef518bf10..28980a158f3b07511dcc159ebbb5ab79
  
  /* A guest access to va, a page the guest doesn't have (the host fault in
   * translated code, f its state there): with a page-fault handler of the
-@@ -649,6 +716,19 @@ void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
+@@ -649,6 +720,19 @@ void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
   * (note, async-signal safe); the next system op makes it a hooked address
   * (flush); is_site answers the JIT's hook query; hook emulates it. */
  void nc_x86mmio_note(uint32_t eip);
@@ -28646,18 +30362,19 @@ index 5aeff8bacc1cb3cbd1f4caa9e05ea99eb640d3c3..ea282b93b1fd0d69a48146c8cf23e9d1
          return 0;
      }
 diff --git a/native/kernel/seh.c b/native/kernel/seh.c
-index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a23257bfa 100644
+index 057ea96405acc914184b7b6ab20355ee579003cb..81475aff3be4ac849ace74fcdd5cb38fcf9d19c1 100644
 --- a/native/kernel/seh.c
 +++ b/native/kernel/seh.c
-@@ -19,6 +19,7 @@
+@@ -19,6 +19,8 @@
  #include "native/kernel/kernel.h"
  
  #include <stdio.h>
 +#include <stdlib.h>
++#include <time.h>
  
  /* EXCEPTION_RECORD */
  #define ER_CODE    0x00
-@@ -58,6 +59,7 @@ enum { CONTINUE_EXECUTION, CONTINUE_SEARCH, NESTED_EXCEPTION, COLLIDED_UNWIND };
+@@ -58,6 +60,7 @@ enum { CONTINUE_EXECUTION, CONTINUE_SEARCH, NESTED_EXCEPTION, COLLIDED_UNWIND };
  
  #define CHAIN_END     0xFFFFFFFFu
  #define STATUS_UNWIND 0xC0000027u
@@ -28665,7 +30382,7 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a
  #define CXX_EXCEPTION 0xE06D7363u /* MSVC's throw */
  
  /* A level's guest frame, from its base up:
-@@ -203,9 +205,47 @@ static NcSeh *push_level(NcKernel *k, NcFrame *f, NcThread *t, uint32_t esp)
+@@ -203,9 +206,47 @@ static NcSeh *push_level(NcKernel *k, NcFrame *f, NcThread *t, uint32_t esp)
  static void unhandled(NcKernel *k, NcFrame *f, NcSeh *l, const char *why)
  {
      char type[96];
@@ -28716,7 +30433,7 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a
  }
  
  /* Calls the handler of the level's registration, or ends the level. */
-@@ -220,6 +260,15 @@ static void step(NcKernel *k, NcFrame *f, NcThread *t)
+@@ -220,6 +261,15 @@ static void step(NcKernel *k, NcFrame *f, NcThread *t)
      if (l->reg == CHAIN_END) {
          if (l->unwind) {
              nc_kernel_request_stop(k, f, "seh: unwind to %08x ran off the chain", l->target);
@@ -28732,7 +30449,7 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a
          } else {
              unhandled(k, f, l, "no handler took it");
          }
-@@ -284,6 +333,118 @@ static uint64_t RtlRaiseException(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -284,6 +334,142 @@ static uint64_t RtlRaiseException(NcKernel *k, NcFrame *f, const uint32_t *a)
      return 0;
  }
  
@@ -28750,6 +30467,24 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a
 + * Returns false if there is no current thread, the thread has no SEH
 + * handler, there is no mapped stack below ESP to run the dispatch on, or the
 + * dispatch can't be set up. The caller then reports the fault as a crash. */
++static struct {
++    uint32_t eip, va;
++    bool write;
++    uint64_t ns;    /* 0: none yet */
++} g_last_fault;
++
++bool nc_seh_last_fault(uint32_t *eip, uint32_t *va, bool *write, uint64_t *mono_ns)
++{
++    if (!g_last_fault.ns) {
++        return false;
++    }
++    *eip = g_last_fault.eip;
++    *va = g_last_fault.va;
++    *write = g_last_fault.write;
++    *mono_ns = g_last_fault.ns;
++    return true;
++}
++
 +bool nc_seh_access_violation(NcKernel *k, NcFrame *f, uint32_t va, bool write)
 +{
 +    NcThread *t = k->current;
@@ -28773,6 +30508,12 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a
 +    nc_wr32(r + ER_INFO + 4, va);
 +    capture(k, f, l->ctx, eip, esp);
 +    l->reg = chain_head(k);
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    g_last_fault.eip = eip;
++    g_last_fault.va = va;
++    g_last_fault.write = write;
++    g_last_fault.ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 +    static unsigned s_logged;
 +    if (s_logged++ < 32) {
 +        nc_log("hakuX-native", "seh: t%u access violation at %08x, %s %08x: to the title's handlers", t->id, eip,
@@ -28851,7 +30592,7 @@ index 057ea96405acc914184b7b6ab20355ee579003cb..13df517d824ff509e68dcd564f67b49a
  /* RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue): calls the
   * handlers above TargetFrame to unwind and unlinks them, then returns. */
  static uint64_t RtlUnwind(NcKernel *k, NcFrame *f, const uint32_t *a)
-@@ -301,7 +462,7 @@ static uint64_t RtlUnwind(NcKernel *k, NcFrame *f, const uint32_t *a)
+@@ -301,7 +487,7 @@ static uint64_t RtlUnwind(NcKernel *k, NcFrame *f, const uint32_t *a)
      l->rec = a[2];
      if (!l->rec) {
          l->rec = l->base + LV_REC;
@@ -29918,7 +31659,7 @@ index 0000000000000000000000000000000000000000..813c5f30688d49bb12548256ebd8a433
 +
 +#endif
 diff --git a/tests/hle/CMakeLists.txt b/tests/hle/CMakeLists.txt
-index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac55093f58d0b7 100644
+index d58451fa6cba42d371542ead3f1f971c07589630..2ad394731d8acc4120dfbc2aa2efb853e70bcf9c 100644
 --- a/tests/hle/CMakeLists.txt
 +++ b/tests/hle/CMakeLists.txt
 @@ -28,6 +28,8 @@ set(HLE_PURE_SOURCES
@@ -29930,7 +31671,7 @@ index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac5509
    ${REPO_ROOT}/native/core/cheats.c
    ${NC_DEPS}/root/subprojects/nv2a_vsh_cpu/src/nv2a_vsh_disassembler.c
  )
-@@ -46,18 +48,48 @@ hle_test(test_ring)
+@@ -46,18 +48,52 @@ hle_test(test_ring)
  hle_test(test_arena)
  hle_test(test_pageuse)
  hle_test(test_pusher)
@@ -29973,6 +31714,10 @@ index d58451fa6cba42d371542ead3f1f971c07589630..404cffc009931c005528d66267ac5509
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
 +audio_test(test_apu_simd ${REPO_ROOT}/native/dev/apu/vp/resample.c
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
++# OGBox 0.0.8: an extracted game's folder, CSOs (one file and split) through the disc reader
++audio_test(test_disc_images ${REPO_ROOT}/native/core/xdvdfs.c ${REPO_ROOT}/native/core/pack.c
++           ${REPO_ROOT}/native/core/folder.c)
++target_compile_definitions(test_disc_images PRIVATE _GNU_SOURCE)
 +# the MCPX's measured curves and resampler (xemu PR #3105)
 +audio_test(test_apu_mcpx ${REPO_ROOT}/native/dev/apu/vp/resample.c
 +           ${REPO_ROOT}/native/dev/apu/vp/resample_sinc.c ${REPO_ROOT}/native/dev/apu/vp/simd.c)
@@ -30389,10 +32134,10 @@ index 368a54bd9b69fc62cd150b3e7d21a0ef5b73c704..44c9611f600473825351d4ec6424ab35
  }
 diff --git a/tests/hle/test_apu_mcpx.c b/tests/hle/test_apu_mcpx.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9bd37837c95e98fda55d508297b769cfaf7d4a3b
+index 0000000000000000000000000000000000000000..1bc9cc7a43688b7981d6b401a97cf9d03713fe05
 --- /dev/null
 +++ b/tests/hle/test_apu_mcpx.c
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,210 @@
 +/* The MCPX voice processor's measured behaviour (xemu PR #3105: raddad772's
 + * tests on a retail console, https://github.com/xemu-project/xemu/pull/3105)
 + * against the native core's code: the volume curve, the HRIR taps' format,
@@ -30408,6 +32153,7 @@ index 0000000000000000000000000000000000000000..9bd37837c95e98fda55d508297b769cf
 +#include "native/dev/apu/vp/mcpx_curves.h"
 +#include "native/dev/apu/vp/mcpx_round.h"
 +#include "native/dev/apu/vp/resample.h"
++#include "native/dev/apu/vp/svf.h"
 +
 +/* ---- the volume curve (fb7e45a) */
 +static void test_attenuation(void)
@@ -30455,6 +32201,44 @@ index 0000000000000000000000000000000000000000..9bd37837c95e98fda55d508297b769cf
 +        y = mcpx_round_filter((1.0 - a) * x + a * y);
 +    }
 +    HT_EQ_INT((int)lrint(y * 8388608.0), 0x10);
++}
++
++/* ---- the DLS2 damping: FC1 / 32768 (b323e32), at most 1.0 (OGBox 0.0.8). NFS Carbon's
++ * DirectSound filter, DLS2 with FC1 FFFFh (game code at 0x315A12), at its table's open end (FC0
++ * 0, f FFFFh): with the damping uncapped (2.0) the history overflowed in under 1500 samples; at
++ * 1.0 a minute of a loud two-tone signal stays within full scale. */
++static double dls2_run(uint16_t fc0, float q, int n, int *overflow_at)
++{
++    sv_filter s = {0};
++    setup_svf(&s, mcpx_filter_frequency((int16_t)fc0), q, F_LP);
++    double peak = 0;
++    *overflow_at = -1;
++    for (int i = 0; i < n; i++) {
++        const float x = 0.45f * sinf(i * 0.05f) + 0.45f * sinf(i * 0.731f);
++        const double y = run_svf(&s, x);
++        if (!(fabs(s.l) <= 1e30 && fabs(s.b) <= 1e30)) {
++            *overflow_at = i;
++            return INFINITY;
++        }
++        peak = fabs(y) > peak ? fabs(y) : peak;
++    }
++    return peak;
++}
++
++static void test_dls2_damping(void)
++{
++    HT_CHECK(mcpx_dls2_damping(0) == 0.0f);                  /* measured: self-oscillates */
++    HT_CHECK(mcpx_dls2_damping(0x4000) == 0.5f);
++    HT_CHECK(mcpx_dls2_damping(0x8000) == 1.0f);
++    HT_CHECK(mcpx_dls2_damping(0xFFFF) == 1.0f);             /* NFS Carbon's */
++    int at;
++    (void)dls2_run(0x0000, 65535.0f / 32768.0f, 48000, &at); /* uncapped: runs away */
++    HT_CHECK(at > 0 && at < 1500);
++    HT_CHECK(dls2_run(0x0000, mcpx_dls2_damping(0xFFFF), 48000 * 60, &at) <= 1.0 && at < 0);
++    /* and through its table's whole range (8000h, the lowest, up to its open end) */
++    for (unsigned fc0 = 0x8000; fc0 <= 0x10000; fc0 += 0x400) {
++        HT_CHECK(dls2_run((uint16_t)fc0, mcpx_dls2_damping(0xFFFF), 48000, &at) <= 1.0 && at < 0);
++    }
 +}
 +
 +/* ---- the mix's 24-bit rounding (45af4ac): halves up */
@@ -30557,6 +32341,7 @@ index 0000000000000000000000000000000000000000..9bd37837c95e98fda55d508297b769cf
 +    HT_RUN(test_attenuation);
 +    HT_RUN(test_hrir_taps);
 +    HT_RUN(test_filters);
++    HT_RUN(test_dls2_damping);
 +    HT_RUN(test_mix_rounding);
 +    HT_RUN(test_resampler_weights);
 +    HT_RUN(test_resampler_pitch_ramp);
@@ -32042,6 +33827,468 @@ index 0000000000000000000000000000000000000000..0d821d1a7c471d1bac0deb154aa07d5d
 +int main(void)
 +{
 +    HT_RUN(test_every_command_wrapped);
++    HT_DONE();
++}
+diff --git a/tests/hle/test_disc_images.c b/tests/hle/test_disc_images.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb8e0a523790f8222cad636c1f4bfdafd0c0cbb0
+--- /dev/null
++++ b/tests/hle/test_disc_images.c
+@@ -0,0 +1,456 @@
++/* OGBox 0.0.8: the disc images hakuX reads besides an ISO, through the disc reader the core boots
++ * with (xdvdfs.c over pack.c): an extracted game's folder read as a disc (folder.c), that disc
++ * written out as an ISO and read back, and the ISO as a CSO in Stellar's layout (MakeMHz's
++ * ciso.py: LZ4 frame blocks and plain ones, one file or split in two with its places from 0
++ * again), with the variants a reader may meet (a frame block stored, bare LZ4 blocks). */
++#include "hle_test.h"
++
++#include <dirent.h>
++#include <fcntl.h>
++#include <stdarg.h>
++#include <stdlib.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "native/core/chd.h"
++#include "native/core/pack.h"
++#include "native/core/xdvdfs.h"
++
++/* the CHD reader and the log stood in */
++NcChd *nc_chd_open(int fd, bool *is_chd)
++{
++    (void)fd;
++    *is_chd = false;
++    return NULL;
++}
++bool nc_chd_read(NcChd *c, void *buf, size_t len, uint64_t off)
++{
++    (void)c, (void)buf, (void)len, (void)off;
++    return false;
++}
++void nc_chd_close(NcChd *c)
++{
++    (void)c;
++}
++void nc_log(const char *tag, const char *fmt, ...)
++{
++    if (!getenv("TEST_VERBOSE")) {
++        return;
++    }
++    va_list ap;
++    va_start(ap, fmt);
++    printf("%s: ", tag);
++    vprintf(fmt, ap);
++    printf("\n");
++    va_end(ap);
++}
++
++static char g_dir[256];
++
++static void put(const char *rel, const uint8_t *data, size_t len)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game/%s", g_dir, rel);
++    FILE *f = fopen(p, "wb");
++    HT_CHECK(f != NULL);
++    if (f) {
++        HT_CHECK(fwrite(data, 1, len, f) == len);
++        fclose(f);
++    }
++}
++
++static void mk(const char *rel)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game/%s", g_dir, rel);
++    mkdir(p, 0755);
++}
++
++static uint8_t *pattern(size_t len, unsigned seed)
++{
++    uint8_t *b = malloc(len ? len : 1);
++    uint32_t x = seed * 2654435761u + 1;
++    for (size_t i = 0; i < len; i++) {
++        x = x * 1103515245u + 12345u;
++        b[i] = (uint8_t)(x >> 16);
++    }
++    return b;
++}
++
++/* the game: its XBEs, files in folders, an empty folder and file, a folder of 300 entries (a table
++ * of several sectors), a 3 MiB file, a long name, and stretches of one byte (compressible) */
++static uint8_t *g_xbe, *g_other, *g_x, *g_big, *g_many[300], *g_long;
++#define BIG (3u * 1024 * 1024 + 123)
++static const char k_long[] =
++    "a_rather_long_file_name_that_goes_on_and_on_to_check_entries_that_do_not_fit_a_sector_s_end_"
++    "and_how_their_tables_place_them.bin";
++
++static void make_game(void)
++{
++    snprintf(g_dir, sizeof(g_dir), "/tmp/nc_disc_XXXXXX");
++    HT_CHECK(mkdtemp(g_dir) != NULL);
++    mk("");
++    mk("media");
++    mk("media/sub");
++    mk("empty");
++    mk("many");
++    g_xbe = pattern(10000, 1);
++    memcpy(g_xbe, "XBEH", 4);
++    put("default.xbe", g_xbe, 10000);
++    g_other = pattern(3000, 2);
++    memcpy(g_other, "XBEH", 4);
++    put("Launcher.xbe", g_other, 3000);
++    g_x = pattern(5000, 3);
++    put("media/sub/x.bin", g_x, 5000);
++    g_big = pattern(BIG, 4);
++    memset(g_big + 4096, 0x00, 64 * 2048);       /* blocks of zeros and of one other byte */
++    memset(g_big + 4096 + 64 * 2048, 0xAB, 16 * 2048);
++    put("media/big.bin", g_big, BIG);
++    put("zero.bin", (const uint8_t *)"", 0);
++    for (int i = 0; i < 300; i++) {
++        char n[64];
++        snprintf(n, sizeof(n), "many/F%03d.dat", i);
++        g_many[i] = pattern(100, 10 + (unsigned)i);
++        put(n, g_many[i], 100);
++    }
++    g_long = pattern(777, 5);
++    char n[300];
++    snprintf(n, sizeof(n), "many/%s", k_long);
++    put(n, g_long, 777);
++}
++
++static bool same(const NcDisc *d, const char *path, const uint8_t *want, size_t len)
++{
++    NcDiscFile f;
++    if (!nc_disc_find(d, path, &f) || f.size != len || (f.attr & 0x10)) {
++        printf("  %s: not found or its size %u, not %zu\n", path, f.size, len);
++        return false;
++    }
++    uint8_t *got = malloc(len ? len : 1);
++    const bool ok = nc_disc_read(d, &f, 0, got, len) && !memcmp(got, want, len);
++    /* and a read from inside it, across a sector's end */
++    bool part = true;
++    if (ok && len > 3000) {
++        part = nc_disc_read(d, &f, 2040, got, 20) && !memcmp(got, want + 2040, 20);
++    }
++    free(got);
++    if (!ok || !part) {
++        printf("  %s: its bytes differ\n", path);
++    }
++    return ok && part;
++}
++
++static bool count_entry(void *ctx, const uint8_t *e, uint32_t off)
++{
++    (void)e, (void)off;
++    (*(unsigned *)ctx)++;
++    return true;
++}
++
++static unsigned entries(const NcDisc *d, const char *path)
++{
++    NcDiscFile f;
++    unsigned n = 0;
++    if (!nc_disc_find(d, path, &f) || !(f.attr & 0x10)) {
++        return 0;
++    }
++    uint8_t *t = malloc(f.size);
++    if (nc_disc_read(d, &f, 0, t, f.size)) {
++        nc_xdvdfs_walk(t, f.size, count_entry, &n);
++    }
++    free(t);
++    return n;
++}
++
++/* every file of the game, as the disc d has it */
++static void check_game(const NcDisc *d, const uint8_t *xbe, size_t xbe_len)
++{
++    HT_CHECK(same(d, "\\default.xbe", xbe, xbe_len));
++    HT_CHECK(same(d, "Launcher.xbe", g_other, 3000));
++    HT_CHECK(same(d, "\\media\\sub\\x.bin", g_x, 5000));
++    HT_CHECK(same(d, "MEDIA/SUB/X.BIN", g_x, 5000));       /* the Xbox's names: any case */
++    HT_CHECK(same(d, "media\\big.bin", g_big, BIG));
++    HT_CHECK(same(d, "zero.bin", (const uint8_t *)"", 0));
++    bool all = true;
++    for (int i = 0; i < 300; i++) {
++        char n[64];
++        snprintf(n, sizeof(n), "\\many\\f%03d.DAT", i);
++        all &= same(d, n, g_many[i], 100);
++    }
++    HT_CHECK(all);
++    char n[300];
++    snprintf(n, sizeof(n), "many\\%s", k_long);
++    HT_CHECK(same(d, n, g_long, 777));
++    NcDiscFile f;
++    HT_CHECK(nc_disc_find(d, "empty", &f) && (f.attr & 0x10));
++    HT_EQ_INT(entries(d, "empty"), 0);
++    HT_EQ_INT(entries(d, "many"), 301);
++    HT_EQ_INT(entries(d, ""), 6);           /* default.xbe, empty, Launcher.xbe, many, media, zero.bin */
++    HT_CHECK(!nc_disc_find(d, "media\\nothing.bin", &f));
++}
++
++static int open_xbe(const char *name)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game/%s", g_dir, name);
++    return open(p, O_RDONLY);
++}
++
++static void test_folder(void)
++{
++    const int fd = open_xbe("default.xbe");
++    char game[512];
++    snprintf(game, sizeof(game), "%s/game", g_dir);
++    nc_pack_register_folder(fd, game, "default.xbe");
++    NcDisc d;
++    HT_CHECK(nc_disc_open(&d, fd));
++    check_game(&d, g_xbe, 10000);
++    nc_disc_close(&d);
++    nc_pack_unregister(fd);
++}
++
++/* another XBE of the folder booted: it is the disc's default.xbe */
++static void test_folder_other_xbe(void)
++{
++    const int fd = open_xbe("Launcher.xbe");
++    char game[512];
++    snprintf(game, sizeof(game), "%s/game", g_dir);
++    nc_pack_register_folder(fd, game, "Launcher.xbe");
++    NcDisc d;
++    HT_CHECK(nc_disc_open(&d, fd));
++    check_game(&d, g_other, 3000);
++    nc_disc_close(&d);
++    nc_pack_unregister(fd);
++}
++
++/* ---- the folder's disc written out: an ISO, then CSOs of it */
++
++static uint8_t *g_iso;
++static size_t g_iso_len;
++
++static bool end_entry(void *ctx, const uint8_t *e, uint32_t off)
++{
++    (void)off;
++    uint64_t *end = ctx;
++    const uint64_t at = (uint64_t)nc_rd32(e + 4) * 2048 + nc_rd32(e + 8);
++    *end = at > *end ? at : *end;
++    return true;
++}
++
++static void dump_tree(const NcDisc *d, uint32_t sector, uint32_t size, uint64_t *end)
++{
++    uint8_t *t = malloc(size);
++    NcDiscFile f = {sector, size, 0x10};
++    if (nc_disc_read(d, &f, 0, t, size)) {
++        nc_xdvdfs_walk(t, size, end_entry, end);
++    }
++    /* and the folders below */
++    for (uint32_t off = 0; off + 14 <= size;) {
++        const uint8_t *e = t + off;
++        if (nc_rd16(e) == 0xFFFF && nc_rd16(e + 2) == 0xFFFF) {
++            off = (off / 2048 + 1) * 2048;
++            continue;
++        }
++        if (e[12] & 0x10) {
++            dump_tree(d, nc_rd32(e + 4), nc_rd32(e + 8), end);
++        }
++        off += (14u + e[13] + 3u) & ~3u;
++    }
++    free(t);
++}
++
++static void test_folder_as_iso(void)
++{
++    const int fd = open_xbe("default.xbe");
++    char game[512];
++    snprintf(game, sizeof(game), "%s/game", g_dir);
++    nc_pack_register_folder(fd, game, "default.xbe");
++    NcDisc d;
++    HT_CHECK(nc_disc_open(&d, fd));
++    uint64_t end = (uint64_t)(d.root_sector + 1) * 2048;
++    dump_tree(&d, d.root_sector, d.root_size, &end);
++    g_iso_len = (size_t)((end + 2047) / 2048 * 2048);
++    g_iso = malloc(g_iso_len);
++    HT_CHECK(nc_pack_read(d.pack, g_iso, g_iso_len, 0));
++    nc_disc_close(&d);
++    nc_pack_unregister(fd);
++    char p[512];
++    snprintf(p, sizeof(p), "%s/game.iso", g_dir);
++    FILE *f = fopen(p, "wb");
++    HT_CHECK(f && fwrite(g_iso, 1, g_iso_len, f) == g_iso_len);
++    fclose(f);
++    const int iso = open(p, O_RDONLY);
++    HT_CHECK(nc_disc_open(&d, iso));
++    check_game(&d, g_xbe, 10000);
++    nc_disc_close(&d);
++}
++
++/* A CSO of the ISO in ciso.py's layout. variant 0: as ciso.py (a compressed block an LZ4 frame's
++ * block: its size, then the LZ4 block; others plain); 1: some frame blocks stored (bit 31 of their
++ * size); 2: bare LZ4 blocks, no size before them. A run of one byte is the block compressed (an
++ * LZ4 block: a literal, a match of 2042 at distance 1, five literals). split_at: past this place
++ * the blocks go in .2.cso, their places from 0 again (ciso.py's 0xFFBF6000). */
++static size_t lz4_run(uint8_t byte, uint8_t *out)
++{
++    size_t n = 0;
++    out[n++] = (1 << 4) | 15;
++    out[n++] = byte;
++    out[n++] = 1, out[n++] = 0;
++    unsigned more = 2042 - 4 - 15;
++    while (more >= 255) {
++        out[n++] = 255;
++        more -= 255;
++    }
++    out[n++] = (uint8_t)more;
++    out[n++] = 5 << 4;
++    for (int i = 0; i < 5; i++) {
++        out[n++] = byte;
++    }
++    return n;
++}
++
++static bool one_byte(const uint8_t *b)
++{
++    for (int i = 1; i < 2048; i++) {
++        if (b[i] != b[0]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static void w32(FILE *f, uint32_t v)
++{
++    const uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
++    fwrite(b, 1, 4, f);
++}
++
++static void write_cso(const char *base, int variant, uint64_t split_at)
++{
++    const uint32_t blocks = (uint32_t)(g_iso_len / 2048);
++    char p1[512], p2[512];
++    snprintf(p1, sizeof(p1), "%s.1.cso", base);
++    snprintf(p2, sizeof(p2), "%s.2.cso", base);
++    FILE *f1 = fopen(p1, "wb"), *f2 = NULL, *out = f1;
++    uint32_t *index = calloc(blocks + 1, 4);
++    const uint8_t hdr[24] = {'C', 'I', 'S', 'O', 0x18, 0, 0, 0};
++    fwrite(hdr, 1, 24, f1);
++    for (uint32_t i = 0; i <= blocks; i++) {
++        w32(f1, 0);
++    }
++    uint64_t pos = 24 + 4ull * (blocks + 1);
++    for (uint32_t b = 0; b < blocks; b++) {
++        if (pos > split_at && !f2) {
++            f2 = fopen(p2, "wb");
++            out = f2;
++            pos = 0;
++        }
++        while (pos & 3) {
++            fputc(0, out);
++            pos++;
++        }
++        index[b] = (uint32_t)(pos >> 2);
++        const uint8_t *src = g_iso + (size_t)b * 2048;
++        uint8_t blk[64];
++        if (one_byte(src)) {
++            const size_t n = lz4_run(src[0], blk);
++            if (variant != 2) {
++                w32(out, (uint32_t)n);
++                pos += 4;
++            }
++            fwrite(blk, 1, n, out);
++            pos += n;
++            index[b] |= 0x80000000u;
++        } else if (variant == 1 && b % 7 == 3) {
++            w32(out, 0x80000000u | 2048);
++            fwrite(src, 1, 2048, out);
++            pos += 2052;
++            index[b] |= 0x80000000u;
++        } else {
++            fwrite(src, 1, 2048, out);
++            pos += 2048;
++        }
++    }
++    index[blocks] = (uint32_t)(pos >> 2);
++    for (FILE *f = f1; f; f = f == f1 ? f2 : NULL) {
++        fseek(f, 0, SEEK_END);
++        const long size = ftell(f);
++        for (long k = 0; k < 0x400 - (size & 0x3FF); k++) {
++            fputc(0, f);
++        }
++    }
++    /* the header's image size, block, version and alignment; the index */
++    fseek(f1, 8, SEEK_SET);
++    w32(f1, (uint32_t)g_iso_len);
++    w32(f1, (uint32_t)((uint64_t)g_iso_len >> 32));
++    w32(f1, 2048);
++    fputc(2, f1);
++    fputc(2, f1);
++    fseek(f1, 24, SEEK_SET);
++    for (uint32_t i = 0; i <= blocks; i++) {
++        w32(f1, index[i]);
++    }
++    free(index);
++    fclose(f1);
++    if (f2) {
++        fclose(f2);
++    }
++}
++
++static void read_cso(const char *base, bool split, bool second_there)
++{
++    char p[512];
++    snprintf(p, sizeof(p), "%s.1.cso", base);
++    const int fd = open(p, O_RDONLY);
++    if (split && second_there) {
++        snprintf(p, sizeof(p), "%s.2.cso", base);
++        const int more = open(p, O_RDONLY);
++        nc_pack_register_slices(fd, &more, 1);
++    }
++    NcDisc d;
++    const bool opened = nc_disc_open(&d, fd);
++    HT_CHECK(opened == (!split || second_there));
++    if (opened) {
++        check_game(&d, g_xbe, 10000);
++        HT_CHECK(d.pack != NULL);
++        /* the whole image, as the ISO */
++        uint8_t *all = malloc(g_iso_len);
++        HT_CHECK(nc_pack_read(d.pack, all, g_iso_len, 0) && !memcmp(all, g_iso, g_iso_len));
++        free(all);
++        nc_disc_close(&d);
++    } else {
++        close(fd);
++    }
++    nc_pack_unregister(fd);
++}
++
++static void test_cso(void)
++{
++    char base[512];
++    for (int variant = 0; variant < 3; variant++) {
++        snprintf(base, sizeof(base), "%s/one%d", g_dir, variant);
++        write_cso(base, variant, UINT64_MAX);
++        read_cso(base, false, false);
++    }
++}
++
++static void test_cso_split(void)
++{
++    char base[512];
++    snprintf(base, sizeof(base), "%s/split", g_dir);
++    write_cso(base, 0, g_iso_len / 2);              /* about half in each file */
++    read_cso(base, true, true);
++    read_cso(base, true, false);                    /* game.2.cso missing: not read */
++}
++
++int main(void)
++{
++    make_game();
++    HT_RUN(test_folder);
++    HT_RUN(test_folder_other_xbe);
++    HT_RUN(test_folder_as_iso);
++    HT_RUN(test_cso);
++    HT_RUN(test_cso_split);
++    printf("(the folder and its images in %s)\n", g_dir);
 +    HT_DONE();
 +}
 diff --git a/tests/hle/test_ffgen.c b/tests/hle/test_ffgen.c

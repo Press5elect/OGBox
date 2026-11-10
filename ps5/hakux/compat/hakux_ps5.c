@@ -130,6 +130,7 @@ typedef struct ThreadRole {
 /* pthread_create(..., entry, ...) in hakuX's own files */
 static const ThreadRole k_entries[] = {
     {"vcpu_thread", PSHAKUX_ROLE_VCPU, "hakux-vcpu"},       /* src/core/hakux_core.c: the guest's CPU */
+    /* (0.0.8 had the device timers at 690, Role::Device: no effect on the late interrupts it was for, off again) */
     {"vblank_thread", PSHAKUX_ROLE_HELPER, "nv2a-vblank"},      /* the GPU's vertical blank */
     {"ptimer_thread", PSHAKUX_ROLE_HELPER, "nv2a-ptimer"},      /* the GPU's timer interrupt */
     {"clock_thread", PSHAKUX_ROLE_HELPER, "kernel-clock"},      /* the kernel's timer DPCs */

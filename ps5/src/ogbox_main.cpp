@@ -11,7 +11,7 @@
  *    arguments. It browses the console's internal storage (/data), USB drives (/mnt/usb0-7),
  *    extended storage (/mnt/ext0-1) and network shares (SMB or NFS, from
  *    /data/ogbox/network.cfg, Crux2's format: src/platform/vfs/ps5_vfs.h), showing folders and
- *    Xbox disc images (.iso, .xiso, .chd, .cci). D-pad to move, CROSS to open a folder or start a game,
+ *    Xbox disc images (.iso, .xiso, .chd, .cci, .cso) and extracted games (a folder with its default.xbe). D-pad to move, CROSS to open a folder or start a game,
  *    CIRCLE for the folder above. The folder last opened is remembered (/data/ogbox/library.txt).
  *    Starting a game relaunches the title with --boot <image> (src/platform/ps5_relaunch.h): the
  *    game boots in a fresh instance, the one way hakuX's core is known to start.
@@ -339,12 +339,15 @@ bool isDiscImage(const std::string &name)
 		return false;
 	}
 	const char *ext = name.c_str() + dot + 1;
-	if (!strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso") || !strcasecmp(ext, "chd") || !strcasecmp(ext, "cci")) {
+	if (!strcasecmp(ext, "iso") || !strcasecmp(ext, "xiso") || !strcasecmp(ext, "chd") || !strcasecmp(ext, "cci") ||
+	    !strcasecmp(ext, "cso")) {
 		/* 0.0.3: CCI (Cerbios's compressed images); an image split in parts shows as its first,
-		 * game.1.iso (its .2, .3 ... are read with it) */
+		 * game.1.iso (its .2, .3 ... are read with it). 0.0.8: CSO (Stellar's, the original
+		 * console's; ciso.py writes game.1.cso and, past 4 GiB, game.2.cso) */
 		return !(dot >= 2 && name[dot - 2] == '.' && name[dot - 1] >= '2' && name[dot - 1] <= '9');
 	}
-	return false;   // 0.1.59: CHD (chdman createdvd)
+	/* 0.0.8: an XBE: the folder it is in booted as the disc (an extracted game, homebrew) */
+	return !strcasecmp(ext, "xbe");   // 0.1.59: CHD (chdman createdvd)
 }
 
 std::string sizeText(int64_t bytes)
@@ -481,7 +484,25 @@ char letterOf(const std::string &name)
 	return '#';
 }
 
-/* A folder's subfolders and disc images, folders first, by name. false with the reason. */
+/* 0.0.8: an extracted game's folder: the path of the default.xbe in it ("" when it has none). */
+std::string folderGameXbe(const std::string &folder)
+{
+	const bool remote = ps5vfs_is_virtual(folder.c_str()) != 0;
+	for (const char *name : { "default.xbe", "DEFAULT.XBE", "Default.xbe" }) {
+		const std::string xbe = folder + "/" + name;
+		struct stat st;
+		if ((remote ? ps5vfs_stat(xbe.c_str(), &st) : stat(xbe.c_str(), &st)) == 0 && S_ISREG(st.st_mode)) {
+			return xbe;
+		}
+		if (remote) {
+			break;              /* a share's names: any case */
+		}
+	}
+	return std::string();
+}
+
+/* A folder's subfolders and disc images, folders first, by name. false with the reason. 0.0.8: a
+ * subfolder with a default.xbe (an extracted game) is a game, its default.xbe its path. */
 bool listFolder(const std::string &folder, std::vector<LibraryEntry> &out, std::string &error)
 {
 	std::vector<LibraryEntry> folders, images;
@@ -491,6 +512,13 @@ bool listFolder(const std::string &folder, std::vector<LibraryEntry> &out, std::
 		}
 		const std::string path = (folder == "/" ? std::string() : folder) + "/" + name;
 		if (dir) {
+			/* (not the mounts' own folders: a share that doesn't answer would hold the listing up) */
+			const bool mounts = folder == "/" || folder == "/smb" || folder == "/nfs" || folder == "/mnt";
+			const std::string xbe = mounts ? std::string() : folderGameXbe(path);
+			if (!xbe.empty()) {
+				images.push_back({ LibraryEntry::Image, name, xbe, 0, "Extracted game (a folder)" });
+				return;
+			}
 			folders.push_back({ LibraryEntry::Folder, name, path, 0, std::string() });
 		} else if (isDiscImage(name)) {
 			images.push_back({ LibraryEntry::Image, name, path, size, sizeText(size) });
@@ -1804,6 +1832,9 @@ public:
 			}
 			rainOn = prefs.on("rain");
 			themeCode = prefs.global("theme") == "code";   // 0.1.52
+			/* 0.0.8: the saves in sync with their place, at each start into the game list: when OGBox
+			 * starts, and back from a game (a game's start and end start the title again) */
+			startSync(true);
 			ogbox::Covers::get().enable(prefs.global("list_covers") != "0");
 			ogbox::About::get().enable(prefs.global("list_covers") != "0");   // 0.0.3
 			screen = Screen::Boot;
@@ -1821,10 +1852,14 @@ public:
 			}
 			/* 0.1.43: the disc last started, selected; back from a game the list itself fades in */
 			const std::string lastGame = readLastGame();
-			if (!lastGame.empty() && lastGame != "none" && isFolder(parentOf(lastGame))) {
-				last = parentOf(lastGame);
+			/* 0.0.8: an extracted game is its folder's default.xbe: the list opens the folder it is in */
+			const bool folderGame = strcasecmp(baseName(lastGame).c_str(), "default.xbe") == 0;
+			const std::string lastPlace = folderGame ? parentOf(parentOf(lastGame)) : parentOf(lastGame);
+			if (!lastGame.empty() && lastGame != "none" && isFolder(lastPlace)) {
+				last = lastPlace;
 			}
-			const std::string select = !lastGame.empty() && parentOf(lastGame) == last ? baseName(lastGame) : std::string();
+			const std::string select = !lastGame.empty() && lastPlace == last ? (folderGame ? lastGame : baseName(lastGame))
+				: std::string();
 			if (boot.back) {
 				screen = Screen::Library;
 				fadeSince = -2.0;   // from the list's first frame
@@ -3465,6 +3500,7 @@ public:
 				}
 			}
 			args.push_back(nullptr);
+			ogbox::saveSyncFinish();   // 0.0.8: the hard disk becomes the game's: a sync under way ends first
 			quiesceForExit();
 			const int r = pshakux_relaunch(args.data());
 			startState.clear();
@@ -4265,6 +4301,7 @@ public:
 			case Screen::Hdd: drawHdd(); break;
 			}
 			updateTick();
+			saveSyncTick();   // 0.0.8
 		}
 		drawOverlays();
 	}
@@ -5212,12 +5249,124 @@ public:
 		return out;
 	}
 
+	/* ---- 0.0.8: the saves kept in sync with a share or a USB drive (ogbox_saves.h) ------------------
+	 * The settings' save_sync (on or off) and save_sync_place (a place's path: the hard disk manager
+	 * chooses it); a sync at each start into the game list, and the hard disk manager's Sync now. */
+	struct SyncNews {
+		std::mutex mutex;
+		bool ready{ false }, quiet{ true };
+		ogbox::SyncOutcome outcome;
+	};
+	std::shared_ptr<SyncNews> syncNews = std::make_shared<SyncNews>();
+
+	ogbox::SyncPlace syncPlace() const
+	{
+		const std::string path = prefs.global("save_sync_place");
+		const std::string name = ogbox::syncPlaceName(path);
+		return { name.empty() ? baseName(path) : name, path };
+	}
+
+	bool syncOn() const
+	{
+		return prefs.global("save_sync") == "1" && !prefs.global("save_sync_place").empty();
+	}
+
+	/* quiet: a toast only when saves were copied or something went wrong */
+	void startSync(bool quiet)
+	{
+		if (!syncOn()) {
+			if (!quiet) {
+				showToast("Choose where the saves are kept in sync first (Keep saves in sync with...).");
+			}
+			return;
+		}
+		const ogbox::SyncPlace place = syncPlace();
+		auto news = syncNews;
+		const bool started = ogbox::startSaveSync(boot.hdd, place, [news, quiet](const ogbox::SyncOutcome &o) {
+			std::lock_guard<std::mutex> lock(news->mutex);
+			news->ready = true;
+			news->quiet = quiet;
+			news->outcome = o;
+		});
+		pshakux_log("save sync: %s with %s (%s)", started ? "started" : "not started (one is under way)",
+			place.name.c_str(), place.path.c_str());
+		if (!quiet) {
+			showToast(started ? "Syncing the saves with " + place.name + "..." : "The saves are being synced already.");
+		}
+	}
+
+	void saveSyncTick()
+	{
+		ogbox::SyncOutcome o;
+		bool quiet = true;
+		{
+			std::lock_guard<std::mutex> lock(syncNews->mutex);
+			if (!syncNews->ready) {
+				return;
+			}
+			syncNews->ready = false;
+			o = syncNews->outcome;
+			quiet = syncNews->quiet;
+		}
+		if (!quiet || !o.listed || o.sent || o.brought || o.failed) {
+			showToast(o.summary);
+		}
+		if (o.brought && screen == Screen::Hdd) {
+			hddRescan();
+		}
+	}
+
+	/* The hard disk manager's Keep saves in sync with...: a place (a share, a USB drive), Sync now,
+	 * or off. */
+	void hddSyncMenu()
+	{
+		const std::vector<ogbox::SyncPlace> places = ogbox::syncPlaces();
+		const bool on = syncOn();
+		const std::string now = prefs.global("save_sync_place");
+		std::vector<std::string> names;
+		std::vector<int> what;   // >= 0 a place, -1 Sync now, -2 Off
+		if (on) {
+			names.push_back("Sync now");
+			what.push_back(-1);
+		}
+		for (size_t i = 0; i < places.size(); i++) {
+			names.push_back(places[i].name + (on && places[i].path == now ? "  (now)" : ""));
+			what.push_back(static_cast<int>(i));
+		}
+		if (on) {
+			names.push_back("Off: no longer in sync");
+			what.push_back(-2);
+		}
+		const std::string body = (on ? "Now with " + syncPlace().name + " (" + now + "/OGBox/Saves). " : std::string("Off now. ")) +
+			"Every console that syncs with the same share has the same saves: when OGBox starts, after each game and with "
+			"Sync now. A save changed on both sides: the newer is kept, the other put in OGBox/Saves/.older." +
+			(places.empty() ? " No share is set up and no USB drive is plugged in: add a share in Settings, Network." : "");
+		openPopup("Keep saves in sync with", body, names, [this, places, what](int i) {
+			if (i < 0 || i >= static_cast<int>(what.size())) {
+				return;
+			}
+			if (what[static_cast<size_t>(i)] == -1) {
+				startSync(false);
+			} else if (what[static_cast<size_t>(i)] == -2) {
+				prefs.setGlobal("save_sync", "0");
+				prefs.flush();
+				showToast("The saves are no longer kept in sync (both sides keep what they have).");
+			} else {
+				const ogbox::SyncPlace &p = places[static_cast<size_t>(what[static_cast<size_t>(i)])];
+				prefs.setGlobal("save_sync_place", p.path);
+				prefs.setGlobal("save_sync", "1");
+				prefs.flush();
+				startSync(false);
+			}
+		});
+	}
+
 	/* ---- 0.1.53: the hard disk manager ----------------------------------------------------------
 	 * The games' saves on the emulated Xbox hard disk, by game (Crux2's card manager's layout): copy a
 	 * save out to the console's backups or a USB drive, move it there, delete it, bring saves in;
 	 * delete a game's own data; empty the cache drives. */
 
-	enum HddAction { HA_IMPORT, HA_EXPORT_ALL, HA_CACHES, HA_COUNT };
+	enum HddAction { HA_SYNC, HA_IMPORT, HA_EXPORT_ALL, HA_CACHES, HA_COUNT };   // 0.0.8: HA_SYNC
 
 	void openHdd(uint32_t onlyTitle)
 	{
@@ -5341,7 +5490,9 @@ public:
 			if (!(pressed & PAD_CROSS)) {
 				return;
 			}
-			if (hdd.selT == HA_IMPORT) {
+			if (hdd.selT == HA_SYNC) {
+				hddSyncMenu();
+			} else if (hdd.selT == HA_IMPORT) {
 				hddPickPlace("Bring saves in from", [this](const ogbox::SavePlace &p) {
 					hdd.copies = ogbox::saveCopiesIn(p.path, boot.hdd);
 					hdd.importPlace = p.path;
@@ -5480,6 +5631,12 @@ public:
 		// the left: the actions, then the games
 		{
 			R r;
+			r.key = "sync";   // 0.0.8
+			r.title = "Keep saves in sync with\xE2\x80\xA6";
+			r.right = syncOn() ? syncPlace().name + (ogbox::saveSyncRunning() ? " \xC2\xB7 syncing" : "") : "Off";
+			r.icon = ui::Icon::Network;
+			v.rows.push_back(r);
+			r = {};
 			r.key = "import";
 			r.title = "Bring saves in\xE2\x80\xA6";
 			r.icon = ui::Icon::Load;
@@ -5506,7 +5663,7 @@ public:
 				r.title = t.name;
 				r.sub = std::to_string(t.saves.size()) + (t.saves.size() == 1 ? " save \xC2\xB7 " : " saves \xC2\xB7 ") + ogbox::bytesText(t.bytes) +
 					" \xC2\xB7 " + t.idText;
-				const int at = static_cast<int>(v.rows.size()) - 4;   // its place among the games
+				const int at = static_cast<int>(v.rows.size()) - (HA_COUNT + 1);   // its place among the games
 				if (std::abs(at - (hdd.selT - HA_COUNT)) <= 12) {
 					r.thumb = uiCover(ogbox::coverSources(std::string(), std::string(), t.titleId, 1));
 				}
@@ -5559,7 +5716,12 @@ public:
 				v.rows2.push_back(r);
 			}
 		} else {
-			v.aside.text = hdd.selT == HA_IMPORT ? "Saves copied out of OGBox, or from another Xbox or emulator, as folders <title ID>/<save> "
+			v.aside.text = hdd.selT == HA_SYNC ? "The saves kept the same both ways with OGBox/Saves on a network share or a USB "
+				"drive, as Crux2 keeps its memory cards: every console syncing with the same share has the same saves. "
+				"When OGBox starts, after each game, and with Sync now. A save changed on both sides: the newer is kept, "
+				"the other put in OGBox/Saves/.older (on this console: backups/older saves). A save deleted on one side "
+				"comes back from the other: delete it on both."
+				: hdd.selT == HA_IMPORT ? "Saves copied out of OGBox, or from another Xbox or emulator, as folders <title ID>/<save> "
 				"(or UDATA/<title ID>/<save>) in OGBox/saves on a USB drive, or in the data folder's backups/saves."
 				: hdd.selT == HA_EXPORT_ALL ? "Every game's saves copied to the data folder's backups/saves, or to OGBox/saves on a USB drive."
 				: "The games' cache drives. Emptying them is safe: games make what they need again (the first load after it is slower).";
@@ -6278,7 +6440,7 @@ public:
 			v.empty = folder.empty() ? (tab == TabInternal ? "No game played yet. Choose a place above: your games' folders are there."
 				: tab == TabUsb ? "No game from a USB drive played yet. Choose a drive above."
 				: "No game from a share played yet. Choose a share above, or add one.")
-				: "No Xbox disc images (.iso, .xiso, .chd, .cci) in this folder.";
+				: "No Xbox games (.iso, .xiso, .chd, .cci, .cso, or a folder with a default.xbe) in this folder.";
 			if (folder.empty() && cards.empty()) {
 				v.empty = tab == TabUsb ? "No USB drive is plugged in (or Settings > Game list hides them)."
 					: tab == TabNetwork ? "No network share yet: add one in Settings > Network and shares."

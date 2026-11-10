@@ -496,10 +496,15 @@ std::string stemOf(const std::string &fileName)
 {
 	const size_t slash = fileName.find_last_of('/');
 	std::string s = slash == std::string::npos ? fileName : fileName.substr(slash + 1);
+	/* 0.0.8: an extracted game goes by its folder's name ("Halo 2 (USA)/default.xbe") */
+	if (slash != std::string::npos && slash > 0 && lower(s) == "default.xbe") {
+		const size_t up = fileName.find_last_of('/', slash - 1);
+		return fileName.substr(up == std::string::npos ? 0 : up + 1, slash - (up == std::string::npos ? 0 : up + 1));
+	}
 	const size_t dot = s.rfind('.');
 	if (dot != std::string::npos) {
 		const std::string ext = lower(s.substr(dot + 1));
-		if (ext == "iso" || ext == "xiso" || ext == "chd" || ext == "cci" || ext == "png") {
+		if (ext == "iso" || ext == "xiso" || ext == "chd" || ext == "cci" || ext == "cso" || ext == "xbe" || ext == "png") {
 			s.erase(dot);
 			/* 0.0.3: a split image's first part: "Halo 2 (USA).1" is "Halo 2 (USA)" */
 			if (s.size() > 2 && s[s.size() - 2] == '.' && s.back() == '1') {

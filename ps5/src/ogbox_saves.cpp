@@ -9,10 +9,17 @@
 #include "ogbox_saves.h"
 
 #include "ogbox_library.h"
+#include "ogbox_save_sync.h"
 #include "ogbox_storage.h"
+#include "platform/ps5_bootlog.h"
+#include "platform/vfs/ps5_vfs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -483,6 +490,223 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 		copyFile(from + "/TitleMeta.xbx", meta, ignored);
 	}
 	return copyTree(copy.path, to, why);
+}
+
+/* ---- 0.0.8: the save sync's file access and its job ---- */
+
+namespace {
+
+bool remotePath(const std::string &p)
+{
+	return ps5vfs_is_virtual(p.c_str()) != 0;
+}
+
+bool syncList(const std::string &folder, std::vector<savesync::Entry> *out)
+{
+	if (remotePath(folder)) {
+		ps5vfs_dir *d = ps5vfs_opendir(folder.c_str());
+		if (!d) {
+			return false;
+		}
+		ps5vfs_dirent e;
+		while (ps5vfs_readdir(d, &e) == 1) {
+			if (std::strcmp(e.name, ".") && std::strcmp(e.name, "..")) {
+				out->push_back({ e.name, e.is_directory != 0, e.size > 0 ? static_cast<uint64_t>(e.size) : 0, e.mtime });
+			}
+		}
+		ps5vfs_closedir(d);
+		return true;
+	}
+	DIR *d = opendir(folder.c_str());
+	if (!d) {
+		return false;
+	}
+	while (struct dirent *e = readdir(d)) {
+		if (!std::strcmp(e->d_name, ".") || !std::strcmp(e->d_name, "..")) {
+			continue;
+		}
+		struct stat st;
+		if (stat((folder + "/" + e->d_name).c_str(), &st) == 0) {
+			out->push_back({ e->d_name, S_ISDIR(st.st_mode), S_ISREG(st.st_mode) ? static_cast<uint64_t>(st.st_size) : 0,
+				static_cast<int64_t>(st.st_mtime) });
+		}
+	}
+	closedir(d);
+	return true;
+}
+
+bool syncRead(const std::string &path, std::string *data)
+{
+	const bool remote = remotePath(path);
+	FILE *f = remote ? ps5vfs_fopen(path.c_str(), "rb") : std::fopen(path.c_str(), "rb");
+	if (!f) {
+		return false;
+	}
+	data->clear();
+	char buf[1 << 16];
+	for (;;) {
+		const size_t n = remote ? ps5vfs_fread(buf, 1, sizeof(buf), f) : std::fread(buf, 1, sizeof(buf), f);
+		if (!n) {
+			break;
+		}
+		data->append(buf, n);
+	}
+	const bool ok = remote ? !ps5vfs_ferror(f) : !std::ferror(f);
+	remote ? ps5vfs_fclose(f) : std::fclose(f);
+	return ok;
+}
+
+/* whole: a share's beside its place first (ps5vfs_store); the console's in a hidden file beside it,
+ * then moved there (a save is never half written on the hard disk) */
+bool syncWrite(const std::string &path, const std::string &data)
+{
+	if (remotePath(path)) {
+		return ps5vfs_store(path.c_str(), data.data(), data.size()) == 0;
+	}
+	const size_t slash = path.find_last_of('/');
+	const std::string tmp = slash == std::string::npos ? "." + path + ".part"
+		: path.substr(0, slash + 1) + "." + path.substr(slash + 1) + ".part";
+	FILE *f = std::fopen(tmp.c_str(), "wb");
+	if (!f) {
+		return false;
+	}
+	bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();
+	ok = std::fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+		unlink(tmp.c_str());
+		return false;
+	}
+	return true;
+}
+
+bool syncMakeFolder(const std::string &folder)
+{
+	return remotePath(folder) ? ps5vfs_make_folders(folder.c_str()) == 0 : makeFolders(folder);
+}
+
+bool syncRemove(const std::string &path)
+{
+	return remotePath(path) ? ps5vfs_remove(path.c_str(), 0) == 0 : unlink(path.c_str()) == 0;
+}
+
+std::atomic<bool> g_syncStop{ false };
+std::mutex g_syncMutex;
+std::condition_variable g_syncEnded;
+bool g_syncRunning = false;   // (g_syncMutex)
+
+bool usbPlugged(const std::string &usb)
+{
+	struct stat st, up;
+	return stat(usb.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && stat("/mnt", &up) == 0 && st.st_dev != up.st_dev;
+}
+
+} // namespace
+
+std::vector<SyncPlace> syncPlaces()
+{
+	std::vector<SyncPlace> out;
+	for (unsigned i = 0; const char *mp = ps5vfs_mount_point(i); i++) {
+		const std::string m = mp;
+		const size_t slash = m.find_last_of('/');
+		if (m.rfind("/smb/", 0) == 0 || m.rfind("/nfs/", 0) == 0) {
+			out.push_back({ m.substr(slash + 1), m });
+		} else if (m.rfind("/mnt/usb", 0) == 0) {
+			out.push_back({ "USB drive " + m.substr(8), m });   // (a drive served through the console's FTP)
+		}
+	}
+	for (int i = 0; i < 8; i++) {
+		const std::string usb = "/mnt/usb" + std::to_string(i);
+		const bool listed = std::any_of(out.begin(), out.end(), [&](const SyncPlace &p) { return p.path == usb; });
+		if (!listed && usbPlugged(usb)) {
+			out.push_back({ "USB drive " + std::to_string(i), usb });
+		}
+	}
+	return out;
+}
+
+std::string syncPlaceName(const std::string &path)
+{
+	for (const SyncPlace &p : syncPlaces()) {
+		if (p.path == path) {
+			return p.name;
+		}
+	}
+	return std::string();
+}
+
+bool saveSyncRunning()
+{
+	std::lock_guard<std::mutex> lock(g_syncMutex);
+	return g_syncRunning;
+}
+
+void saveSyncFinish()
+{
+	std::unique_lock<std::mutex> lock(g_syncMutex);
+	if (!g_syncRunning) {
+		return;
+	}
+	g_syncStop = true;
+	pshakux_log("save sync: a game starts: the sync stops after the save it is copying");
+	g_syncEnded.wait(lock, [] { return !g_syncRunning; });
+}
+
+bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::function<void(const SyncOutcome &)> done)
+{
+	{
+		std::lock_guard<std::mutex> lock(g_syncMutex);
+		if (g_syncRunning) {
+			return false;
+		}
+		g_syncRunning = true;
+		g_syncStop = false;
+	}
+	std::thread([hddRoot, place, done] {
+		savesync::Folders folders;
+		folders.here = child(usersPartition(hddRoot), "UDATA");
+		folders.there = place.path + "/OGBox/Saves/UDATA";
+		folders.olderHere = storagePath("backups") + "/older saves";
+		folders.olderThere = place.path + "/OGBox/Saves/.older";
+		/* what each side was after the last sync with this place, in a list of the console's own */
+		uint32_t hash = 2166136261u;
+		for (const unsigned char c : place.path) {
+			hash = (hash ^ c) * 16777619u;
+		}
+		char name[48];
+		std::snprintf(name, sizeof(name), "/save-sync-%08x.txt", hash);
+		const std::string cache = storagePath("cache");
+		makeFolders(cache);
+		const std::string list = cache + name;
+		std::string text;
+		syncRead(list, &text);
+		savesync::Records records = savesync::parseRecords(text);
+		savesync::Io io;
+		io.list = syncList;
+		io.read = syncRead;
+		io.write = syncWrite;
+		io.makeFolder = syncMakeFolder;
+		io.remove = syncRemove;
+		io.stop = [] { return g_syncStop.load(); };
+		io.persist = [list](const std::string &records) { syncWrite(list, records); };
+		pshakux_log("save sync: %s with %s", folders.here.c_str(), folders.there.c_str());
+		const savesync::Result r = savesync::sync(io, folders, &records, std::time(nullptr));
+		for (const std::string &line : r.lines) {
+			pshakux_log("save sync: %s", line.c_str());
+		}
+		const std::string summary = savesync::summary(r, place.name);
+		pshakux_log("save sync: %s (%d unchanged)", summary.c_str(), r.unchanged);
+		if (done) {
+			done(SyncOutcome{ summary, r.listed, r.sent, r.brought, r.failed });
+		}
+		{
+			std::lock_guard<std::mutex> lock(g_syncMutex);
+			g_syncRunning = false;
+		}
+		g_syncEnded.notify_all();
+	}).detach();
+	return true;
 }
 
 std::string bytesText(uint64_t bytes)

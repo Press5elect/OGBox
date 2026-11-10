@@ -42,6 +42,8 @@ enum class Role
 	Emulation,  // 700: the emulation thread, and so the threads it starts (GS, VU, software renderer)
 	Helper,     // 690: OGBox: the core's helpers (the HLE GPU's render and pipeline threads, the APU)
 	Background, // 730: downloads, unpacking, copies, card sync, the game list, the web page
+	Device,     // 690: OGBox 0.0.8: the core's device timers (USB frames, vblank, timers): a few us a
+	            // period, holding a lock the vCPU takes, ahead of the helpers that share their processors
 };
 
 /// The calling thread runs at its role's priority, unless [PS5] ThreadPriorities is off.
@@ -62,7 +64,7 @@ inline void SetEnabled(bool) {}
 extern "C" {
 #endif
 enum { PSHAKUX_ROLE_SOUND, PSHAKUX_ROLE_INPUT, PSHAKUX_ROLE_INTERFACE, PSHAKUX_ROLE_VCPU,
-       PSHAKUX_ROLE_HELPER, PSHAKUX_ROLE_BACKGROUND };
+       PSHAKUX_ROLE_HELPER, PSHAKUX_ROLE_BACKGROUND, PSHAKUX_ROLE_DEVICE };
 void pshakux_priority_set(int role);
 /* OGBox 0.1.3: the role of a thread (itself or another), said in the boot log once with its
  * name and priority; role -1: none (said so). how: by what the role was known. */
