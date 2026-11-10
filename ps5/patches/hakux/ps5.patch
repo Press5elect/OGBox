@@ -191,6 +191,7 @@ native core's work tree (oldest first; author: subject):
   7347a40ab2 Claude: ohci: the guest's waits for the controller's lock over 2 ms are said; irq: the
              CPU-time sample back behind NC_IRQ_SCHED
   e02c0e1449 Claude: apu: the DirectSound mailbox wait spins (2 ms at most) instead of sleeping in usleep(1)
+  5150a617f1 Claude: hle-pb: the decoder awake on its kick count up to 20 ms before it sleeps (the PS5)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -2509,7 +2510,7 @@ index 195825563bf8d594be1f1eaab1d1d919caea7a35..81e5453dc10268f722f8e2dc7eedca6f
  void hle_pbd_vis_counts(uint64_t *tests, uint64_t *kicks);
  /* debug (HAKUX_HLE_PB_NOVIS=1): no occlusion queries; visibility tests
 diff --git a/hw/xbox/hle/pb/pbmode.c b/hw/xbox/hle/pb/pbmode.c
-index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4039f4617 100644
+index 569f62694b0c5679db990b987ee01b72ecab4e40..1a39677800cc97ee00e9e1b03daa0a73b8ec9aab 100644
 --- a/hw/xbox/hle/pb/pbmode.c
 +++ b/hw/xbox/hle/pb/pbmode.c
 @@ -97,6 +97,8 @@ static struct {
@@ -2688,7 +2689,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
  }
  
  void hle_pb_pushed(uint32_t put)
-@@ -1334,6 +1418,30 @@ static bool kick_wait_brief(uint32_t seen)
+@@ -1334,6 +1418,89 @@ static bool kick_wait_brief(uint32_t seen)
              return false;
          }
      }
@@ -2716,10 +2717,69 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
 +            return false;
 +        }
 +    }
++#else
++    (void)seen;
++    return false;
++#endif
++}
++
++/* OGBox 0.0.8: before the decoder sleeps on its semaphore, awake on the kick count for up to
++ * HLE_KICK_SPIN_MS (the PS5: 20, a vblank and more; elsewhere 0, as before). Woken from the
++ * semaphore, it went on 8 to 19 ms after its kick now and then: Breakdown at 60 fps, its frame
++ * end a software trap and a FLIP_STALL, missed a vblank every few seconds ("decoder waited 14 ms
++ * on the guest's GPU interrupt handler", "... 15 ms for the flip") with every interrupt delivered
++ * on time. The decoder has processors 2-3 to itself ("GPU on separate cores"). */
++static uint64_t kick_spin_ticks(void)
++{
++    static uint64_t ticks = UINT64_MAX;
++    if (ticks == UINT64_MAX) {
++#if defined(__PROSPERO__)
++        long ms = 20;
++#else
++        long ms = 0;
++#endif
++        const char *e = getenv("HLE_KICK_SPIN_MS");
++        if (e && *e) {
++            ms = strtol(e, NULL, 10);
++        }
++        ticks = 0;
++#if defined(__x86_64__)
++        if (ms > 0) {
++            const uint64_t a = __builtin_ia32_rdtsc();
++            const int64_t n0 = hle_now_ns();
++            while (hle_now_ns() - n0 < 1000000) {
++                __builtin_ia32_pause();
++            }
++            ticks = (__builtin_ia32_rdtsc() - a) * (uint64_t)ms;
++        }
++#endif
++    }
++    return ticks;
++}
++
++static bool kick_spin(uint32_t seen)
++{
++#if defined(__x86_64__)
++    const uint64_t span = kick_spin_ticks();
++    if (!span) {
++        return false;
++    }
++    const uint64_t t0 = __builtin_ia32_rdtsc();
++    for (;;) {
++        for (unsigned i = 0; i < 64; i++) {
++            if (__atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE) != seen || g_pb.stop) {
++                return true;
++            }
++            __builtin_ia32_pause();
++        }
++        if (__builtin_ia32_rdtsc() - t0 > span) {
++            return false;
++        }
++    }
  #else
      (void)seen;
      return false;
-@@ -1463,6 +1571,7 @@ void hle_pb_state_set(const HlePbState *s)
+@@ -1463,6 +1630,7 @@ void hle_pb_state_set(const HlePbState *s)
      g_pb.flip_wait = s->flip_wait;
      g_pb.flip_wait_ns = hle_now_ns();
      g_pb.trap_wait = s->trap_wait;
@@ -2727,22 +2787,37 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
      g_trel.pending = false;                 /* the scout syncs again at the next PUT */
      g_sc.synced = false;
      memcpy(g_pb.sub_r, s->sub_r, sizeof(s->sub_r));
-@@ -1483,10 +1592,11 @@ static void *decode_thread(void *opaque)
+@@ -1481,19 +1649,24 @@ static void *decode_thread(void *opaque)
+ {
+     hle_hitch_thread(HLE_HT_DECODE);    /* the stutter / hang monitor's (hitch.h) */
      t_decoder = true;
++    uint32_t seen = __atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE);
      while (!g_pb.stop) {
          /* asleep until a kick: waiting for the guest, the flip it stalls on
 -         * (FLIP_STALL) or its interrupt handler (a trap); once a sleep, not
 -         * a method */
 +         * (FLIP_STALL), its interrupt handler (a trap) or the GPU (the frame
-+         * pace); once a sleep, not a method */
++         * pace); once a sleep, not a method. 0.0.8: awake for it a while
++         * first (kick_spin) */
          const uint32_t pa = hle_hitch_enter(g_pb.flip_wait ? HLE_ACT_FLIP :
 -                                            g_pb.trap_wait ? HLE_ACT_TRAP : HLE_ACT_IDLE);
+-        hle_sem_wait(&g_pb.kick);
 +                                            g_pb.trap_wait ? HLE_ACT_TRAP :
 +                                            g_pb.pace_wait ? HLE_ACT_GPU : HLE_ACT_IDLE);
-         hle_sem_wait(&g_pb.kick);
++        if (!kick_spin(seen)) {
++            hle_sem_wait(&g_pb.kick);
++        }
          hle_hitch_leave(pa);
          while (!g_pb.stop) {
-@@ -1557,7 +1667,7 @@ void hle_pb_start(void)
+             /* a pass reads the registers fresh: it covers every kick before it */
+             while (hle_sem_trywait(&g_pb.kick)) {
+             }
+-            const uint32_t seen = __atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE);
++            seen = __atomic_load_n(&g_pb.kicks, __ATOMIC_ACQUIRE);
+             consume();
+             if (park_due()) {
+                 park();
+@@ -1557,7 +1730,7 @@ void hle_pb_start(void)
          memset(&g_sc, 0, sizeof(g_sc));
          g_sc_gate = !(e && !strcmp(e, "0"));
          g_sc_on = false;                /* until the first GET_REPORT */
@@ -2751,7 +2826,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
      }
      hle_host_pb_mode(true);
      hle_log("hakuX-hle-pb", "push-buffer mode: the title's D3D runs; its push buffer is decoded");
-@@ -1573,7 +1683,7 @@ void hle_pb_stop(void)
+@@ -1573,7 +1746,7 @@ void hle_pb_stop(void)
      hle_barrier_set_catch_up(NULL);
      g_sc_gate = false;
      __atomic_store_n(&g_sc_on, false, __ATOMIC_RELEASE);
@@ -2760,7 +2835,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
      g_pb.stop = true;
      hle_sem_post(&g_pb.kick);
      hle_thread_join(&g_pb.th);
-@@ -1677,6 +1787,7 @@ void hle_pb_diag(void)
+@@ -1677,6 +1850,7 @@ void hle_pb_diag(void)
      /* where the decoder is: waiting for the ISR (trap), a flip, the FIFO
       * access, arena or ring space in a draw, or decoding */
      const char *ph = hle_pbd_phase(), *state = g_pb.trap_wait ? " (trap)" : g_pb.flip_wait ? " (flip stall)"
@@ -2768,7 +2843,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
                                                : !fifo_open()      ? " (fifo closed)"
                                                : ph && *ph == 'a'  ? " (arena wait)"
                                                : ph                ? " (ring wait)"
-@@ -1720,10 +1831,12 @@ void hle_pb_diag(void)
+@@ -1720,10 +1894,12 @@ void hle_pb_diag(void)
          prev_cu = cu;
          hle_log("hakuX-hle-pb", "catch-up: %llu stores waited for the decoder (caught up %llu; it "
                  "waited on the guest at a trap %llu, a flip stall %llu, the FIFO off %llu; for arena "
@@ -2783,7 +2858,7 @@ index 569f62694b0c5679db990b987ee01b72ecab4e40..2256241487e9c31a27eeacdf8dd056a4
                  (double)g_cu.ns / 1e6);
      }
      static uint64_t prev_coh;
-@@ -1738,13 +1851,15 @@ void hle_pb_diag(void)
+@@ -1738,13 +1914,15 @@ void hle_pb_diag(void)
                  (unsigned long long)nbr, (unsigned long long)hot);
      }
      static uint64_t prev_rw;
