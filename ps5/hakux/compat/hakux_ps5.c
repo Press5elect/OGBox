@@ -130,12 +130,12 @@ typedef struct ThreadRole {
 /* pthread_create(..., entry, ...) in hakuX's own files */
 static const ThreadRole k_entries[] = {
     {"vcpu_thread", PSHAKUX_ROLE_VCPU, "hakux-vcpu"},       /* src/core/hakux_core.c: the guest's CPU */
-    /* 0.0.8: the device timers at 690 (ps5_priority.cpp, Role::Device): ahead of the helpers on their processors */
-    {"vblank_thread", PSHAKUX_ROLE_DEVICE, "nv2a-vblank"},      /* the GPU's vertical blank */
-    {"ptimer_thread", PSHAKUX_ROLE_DEVICE, "nv2a-ptimer"},      /* the GPU's timer interrupt */
-    {"clock_thread", PSHAKUX_ROLE_DEVICE, "kernel-clock"},      /* the kernel's timer DPCs */
-    {"timer_thread", PSHAKUX_ROLE_DEVICE, "hle-timers"},        /* the HLE GPU's timers */
-    {"frame_thread", PSHAKUX_ROLE_DEVICE, "ohci-frame"},        /* USB frames: the controllers */
+    /* (0.0.8 had the device timers at 690, Role::Device: no effect on the late interrupts it was for, off again) */
+    {"vblank_thread", PSHAKUX_ROLE_HELPER, "nv2a-vblank"},      /* the GPU's vertical blank */
+    {"ptimer_thread", PSHAKUX_ROLE_HELPER, "nv2a-ptimer"},      /* the GPU's timer interrupt */
+    {"clock_thread", PSHAKUX_ROLE_HELPER, "kernel-clock"},      /* the kernel's timer DPCs */
+    {"timer_thread", PSHAKUX_ROLE_HELPER, "hle-timers"},        /* the HLE GPU's timers */
+    {"frame_thread", PSHAKUX_ROLE_HELPER, "ohci-frame"},        /* USB frames: the controllers */
     {"pcm_thread", PSHAKUX_ROLE_HELPER, "aci-pcm"},             /* AC'97 sound */
     {"reader_thread", PSHAKUX_ROLE_HELPER, "disc-reader"},      /* disc reads the guest waits for */
     {"nvnet_thread", PSHAKUX_ROLE_HELPER, "nvnet"},             /* the NIC's interrupts */

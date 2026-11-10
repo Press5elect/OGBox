@@ -198,6 +198,7 @@ native core's work tree (oldest first; author: subject):
   e65ba02499 Claude: hitch: the GPU event trace of the first 8 ready-but-flipped-late stutters (the PS5)
   15005932f2 Claude: nv2a: the interrupt line worked out and set one thread at a time (a lost trap interrupt)
   4beedfa7da Claude: apu: the sound's level at each stage once a second
+  fbeab56d28 Claude: nv2a: the vblank thread no longer says its next rise to the idle wait (nc_irq_expect off)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -24211,7 +24212,7 @@ index bc96610e9f894eebce6568da853649b93b18c2df..97e38bf1bf5bdeb27a8d681f177156b6
  void mcpx_apu_vp_reset(MCPXAPUState *d);
  void mcpx_apu_vp_refresh_voice_cache(MCPXAPUState *d, uint32_t new_base);
 diff --git a/native/dev/nv2a.c b/native/dev/nv2a.c
-index a1c3a46edc58f44edd3f232bb86ce5b403498322..71a2ccef17b97b463a5ef7d5354fd2ee111c0903 100644
+index a1c3a46edc58f44edd3f232bb86ce5b403498322..e1f0fb7a34bb0b3c974d48f227846cfc4e7b9ac4 100644
 --- a/native/dev/nv2a.c
 +++ b/native/dev/nv2a.c
 @@ -36,7 +36,9 @@
@@ -24266,15 +24267,16 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..71a2ccef17b97b463a5ef7d5354fd2ee
          case NV_USER_DMA_PUT:
          case NV_USER_DMA_GET:
          case NV_USER_REF:
-@@ -753,6 +773,7 @@ static void *vblank_thread(void *arg)
+@@ -753,6 +773,8 @@ static void *vblank_thread(void *arg)
              next = now_ns();
          }
          const uint64_t due = next_vblank(next);
-+        nc_irq_expect(NV2A_IRQ, due);   /* OGBox 0.0.8: an idle guest CPU is awake for it */
++        /* (OGBox 0.0.8 tried nc_irq_expect here: an idle guest CPU awake for the vblank. Off again:
++         * never shown to help, and NFS Carbon's sound broke in the builds that had it) */
          next = wait_vblank(due, next);
          __atomic_store_n(&g_last_vblank_ns, next, __ATOMIC_RELEASE);
          __atomic_fetch_or(reg(NV_PCRTC_INTR_0), PCRTC_VBLANK, __ATOMIC_ACQ_REL);
-@@ -774,7 +795,18 @@ void nc_dev_nv2a_init(void)
+@@ -774,7 +796,18 @@ void nc_dev_nv2a_init(void)
  {
      g_regs = calloc(1, NV2A_SIZE); /* pages are touched only where the guest writes */
      nc_wr32(g_regs + NV_PMC_BOOT_0, 0x02A000A1u);
