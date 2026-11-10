@@ -186,6 +186,8 @@ native core's work tree (oldest first; author: subject):
   c64248649f Claude: irq: an idle wait is awake for the vblank that is due (nc_irq_expect)
   9d5f274394 Claude: io: a file NtCreateFile creates or empties is opened on the reader thread, its
              thread waiting (8-21 ms creates on the PS5's storage stopped every guest thread)
+  5759f845ca Claude: irq, cpu: where a late interrupt's time went (idle or busy at the rise, CPU time,
+             idle-wait gaps, kick latency)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -8266,7 +8268,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7f564294286b37fb033291336e904078
      }
      nc_cpu_fault_resume(c->cpu, ucontext);
 diff --git a/native/core/irq.c b/native/core/irq.c
-index 7a128a71c5da784985ae12348b0f30cf795e0548..2ae5a74e4fd02bb52b17f9df8e038a583b663022 100644
+index 7a128a71c5da784985ae12348b0f30cf795e0548..61996b48de1af0a0c7f15198c18e61252a443b12 100644
 --- a/native/core/irq.c
 +++ b/native/core/irq.c
 @@ -7,6 +7,7 @@
@@ -8277,7 +8279,36 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..2ae5a74e4fd02bb52b17f9df8e038a58
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -426,26 +427,92 @@ bool nc_irq_take_work(void)
+@@ -85,8 +86,15 @@ uint64_t nc_irq_rise_cpu_ns(unsigned line)
+  * time runnable but not running (schedstat's run delay) at each rise, so a
+  * late line tells a thread waiting for a host CPU from one blocked or
+  * sleeping. */
++extern volatile int g_nc_idle_waiting;
+ static int g_cpu_tid;
+ static uint64_t g_up_delay_ns[NC_IRQ_LINES];
++static uint8_t g_up_idle[NC_IRQ_LINES];  /* OGBox 0.0.8: the guest CPU in its idle wait at the rise */
++
++bool nc_irq_rise_idle(unsigned line)
++{
++    return line < NC_IRQ_LINES && __atomic_load_n(&g_up_idle[line], __ATOMIC_RELAXED);
++}
+ 
+ static bool sched_on(void)
+ {
+@@ -224,8 +232,11 @@ void nc_irq_set(unsigned line, bool level)
+      * for vblanks taken at once (PGR2's movies, many a second). */
+     /* the guest thread's CPU time at the rise, for the slow-delivery log
+      * (intr.c): a syscall a rise, so only with NC_IRQ_SCHED, as the delay */
+-    __atomic_store_n(&g_up_cpu_ns[line], sched_on() ? nc_irq_cpu_ns() : 0, __ATOMIC_RELAXED);
++    /* OGBox 0.0.8: the CPU time always (a clock read a rise), the run delay with NC_IRQ_SCHED (a
++     * file read a rise; no such file on the PS5); and whether the guest CPU sat in its idle wait */
++    __atomic_store_n(&g_up_cpu_ns[line], nc_irq_cpu_ns(), __ATOMIC_RELAXED);
+     __atomic_store_n(&g_up_delay_ns[line], nc_irq_delay_ns(), __ATOMIC_RELAXED);
++    __atomic_store_n(&g_up_idle[line], (uint8_t)__atomic_load_n(&g_nc_idle_waiting, __ATOMIC_RELAXED), __ATOMIC_RELAXED);
+     __atomic_store_n(&g_up_ns[line], mono_ns(), __ATOMIC_RELEASE);
+     if (__atomic_fetch_or(&g_lines, 1u << line, __ATOMIC_ACQ_REL) & (1u << line)) {
+         return; /* another device thread asserted it meanwhile */
+@@ -426,26 +437,113 @@ bool nc_irq_take_work(void)
      return __atomic_load_n(&g_work, __ATOMIC_ACQUIRE) && __atomic_exchange_n(&g_work, 0, __ATOMIC_ACQ_REL);
  }
  
@@ -8370,7 +8401,28 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..2ae5a74e4fd02bb52b17f9df8e038a58
 +    }
 +    if (spin) {
 +        /* what is left of the wait, awake: a line or work ends it, as before */
-+        while (!nc_irq_lines() && !__atomic_load_n(&g_work, __ATOMIC_ACQUIRE) && mono_ns() < until) {
++        /* OGBox 0.0.8: a pass of this loop that took over 4 ms: the host gave the guest CPU's
++         * processor to another thread meanwhile (its sched_yield, or a preemption); said, a few a
++         * second, with how long */
++        uint64_t prev = mono_ns();
++        while (!nc_irq_lines() && !__atomic_load_n(&g_work, __ATOMIC_ACQUIRE)) {
++            const uint64_t t = mono_ns();
++            if (t - prev > 4000000ull) {
++                static uint64_t window;
++                static unsigned said;
++                if (t - window > 1000000000ull) {
++                    window = t;
++                    said = 0;
++                }
++                if (said++ < 4) {
++                    nc_log("hakuX-native-irq", "idle wait: the guest CPU's thread was off its processor %.1f ms",
++                           (t - prev) / 1e6);
++                }
++            }
++            prev = t;
++            if (t >= until) {
++                break;
++            }
 +            cpu_relax();
 +            sched_yield();
          }
@@ -8380,16 +8432,18 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..2ae5a74e4fd02bb52b17f9df8e038a58
      return nc_irq_lines();
  }
 diff --git a/native/core/irq.h b/native/core/irq.h
-index 3e422fa7fbe116cafa9bb1a17838c84c49748e62..0fe1e6d117cc01aa5228e3dc28f5347ef1691f3e 100644
+index 3e422fa7fbe116cafa9bb1a17838c84c49748e62..e1af7336094ae9345b2dc71e06c455151693758e 100644
 --- a/native/core/irq.h
 +++ b/native/core/irq.h
-@@ -49,6 +49,9 @@ void nc_irq_enable(unsigned line, bool on);
+@@ -49,6 +49,11 @@ void nc_irq_enable(unsigned line, bool on);
   * time reaches deadline_ns (0: wait for a line only, up to max_ns). Returns
   * the lines. */
  uint32_t nc_irq_idle_wait(uint64_t deadline_ns, uint64_t max_ns);
 +/* OGBox 0.0.8: a device thread's next rise of line, due at when_ns (CLOCK_MONOTONIC): an idle
 + * wait then is awake for it (the spin of nc_irq_idle_wait) instead of asleep. */
 +void nc_irq_expect(unsigned line, uint64_t when_ns);
++/* OGBox 0.0.8: whether the guest CPU sat in its idle wait when line last rose */
++bool nc_irq_rise_idle(unsigned line);
  /* Work for the kernel from a host thread (a disc read done): rings the
   * doorbell and wakes an idle wait as a line does, but delivers no interrupt.
   * nc_irq_take_work says whether any was posted since it last asked. */
@@ -13604,10 +13658,10 @@ index 4bab37d21f33284fec257dae3647f097920f331d..b4278eb541f8c095a11e85b692309028
  /* A SIGBUS (si_code code) in translated guest code: an atomic access the host
 diff --git a/native/cpu/cpu_native.c b/native/cpu/cpu_native.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24aa70c6c07
+index 0000000000000000000000000000000000000000..9a7f4e48dcfe089da91d575cca14e5e49c754855
 --- /dev/null
 +++ b/native/cpu/cpu_native.c
-@@ -0,0 +1,1816 @@
+@@ -0,0 +1,1834 @@
 +/*
 + * hakuX native core — the guest CPU on an x86-64 host: the title's code runs
 + * natively in 32-bit compatibility mode (cpu.h, cpu_native.h).
@@ -13804,6 +13858,8 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +    volatile int smp_where;     /* NC_SAMPLE_GUEST / _GATE / _HOST */
 +    int pending;                /* an interrupt was requested */
 +    int kicked;                 /* a kick signal is on its way */
++    volatile uint64_t kick_sent; /* OGBox 0.0.8: the TSC when it was sent (its handler's latency) */
++    uint64_t kick_lat_max, kick_late, kick_n; /* since the last stats line: the longest, over 4 ms, all */
 +    bool stepping;              /* TF set to leave a no-interrupt range */
 +    bool cpuid_faults;          /* Linux's CPUID faulting is on for the vCPU thread */
 +    bool gate_step;             /* TF set in the gate's exit for a request it missed */
@@ -14211,6 +14267,14 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +           (unsigned long long)cpu->st.steps, (unsigned long long)cpu->st.rdtsc, (unsigned long long)cpu->st.cpuid,
 +           (unsigned long long)cpu->st.flags_insns, (unsigned long long)cpu->st.fs_rewrites,
 +           (double)(__atomic_load_n(&cpu->st.seg_faults, __ATOMIC_RELAXED) - cpu->st_seg0) / s);
++    /* OGBox 0.0.8: how long the kicks took to reach their handler (an interrupt for the guest's
++     * code waits that long) */
++    if (cpu->kick_n) {
++        nc_log("hakuX-native-cpu", "kicks to their handler: %llu, the longest %.2f ms, %llu over 4 ms",
++               (unsigned long long)cpu->kick_n, (double)cpu->kick_lat_max * 1000.0 / (double)g_tsc_hz,
++               (unsigned long long)cpu->kick_late);
++        cpu->kick_n = cpu->kick_late = cpu->kick_lat_max = 0;
++    }
 +    cpu->st_seg0 = __atomic_load_n(&cpu->st.seg_faults, __ATOMIC_RELAXED);
 +    cpu->st_t0 = now;
 +    cpu->st_sysops0 = cpu->st.sysops;
@@ -14801,6 +14865,13 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +    const int saved = errno;
 +    __atomic_store_n(&cpu->kicked, 0, __ATOMIC_RELEASE);
 +    if (pthread_equal(cpu->thread, pthread_self())) {
++        const uint64_t sent = __atomic_exchange_n(&cpu->kick_sent, 0, __ATOMIC_ACQ_REL);
++        if (sent) {
++            const uint64_t lat = rdtsc() - sent;
++            cpu->kick_n++;
++            cpu->kick_late += lat > g_tsc_hz / 250;
++            cpu->kick_lat_max = lat > cpu->kick_lat_max ? lat : cpu->kick_lat_max;
++        }
 +        if (in_guest(u)) {
 +            cpu->last_eip = (uint32_t)C_RIP(u);
 +        }
@@ -14857,6 +14928,7 @@ index 0000000000000000000000000000000000000000..c8b5db6dacbc8cd86a492358eb5cc24a
 +        return;                         /* the system op's end takes it */
 +    }
 +    if (!__atomic_exchange_n(&cpu->kicked, 1, __ATOMIC_ACQ_REL)) {
++        __atomic_store_n(&cpu->kick_sent, rdtsc(), __ATOMIC_RELEASE);
 +        pthread_kill(cpu->thread, NC_KICK_SIGNAL);
 +    }
 +}
@@ -24802,7 +24874,7 @@ index cfded0584aab0739e62c447ef9d785260876fb78..5d60d1b7b7bfb74fba65a0aad8b8f6e8
          }
      }
 diff --git a/native/kernel/intr.c b/native/kernel/intr.c
-index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd7cf2aae4 100644
+index 956ec2f699bf124abdb16ef6c6099d4428c4c314..b780016e8bfafa4310a42f4e0d512db5ecccd9f0 100644
 --- a/native/kernel/intr.c
 +++ b/native/kernel/intr.c
 @@ -112,6 +112,7 @@ static struct {
@@ -24915,7 +24987,37 @@ index 956ec2f699bf124abdb16ef6c6099d4428c4c314..ffdc577b2a748ae064f47d2d86e1c1dd
          if (!g_hold[l].refusals++) {
              g_hold[l].why = why;
              g_hold[l].irql = *irql(k);
-@@ -219,6 +308,7 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
+@@ -162,16 +251,24 @@ static void hold_report(unsigned l)
+             const bool same = g_hold[l].rise == rise && g_hold[l].refusals;
+             const uint64_t c0 = nc_irq_rise_cpu_ns(l), c1 = c0 ? nc_irq_cpu_ns() : 0;
+             const uint64_t d0 = nc_irq_rise_delay_ns(l), d1 = d0 ? nc_irq_delay_ns() : 0;
+-            char dl[48] = "";
++            char dl[48] = "", ran[48];
+             if (d1 > d0) {
+                 snprintf(dl, sizeof(dl), ", waited for a host CPU %.1f ms", (d1 - d0) / 1e6);
+             }
+-            nc_log("hakuX-native-irq", "line %u delivered %.1f ms after it rose: %u refusals, first %s "
+-                   "(IRQL %u, ISR line %d, thread t%u); the guest CPU's thread ran %.1f ms of it%s",
+-                   l, lat / 1e6, same ? g_hold[l].refusals : 0,
++            /* 0.0.8: its CPU time over the delay: about all of it, on its processor (spinning, or
++             * the guest's code past a late kick); about none, off it */
++            if (c0) {
++                snprintf(ran, sizeof(ran), "ran %.1f ms of it", c1 > c0 ? (c1 - c0) / 1e6 : 0.0);
++            } else {
++                snprintf(ran, sizeof(ran), "CPU time unknown");
++            }
++            nc_log("hakuX-native-irq", "line %u delivered %.1f ms after it rose (%s at the rise): %u refusals, first %s "
++                   "(IRQL %u, ISR line %d, thread t%u); the guest CPU's thread %s%s",
++                   l, lat / 1e6, nc_irq_rise_idle(l) ? "the guest CPU idle" : "the guest CPU busy",
++                   same ? g_hold[l].refusals : 0,
+                    same ? k_hold[g_hold[l].why] : "none: no kernel entry meanwhile", same ? g_hold[l].irql : 0,
+                    same && g_hold[l].isr_line != 0xFF ? (int)g_hold[l].isr_line : -1,
+-                   same ? g_hold[l].thread : 0, c1 > c0 ? (c1 - c0) / 1e6 : 0.0, dl);
++                   same ? g_hold[l].thread : 0, ran, dl);
+         }
+     }
+     memset(&g_hold[l], 0, sizeof(g_hold[l]));
+@@ -219,6 +316,7 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
          t->state = NC_T_READY;
  
          k->in_isr = true;
