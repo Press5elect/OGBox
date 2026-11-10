@@ -188,6 +188,8 @@ native core's work tree (oldest first; author: subject):
              thread waiting (8-21 ms creates on the PS5's storage stopped every guest thread)
   5759f845ca Claude: irq, cpu: where a late interrupt's time went (idle or busy at the rise, CPU time,
              idle-wait gaps, kick latency)
+  7347a40ab2 Claude: ohci: the guest's waits for the controller's lock over 2 ms are said; irq: the
+             CPU-time sample back behind NC_IRQ_SCHED
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -8268,7 +8270,7 @@ index ae7dc59281c7c55b1ee90db96276d61d3c6a015a..7f564294286b37fb033291336e904078
      }
      nc_cpu_fault_resume(c->cpu, ucontext);
 diff --git a/native/core/irq.c b/native/core/irq.c
-index 7a128a71c5da784985ae12348b0f30cf795e0548..61996b48de1af0a0c7f15198c18e61252a443b12 100644
+index 7a128a71c5da784985ae12348b0f30cf795e0548..499c8069c7ced22a8c2080add952cabedef2dbeb 100644
 --- a/native/core/irq.c
 +++ b/native/core/irq.c
 @@ -7,6 +7,7 @@
@@ -8295,20 +8297,20 @@ index 7a128a71c5da784985ae12348b0f30cf795e0548..61996b48de1af0a0c7f15198c18e6125
  
  static bool sched_on(void)
  {
-@@ -224,8 +232,11 @@ void nc_irq_set(unsigned line, bool level)
+@@ -224,8 +232,12 @@ void nc_irq_set(unsigned line, bool level)
       * for vblanks taken at once (PGR2's movies, many a second). */
      /* the guest thread's CPU time at the rise, for the slow-delivery log
       * (intr.c): a syscall a rise, so only with NC_IRQ_SCHED, as the delay */
--    __atomic_store_n(&g_up_cpu_ns[line], sched_on() ? nc_irq_cpu_ns() : 0, __ATOMIC_RELAXED);
-+    /* OGBox 0.0.8: the CPU time always (a clock read a rise), the run delay with NC_IRQ_SCHED (a
-+     * file read a rise; no such file on the PS5); and whether the guest CPU sat in its idle wait */
-+    __atomic_store_n(&g_up_cpu_ns[line], nc_irq_cpu_ns(), __ATOMIC_RELAXED);
++    /* OGBox 0.0.8: whether the guest CPU sat in its idle wait. Its thread's CPU time only with
++     * NC_IRQ_SCHED, as before: read on the PS5 from the rising thread, the guest CPU's clock gave
++     * that thread's time (a "22530 ms of" an 18 ms delay) */
+     __atomic_store_n(&g_up_cpu_ns[line], sched_on() ? nc_irq_cpu_ns() : 0, __ATOMIC_RELAXED);
      __atomic_store_n(&g_up_delay_ns[line], nc_irq_delay_ns(), __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_up_idle[line], (uint8_t)__atomic_load_n(&g_nc_idle_waiting, __ATOMIC_RELAXED), __ATOMIC_RELAXED);
      __atomic_store_n(&g_up_ns[line], mono_ns(), __ATOMIC_RELEASE);
      if (__atomic_fetch_or(&g_lines, 1u << line, __ATOMIC_ACQ_REL) & (1u << line)) {
          return; /* another device thread asserted it meanwhile */
-@@ -426,26 +437,113 @@ bool nc_irq_take_work(void)
+@@ -426,26 +438,113 @@ bool nc_irq_take_work(void)
      return __atomic_load_n(&g_work, __ATOMIC_ACQUIRE) && __atomic_exchange_n(&g_work, 0, __ATOMIC_ACQ_REL);
  }
  
@@ -24057,7 +24059,7 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..4adca90ee29cc7a499908a5bd4aaccf9
      hle_prop_get("debug.hakux.nvcensus", v);
      const char *e = getenv("NC_NV2A_CENSUS");
 diff --git a/native/dev/ohci.c b/native/dev/ohci.c
-index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..eb1c7a9bcce8dee5aa849ba4f8d79bd3c20d0272 100644
+index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..7fb73904eef88a0d1d2dcf312780768de56f8d51 100644
 --- a/native/dev/ohci.c
 +++ b/native/dev/ohci.c
 @@ -15,8 +15,12 @@
@@ -24142,6 +24144,53 @@ index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..eb1c7a9bcce8dee5aa849ba4f8d79bd3
          }
      }
  }
+@@ -553,11 +583,36 @@ static void *frame_thread(void *arg)
+ 
+ /* ------------------------------------------------------------ registers */
+ 
++/* OGBox 0.0.8: the registers' lock, taken by the guest's CPU: a wait over 2 ms is said (a few a
++ * second), the frame thread having held it that long (preempted with it held: the guest CPU stood
++ * still, its interrupts waiting) */
++static void reg_lock(Ohci *o, uint32_t off, bool write)
++{
++    if (pthread_mutex_trylock(&o->lock) == 0) {
++        return;
++    }
++    const uint64_t t0 = now_ns();
++    pthread_mutex_lock(&o->lock);
++    const uint64_t waited = now_ns() - t0;
++    if (waited > 2000000ull) {
++        static uint64_t window;
++        static unsigned said;
++        if (t0 - window > 1000000000ull) {
++            window = t0;
++            said = 0;
++        }
++        if (said++ < 4) {
++            nc_log("hakuX-native-usb", "ohci: the guest's %s of +%x waited %.1f ms for the controller's lock",
++                   write ? "write" : "read", off, waited / 1e6);
++        }
++    }
++}
++
+ static uint64_t ohci_read(void *opaque, uint32_t off, unsigned size)
+ {
+     Ohci *o = opaque;
+     uint32_t v = 0;
+-    pthread_mutex_lock(&o->lock);
++    reg_lock(o, off, false);
+     switch (off & ~3u) {
+     case 0x00: v = 0x10; break;
+     case 0x04: v = o->ctl; break;
+@@ -599,7 +654,7 @@ static void ohci_write(void *opaque, uint32_t off, uint64_t value, unsigned size
+ {
+     Ohci *o = opaque;
+     const uint32_t v = (uint32_t)value;
+-    pthread_mutex_lock(&o->lock);
++    reg_lock(o, off, true);
+     switch (off) {
+     case 0x04: {
+         const uint32_t old = o->ctl & CTL_HCFS;
 diff --git a/native/dev/ports.c b/native/dev/ports.c
 index cc048c04457bc243803770826d23aef562322ff9..8ad1676027b2a64ae6e4d4844b3302055119a758 100644
 --- a/native/dev/ports.c

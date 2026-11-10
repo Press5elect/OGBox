@@ -81,6 +81,11 @@ int PriorityOf(Role role)
 		case Role::Emulation: return VcpuPriority();
 		case Role::Helper: return 700;
 		case Role::Background: return 730;
+		/* OGBox 0.0.8: the device timers ahead of the helpers on their processors (2-12, not the
+		 * vCPU's): preempted holding the USB controller's lock, the frame thread kept the guest's CPU
+		 * from its USB register reads for a time slice, and its interrupts and the vblank behind
+		 * them came 8-18 ms late (Breakdown at 60 fps: a frame flipped late every few seconds) */
+		case Role::Device: return 690;
 	}
 	return 700;
 }
@@ -95,6 +100,7 @@ const char* NameOf(Role role)
 		case Role::Emulation: return "emulation";
 		case Role::Helper: return "helper";
 		case Role::Background: return "background job";
+		case Role::Device: return "device timer";
 	}
 	return "?";
 }
@@ -215,7 +221,7 @@ extern "C" void pshakux_priority_set(int role)
 {
 	using PS5Priority::Role;
 	static const Role roles[] = {Role::Sound, Role::Input, Role::Interface, Role::Emulation, Role::Helper,
-		Role::Background};
+		Role::Background, Role::Device};
 	if (role >= 0 && role < static_cast<int>(sizeof(roles) / sizeof(roles[0])))
 		PS5Priority::SetCurrentThread(roles[role]);
 }
@@ -227,7 +233,7 @@ extern "C" void pshakux_priority_set_thread(pthread_t thread, int role, const ch
 {
   using PS5Priority::Role;
   static const Role roles[] = {Role::Sound, Role::Input, Role::Interface, Role::Emulation, Role::Helper,
-    Role::Background};
+    Role::Background, Role::Device};
   int before = -1, after = -1;
   PS5Priority::GetPriority(thread, &before);
   if (role < 0 || role >= static_cast<int>(sizeof(roles) / sizeof(roles[0])))
