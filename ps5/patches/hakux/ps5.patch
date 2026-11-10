@@ -192,6 +192,8 @@ native core's work tree (oldest first; author: subject):
              CPU-time sample back behind NC_IRQ_SCHED
   e02c0e1449 Claude: apu: the DirectSound mailbox wait spins (2 ms at most) instead of sleeping in usleep(1)
   5150a617f1 Claude: hle-pb: the decoder awake on its kick count up to 20 ms before it sleeps (the PS5)
+  2c4e3cd3dd Claude: nv2a: D3D's vblank timer (PTIMER alarms a frame apart) raised at the vblanks, locked to
+             the panel
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -24100,7 +24102,7 @@ index bc96610e9f894eebce6568da853649b93b18c2df..97e38bf1bf5bdeb27a8d681f177156b6
  void mcpx_apu_vp_reset(MCPXAPUState *d);
  void mcpx_apu_vp_refresh_voice_cache(MCPXAPUState *d, uint32_t new_base);
 diff --git a/native/dev/nv2a.c b/native/dev/nv2a.c
-index a1c3a46edc58f44edd3f232bb86ce5b403498322..4adca90ee29cc7a499908a5bd4aaccf9684fa2b5 100644
+index a1c3a46edc58f44edd3f232bb86ce5b403498322..a436da7e31a9ff221e3bc4b2c5324f627f923368 100644
 --- a/native/dev/nv2a.c
 +++ b/native/dev/nv2a.c
 @@ -36,7 +36,9 @@
@@ -24122,7 +24124,129 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..4adca90ee29cc7a499908a5bd4aaccf9
  #define NV_PFIFO_CACHE1_DMA_PUT  0x003240u
  #define NV_PFIFO_CACHE1_DMA_GET  0x003244u
  #define NV_PFIFO_CACHE1_REF      0x003248u
-@@ -395,6 +399,11 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
+@@ -304,7 +308,11 @@ static struct {
+     pthread_once_t once;
+     bool rearm;                     /* ALARM_0 written (or a savestate's): due again */
+     uint64_t due;                   /* guest ns; 0: none */
+-} g_alarm = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_ONCE_INIT, false, 0};
++    /* OGBox 0.0.8: D3D's vblank timer (alarm_vblank_like) */
++    uint64_t fired;                 /* the due (guest ns) of the alarm last raised; 0: none */
++    unsigned like;                  /* re-arms in a row one frame after the alarm before */
++    bool locked;                    /* raised at the vblanks (vblank_alarm), not at its time */
++} g_alarm = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_ONCE_INIT, false, 0, 0, 0, false};
+ 
+ /* When the time's low word, at now, next reaches alarm */
+ static uint64_t alarm_due(uint32_t alarm, uint64_t now)
+@@ -313,6 +321,61 @@ static uint64_t alarm_due(uint32_t alarm, uint64_t now)
+     return d >= (uint32_t)-ALARM_LATE_NS ? now : now + d;
+ }
+ 
++/* OGBox 0.0.8: D3D's vblank timer, locked to the vblanks.
++ *
++ * In the modes whose vblank D3D doesn't take from the encoder (the HDTV ones: Breakdown with an
++ * HDTV pack) its swaps flip at PTIMER alarms it sets a frame apart (59.94 Hz: 16683350 ns from
++ * the last one, 20 ms at 50 Hz), and its handler takes each alarm for a vblank whatever the time
++ * (0x1C6BA0 -> 0x1C6A90 in Breakdown's D3D: the vblank count up, the frame due flipped). Raised at
++ * its own time, an alarm's phase against the panel was wherever D3D started it, and woken from a
++ * timed wait the ptimer thread raised it late now and then: a flip that came after the
++ * presenter's pickup showed its frame a refresh late (at 60 fps, a frame shown twice every few
++ * seconds, everything ready early). An alarm D3D sets one frame after the last one, twice in a
++ * row, is raised instead by the vblank thread at the vblank nearest its time, half a refresh off
++ * the presenter's pickup, as the vblanks of the titles that take them from the encoder; the
++ * ptimer thread raises it only if no vblank has 1.5 frames past its time (no panel, paused). Any
++ * other alarm (D3D's timer callbacks) unlocks it, raised at its time as before. */
++static void alarm_raise(void)    /* g_alarm.mu held */
++{
++    __atomic_fetch_or(reg(NV_PTIMER_INTR_0), PTIMER_ALARM, __ATOMIC_ACQ_REL);
++    update_irq();
++    g_alarm.fired = g_alarm.due;
++    g_alarm.due += 1ull << 32;      /* the low word comes round to it again */
++}
++
++static void alarm_vblank_like(void)    /* g_alarm.mu held, at a re-arm */
++{
++    const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
++    const uint64_t d = g_alarm.fired && g_alarm.due > g_alarm.fired ? g_alarm.due - g_alarm.fired : 0;
++    const bool like = d && d + frame / 20 >= frame && d <= frame + frame / 20;
++    g_alarm.like = like ? g_alarm.like + 1 : 0;
++    const bool locked = g_alarm.like >= 2;
++    if (locked != g_alarm.locked) {
++        g_alarm.locked = locked;
++        static unsigned said;
++        if (said++ < 8) {
++            nc_log("hakuX-native", "nv2a: PTIMER alarms a frame apart (%.3f ms): %s", d / 1e6,
++                   locked ? "D3D's vblank timer, raised at the vblanks" : "raised at their time again");
++        }
++    }
++}
++
++/* The vblank thread, at a vblank at host time vb: a locked alarm whose time is within half a
++ * frame is raised now */
++static void vblank_alarm(uint64_t vb)
++{
++    if (!__atomic_load_n(&g_alarm.locked, __ATOMIC_RELAXED)) {
++        return;
++    }
++    pthread_mutex_lock(&g_alarm.mu);
++    const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
++    if (g_alarm.locked && !g_alarm.rearm && g_alarm.due && nc_ke_host_ns(g_alarm.due) <= vb + frame / 2) {
++        alarm_raise();
++        pthread_cond_signal(&g_alarm.cv);
++    }
++    pthread_mutex_unlock(&g_alarm.mu);
++}
++
+ static void *ptimer_thread(void *arg)
+ {
+     nc_pause_register("ptimer");
+@@ -328,14 +391,16 @@ static void *ptimer_thread(void *arg)
+         if (g_alarm.rearm) {
+             g_alarm.rearm = false;
+             g_alarm.due = alarm_due(ld(NV_PTIMER_ALARM_0), now);
++            alarm_vblank_like();
+         }
+-        if (now >= g_alarm.due) {
+-            __atomic_fetch_or(reg(NV_PTIMER_INTR_0), PTIMER_ALARM, __ATOMIC_ACQ_REL);
+-            update_irq();
+-            g_alarm.due += 1ull << 32;      /* the low word comes round to it again */
++        /* locked: the vblank thread raises it (vblank_alarm); here only as a fallback */
++        const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
++        const uint64_t at = g_alarm.locked ? g_alarm.due + frame + frame / 2 : g_alarm.due;
++        if (now >= at) {
++            alarm_raise();
+             continue;
+         }
+-        uint64_t until = nc_ke_host_ns(g_alarm.due);
++        uint64_t until = nc_ke_host_ns(at);
+         const uint64_t cap = now_ns() + ALARM_POLL_NS;
+         until = until < cap ? until : cap;
+         const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
+@@ -360,11 +425,22 @@ static void ptimer_start(void)
+ }
+ 
+ /* ALARM_0 written, or restored */
+-static void alarm_set(void)
++static void alarm_set(bool restored)
+ {
+     pthread_once(&g_alarm.once, ptimer_start);
+     pthread_mutex_lock(&g_alarm.mu);
+-    g_alarm.rearm = true;
++    if (restored) {
++        g_alarm.rearm = true;           /* on the state's clock, in the ptimer thread */
++        g_alarm.fired = 0;
++        g_alarm.like = 0;
++        g_alarm.locked = false;
++    } else {
++        /* OGBox 0.0.8: its time now, not when the ptimer thread wakes (on the PS5 up to a tick
++         * later): the vblank thread may raise it at the next vblank (vblank_alarm) */
++        g_alarm.rearm = false;
++        g_alarm.due = alarm_due(ld(NV_PTIMER_ALARM_0), nc_ke_now_ns());
++        alarm_vblank_like();
++    }
+     pthread_cond_signal(&g_alarm.cv);
+     pthread_mutex_unlock(&g_alarm.mu);
+ }
+@@ -395,6 +471,11 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
          case NV_PFIFO_CACHE1_DMA_PUSH:
              v = fifo_empty() ? ld(word) & ~PFIFO_DMA_BUSY : ld(word) | PFIFO_DMA_BUSY;
              break;
@@ -24134,15 +24258,26 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..4adca90ee29cc7a499908a5bd4aaccf9
          case NV_USER_DMA_PUT:
          case NV_USER_DMA_GET:
          case NV_USER_REF:
-@@ -753,6 +762,7 @@ static void *vblank_thread(void *arg)
+@@ -563,7 +644,7 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
+         return;
+     case NV_PTIMER_ALARM_0:
+         __atomic_store_n(reg(off), (uint32_t)value, __ATOMIC_RELEASE);
+-        alarm_set();
++        alarm_set(false);
+         return;
+     case NV_PMC_INTR_EN_0:
+     case NV_PCRTC_INTR_EN_0:
+@@ -753,7 +834,9 @@ static void *vblank_thread(void *arg)
              next = now_ns();
          }
          const uint64_t due = next_vblank(next);
 +        nc_irq_expect(NV2A_IRQ, due);   /* OGBox 0.0.8: an idle guest CPU is awake for it */
          next = wait_vblank(due, next);
++        vblank_alarm(next);             /* OGBox 0.0.8: D3D's vblank timer, at the vblank */
          __atomic_store_n(&g_last_vblank_ns, next, __ATOMIC_RELEASE);
          __atomic_fetch_or(reg(NV_PCRTC_INTR_0), PCRTC_VBLANK, __ATOMIC_ACQ_REL);
-@@ -774,7 +784,18 @@ void nc_dev_nv2a_init(void)
+         __atomic_fetch_add(&g_vblanks, 1, __ATOMIC_RELAXED);
+@@ -774,7 +857,18 @@ void nc_dev_nv2a_init(void)
  {
      g_regs = calloc(1, NV2A_SIZE); /* pages are touched only where the guest writes */
      nc_wr32(g_regs + NV_PMC_BOOT_0, 0x02A000A1u);
@@ -24162,6 +24297,15 @@ index a1c3a46edc58f44edd3f232bb86ce5b403498322..4adca90ee29cc7a499908a5bd4aaccf9
      char v[PROP_VALUE_MAX] = "";
      hle_prop_get("debug.hakux.nvcensus", v);
      const char *e = getenv("NC_NV2A_CENSUS");
+@@ -980,7 +1074,7 @@ bool nc_nv2a_state_load(NcRd *r, unsigned v)
+     g_disp_vsync_ns = 0;
+     g_pick_off_ns = -1;
+     if (ld(NV_PTIMER_ALARM_0) || ld(NV_PTIMER_INTR_EN_0)) {
+-        alarm_set();                    /* due from the state's alarm, on its clock */
++        alarm_set(true);                /* due from the state's alarm, on its clock */
+     }
+     update_irq();
+     return true;
 diff --git a/native/dev/ohci.c b/native/dev/ohci.c
 index 0c5c44bf394dc3ebab2716b85f3ad1c011422f32..7fb73904eef88a0d1d2dcf312780768de56f8d51 100644
 --- a/native/dev/ohci.c
