@@ -199,6 +199,7 @@ native core's work tree (oldest first; author: subject):
   15005932f2 Claude: nv2a: the interrupt line worked out and set one thread at a time (a lost trap interrupt)
   4beedfa7da Claude: apu: the sound's level at each stage once a second
   fbeab56d28 Claude: nv2a: the vblank thread no longer says its next rise to the idle wait (nc_irq_expect off)
+  71908e9b8e Claude: apu: a multichannel buffer voice's ring once a second, and the zeros it played
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -22527,7 +22528,7 @@ index a02b561f0f33fa4955418ee3e89e02de0d56794d..e6ec13330b7abf312bab68800e4cf3dc
  
  #endif
 diff --git a/native/dev/apu/vp/vp.c b/native/dev/apu/vp/vp.c
-index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c536a68399 100644
+index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..50009c878441a21fa053c5e123cb859fed7f5cb8 100644
 --- a/native/dev/apu/vp/vp.c
 +++ b/native/dev/apu/vp/vp.c
 @@ -22,6 +22,8 @@
@@ -22539,7 +22540,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #include "native/core/mmio.h"   /* nc_mmio_retry */
  
  /* -------------------------------------------------------------------------
-@@ -123,6 +125,65 @@ static const struct {
+@@ -123,6 +125,67 @@ static const struct {
      { NV_PAPU_TVLMP, NV_PAPU_CVLMP, NV_PAPU_NVLMP }, // MP
  };
  
@@ -22556,6 +22557,8 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
 +static uint32_t g_idle_traps;
 +static uint32_t g_v_samples[MCPX_HW_MAX_VOICES], g_v_segments[MCPX_HW_MAX_VOICES],
 +    g_v_ssls[MCPX_HW_MAX_VOICES], g_v_notified[MCPX_HW_MAX_VOICES], g_v_ends[MCPX_HW_MAX_VOICES];
++/* OGBox 0.0.8: a buffer voice's samples played that were zero on every channel (ring_watch) */
++static uint32_t g_v_zero[MCPX_HW_MAX_VOICES], g_v_played[MCPX_HW_MAX_VOICES];
 +#define DIAG_ADD(p, n) ((void)__atomic_fetch_add(p, n, __ATOMIC_RELAXED))
 +
 +/* The event log: the guest's methods that start, stop, pause or place a
@@ -22605,7 +22608,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
                                int status)
  {
-@@ -131,6 +192,25 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -131,6 +194,25 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
                             v * MCPX_HW_NOTIFIER_COUNT + notifier);
      notify_offset += 15; // Final byte is status, same for all notifiers
  
@@ -22631,7 +22634,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      // FIXME: Check notify enable
      // FIXME: Set NV1BA0_NOTIFICATION_STATUS_IN_PROGRESS when appropriate
      apu_ram_st8(notify_offset, status);
-@@ -144,34 +224,53 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+@@ -144,34 +226,53 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
      apu_st(&d->set_irq, true);
  }
  
@@ -22702,7 +22705,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
  }
  
-@@ -472,6 +571,8 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
+@@ -472,6 +573,8 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
          for (unsigned i = 1;; i++) {
  #if defined(__aarch64__)
              __asm__ __volatile__("yield" ::: "memory");
@@ -22711,7 +22714,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #endif
              if (!__atomic_load_n(&d->vp.voice_spinlocks[v].v, __ATOMIC_RELAXED) &&
                  apu_spin_trylock(&d->vp.voice_spinlocks[v])) {
-@@ -518,11 +619,13 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
+@@ -518,11 +621,13 @@ static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
      return (apu_ld(&d->vp.voice_locked[v / 64]) & mask) != 0;
  }
  
@@ -22726,7 +22729,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  }
  
  static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
-@@ -600,7 +703,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -600,7 +705,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                                 NV_PAVS_VOICE_CFG_ENV0_EA_DELAYTIME);
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EACOUNT, delay_time * 16);
@@ -22736,7 +22739,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EACOUNT, 0);
          } else if (ea_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD) {
-@@ -621,7 +725,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -621,7 +727,8 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                                 NV_PAVS_VOICE_CFG_ENV0_EA_DELAYTIME);
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EFCOUNT, delay_time * 16);
@@ -22746,7 +22749,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              voice_set_mask(d, selected_handle, NV_PAVS_VOICE_CUR_ECNT,
                             NV_PAVS_VOICE_CUR_ECNT_EFCOUNT, 0);
          } else if (ef_start == NV_PAVS_VOICE_PAR_STATE_EFCUR_HOLD) {
-@@ -634,6 +739,20 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -634,6 +741,20 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          // FIXME: Will count be overwritten in other cases too?
  
          voice_reset_filters(d, selected_handle);
@@ -22767,7 +22770,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          voice_set_mask(d, selected_handle, NV_PAVS_VOICE_PAR_STATE,
                         NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE, 1);
          break;
-@@ -740,10 +859,18 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -740,10 +861,18 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_VOLC,
                         0xFFFFFFFF, argument);
          break;
@@ -22786,7 +22789,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      case NV1BA0_PIO_SET_VOICE_TAR_FCA:
          voice_set_mask(d, d->regs[NV_PAPU_FECV], NV_PAVS_VOICE_TAR_FCA,
                         0xFFFFFFFF, argument);
-@@ -839,18 +966,15 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -839,18 +968,15 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
              argument & NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_HANDLE;
          break;
      case NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET: {
@@ -22814,7 +22817,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                  argument & NV1BA0_PIO_SET_CURRENT_OUTBUF_SGE_OFFSET_PARAMETER);
          break;
      }
-@@ -928,6 +1052,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+@@ -928,6 +1054,12 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
          break;
      case SE2FE_IDLE_VOICE:
          if (d->regs[NV_PAPU_FETFORCE1] & NV_PAPU_FETFORCE1_SE2FE_IDLE_VOICE) {
@@ -22827,7 +22830,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FEMETHMODE;
              d->regs[NV_PAPU_FECTL] |= NV_PAPU_FECTL_FEMETHMODE_TRAPPED;
              d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FETRAPREASON;
-@@ -970,6 +1100,11 @@ uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
+@@ -970,6 +1102,11 @@ uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
      DPRINTF("mcpx apu VP: read [0x%" PRIx64 "] (%s)\n", addr,
              get_method_str(addr));
  
@@ -22839,7 +22842,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      switch (addr) {
      case NV1BA0_PIO_FREE:
          /* we don't simulate the queue for now,
-@@ -988,6 +1123,18 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -988,6 +1125,18 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
  
      DPRINTF("mcpx apu VP: [0x%" PRIx64 "] %s = 0x%lx\n", addr,
              get_method_str(addr), val);
@@ -22858,7 +22861,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  
      switch (addr) {
      case NV1BA0_PIO_SET_ANTECEDENT_VOICE:
-@@ -1009,7 +1156,9 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
+@@ -1009,7 +1158,9 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
      case NV1BA0_PIO_SET_VOICE_TAR_VOLA:
      case NV1BA0_PIO_SET_VOICE_TAR_VOLB:
      case NV1BA0_PIO_SET_VOICE_TAR_VOLC:
@@ -22868,7 +22871,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      case NV1BA0_PIO_SET_VOICE_TAR_FCA:
      case NV1BA0_PIO_SET_VOICE_TAR_FCB:
      case NV1BA0_PIO_SET_VOICE_TAR_PITCH:
-@@ -1109,165 +1258,146 @@ static uint64_t get_data_ptr(MCPXAPUState *d, uint64_t sge_base,
+@@ -1109,165 +1260,146 @@ static uint64_t get_data_ptr(MCPXAPUState *d, uint64_t sge_base,
      return prd_address + addr % APU_PAGE_SIZE;
  }
  
@@ -23154,7 +23157,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                         float samples[][2],
                         int num_samples_requested)
-@@ -1368,7 +1498,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1368,7 +1500,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
              d->vp.ssl[v].ssl_seg = 0;
              if (!persist) {
                  d->vp.ssl[v].ssl_index = 0;
@@ -23163,7 +23166,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              } else {
                  set_notify_status(
                      d, v, MCPX_HW_NOTIFIER_SSLA_DONE + d->vp.ssl[v].ssl_index,
-@@ -1391,7 +1521,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1391,7 +1523,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                  segment_length = apu_ram_ld32(addr + 4);
              }
          }
@@ -23176,7 +23179,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          assert(segment_length != 0);
          seg_len = (segment_length >> 0) & 0xffff;
          seg_cs = (segment_length >> 16) & 3;
-@@ -1399,7 +1533,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1399,7 +1535,11 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
          seg_s = (segment_length >> 23) & 1;
          assert(seg_cs == container_size_index);
          assert((seg_spb + 1) == samples_per_block);
@@ -23189,8 +23192,14 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          container_size_index = seg_cs;
          if (seg_cs == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
              sample_size = NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24;
-@@ -1555,13 +1693,16 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1553,15 +1693,22 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+         if (!stereo) {
+             samples[sample_count][1] = samples[sample_count][0];
          }
++        if (!stream && !adpcm) {
++            g_v_played[v]++;
++            g_v_zero[v] += samples[sample_count][0] == 0.0f && samples[sample_count][1] == 0.0f;
++        }
      }
  
 +    DIAG_ADD(&g_v_samples[v], (uint32_t)sample_count);
@@ -23206,7 +23215,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                  int next_index = (ssl_index + 1) % 2;
                  DPRINTF("SSL%c\n", 'A' + next_index);
                  d->vp.ssl[v].ssl_index = next_index;
-@@ -1574,7 +1715,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
+@@ -1574,7 +1721,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                  cbo = lbo;
              } else {
                  cbo = ebo;
@@ -23216,7 +23225,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                  DPRINTF("end of buffer!\n");
              }
          }
-@@ -1595,7 +1737,7 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1595,7 +1743,7 @@ static long voice_resample_callback(void *cb_data, float **data)
      uint8_t *c = filter->cb_voice_cache;
  
      int sample_count = 0;
@@ -23225,7 +23234,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          int active = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                      NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE);
          if (!active) {
-@@ -1614,6 +1756,9 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1614,6 +1762,9 @@ static long voice_resample_callback(void *cb_data, float **data)
          /* Starvation causes SRC hang on repeated calls. Provide silence. */
          memset(&filter->resample_buf[2*sample_count], 0,
              2*(NUM_SAMPLES_PER_FRAME-sample_count)*sizeof(float));
@@ -23235,7 +23244,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          sample_count = NUM_SAMPLES_PER_FRAME;
      }
  
-@@ -1621,49 +1766,32 @@ static long voice_resample_callback(void *cb_data, float **data)
+@@ -1621,49 +1772,32 @@ static long voice_resample_callback(void *cb_data, float **data)
      return sample_count;
  }
  
@@ -23300,7 +23309,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  }
  
  static int peek_ahead_multipass_bin(MCPXAPUState *d, uint8_t *c,
-@@ -1711,9 +1839,28 @@ static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
+@@ -1711,9 +1845,28 @@ static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
      int mp_bin = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                  NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
  
@@ -23331,7 +23340,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
  
      // DirectSound sets clear mix to true
-@@ -1732,7 +1879,12 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1732,7 +1885,12 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
      assert(v < MCPX_HW_MAX_VOICES);
      bool stereo = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                   NV_PAVS_VOICE_CFG_FMT_STEREO);
@@ -23345,7 +23354,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      bool paused = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                   NV_PAVS_VOICE_PAR_STATE_PAUSED);
  
-@@ -1751,7 +1903,23 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1751,7 +1909,23 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
                                 NV_PAVS_VOICE_TAR_PITCH_LINK_PITCH);
      int8_t ps = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_ENV0,
                                 NV_PAVS_VOICE_CFG_ENV0_EF_PITCHSCALE);
@@ -23370,7 +23379,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  
      float ea_value = voice_step_envelope(
          d, c, v, NV_PAVS_VOICE_CFG_ENV0, NV_PAVS_VOICE_CFG_ENVA,
-@@ -1769,6 +1937,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1769,6 +1943,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * bit-exactly (the loop trip count and num_samples_requested are value-
       * independent of the decoded samples; we only null the sample VALUES). */
      bool skip_muted = voice_all_vols_maxed(d, c, v);
@@ -23385,7 +23394,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #endif
  
      float samples[NUM_SAMPLES_PER_FRAME][2] = { 0 };
-@@ -1779,7 +1955,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1779,7 +1961,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
  #if !defined(HAKUX_AUDIO_NO_PROCESS) || !HAKUX_AUDIO_NO_PROCESS
  #if HAKUX_AUDIO_SKIP_MUTED
      /* Thread the per-voice skip decision into voice_get_samples (reached via
@@ -23394,7 +23403,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
       * only for the synchronous duration of the resample loop below, same
       * lifetime contract as cb_voice_cache. Multipass voices have no decode
       * loop, so this is consumed only on the non-multipass path. */
-@@ -1796,7 +1972,8 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1796,7 +1978,8 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
              }
              int count =
                  voice_resample(d, c, v, &samples[sample_count],
@@ -23404,7 +23413,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
              if (count < 0) {
                  break;
              }
-@@ -1809,6 +1986,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1809,6 +1992,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
      if (!active) {
          return;
      }
@@ -23419,7 +23428,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #else
      /* HAKUX_AUDIO_NO_PROCESS=1: skip the expensive sample-production +
       * mixing path. Envelopes above still advance guest-observable
-@@ -1825,7 +2010,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1825,7 +2016,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * (void)multipass; (void)rate; (void)mixbins; */
      (void)samples;
      (void)multipass;
@@ -23428,7 +23437,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      (void)mixbins;
      return;
  #endif
-@@ -1941,61 +2126,144 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -1941,61 +2132,144 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
       * muted-frame input -- exactly the decode we skipped.) */
      if (d->vp.filters[v].muted_prev) {
          memset(&d->vp.filters[v].svf, 0, sizeof(d->vp.filters[v].svf));
@@ -23613,7 +23622,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
          channel_buf[0][i] = samples[i][0];
      }
-@@ -2004,31 +2272,103 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -2004,31 +2278,103 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
              channel_buf[1][i] = samples[i][1];
          }
      }
@@ -23728,7 +23737,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
           *
           * If the current voice belongs to a multipass sub-voice group we must
           * skip it here to avoid mixing it in twice because the sub-voices are
-@@ -2057,10 +2397,16 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
+@@ -2057,10 +2403,16 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
          }
          g *= ea_value;
          for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
@@ -23747,7 +23756,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  }
  
  static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
-@@ -2077,9 +2423,9 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+@@ -2077,9 +2429,9 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
                                      NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
          bool clear_mix = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                          NV_PAVS_VOICE_CFG_FMT_CLEAR_MIX);
@@ -23759,7 +23768,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          }
      }
  
-@@ -2109,7 +2455,7 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
+@@ -2109,7 +2461,7 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
                              NV_PAVS_VOICE_CFG_FMT_V7BIN);
  
      for (int i = 0; i < 8; i++) {
@@ -23768,7 +23777,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
  
      if (src) {
-@@ -2195,6 +2541,7 @@ static void *voice_worker_thread(void *arg)
+@@ -2195,6 +2547,7 @@ static void *voice_worker_thread(void *arg)
          pthread_cond_wait(&self->cond, &vwd->lock);
      } while (!vwd->workers_should_exit);
  
@@ -23776,7 +23785,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      return NULL;
  }
  
-@@ -2251,6 +2598,8 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
+@@ -2251,6 +2604,8 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
                  } else if (us < HELD_SPIN_US) {
  #if defined(__aarch64__)
                      __asm__ __volatile__("yield" ::: "memory");
@@ -23785,7 +23794,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  #endif
                  } else {
                      usleep(HELD_NAP_US);
-@@ -2320,16 +2669,45 @@ static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
+@@ -2320,16 +2675,45 @@ static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
      bool group = false;
      uint32_t dirty = 0;
  
@@ -23837,7 +23846,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
          //
          // - MP bin is constant
          assert(!src || (src == MULTIPASS_BIN_MASK));
-@@ -2484,6 +2862,21 @@ static void voice_work_finalize(MCPXAPUState *d)
+@@ -2484,6 +2868,21 @@ static void voice_work_finalize(MCPXAPUState *d)
   * to stop playing; with its first voice reported every frame and ignored,
   * the group was never released and the game spun in GetStatus, loading,
   * where the guest turned the three off within one frame (the Odin 3). */
@@ -23859,7 +23868,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
  {
      unsigned k = 0;
-@@ -2501,9 +2894,23 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
+@@ -2501,13 +2900,84 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
       * holds the voice locks of its batch, which a guest write may be waiting
       * on (a voice not reported now is in a later frame: it stays listed) */
      if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
@@ -23886,7 +23895,76 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      }
      apu_spin_unlock(&d->vp.fe_spin);
  }
-@@ -2591,7 +2998,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
+ 
++/* OGBox 0.0.8: once a second, each active looping PCM buffer voice of three or more samples a
++ * block (a game's multichannel mix ring: NFS Carbon's 5.1 music, 2400 frames): the ring in 32
++ * slices, '#' a slice with sound on the voice's channels, '.' all zeros, '^' where the VP plays
++ * (CBO), and how much of what it played in the second was zeros. A silent stretch just ahead of
++ * the CBO: the game writes behind the VP; zeros played with sound at the CBO: the VP reads wrong. */
++static void ring_watch(MCPXAPUState *d)
++{
++    static int64_t at_ms;
++    const int64_t now = apu_host_ms();
++    if (now - at_ms < 1000) {
++        return;
++    }
++    at_ms = now;
++    unsigned logged = 0;
++    for (uint16_t v = 0; v < MCPX_HW_MAX_VOICES && logged < 4; v++) {
++        const uint32_t state = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE, 0xFFFFFFFF);
++        const uint32_t fmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFF);
++        const unsigned spb = 1 + GET_MASK(fmt, NV_PAVS_VOICE_CFG_FMT_SAMPLES_PER_BLOCK);
++        const unsigned cs_i = GET_MASK(fmt, NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE);
++        if (!(state & NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE) || (fmt & NV_PAVS_VOICE_CFG_FMT_DATA_TYPE) ||
++            !(fmt & NV_PAVS_VOICE_CFG_FMT_LOOP) || spb < 3 || cs_i == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
++            continue;
++        }
++        static const unsigned k_cs[4] = {1, 2, 0, 4};
++        const unsigned cs = k_cs[cs_i], channels = (fmt & NV_PAVS_VOICE_CFG_FMT_STEREO) ? 2 : 1;
++        const uint32_t block = cs * spb;
++        const uint32_t ebo = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_NEXT, NV_PAVS_VOICE_PAR_NEXT_EBO);
++        const uint32_t cbo = voice_get_mask(d, v, NV_PAVS_VOICE_PAR_OFFSET, NV_PAVS_VOICE_PAR_OFFSET_CBO);
++        const uint32_t ba = voice_get_mask(d, v, NV_PAVS_VOICE_CUR_PSL_START, NV_PAVS_VOICE_CUR_PSL_START_BA);
++        const uint32_t frames = ebo + 1;
++        char map[33];
++        for (unsigned sl = 0; sl < 32; sl++) {
++            const uint32_t f0 = frames * sl / 32, f1 = frames * (sl + 1) / 32;
++            bool sound = false;
++            for (uint32_t f = f0; f < f1 && !sound; f++) {
++                const uint32_t lin = ba + f * block;
++                const uint64_t addr = get_data_ptr(d, d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
++                                                   lin & ~(uint32_t)(APU_PAGE_SIZE - 1)) + lin % APU_PAGE_SIZE;
++                const uint8_t *src = &d->ram_ptr[vp_ram_addr(d, addr, (size_t)cs * channels)];
++                for (unsigned c = 0; c < cs * channels; c++) {
++                    sound |= src[c] != 0;
++                }
++            }
++            map[sl] = sound ? '#' : '.';
++        }
++        map[32] = 0;
++        const unsigned at = frames ? (unsigned)((uint64_t)cbo * 32 / frames) : 0;
++        if (at < 32) {
++            map[at] = map[at] == '#' ? '^' : 'v';
++        }
++        const uint32_t played = apu_xchg(&g_v_played[v], 0), zero = apu_xchg(&g_v_zero[v], 0);
++        nc_log("hakuX-apu", "ring voice %02x (%u per block, %u frames): [%s] cbo %u | in 1 s: %u played, %u zero (%.0f%%)",
++               v, spb, frames, map, cbo, played, zero, played ? 100.0 * zero / played : 0.0);
++        logged++;
++    }
++}
++
+ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+ {
+     memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
+@@ -2584,6 +3054,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
+         }
+     }
+     voice_work_dispatch(d, c, mixbins);
++    ring_watch(d);                      /* OGBox 0.0.8: a multichannel ring, once a second */
+     if (c) {
+         report_written_voices(d, c);
+     }
+@@ -2591,7 +3062,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
      if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
          /* Mix all voices together to hear any audible voice */
          int16_t isamp[NUM_SAMPLES_PER_FRAME * 2];
@@ -23895,7 +23973,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
                                   NUM_SAMPLES_PER_FRAME * 2);
          int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
          for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
-@@ -2615,12 +3022,31 @@ void mcpx_apu_vp_init(MCPXAPUState *d)
+@@ -2615,12 +3086,31 @@ void mcpx_apu_vp_init(MCPXAPUState *d)
      d->vp.voice_cache = NULL;
      d->vp.ssl_cache = NULL;
  
@@ -23927,7 +24005,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
  
      d->vp.voice_cache = NULL;
      d->vp.ssl_cache = NULL;
-@@ -2640,7 +3066,26 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
+@@ -2640,7 +3130,26 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
      g_idle_last = 0xFFFF;
      for (int v = 0; v < ARRAY_SIZE(d->vp.filters); v++) {
          hrtf_filter_init(&d->vp.filters[v].hrtf);
@@ -23955,7 +24033,7 @@ index a282c7e2f31e832ee1e3855360eb2dd6a970ed06..d137cb1bd253ee25caea2c3ccee4c7c5
      refresh_table(&d->vp.voice_cache, 0, 0);
      refresh_table(&d->vp.ssl_cache, 0, 0);
  }
-@@ -2674,3 +3119,181 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
+@@ -2674,3 +3183,181 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
      nc_log("hakuX-native-state", "apu: %u 3D voices' HRTF filters set again (%u entries hold coefficients)", set,
             entries);
  }
