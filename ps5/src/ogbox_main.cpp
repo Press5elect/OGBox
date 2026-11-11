@@ -835,6 +835,10 @@ public:
 	std::vector<uint8_t> logoPixels;
 	uint32_t logoWidth{ 0 }, logoHeight{ 0 };
 	bool showingLogo{ false };  // the picture is the logo, not a game's frame
+	// OGBox 0.0.9: the startup video (ogbox_intro.h) in the boot screen's place, when OGBox starts
+	ogbox::IntroPlayer intro;
+	bool introTried{ false }, introOn{ false }, introStarted{ false }, showingIntro{ false };
+	uint64_t introSerial{ ~0ull };
 	uint64_t framesDrawn{ 0 }, picturesTaken{ 0 };
 	uint32_t players{ 0 };
 	double quitHeldSince{ -1.0 };
@@ -1116,6 +1120,16 @@ public:
 	 * into images of its own, then shown as the picture is) and SSAA (the resolution scale raised
 	 * above the screen, the picture averaged down over every texel a pixel covers) */
 	bool smaaOn{ false }, ssaaOn{ false };
+	/* 0.0.9: Quincunx (the Xbox's own anti-aliasing, quincunx.frag, a scaler like SSAA); and Debanding
+	 * (deband.frag), a pass at the picture's size before it is scaled, after SMAA, into postA */
+	bool quincunxOn{ false }, debandOn{ false };
+	float debandStep{ 0.0f };   // a band's step: Low 2 levels of 255 (32-bit colour), High 5 (16-bit)
+	VkPipeline pipelineQuincunx{ VK_NULL_HANDLE }, postDeband{ VK_NULL_HANDLE };
+	VkDescriptorPool postPool{ VK_NULL_HANDLE };
+	VkDescriptorSet postFromPicture{ VK_NULL_HANDLE }, postFromSmaa{ VK_NULL_HANDLE }, presentFromA{ VK_NULL_HANDLE };
+	VkImageView postPictureView{ VK_NULL_HANDLE }, postSmaaView{ VK_NULL_HANDLE };
+	bool postValid{ false };
+	bool postFromSmaaNow{ false };   // what the passes last read: SMAA's result, or the picture
 	bool cropOn{ false };       // 0.1.59: the overscan cropped (3/80 a side, hakuX-lr's)
 	struct AaImage {
 		VkImage image{ VK_NULL_HANDLE };
@@ -1123,6 +1137,8 @@ public:
 		VkImageView view{ VK_NULL_HANDLE };
 	};
 	AaImage smaaEdges{}, smaaWeights{}, smaaOut{}, smaaArea{}, smaaSearch{};
+	AaImage postA{};
+	uint32_t postW{ 0 }, postH{ 0 };
 	uint32_t smaaW{ 0 }, smaaH{ 0 };
 	VkImageView smaaPictureView{ VK_NULL_HANDLE };   // the picture the sets were written for
 	bool smaaValid{ false };                         // smaaOut holds the current picture
@@ -1949,11 +1965,13 @@ public:
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
-		if (ssaaOn) {
+		if (ssaaOn || quincunxOn) {
 			/* SSAA: the scale that draws a 480-line picture at 1.5 times the screen's height or more
 			 * (4x on a 1080p screen, 6x on a 4K one; hakuX keeps a wider picture within 3840 at
-			 * scales above 4), or the setting's if higher */
-			const int want = std::min(6, std::max(1, static_cast<int>(std::ceil(1.5 * height / 480.0))));
+			 * scales above 4), or the setting's if higher. 0.0.9: Quincunx: the screen's height at
+			 * least, 2x at least (3x on a 1080p screen, 5x on a 4K one) */
+			const double over = ssaaOn ? 1.5 : 1.0;
+			const int want = std::min(6, std::max(2, static_cast<int>(std::ceil(over * height / 480.0))));
 			for (std::string &option : fromSettings) {
 				if (option.rfind("scale=", 0) == 0 && std::atoi(option.c_str() + 6) < want) {
 					option = "scale=" + std::to_string(want);
@@ -1967,8 +1985,9 @@ public:
 		}
 		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s%s, anti-aliasing %s, upscaling %s, FPS counter %s",
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
-			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaOn ? "SSAA" : "off",
+			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaOn ? "SSAA" : quincunxOn ? "Quincunx" : "off",
 			sgsrOn ? "FSR1" : sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
+		pshakux_log("ogbox: debanding %s", debandOn ? prefs.value("deband").c_str() : "off");
 		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
 		static std::vector<std::string> fromTrainer;
 		fromTrainer.clear();
@@ -2254,7 +2273,7 @@ public:
 			const char *file;
 			VkPipeline *out;
 		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp }, { "ogbox/logo.frag.spv", &pipelineLogo },
-			{ "ogbox/ssaa.frag.spv", &pipelineSsaa } };
+			{ "ogbox/ssaa.frag.spv", &pipelineSsaa }, { "ogbox/quincunx.frag.spv", &pipelineQuincunx } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
 			pipelineCI.pStages = stages.data();
@@ -2264,6 +2283,7 @@ public:
 			}
 		}
 		prepareSmaa(pipelineCI, rasterization);
+		preparePost(pipelineCI);
 	}
 
 	// ---- 0.1.58: SMAA 1x (iryoku/smaa, MIT: shaders/glsl/ogbox/SMAA.hlsl, third_party/smaa) -------
@@ -2498,6 +2518,129 @@ public:
 		smaaValid = true;
 	}
 
+	/* 0.0.9: Debanding's pipeline (SMAA's layout: a picture at binding 0, a vec4) and its sets; off if
+	 * it can't be made. */
+	void preparePost(VkGraphicsPipelineCreateInfo pipelineCI)
+	{
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 3);
+		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &postPool));
+		const VkDescriptorSetLayout two[2] = { smaaSetLayout, smaaSetLayout };
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, two, 2);
+		VkDescriptorSet sets[2];
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, sets));
+		postFromPicture = sets[0];
+		postFromSmaa = sets[1];
+		allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, &descriptorSetLayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &presentFromA));
+		const struct {
+			const char *frag;
+			VkPipeline *out;
+		} passes[] = { { "ogbox/deband.frag.spv", &postDeband } };
+		for (const auto &pass : passes) {
+			std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+				loadShader(getShadersPath() + "ogbox/present.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+				loadShader(getShadersPath() + pass.frag, VK_SHADER_STAGE_FRAGMENT_BIT),
+			};
+			VkPipelineRenderingCreateInfoKHR renderingCI{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+			renderingCI.colorAttachmentCount = 1;
+			renderingCI.pColorAttachmentFormats = &picture.format;
+			pipelineCI.pNext = &renderingCI;
+			pipelineCI.layout = smaaPipelineLayout;
+			pipelineCI.stageCount = 2;
+			pipelineCI.pStages = stages.data();
+			pipelineCI.pDepthStencilState = nullptr;
+			if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, pass.out) != VK_SUCCESS) {
+				*pass.out = VK_NULL_HANDLE;
+				pshakux_log("presenter: %s cannot be made: that pass is off", pass.frag);
+			}
+		}
+	}
+
+	/* The pass's image at the picture's size, and the sets pointed at what it reads now. */
+	void ensurePost()
+	{
+		if (postW != picture.width || postH != picture.height) {
+			vkDeviceWaitIdle(device);
+			destroyAaImage(postA);
+			createAaImage(postA, picture.format, picture.width, picture.height,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			postW = picture.width;
+			postH = picture.height;
+			VkDescriptorImageInfo a{ sampler, postA.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(presentFromA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &a);
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+			postValid = false;
+			pshakux_log("presenter: debanding's image %ux%u", postW, postH);
+		}
+		if (postPictureView != picture.view) {
+			VkDescriptorImageInfo color{ sampler, picture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(postFromPicture, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color);
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+			postPictureView = picture.view;
+			postValid = false;
+		}
+		if (smaaOut.view != VK_NULL_HANDLE && postSmaaView != smaaOut.view) {
+			VkDescriptorImageInfo color{ sampler, smaaOut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(postFromSmaa, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color);
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+			postSmaaView = smaaOut.view;
+			postValid = false;
+		}
+	}
+
+	/* One pass into target at the picture's size (smaaPass's, with the pass's own vec4). */
+	void postPass(VkCommandBuffer cmd, AaImage &target, VkPipeline pipe, VkDescriptorSet set, const float params[4])
+	{
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, target.image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, range);
+		VkRenderingAttachmentInfoKHR color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		color.imageView = target.view;
+		color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		VkRenderingInfoKHR info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+		info.renderArea = { { 0, 0 }, { postW, postH } };
+		info.layerCount = 1;
+		info.colorAttachmentCount = 1;
+		info.pColorAttachments = &color;
+		vkCmdBeginRendering(cmd, &info);
+		VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(postW), static_cast<float>(postH), 0.0f, 1.0f };
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		VkRect2D scissor{ { 0, 0 }, { postW, postH } };
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, smaaPipelineLayout, 0, 1, &set, 0, nullptr);
+		vkCmdPushConstants(cmd, smaaPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+			4 * sizeof(float), params);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+		vkCmdEndRendering(cmd);
+		vks::tools::insertImageMemoryBarrier(cmd, target.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
+	}
+
+	/* Debanding over a new picture (or SMAA's result of it): the set the present pass reads then
+	 * (VK_NULL_HANDLE: it is off). An unchanged picture keeps its result. */
+	VkDescriptorSet recordPost(VkCommandBuffer cmd, bool fromSmaa)
+	{
+		if (!debandOn || postDeband == VK_NULL_HANDLE) {
+			return VK_NULL_HANDLE;
+		}
+		ensurePost();
+		if (!postValid || pictureChanged || fromSmaa != postFromSmaaNow) {
+			/* the step (debandStep); the dither half a level; the reach: 32 lines of the Xbox's 480,
+			 * at the picture's scale (a 16-bit band's width at most) */
+			const float params[4] = { debandStep, 0.5f / 255.0f, 32.0f * static_cast<float>(postH) / 480.0f, 0.0f };
+			postPass(cmd, postA, postDeband, fromSmaa ? postFromSmaa : postFromPicture, params);
+			postValid = true;
+			postFromSmaaNow = fromSmaa;
+		}
+		return presentFromA;
+	}
+
 	void destroySmaa()
 	{
 		destroyAaImage(smaaEdges);
@@ -2509,6 +2652,10 @@ public:
 		vkDestroyPipeline(device, smaaWeight, nullptr);
 		vkDestroyPipeline(device, smaaBlend, nullptr);
 		vkDestroyPipeline(device, pipelineSsaa, nullptr);
+		vkDestroyPipeline(device, pipelineQuincunx, nullptr);
+		vkDestroyPipeline(device, postDeband, nullptr);
+		destroyAaImage(postA);
+		vkDestroyDescriptorPool(device, postPool, nullptr);
 		vkDestroyPipelineLayout(device, smaaPipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, smaaSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, smaaPool, nullptr);
@@ -2553,6 +2700,49 @@ public:
 		logoPixels.assign(pixels, pixels + size_t(logoWidth) * logoHeight * 4);
 		stbi_image_free(pixels);
 		pshakux_log("presenter: logo %ux%u from %s, shown until the game's first frame", logoWidth, logoHeight, path.c_str());
+	}
+
+	/* 0.0.9: the startup video's frame for now into this frame's staging buffer (true: a new one
+	 * to upload). It starts at OGBox's start into the game list (Settings > Interface > Startup
+	 * video), and its clock with its first decoded frame. */
+	bool introFrame()
+	{
+		if (!introTried) {
+			introTried = true;
+			introOn = prefs.global("startup_video") != "0" &&
+				intro.open(getAssetPath() + "intro.ivf", getAssetPath() + "intro.wav");
+		}
+		if (!introOn) {
+			return false;
+		}
+		uint32_t w = 0, h = 0;
+		uint64_t serial = 0;
+		const uint8_t *pixels = intro.frame(&w, &h, &serial);
+		if (pixels && !introStarted) {
+			introStarted = true;
+			intro.start();
+		}
+		if (!pixels || serial == introSerial) {
+			return false;
+		}
+		Staging &s = staging[currentBuffer];
+		ensureStaging(s, VkDeviceSize(w) * h * 4);
+		std::memcpy(s.mapped, pixels, size_t(w) * h * 4);
+		ensurePicture(w, h);
+		showingIntro = true;
+		introSerial = serial;
+		return true;
+	}
+
+	/* 0.0.9: the startup video's end (its last frame, or CROSS / CIRCLE): the game list. */
+	void endIntro()
+	{
+		intro.close();
+		introOn = showingIntro = false;
+		screen = Screen::Library;
+		screenSince = now_seconds();
+		fadeSince = -2.0;   // the list fades in from its first frame
+		pshakux_log("intro: over");
 	}
 
 	/* The logo into this frame's staging buffer, once, while no game frame has come. */
@@ -2785,11 +2975,15 @@ public:
 		if (smaaNow) {
 			recordSmaa(cmdBuffer);
 		}
+		/* 0.0.9: Debanding, on the game's picture (not the logo, not the intro) */
+		const VkDescriptorSet postSet = havePicture && !showingLogo && picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			? recordPost(cmdBuffer, smaaNow && smaaValid) : VK_NULL_HANDLE;
 		beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
 		const bool splash = library && screen == Screen::Boot && showingLogo;
-		if ((havePicture || (showingLogo && (!library || splash))) &&
+		const bool introNow = showingIntro && library && screen == Screen::Boot;
+		if ((havePicture || (showingLogo && (!library || splash)) || introNow) &&
 			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-			const float aspect = displayAspect();
+			const float aspect = introNow ? static_cast<float>(picture.width) / static_cast<float>(picture.height) : displayAspect();
 			/* 0.1.26: the boot screen's logo in a box above its middle */
 			const float boxW = static_cast<float>(width), boxH = splash ? static_cast<float>(height) * 0.46f : static_cast<float>(height);
 			float w = boxW, h = boxH;
@@ -2818,6 +3012,9 @@ public:
 				if (smaaNow && smaaValid) {
 					set = smaaPresentSet;   // SMAA's result, scaled as the picture would be
 				}
+				if (postSet != VK_NULL_HANDLE) {
+					set = postSet;          // 0.0.9: debanded (SMAA's result, if it is on)
+				}
 				if (fxaaOn && pipelineFxaa != VK_NULL_HANDLE) {
 					chosen = pipelineFxaa;
 				} else if (sgsrOn && smaller && pipelineSgsr != VK_NULL_HANDLE) {
@@ -2826,6 +3023,8 @@ public:
 					chosen = pipelineSharp;
 				} else if (ssaaOn && larger && pipelineSsaa != VK_NULL_HANDLE) {
 					chosen = pipelineSsaa;   // averaged down over every texel a pixel covers
+				} else if (quincunxOn && larger && pipelineQuincunx != VK_NULL_HANDLE) {
+					chosen = pipelineQuincunx;   // 0.0.9: the Xbox's own: the middle and the four corners
 				}
 			}
 			if (splash && pipelineLogo != VK_NULL_HANDLE) {
@@ -2837,7 +3036,7 @@ public:
 				const SplashTimes st = splashTimes(static_cast<float>(now_seconds() - screenSince));
 				const float params[4] = { st.logo, st.shine, 0.0f, 0.0f };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params), params);
-			} else if (chosen == pipelineSsaa || chosen == pipelineSharp) {
+			} else if (chosen == pipelineSsaa || chosen == pipelineSharp || chosen == pipelineQuincunx) {
 				const float metrics[4] = { 0.0f, 0.0f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			}
@@ -3098,6 +3297,15 @@ public:
 		}
 		switch (screen) {
 		case Screen::Boot:
+			if (introOn) {   // 0.0.9: the startup video: CROSS or CIRCLE cuts it short
+				if (pressed & (PAD_CROSS | PAD_CIRCLE)) {
+					intro.skip();
+				}
+				if (intro.finished()) {
+					endIntro();
+				}
+				break;
+			}
 			/* CROSS or CIRCLE skips the splash (0.0.1: no longer said on it) */
 			if ((pressed & (PAD_CROSS | PAD_CIRCLE)) || now_seconds() - screenSince > kSplashLength) {
 				screen = Screen::Library;
@@ -3598,7 +3806,7 @@ public:
 		}
 		ui.visible = true;
 		VulkanExampleBase::prepareFrame();
-		upload = screen == Screen::Boot && fetchLogo();
+		upload = screen == Screen::Boot && (introFrame() || (!introOn && fetchLogo()));
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
 		framesDrawn++;
@@ -4376,7 +4584,11 @@ public:
 		} else {
 			switch (screen) {
 			case Screen::Notice: drawNotice(); break;
-			case Screen::Boot: drawBoot(); break;
+			case Screen::Boot:
+				if (!introOn) {
+					drawBoot();
+				}
+				break;
 			case Screen::Library:
 				if (gp.open) {
 					drawGamePageNew();
@@ -6612,7 +6824,7 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "framegen", "aniso", "sharpen", "dither", "crop_overscan", "show_fps" } } };
+			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "framegen", "aniso", "sharpen", "dither", "deband", "crop_overscan", "show_fps" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
@@ -6651,7 +6863,7 @@ public:
 				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
 			/* 0.0.9: the DualSense in the menus (PSWin's) */
-			return { { "", { "theme", "rain", "quick_menu" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } } };
+			return { { "", { "theme", "rain", "quick_menu", "startup_video" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } } };
 		case SP_CONTROLLER:
 			/* 0.0.6: the buttons on the controller's picture, in its order (left column, then right) */
 			return { { "", { "pad_lt", "pad_lthumb", "pad_up", "pad_down", "pad_left", "pad_right", "pad_back", "pad_rt", "pad_y",
@@ -6683,6 +6895,10 @@ public:
 		fxaaOn = prefs.on("fxaa");
 		smaaOn = prefs.value("fxaa") == "smaa";
 		ssaaOn = prefs.value("fxaa") == "ssaa";
+		quincunxOn = prefs.value("fxaa") == "quincunx";   // 0.0.9
+		debandOn = prefs.value("deband") == "low" || prefs.value("deband") == "high";
+		debandStep = (prefs.value("deband") == "high" ? 5.0f : 2.0f) / 255.0f;
+		postValid = false;
 		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
 		sharpOn = prefs.value("upscale") == "sharp";
 		showFps = prefs.value("show_fps") != "0";
@@ -6694,7 +6910,8 @@ public:
 	 * which restarts the game from a state saved where it is. */
 	static bool liveKey(const std::string &k)
 	{
-		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality" };
+		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality",
+			"deband" };
 		for (const char *x : keys) {
 			if (k == x) {
 				return true;
@@ -6710,10 +6927,10 @@ public:
 		}
 		const std::string k = o.key;
 		if (liveKey(k)) {
-			const bool ssaaWas = ssaaOn;
+			const bool ssaaWas = ssaaOn, quincunxWas = quincunxOn;
 			readPictureSettings();
 			refreshFrameGen(k);
-			if (ssaaOn != ssaaWas) {
+			if (ssaaOn != ssaaWas || quincunxOn != quincunxWas) {
 				markApply();   // (SSAA also raises the internal resolution, at the game's start)
 			}
 			return;

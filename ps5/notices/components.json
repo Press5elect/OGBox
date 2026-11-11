@@ -683,6 +683,23 @@
    }
   },
   {
+   "id": "libvpx",
+   "name": "libvpx (the startup video's VP9 decoder)",
+   "copyright": "The WebM Project authors (Google)",
+   "licence": "BSD-3-Clause",
+   "modifications": "none",
+   "source": {
+    "revision": "v0.40.2",
+    "url": "https://github.com/ps5-payload-dev/pacbrew-repo (release v0.40.2, prebuilt for the console)"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "libvpx-copyright.txt": "/usr/share/doc/libvpx9/copyright"
+   }
+  },
+  {
    "id": "libzip",
    "name": "libzip (the updater reads a release's ZIP with it)",
    "copyright": "Dieter Baron and Thomas Klausner",

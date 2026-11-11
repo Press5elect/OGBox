@@ -154,6 +154,7 @@ add_library(samples OBJECT
 	src/ogbox_ui_screens.cpp
 	src/ogbox_shares.cpp
 	src/ogbox_pad.cpp
+	src/ogbox_intro.cpp
 	src/platform.c)
 target_compile_definitions(samples PRIVATE
 	VK_EXAMPLE_PS5
@@ -178,6 +179,8 @@ target_include_directories(samples PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}
 	src/framegen
 	src)
+# 0.0.9: the startup video's decoder (libvpx's headers, tools/build-deps.sh)
+set_source_files_properties(src/ogbox_intro.cpp PROPERTIES INCLUDE_DIRECTORIES "${PSHAKUX_PORTS}/include")
 set_source_files_properties(src/framegen/ps5_mihawkgen_model.cpp PROPERTIES
 	COMPILE_DEFINITIONS "MIHAWKGEN_MODEL_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/model/network.fgw\"")
 set_target_properties(samples PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON C_STANDARD 11)
@@ -198,6 +201,8 @@ set(link_archives
 	# 0.0.1: the updater's (tools/build-deps.sh): ZIPs, and HTTPS (zlib is the RADV archive's)
 	${PSHAKUX_PORTS}/lib/libzip.a ${PSHAKUX_PORTS}/lib/libcurl.a ${PSHAKUX_PORTS}/lib/libpsl.a
 	${PSHAKUX_PORTS}/lib/libssl.a ${PSHAKUX_PORTS}/lib/libcrypto.a
+	# 0.0.9: the startup video's VP9 decoder
+	${PSHAKUX_PORTS}/lib/libvpx.a
 	# 0.0.4: the DSP56300 JIT, when built (cmake/hakux.cmake)
 	${PSHAKUX_DSP_ARCHIVES})
 if(NOT EXISTS ${CMAKE_BINARY_DIR}/radv-archive.txt)

@@ -288,6 +288,17 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ### 0.0.9 (in progress)
 
+Added
+- A startup video: the OGBox X glows behind black glass, three blows crack it and it shatters, with
+  its own sound (8 seconds; CROSS or CIRCLE skips it, Settings > Interface > Startup video turns it
+  off). Its sources and how to make it again are in `ps5/art/intro`.
+- Quincunx anti-aliasing, the original Xbox's own: each pixel is its middle and its four corners,
+  very smooth edges and a softer picture, as on the console. It raises the internal resolution to
+  the screen's at least.
+- Debanding (Settings > Graphics): smooths the colour bands in skies, fog and dark gradients that
+  show at high internal resolutions, keeping edges and detail. Low for 32-bit colour's fine steps,
+  High for 16-bit colour's wider ones.
+
 Fixed
 - Games that wait for one of their threads to end no longer wait for ever: a thread's end now sets
   what XAPI's `GetExitCodeThread` reads.

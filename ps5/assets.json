@@ -112,6 +112,34 @@
       "url": "https://github.com/Press5elect/OGBox",
       "changes": "none; shown scaled until the game's first frame",
       "licence_file": "licenses/GPL-3.0.txt"
+    },
+    {
+      "path": "intro.ivf",
+      "from": "file",
+      "source": "ps5/art/intro/intro.ivf",
+      "used_by": [
+        "*"
+      ],
+      "title": "OGBox startup video",
+      "author": "Press5elect",
+      "licence": "GPL-3.0-or-later",
+      "url": "https://github.com/Press5elect/OGBox",
+      "changes": "made from ps5/art/intro/src (README.md there); played at OGBox's start (OGBox 0.0.9)",
+      "licence_file": "licenses/GPL-3.0.txt"
+    },
+    {
+      "path": "intro.wav",
+      "from": "file",
+      "source": "ps5/art/intro/intro.wav",
+      "used_by": [
+        "*"
+      ],
+      "title": "OGBox startup video's sound",
+      "author": "Press5elect",
+      "licence": "GPL-3.0-or-later",
+      "url": "https://github.com/Press5elect/OGBox",
+      "changes": "made by ps5/art/intro/src/audio.py; played with the startup video (OGBox 0.0.9)",
+      "licence_file": "licenses/GPL-3.0.txt"
     }
   ]
 }

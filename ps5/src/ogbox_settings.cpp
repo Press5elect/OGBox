@@ -46,8 +46,14 @@ std::vector<Option> makeOptions()
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
 		"Smooths jagged edges. FXAA: the lightest and softest. SMAA: sharper. SSAA: the best picture quality, but it "
-		"may tank performance.",
-		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" } }, "0", true });
+		"may tank performance. Quincunx: the original Xbox's own, very smooth and soft (it raises the internal "
+		"resolution to the screen's at least; Sharpening brings back detail).",
+		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" }, { "quincunx", "Quincunx" } }, "0", true });
+	/* 0.0.9: a pass over the picture before it is scaled (ogbox_main.cpp recordPost) */
+	o.push_back({ "deband", Section::Graphics, "Debanding",
+		"Smooths the colour bands in skies, fog and dark gradients, more visible at high internal resolutions; edges "
+		"and detail are kept. Low: the fine steps of 32-bit colour. High: the wider ones of 16-bit colour.",
+		{ { "0", "Off" }, { "low", "Low" }, { "high", "High" } }, "0", true });
 	o.push_back({ "aspect", Section::Graphics, "Aspect ratio", "",
 		{ { "auto", "Auto" }, { "4:3", "4:3" }, { "16:9", "16:9" }, { "stretch", "Stretch to the screen" } },
 		"auto", true });
@@ -262,6 +268,13 @@ std::vector<Option> makeOptions()
 			"The falling code behind the menus (the Code theme).", kOnOff, "1", false };
 		rain.now = true;
 		o.push_back(rain);
+	}
+	{
+		/* 0.0.9: the startup video (ogbox_intro.h): the X behind black glass, cracked and shattered */
+		Option intro{ "startup_video", Section::Interface, "Startup video",
+			"The cracked-glass intro with sound when OGBox starts. CROSS or CIRCLE skips it.", kOnOff, "1", false };
+		intro.now = true;
+		o.push_back(intro);
 	}
 	{
 		/* 0.0.1: the updater (Crux2's) */

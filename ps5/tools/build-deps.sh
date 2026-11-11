@@ -81,6 +81,16 @@ if ! have ports-https; then
     mark ports-https
 fi
 
+# OGBox 0.0.9: the startup video's decoder (ps5/src/ogbox_intro.cpp): libvpx's VP9 (BSD-3-Clause), the
+# same ports release's.
+if ! have ports-vpx; then
+    step "copying the video decoder's port (libvpx)"
+    rm -rf "$sys/include/vpx"
+    cp -r "$pacbrew/include/vpx" "$sys/include/"
+    cp "$pacbrew/lib/libvpx.a" "$sys/lib/"
+    mark ports-vpx
+fi
+
 # --------------------------------------------------------------------- sources
 fetch() {
     local name=$1 url=$2 revision=$3
