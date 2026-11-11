@@ -257,6 +257,11 @@ The source history of OGBox's own PS5 work, and the attribution it requires, are
   compute passes but not used by OGBox): Settings > Frame generation.
 - **hakuX-lr** (PortareOS and its contributors; GPL-3.0-or-later): graphics, audio, disc and kernel
   improvements taken into the core.
+- **xbased** (crazyriddler's hakuX fork, by way of Prodigy488's xbased-modern-gui; GPL-3.0-or-later):
+  CPU, GPU and kernel fixes taken into the core.
+- The hakuX contributors whose open pull requests to hakuX were taken in: Jbbrack03, Robby Czesany
+  and Möhle Jonas. **Cxbx-Reloaded's xbox_kernel_test_suite** (the Cxbx-Reloaded team; GPL-2.0)
+  measured the kernel against a console: no code of it is in OGBox.
 - **libchdr** (Romain Tisserand; BSD-3-Clause), with the LZMA SDK, zstd and dr_flac: CHD images.
 - **SMAA** (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, Diego Gutierrez; MIT):
   the SMAA anti-aliasing shader and its area and search textures.
@@ -280,6 +285,27 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 0.0.9 (in progress)
+
+Fixed
+- Games that wait for one of their threads to end no longer wait for ever: a thread's end now sets
+  what XAPI's `GetExitCodeThread` reads.
+- The AV pack is the one the console reports (`HalBootSMCVideoMode`): games that check the cable
+  keep their HD modes (`4D530064` lost 480p).
+- A game that rewrites its own code and then protects it runs the new code; a game that never
+  initializes a critical section no longer hangs on it; MMX instructions with a `0x66` prefix run
+  as the console's CPU runs them (a crash at boot).
+- Vertex alignment on the PS5's GPU, and three-component vertex attributes whose fourth component
+  was taken from the next attribute.
+- Up to 1,024 XBE sections, 64 nested exceptions per thread, a contiguous memory block per page of
+  RAM, directory listings with FindFirstFile's dot rules, named kernel objects (`OpenEvent` and the
+  like), GPU work queued into memory a game had freed.
+- The kernel checked with Cxbx-Reloaded's kernel test suite (its expected results come from a
+  console): 80 of its 87 tests with checks pass, where it stopped at its second before. About 30 kernel functions that stopped a game are now there: thread
+  creation, string and number routines, stack walks, kernel queues, I/O completion ports, directory
+  objects, raised statuses, `XcPKDecPrivate`; and the console's results where ours differed: Latin-1
+  case, string conversion limits, DES and RSA edge cases, section page counts, suspend counts.
 
 ### 0.0.8
 
