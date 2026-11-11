@@ -298,6 +298,14 @@ Added
 - Debanding (Settings > Graphics): smooths the colour bands in skies, fog and dark gradients that
   show at high internal resolutions, keeping edges and detail. Low for 32-bit colour's fine steps,
   High for 16-bit colour's wider ones.
+- SSAA + SMAA (Anti-aliasing): SSAA, then SMAA over its result for the edges it leaves.
+- SSAA down-sampling (Settings > Graphics): Sharp (Lanczos) shrinks SSAA's larger picture with
+  crisper edges and less shimmer on fine patterns than Soft, the even average (the default).
+- Texture sharpness (Settings > Graphics): textures stay sharper into the distance, more so at a
+  higher internal resolution; some games' fine patterns may shimmer. Off by default.
+- CRT look (Settings > Graphics): the scanlines between the game's own lines, as a TV of the time
+  showed them, and with Strong the screen's red, green and blue stripes; the picture keeps its
+  brightness. Best on a 4K screen.
 
 Fixed
 - Games that wait for one of their threads to end no longer wait for ever: a thread's end now sets

@@ -46,9 +46,21 @@ std::vector<Option> makeOptions()
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
 		"Smooths jagged edges. FXAA: the lightest and softest. SMAA: sharper. SSAA: the best picture quality, but it "
-		"may tank performance. Quincunx: the original Xbox's own, very smooth and soft (it raises the internal "
-		"resolution to the screen's at least; Sharpening brings back detail).",
-		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" }, { "quincunx", "Quincunx" } }, "0", true });
+		"may tank performance. SSAA + SMAA: SSAA, then SMAA over the result for the edges it leaves. Quincunx: the "
+		"original Xbox's own, very smooth and soft (it raises the internal resolution to the screen's at least; "
+		"Sharpening brings back detail).",
+		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" }, { "ssaa_smaa", "SSAA + SMAA" },
+			{ "quincunx", "Quincunx" } }, "0", true });
+	/* 0.0.9: SSAA's down-sampling filter (ssaa.frag: the box average, or Lanczos-2) */
+	o.push_back({ "ssaa_filter", Section::Graphics, "SSAA down-sampling",
+		"For SSAA: how the larger picture is shrunk to the screen. Soft: an even average (the default). Sharp: a "
+		"Lanczos filter: crisper edges and less shimmer on fine patterns, with a faint halo along hard edges.",
+		{ { "soft", "Soft" }, { "sharp", "Sharp (Lanczos)" } }, "soft", true });
+	/* 0.0.9: the CRT look (crt.frag), the picture's last pass */
+	o.push_back({ "crt", Section::Graphics, "CRT look",
+		"The picture as a TV of the time showed it: the scanlines between the game's own lines (and, Strong, the "
+		"screen's red, green and blue stripes). Replaces the upscaling filter. Best on a 4K screen.",
+		{ { "off", "Off" }, { "light", "Light" }, { "strong", "Strong" } }, "off", true });
 	/* 0.0.9: a pass over the picture before it is scaled (ogbox_main.cpp recordPost) */
 	o.push_back({ "deband", Section::Graphics, "Debanding",
 		"Smooths the colour bands in skies, fog and dark gradients, more visible at high internal resolutions; edges "
@@ -97,6 +109,11 @@ std::vector<Option> makeOptions()
 	/* 0.0.4: anisotropic filtering and sharpening (hakuX's NC_HLE_ANISO and NC_HLE_SHARPEN) */
 	o.push_back({ "aniso", Section::Graphics, "Anisotropic filtering", "",
 		{ { "0", "Default" }, { "2", "2x" }, { "4", "4x" }, { "8", "8x" }, { "16", "16x" } }, "0", true });
+	/* 0.0.9: the mip levels' bias (hakuX's NC_HLE_LODBIAS) */
+	o.push_back({ "lod_bias", Section::Graphics, "Texture sharpness",
+		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
+		"patterns may shimmer. Takes effect at the game's next start.",
+		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
@@ -737,6 +754,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("sharpen") == "30" || value("sharpen") == "60" || value("sharpen") == "90") {
 		a.push_back("NC_HLE_SHARPEN=" + value("sharpen"));
+	}
+	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
+		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");
