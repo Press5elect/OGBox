@@ -598,7 +598,7 @@
   },
   {
    "id": "hakux-lr",
-   "name": "hakuX-lr (PortareOS's hakuX fork): its HLE GPU accuracy work (two-sided lighting, colour sign and key, convolution filters, line width, dithering, antialiasing control, window clip, DOT_ZW / BRDF, texture formats), its APU (the sinc resampler, SSE2/AVX2 mixing, stereo downmix and 3D routing, guards), CHD images, disc, DVD security, cheat, SEH and kernel-pool fixes, merged into hakuX-native",
+   "name": "hakuX-lr (PortareOS's hakuX fork): its HLE GPU accuracy work (two-sided lighting, colour sign and key, convolution filters, line width, dithering, antialiasing control, window clip, DOT_ZW / BRDF, texture formats), its APU (the sinc resampler, SSE2/AVX2 mixing, stereo downmix and 3D routing, guards), CHD images, disc, DVD security, cheat, SEH and kernel-pool fixes, and kernel exports (the stack walks, XcPKDecPrivate, the kernel queues, I/O completion ports and directory objects, these two without its IRP model), merged into hakuX-native",
    "licence": "GPL-3.0-or-later",
    "copyright": "PortareOS (portare-ch) and the hakuX-lr contributors; rfandango and the hakuX contributors",
    "modifications": "taken commit by commit onto hakuX-native's native CPU by Press5elect, 2026: its libretro core, Linux front end, KVM backend and DSP56300 JIT (a Rust crate) left out",
@@ -611,6 +611,23 @@
    "source": {
     "url": "https://github.com/portare-ch/hakuX-lr",
     "revision": "3cc0d0ccab"
+   }
+  },
+  {
+   "id": "xbased",
+   "name": "xbased (crazyriddler's hakuX fork): its fixes for a never-initialized critical section, MMX instructions with a 0x66 prefix (the native CPU's code sweep), the vertex alignment quirk on AMD GPUs and three-component vertex attributes, taken into hakuX-native",
+   "licence": "GPL-3.0-or-later",
+   "copyright": "crazyriddler and the xbased contributors; rfandango and the hakuX contributors",
+   "modifications": "taken commit by commit onto hakuX-native by Press5elect, 2026, the MMX fix as a rewrite in the native CPU's code sweep (native/cpu/codepatch.c)",
+   "texts": {
+    "hakuX-COPYING.txt": "build/hakux-src/COPYING"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/Prodigy488/xbased-modern-gui",
+    "revision": "bac16af2ca"
    }
   },
   {

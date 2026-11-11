@@ -55,7 +55,11 @@ MCPX APU: LGPL-2.1-or-later, GPL-2.0-or-later and the other terms in hakuX's LIC
 processor's measured behaviour from raddad772's xemu pull request #3105, LGPL-2.1-or-later, by
 way of CallistoNTG's hakuX port), and the
 rules for which rdtsc instructions to patch in native/cpu/codepatch.c, taken from Cxbx-Reloaded
-(src/core/kernel/support/PatchRdtsc.cpp, the Cxbx-Reloaded team, GPL-2.0-or-later), and the
+(src/core/kernel/support/PatchRdtsc.cpp, the Cxbx-Reloaded team, GPL-2.0-or-later), the
+commits taken from hakuX's forks into hakuX-native (hakuX-lr: PortareOS and its contributors;
+xbased: crazyriddler, by way of Prodigy488's xbased-modern-gui; and open pull requests to hakuX
+by Jbbrack03, Robby Czesany and Möhle Jonas; all GPL-3.0-or-later, their authors kept on each
+commit and named in ps5/patches/hakux/ps5.patch), and the
 other parts named in ps5/notices/components.json are their authors' work, under their own
 licences and notices, which are kept as they are. The terms above do not apply to them: they
 cover Press5elect's code only. Files made from the PS5 Vulkan Template (Copyright (C) 2026
