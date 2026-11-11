@@ -306,6 +306,13 @@ Added
 - CRT look (Settings > Graphics): the scanlines between the game's own lines, as a TV of the time
   showed them, and with Strong the screen's red, green and blue stripes; the picture keeps its
   brightness. Best on a 4K screen.
+- HDR (Settings > Graphics): the picture goes to an HDR TV as HDR10 (BT.2020 colours, the PQ
+  curve), with the game's brightest parts raised toward HDR highlights (Off, or 600 to 4000 nits;
+  1000 by default) and white at the HDR white level (203 nits, HDR's reference, by default). The
+  menus stay at the white level. It needs the console's own HDR setting on and a TV that takes HDR;
+  otherwise the picture stays SDR. OGBox now declares HDR to the console, so an HDR TV goes into HDR
+  mode while OGBox runs, with this on or off. The framebuffers are switched as VLC for PS5 does
+  (`ps5/patches/mesa-27/0019`), and the declaration is the one other PS5 homebrew shows working.
 
 Fixed
 - Games that wait for one of their threads to end no longer wait for ever: a thread's end now sets

@@ -61,6 +61,32 @@ std::vector<Option> makeOptions()
 		"The picture as a TV of the time showed it: the scanlines between the game's own lines (and, Strong, the "
 		"screen's red, green and blue stripes). Replaces the upscaling filter. Best on a 4K screen.",
 		{ { "off", "Off" }, { "light", "Light" }, { "strong", "Strong" } }, "off", true });
+	/* 0.0.9: HDR output (ogbox_main.cpp hdrUpdate, hdr.frag; the driver's ps5/patches/mesa-27/0019).
+	 * The app's, for the menus too: not a game's own. */
+	{
+		Option hdr{ "hdr", Section::Graphics, "HDR",
+			"Sends the picture to the TV as HDR10, with the game's brightest parts brighter (HDR highlights). Needs "
+			"the console's own HDR on (Settings > Screen and Video > Video Output) and a TV that takes HDR; without "
+			"them the picture stays SDR. The TV goes into HDR mode while OGBox runs whether this is on or off.",
+			kOnOff, "0", false };
+		hdr.now = true;
+		o.push_back(hdr);
+		Option white{ "hdr_white", Section::Graphics, "HDR white level",
+			"For HDR: how bright white is (the menus' white, and the game's ordinary whites). 203 nits is HDR's "
+			"reference level; raise it if the picture looks dim.",
+			{ { "100", "100 nits" }, { "150", "150 nits" }, { "203", "203 nits (reference)" }, { "250", "250 nits" },
+				{ "300", "300 nits" }, { "400", "400 nits" } }, "203", false };
+		white.now = true;
+		o.push_back(white);
+		Option peak{ "hdr_highlights", Section::Graphics, "HDR highlights",
+			"For HDR: how bright the game's brightest parts become (the sky, lights, fire: above about three "
+			"quarters of white), rising smoothly from the rest, which stays as it was. Set it near the TV's peak "
+			"brightness. Off: the SDR picture as it is, at the white level.",
+			{ { "0", "Off" }, { "600", "600 nits" }, { "1000", "1000 nits" }, { "1500", "1500 nits" }, { "2000", "2000 nits" },
+				{ "4000", "4000 nits" } }, "1000", false };
+		peak.now = true;
+		o.push_back(peak);
+	}
 	/* 0.0.9: a pass over the picture before it is scaled (ogbox_main.cpp recordPost) */
 	o.push_back({ "deband", Section::Graphics, "Debanding",
 		"Smooths the colour bands in skies, fog and dark gradients, more visible at high internal resolutions; edges "
