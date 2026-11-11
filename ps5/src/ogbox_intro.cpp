@@ -48,10 +48,10 @@ bool readFile(const std::string &path, std::vector<uint8_t> &out)
 
 inline uint8_t clamp8(int v) { return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-/* I420 (BT.601, studio range: what the encoder was given) into RGBA */
-void toRgba(const vpx_image_t *img, uint8_t *out, uint32_t w, uint32_t h)
+/* I420 (BT.601, studio range: what the encoder was given) into RGBA, rows y0 to y1 */
+void toRgba(const vpx_image_t *img, uint8_t *out, uint32_t w, uint32_t y0, uint32_t y1)
 {
-	for (uint32_t y = 0; y < h; y++) {
+	for (uint32_t y = y0; y < y1; y++) {
 		const uint8_t *py = img->planes[VPX_PLANE_Y] + static_cast<size_t>(y) * img->stride[VPX_PLANE_Y];
 		const uint8_t *pu = img->planes[VPX_PLANE_U] + static_cast<size_t>(y >> 1) * img->stride[VPX_PLANE_U];
 		const uint8_t *pv = img->planes[VPX_PLANE_V] + static_cast<size_t>(y >> 1) * img->stride[VPX_PLANE_V];
@@ -71,7 +71,9 @@ void toRgba(const vpx_image_t *img, uint8_t *out, uint32_t w, uint32_t h)
 	}
 }
 
-constexpr int kSlots = 6;           // decoded ahead: a tenth of a second at 60 frames a second
+constexpr int kSlots = 12;          // decoded ahead: a fifth of a second at 60 frames a second
+constexpr int kPreroll = 8;         // decoded before the clock starts (start() waits for them)
+constexpr int kConverters = 4;      // threads that turn a frame into RGBA, a stripe each
 constexpr double kFade = 0.2;       // seconds: the sound's fade when skipped
 
 } // namespace
@@ -98,7 +100,63 @@ struct IntroPlayer::Impl {
 	std::thread decoder;
 	std::atomic<bool> quit{ false };
 	std::atomic<int> wanted{ 0 };        // the frame the clock is at: frames before it aren't converted
+	std::atomic<int> decoded{ -1 };      // the newest frame decoded and converted
+	std::atomic<bool> done{ false };     // the decoder is through
 	uint64_t serial = 0;
+
+	/* the conversion's helpers: each frame, stripes 1..kConverters-1 (the decoder does stripe 0) */
+	std::thread converters[kConverters - 1];
+	std::mutex cmu;
+	std::condition_variable cgo, cdone;
+	const vpx_image_t *cimg = nullptr;
+	uint8_t *cout = nullptr;
+	uint64_t cjob = 0;
+	int cleft = 0;
+	bool cquit = false;
+
+	void converter(int stripe)
+	{
+		uint64_t seen = 0;
+		for (;;) {
+			std::unique_lock<std::mutex> lock(cmu);
+			cgo.wait(lock, [&] { return cquit || cjob != seen; });
+			if (cquit) {
+				return;
+			}
+			seen = cjob;
+			const vpx_image_t *img = cimg;
+			uint8_t *out = cout;
+			lock.unlock();
+			convertStripe(img, out, stripe);
+			lock.lock();
+			if (--cleft == 0) {
+				cdone.notify_one();
+			}
+		}
+	}
+
+	void convertStripe(const vpx_image_t *img, uint8_t *out, int stripe)
+	{
+		const uint32_t h = std::min<uint32_t>(img->d_h, height), w = std::min<uint32_t>(img->d_w, width);
+		const uint32_t rows = ((h + kConverters - 1) / kConverters + 1) & ~1u;   // even: a chroma row is two
+		const uint32_t y0 = std::min(h, rows * static_cast<uint32_t>(stripe)), y1 = std::min(h, y0 + rows);
+		toRgba(img, out, w, y0, y1);
+	}
+
+	void convert(const vpx_image_t *img, uint8_t *out)
+	{
+		{
+			std::lock_guard<std::mutex> lock(cmu);
+			cimg = img;
+			cout = out;
+			cleft = kConverters - 1;
+			cjob++;
+		}
+		cgo.notify_all();
+		convertStripe(img, out, 0);
+		std::unique_lock<std::mutex> lock(cmu);
+		cdone.wait(lock, [&] { return cleft == 0; });
+	}
 
 	std::vector<int16_t> pcm;            // interleaved stereo, 48 kHz
 	std::atomic<size_t> pos{ 0 };        // in frames
@@ -185,15 +243,24 @@ struct IntroPlayer::Impl {
 	{
 		vpx_codec_ctx_t codec;
 		vpx_codec_dec_cfg_t cfg{};
-		cfg.threads = 4;
+		cfg.threads = 6;
 		cfg.w = width;
 		cfg.h = height;
 		if (vpx_codec_dec_init(&codec, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) {
 			pshakux_log("intro: the VP9 decoder cannot start: no video");
+			done.store(true);
 			return;
 		}
-		unsigned late = 0;
+		/* row-based threads (within a tile column too) and the faster loop filter */
+		vpx_codec_control(&codec, VP9D_SET_ROW_MT, 1);
+		vpx_codec_control(&codec, VP9D_SET_LOOP_FILTER_OPT, 1);
+		for (int c = 1; c < kConverters; c++) {
+			converters[c - 1] = std::thread([this, c] { converter(c); });
+		}
+		unsigned late = 0, frames = 0;
+		double decodeTime = 0.0, convertTime = 0.0, slowest = 0.0;
 		for (size_t i = 0; i < packets.size() && !quit.load(); i++) {
+			const double t0 = now_seconds();
 			if (vpx_codec_decode(&codec, file.data() + packets[i].offset, packets[i].size, nullptr, 0) != VPX_CODEC_OK) {
 				pshakux_log("intro: frame %zu cannot be decoded (%s): the video ends there", i, vpx_codec_error(&codec));
 				break;
@@ -203,6 +270,8 @@ struct IntroPlayer::Impl {
 			if (!img || img->fmt != VPX_IMG_FMT_I420) {
 				continue;
 			}
+			const double t1 = now_seconds();
+			decodeTime += t1 - t0;
 			if (static_cast<int>(i) < wanted.load() && i + 1 < packets.size()) {
 				late++;                      // behind the clock: decoded (the next needs it), not shown
 				continue;
@@ -223,14 +292,31 @@ struct IntroPlayer::Impl {
 			}
 			lock.unlock();
 			free->rgba.resize(static_cast<size_t>(width) * height * 4);
-			toRgba(img, free->rgba.data(), std::min<uint32_t>(img->d_w, width), std::min<uint32_t>(img->d_h, height));
+			const double t2 = now_seconds();
+			convert(img, free->rgba.data());
+			const double t3 = now_seconds();
+			convertTime += t3 - t2;
+			slowest = std::max(slowest, (t1 - t0) + (t3 - t2));
+			frames++;
 			lock.lock();
 			free->index = static_cast<int>(i);
+			decoded.store(static_cast<int>(i));
+		}
+		{
+			std::lock_guard<std::mutex> lock(cmu);
+			cquit = true;
+		}
+		cgo.notify_all();
+		for (std::thread &t : converters) {
+			if (t.joinable()) {
+				t.join();
+			}
 		}
 		vpx_codec_destroy(&codec);
-		if (late) {
-			pshakux_log("intro: %u frames decoded behind the clock (not shown)", late);
-		}
+		done.store(true);
+		pshakux_log("intro: decoding %.1f ms a frame, turning into RGBA %.1f ms (%d threads), the slowest frame %.1f ms; "
+			"%u frames shown of %zu, %u decoded behind the clock (not shown)", 1000.0 * decodeTime / std::max<size_t>(1, packets.size()),
+			1000.0 * convertTime / std::max(1u, frames), kConverters, 1000.0 * slowest, frames, packets.size(), late);
 	}
 };
 
@@ -251,6 +337,11 @@ bool IntroPlayer::open(const std::string &video, const std::string &sound)
 		d->sound ? ", with its sound" : ", no sound");
 	d->decoder = std::thread([this] { d->decode(); });
 	return true;
+}
+
+bool IntroPlayer::ready() const
+{
+	return d->file.empty() || d->done.load() || d->decoded.load() >= std::min<int>(kPreroll, static_cast<int>(d->packets.size())) - 1;
 }
 
 void IntroPlayer::start()

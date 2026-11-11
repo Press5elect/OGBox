@@ -30,6 +30,9 @@ public:
 	/* Reads the video (and the sound, when there is one) and starts decoding ahead; false (and
 	 * a line in the boot log) when the video is missing or unreadable: no intro then. */
 	bool open(const std::string &video, const std::string &sound);
+	/* Enough frames are decoded ahead for the clock to start (a few, so the decoder's slower frames
+	 * have room): the caller then calls start(). */
+	bool ready() const;
 	/* The clock and the sound start. */
 	void start();
 	/* The frame for the time since start(): its RGBA pixels (w x h x 4, valid until the next

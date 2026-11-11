@@ -2718,7 +2718,7 @@ public:
 		uint32_t w = 0, h = 0;
 		uint64_t serial = 0;
 		const uint8_t *pixels = intro.frame(&w, &h, &serial);
-		if (pixels && !introStarted) {
+		if (pixels && !introStarted && intro.ready()) {   // (the first frame up while a few more decode)
 			introStarted = true;
 			intro.start();
 		}
