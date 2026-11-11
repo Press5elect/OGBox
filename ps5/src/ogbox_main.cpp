@@ -1038,6 +1038,9 @@ public:
 	bool touchWas[PAD_PLAYERS]{};
 	ogbox::PadMap padMap;                     // Settings > Controller, the game's own on top
 	int rumblePercent{ 100 };
+	float buzzLarge{ 0.0f }, buzzSmall{ 0.0f };   // 0.0.9: the buzz's motors (player 1's, until buzzUntil)
+	uint32_t lightBarWas[PAD_PLAYERS]{ 1u << 31, 1u << 31, 1u << 31, 1u << 31 };   // 0.0.9: as last set (bit 31: none)
+	uint32_t lightBarPlayers{ 0 };            // the controllers the light bars were set for
 	double buzzUntil{ 0.0 };                  // 0.0.6: the settings' test buzz stops then                 // 0.0.6: Settings > Controller > Rumble strength
 	ogbox::TapLatch tapLatch[PAD_PLAYERS];    // a tap shorter than a frame still reaches the game
 	std::string toast;
@@ -2520,6 +2523,7 @@ public:
 		prepared = true;
 		if (configured) {
 			pshakux_log("ogbox: starting the core");
+			menuBuzz(0.7f, 0.18);   // 0.0.9: the start's buzz (PSWin's), if Settings > Interface > Vibration
 			pshx_core_start();
 		}
 	}
@@ -2860,7 +2864,9 @@ public:
 		/* 0.1.53: player 1's OPTIONS opens the quick menu (or, held, in the "OPTIONS held" mode); the
 		 * menu and its screens have the controller, and the game gets none while it is open */
 		pad_player(0, &menuPad);
+		menuButtons(menuPad);
 		ui::setScrollInput(menuPad.right_y);
+		lightBars(false);
 		if (shareWait.active) {
 			if ((menuPad.pressed & PAD_CIRCLE) && !relaunchAsked) {
 				pshakux_log("ogbox: waiting for the share given up (CIRCLE)");
@@ -2869,6 +2875,9 @@ public:
 			return;
 		}
 		gameMenuControls();
+		if (ui::takeListEdge()) {
+			menuBuzz(0.4f, 0.08);   // 0.0.9: the quick menu's screens' lists too
+		}
 		const bool menu = qm.open || qm.sub != Quick::Sub::None;
 		const bool holdMode = prefs.global("quick_menu") == "options_hold";
 		const std::string quickMode = prefs.global("quick_menu");
@@ -2946,7 +2955,11 @@ public:
 			pshx_core_rumble(static_cast<unsigned>(player), &large, &small);
 			/* 0.0.6: Settings > Controller's rumble strength (a percent, PSWin's way) */
 			const float strength = menu ? 0.0f : static_cast<float>(rumblePercent) / 100.0f;
-			pad_player_vibrate(player, large * strength, small * strength);
+			if (player == 0 && buzzUntil > 0.0 && now_seconds() < buzzUntil) {
+				pad_player_vibrate(0, buzzLarge, buzzSmall);   // 0.0.9: a buzz of the menus' (the start's, the test's)
+			} else {
+				pad_player_vibrate(player, large * strength, small * strength);
+			}
 		}
 		struct pad first{};
 		pad_player(0, &first);
@@ -2973,6 +2986,82 @@ public:
 			pad_vibrate(0.0f, 0.0f);
 		}
 		pad_player(0, &menuPad);
+		menuButtons(menuPad);
+		libraryInput();
+		if (ui::takeListEdge()) {
+			menuBuzz(0.4f, 0.08);
+		}
+		lightBars(true);
+	}
+
+	/* ---- 0.0.9: the DualSense as PSWin has it in its menus -------------------------------------- */
+
+	/* Settings > Interface > Circle confirms: CROSS and CIRCLE swapped for the menus (the game's
+	 * controllers are never swapped). */
+	void menuButtons(struct pad &p)
+	{
+		const bool swap = prefs.global("circle_confirms") == "1";
+		ui::setSwapConfirm(swap);
+		if (!swap) {
+			return;
+		}
+		const auto swapped = [](uint32_t b) {
+			const uint32_t x = b & PAD_CROSS, o = b & PAD_CIRCLE;
+			b &= ~(PAD_CROSS | PAD_CIRCLE);
+			return b | (x ? PAD_CIRCLE : 0u) | (o ? PAD_CROSS : 0u);
+		};
+		p.pressed = swapped(p.pressed);
+		p.held = swapped(p.held);
+	}
+
+	/* Settings > Interface > Vibration: a short buzz on player 1's controller (PSWin's: the small
+	 * motor's tick, the large one only for strong ones), at the end of a list and when a game starts. */
+	void menuBuzz(float strength, double seconds)
+	{
+		if (prefs.global("menu_vibration") == "0") {
+			return;
+		}
+		buzzLarge = strength > 0.6f ? (strength - 0.6f) * 2.5f : 0.0f;
+		buzzSmall = strength;
+		pad_vibrate(buzzLarge, buzzSmall);
+		buzzUntil = now_seconds() + seconds;
+	}
+
+	/* Settings > Interface > Light bar: in the menus player 1's follows the menus' light (the chosen
+	 * game's colour, else the theme's accent), as PSWin's follows its accent; in a game, and for the
+	 * other players, each player's colour as the PS5 gives them (blue, red, green, pink). Set when it
+	 * changes; "console": left as the console has it. */
+	void lightBars(bool menus)
+	{
+		if (prefs.global("light_bar") == "console") {
+			return;
+		}
+		const uint32_t connected = pad_players();
+		if (connected != lightBarPlayers) {
+			lightBarPlayers = connected;
+			for (uint32_t &was : lightBarWas) {
+				was = 1u << 31;   // (a controller come or gone: its light bar again)
+			}
+		}
+		static const uint32_t kPlayer[PAD_PLAYERS] = { 0x0050FF, 0xFF2020, 0x20FF30, 0xFF30C8 };
+		for (int player = 0; player < PAD_PLAYERS; player++) {
+			if (!(connected & (1u << player))) {
+				continue;
+			}
+			uint32_t rgb = kPlayer[player];
+			if (menus && player == 0) {
+				const ImU32 c = themeCode ? ui::P().accent : ui::backdropLight();
+				rgb = ((c >> IM_COL32_R_SHIFT) & 0xFF) << 16 | ((c >> IM_COL32_G_SHIFT) & 0xFF) << 8 | ((c >> IM_COL32_B_SHIFT) & 0xFF);
+			}
+			if (rgb != lightBarWas[player]) {
+				lightBarWas[player] = rgb;
+				pad_player_light_bar(player, static_cast<uint8_t>(rgb >> 16), static_cast<uint8_t>(rgb >> 8), static_cast<uint8_t>(rgb));
+			}
+		}
+	}
+
+	void libraryInput()
+	{
 		ui::setScrollInput(menuPad.right_y);   // 0.0.6: long text scrolls with the right stick
 		const uint32_t pressed = menuPad.pressed;
 		const uint32_t nav = navPressed();   // 0.0.3: with the D-pad's repeats, L2 / R2 as presses
@@ -6212,6 +6301,10 @@ public:
 				to += (p & PAD_RIGHT) ? 1 : 0;
 				to -= (p & PAD_LEFT) ? 1 : 0;
 			}
+			if ((list && (((p & PAD_DOWN) && at >= n - 1) || ((p & PAD_UP) && at == 0 && cards.empty()))) ||
+				((p & PAD_RIGHT) && at >= n - 1) || ((p & PAD_LEFT) && at == 0)) {
+				ui::listEdge();   // 0.0.9: the list's end (Settings > Interface > Vibration)
+			}
 			to = std::max(0, std::min(n - 1, to));
 			if ((p & PAD_UP) && (!list || at == 0) && !cards.empty()) {
 				lastGame = selected;
@@ -6228,9 +6321,13 @@ public:
 			}
 			if ((p & PAD_LEFT) && at > 0) {
 				choose(cards[static_cast<size_t>(at - 1)]);
+			} else if (p & PAD_LEFT) {
+				ui::listEdge();
 			}
 			if ((p & PAD_RIGHT) && at + 1 < n) {
 				choose(cards[static_cast<size_t>(at + 1)]);
+			} else if (p & PAD_RIGHT) {
+				ui::listEdge();
 			}
 			if ((p & PAD_DOWN) && !games.empty()) {
 				lastCard = selected;
@@ -6553,7 +6650,8 @@ public:
 			return { { "Places", { "list_games", "list_internal", "list_usb", "list_ext", "list_network" } },
 				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
-			return { { "", { "theme", "rain", "quick_menu" } } };
+			/* 0.0.9: the DualSense in the menus (PSWin's) */
+			return { { "", { "theme", "rain", "quick_menu" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } } };
 		case SP_CONTROLLER:
 			/* 0.0.6: the buttons on the controller's picture, in its order (left column, then right) */
 			return { { "", { "pad_lt", "pad_lthumb", "pad_up", "pad_down", "pad_left", "pad_right", "pad_back", "pad_rt", "pad_y",
@@ -6647,7 +6745,9 @@ public:
 		const std::string key = o.key;
 		if (key == "pad_rumble") {   // 0.0.6: a short buzz at the new strength, as PSWin gives
 			const float k = static_cast<float>(std::atoi(next.c_str())) / 100.0f;
-			pad_vibrate(0.5f * k, 0.12f * k);
+			buzzLarge = 0.5f * k;
+			buzzSmall = 0.12f * k;
+			pad_vibrate(buzzLarge, buzzSmall);
 			buzzUntil = now_seconds() + 0.18;
 		}
 		if (forGame) {
@@ -7058,6 +7158,8 @@ public:
 			}
 			if (i >= 0) {
 				setRowSel = i;
+			} else {
+				ui::listEdge();
 			}
 		}
 		if (p & PAD_DOWN) {
@@ -7067,6 +7169,8 @@ public:
 			}
 			if (i < static_cast<int>(rows.size())) {
 				setRowSel = i;
+			} else {
+				ui::listEdge();
 			}
 		}
 		if (p & PAD_CIRCLE) {
@@ -7403,9 +7507,15 @@ public:
 		const int n = static_cast<int>(rows.size());
 		form.sel = std::max(0, std::min(n - 1, form.sel));
 		if (p & PAD_UP) {
+			if (form.sel == 0) {
+				ui::listEdge();
+			}
 			form.sel = std::max(0, form.sel - 1);
 		}
 		if (p & PAD_DOWN) {
+			if (form.sel >= n - 1) {
+				ui::listEdge();
+			}
 			form.sel = std::min(n - 1, form.sel + 1);
 		}
 		if (p & PAD_CIRCLE) {

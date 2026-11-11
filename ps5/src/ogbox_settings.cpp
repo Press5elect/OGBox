@@ -295,6 +295,25 @@ std::vector<Option> makeOptions()
 		layout.now = true;
 		o.push_back(layout);
 	}
+	{
+		/* 0.0.9: the DualSense in the menus, as PSWin has it */
+		Option vib{ "menu_vibration", Section::Interface, "Vibration",
+			"A short buzz at the end of a list and when a game starts. The games' own rumble is Settings > Controller's.",
+			kOnOff, "1", false };
+		vib.now = true;
+		o.push_back(vib);
+		Option swap{ "circle_confirms", Section::Interface, "Circle confirms",
+			"Circle confirms and Cross goes back, in OGBox's menus only (the games' buttons stay as they are).",
+			kOnOff, "0", false };
+		swap.now = true;
+		o.push_back(swap);
+		Option bar{ "light_bar", Section::Interface, "Light bar",
+			"The controller's light: in the menus, the chosen game's colour (or the theme's); in a game, each player's "
+			"colour, as the PS5 gives them: blue, red, green, pink. Left as the console has it: from the next start.",
+			{ { "colours", "Menu and player colours" }, { "console", "Left as the console has it" } }, "colours", false };
+		bar.now = true;
+		o.push_back(bar);
+	}
 	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
 	{
 		for (int i = 0; i < static_cast<int>(XboxControl::Count); i++) {

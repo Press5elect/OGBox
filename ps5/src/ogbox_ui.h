@@ -121,6 +121,13 @@ struct Hint {
 };
 /* A key and its words; its width. */
 float hint(ImDrawList *dl, ImVec2 p, const Hint &h, ImU32 col, bool measureOnly = false);
+/* 0.0.9: Settings > Interface > Circle confirms (PSWin's): the menus' CROSS and CIRCLE are swapped,
+ * and the hints' and buttons' X and O keycaps with them (keycap() itself draws the buttons as they are). */
+void setSwapConfirm(bool on);
+/* 0.0.9: a list stepped against its end (listStep, or a screen's own list saying so), for the
+ * menus' end-of-list buzz: true once after it happened. */
+void listEdge();
+bool takeListEdge();
 /* The hints along the foot of the screen, and words at its right. */
 void footer(ImDrawList *dl, ImVec2 screen, const std::vector<Hint> &hints, const std::string &right = std::string());
 
@@ -247,6 +254,9 @@ struct Backdrop {
 	float strength{ 1.0f };
 };
 void backdrop(ImDrawList *dl, ImVec2 size, const Backdrop &b);
+/* 0.0.9: the colour of the backdrop's light as last drawn (the chosen game's, else the accent):
+ * the DualSense's light bar in the menus. */
+ImU32 backdropLight();
 
 // ---- the game list ----------------------------------------------------------------------------
 

@@ -556,6 +556,35 @@ float keycap(ImDrawList *dl, ImVec2 p, float h, const std::string &name, ImU32 c
 	return w;
 }
 
+static bool g_swapConfirm = false;
+static bool g_listEdge = false;
+
+void setSwapConfirm(bool on)
+{
+	g_swapConfirm = on;
+}
+
+void listEdge()
+{
+	g_listEdge = true;
+}
+
+bool takeListEdge()
+{
+	const bool was = g_listEdge;
+	g_listEdge = false;
+	return was;
+}
+
+/* A hint's or a button's key as the menus' buttons are (Circle confirms: X and O swapped). */
+static std::string menuKey(const std::string &k)
+{
+	if (!g_swapConfirm) {
+		return k;
+	}
+	return k == "X" ? std::string("O") : k == "O" ? std::string("X") : k;
+}
+
 float hint(ImDrawList *dl, ImVec2 p, const Hint &h, ImU32 col, bool measureOnly)
 {
 	const float kh = px(30.0f), fs = px(17.0f);
@@ -567,7 +596,7 @@ float hint(ImDrawList *dl, ImVec2 p, const Hint &h, ImU32 col, bool measureOnly)
 		if (sp == std::string::npos) {
 			sp = keys.size();
 		}
-		const std::string k = keys.substr(at, sp - at);
+		const std::string k = menuKey(keys.substr(at, sp - at));
 		x += keycap(measureOnly ? nullptr : dl, ImVec2(x, p.y), kh, k, P().textDim, 0, measureOnly) + px(5.0f);
 		at = sp + 1;
 	}
@@ -945,7 +974,7 @@ float button(ImDrawList *dl, ImVec2 p, const Button &b, float focus, float a, bo
 	}
 	float x = p.x + padX;
 	if (!b.key.empty()) {
-		keycap(dl, ImVec2(x, p.y + (h - kw) * 0.5f), kw, b.key, alpha(ink, a), b.primary ? alpha(IM_COL32(255, 255, 255, 90), a) : 0);
+		keycap(dl, ImVec2(x, p.y + (h - kw) * 0.5f), kw, menuKey(b.key), alpha(ink, a), b.primary ? alpha(IM_COL32(255, 255, 255, 90), a) : 0);
 		x += kw + px(12.0f);
 	} else if (b.icon != Icon::None) {
 		icon(dl, b.icon, ImVec2(x + kw * 0.5f, p.y + h * 0.5f), px(24.0f), alpha(b.primary ? ink : pl.textDim, a));
@@ -1126,6 +1155,7 @@ int listStep(const std::vector<ListRow> &rows, int sel, int dir)
 			return i;
 		}
 	}
+	g_listEdge = true;   // (nothing further that way: the end of the list)
 	return sel;
 }
 
@@ -1230,12 +1260,20 @@ void drawAside(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const Aside &as, float appe
 
 // ---- the backdrop -----------------------------------------------------------------------------
 
+static const ImU32 *g_backdropLight = nullptr;
+
+ImU32 backdropLight()
+{
+	return g_backdropLight && *g_backdropLight ? *g_backdropLight : P().accent;
+}
+
 void backdrop(ImDrawList *dl, ImVec2 size, const Backdrop &b)
 {
 	static std::string curKey;
 	static Tex cur, prev;
 	static ImU32 curTint = 0, prevTint = 0;
 	static float fade = 1.0f;
+	g_backdropLight = &curTint;
 	if (b.key != curKey) {
 		prev = cur;
 		prevTint = curTint;
