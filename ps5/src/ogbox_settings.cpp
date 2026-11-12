@@ -100,11 +100,16 @@ std::vector<Option> makeOptions()
 	// ---- Graphics: how the picture looks
 	o.push_back({ "render_scale", Section::Graphics, "Internal resolution",
 		"1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen. Above that the "
-		"picture is drawn larger than the screen and shrunk to it, smoother, at a much higher cost: up to 12x "
-		"(a 720p game stops at 6x).",
+		"picture is drawn larger than the screen and shrunk to it, smoother, at a much higher cost (7x to 12x: "
+		"Settings > Advanced).",
 		{ { "1", "1x (Xbox default)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" },
 			{ "7", "7x" }, { "8", "8x" }, { "9", "9x" }, { "10", "10x" }, { "11", "11x" }, { "12", "12x" } },
 		"1", true });
+	/* 0.0.9: 7x to 12x only when asked for (Settings > Advanced) */
+	o.push_back({ "high_res", Section::Performance, "Internal resolutions above 6x",
+		"Unlocks Internal resolution's 7x to 12x. Warning: performance may vary, and it may crash OGBox or the "
+		"console. A 720p game stops at 6x.",
+		{ { "0", "Off" }, { "1", "On" } }, "0", false });
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
 		"Smooths jagged edges. FXAA: the lightest and softest. SMAA: sharper. SSAA: the best picture quality, but it "
@@ -761,7 +766,14 @@ std::vector<std::string> Settings::coreArgs() const
 	if (on("uncapped")) {
 		a.push_back("uncap");
 	}
-	a.push_back("scale=" + value("render_scale"));
+	{
+		/* 0.0.9: above 6x only with Settings > Advanced > Internal resolutions above 6x on */
+		int scale = std::atoi(value("render_scale").c_str());
+		if (scale > 6 && global("high_res") != "1") {
+			scale = 6;
+		}
+		a.push_back("scale=" + std::to_string(std::max(1, scale)));
+	}
 	// the console's video settings (AppPrefs.videoFlags) and its language (xboxLanguage)
 	unsigned flags = 0;
 	const std::string format = value("screen_format");

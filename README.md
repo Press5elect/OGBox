@@ -64,8 +64,11 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
    named `elevation-off.txt` in the title folder.
 3. **Start it** from the PS5 home screen. Press CROSS past the experimental notice. The first time,
    OGBox asks where to keep its data (the emulated Xbox hard disk, caches, covers and screenshots):
-   the console's storage, a folder of your own, a USB drive or extended storage. You can change it
-   later in Settings > Data folder, and OGBox moves everything for you.
+   the console's storage, a folder of your own, a USB drive or extended storage. A USB drive is
+   recommended (OGBox lists it first): games write to the Xbox hard disk and the caches as they
+   play, and the console slows a title's writes to its own storage down after a few GB, which slows
+   the game; on a USB drive it doesn't. You can change it later in Settings > Data folder, and
+   OGBox moves everything for you.
 4. **Pick a game.** Your games show as covers, or as a list if you prefer (Settings > Game list).
    - **L1 / R1** switch between the **Internal**, **USB** and **Network** tabs.
    - The **D-pad** moves along your games. **UP** goes to the strip above them: the folders, the

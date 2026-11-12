@@ -71,7 +71,7 @@ typedef struct OgboxModEntry {
     /* 0.1.45: an XBE patch of gamedata/patches.db (ogbox_patches.h) */
     bool patch;
     char category[16];
-    char author[64];
+    char author[64];       /* a patch's; a mod's (mod.txt "author:", "" without one) */
     char source[64];
     char region[16];       /* 0.0.6: a patch's release ("USA", "PAL"...; "" any) */
     /* 0.0.2: the release check (OGBOX_FIT_*), and why it doesn't fit */

@@ -1132,6 +1132,7 @@ public:
 		bool active{ false };
 		std::function<void()> then;
 		std::string what;            // "going back to the game list"...
+		std::string title;           // the bar's own title ("" for "Saving before " + what)
 		double since{ 0.0 }, lastLog{ 0.0 };
 		uint64_t cacheFirst{ 0 };    // the cache drives' bytes held when it began (the bar's start)
 		bool cacheLeft{ false };     // CIRCLE: the cache drives' unwritten bytes left (the game copies them again)
@@ -1859,7 +1860,7 @@ public:
 	 * (a save among them) and its files' syncs and closes always, a save sync to a share or USB drive
 	 * to the end of the save it is copying, the cache drives' held bytes unless CIRCLE leaves them
 	 * (the game finds those files missing and copies them again). */
-	void leaveAfterWrites(const char *what, std::function<void()> then)
+	void leaveAfterWrites(const char *what, std::function<void()> then, const char *title = "")
 	{
 		if (leave.active) {
 			return;
@@ -1882,6 +1883,7 @@ public:
 		leave.active = true;
 		leave.then = std::move(then);
 		leave.what = what;
+		leave.title = title;
 		leave.since = leave.lastLog = now_seconds();
 		leave.cacheFirst = w.cache_bytes;
 		pshakux_log("ogbox: %s: waiting for the disk first (the game's writes %u, syncs and closes %u, the cache "
@@ -1921,7 +1923,7 @@ public:
 			parts.push_back(part);
 		}
 		const bool cacheOnly = !w.writes && !w.closes && !syncing && w.cache_bytes;
-		v->title = "Saving before " + leave.what;
+		v->title = leave.title.empty() ? "Saving before " + leave.what : leave.title;
 		v->detail.clear();
 		for (size_t i = 0; i < parts.size(); i++) {
 			v->detail += (i ? " \xC2\xB7 " : "") + parts[i];
@@ -4383,7 +4385,7 @@ public:
 			R r;
 			r.key = "m" + std::to_string(kindOf(m)) + ":" + m.id;
 			r.title = m.name;
-			r.sub = m.patch ? std::string("by ") + m.author : std::string();
+			r.sub = (m.patch || (!m.cheat && m.author[0])) ? std::string("by ") + m.author : std::string();
 			r.right = other ? std::string(m.on ? "Incompatible: left out" : "Incompatible")
 				: m.gamefix ? std::string("always on")
 				: m.cheat ? (m.once ? "once" : std::string())
@@ -4417,6 +4419,9 @@ public:
 				} else if (m.gamefix) {
 					help += "A game fix: OGBox always applies it, because the game doesn't run well on the PS5 without it. It can't be turned off.";
 				} else {
+					if (!m.cheat && m.author[0]) {
+						help += std::string("By ") + m.author + ". ";
+					}
 					help += m.cheat ? "Cheats apply while the game runs, from its next start." : "Mods change the game's code and files, from its next start.";
 				}
 				if (unchecked && !m.patch) {
@@ -5260,6 +5265,19 @@ public:
 		}
 	}
 
+	/* 0.0.8: why a USB drive is recommended for the data folder (the data folder's screen) */
+	std::string storageAdvice() const
+	{
+		bool usb = false;
+		for (const ogbox::StoragePlace &p : storageList) {
+			usb |= p.path.rfind("/mnt/usb", 0) == 0;
+		}
+		const std::string why = "games write to the Xbox hard disk and the caches as they play, and the console slows a title's "
+			"writes to its own storage down after a few GB, which slows the game; on a USB drive it doesn't.";
+		return usb ? "A USB drive is recommended: " + why
+				   : "Recommended: plug in a USB drive and keep the data there (Another folder\xE2\x80\xA6 if it isn't listed): " + why;
+	}
+
 	/* The data folder's screen for its step: its words, its rows and what each does. */
 	void storageModel(ui::ListScreenView &v, std::vector<std::function<void()>> &acts)
 	{
@@ -5278,10 +5296,10 @@ public:
 			if (storageFirst) {
 				v.intro = "Where should OGBox keep its data? That is the Xbox's hard disk (your saves), the shader caches, the covers and "
 					"your screenshots: a few GB as you play. OGBox's settings stay on the console either way, and you can change this "
-					"later in Settings.";
+					"later in Settings. " + storageAdvice();
 			} else if (isFolder(now)) {
 				v.intro = "Now: " + now + " (" + ogbox::freeSpaceText(now) + "). Choose another place and OGBox moves your Xbox hard "
-					"disk, caches, covers and screenshots there.";
+					"disk, caches, covers and screenshots there. " + storageAdvice();
 			} else {   // 0.0.3: its drive unplugged
 				v.intro = "Now: " + now + ", which isn't there: is its drive plugged in? Your Xbox hard disk is on it.";
 				v.introWarn = true;
@@ -5693,7 +5711,12 @@ public:
 	/* A setting's row: its value one step on (by -1 or +1), the game's own (as Game Settings sets it) */
 	void quickStepOption(const ogbox::Option &o, int by)
 	{
-		const std::string next = ogbox::Settings::step(o, prefs.value(o.key), by);
+		std::string next = ogbox::Settings::step(o, prefs.value(o.key), by);
+		if (std::string(o.key) == "render_scale" && prefs.global("high_res") != "1") {
+			/* 0.0.9: 1x to 6x round, unless Settings > Advanced unlocks 7x to 12x */
+			const int at = std::max(1, std::min(6, std::atoi(prefs.value(o.key).c_str())));
+			next = std::to_string((at - 1 + by % 6 + 6) % 6 + 1);
+		}
 		prefs.setOverride(o.key, next == prefs.global(o.key) ? std::string() : next);
 		afterGameChange(o);
 	}
@@ -5712,7 +5735,7 @@ public:
 		mkdir(ogbox::storagePath("states").c_str(), 0777);
 		mkdir(ogbox::stateFolder(runKey).c_str(), 0777);
 		qm.applyPath = ogbox::stateFolder(runKey) + "/apply.state";
-		qm.busy = "Applying: the game restarts here";
+		qm.busy = "Applying Settings";
 		qm.after = Quick::After::Apply;
 		qm.result = std::make_shared<std::atomic<int>>(0);
 		qm.why = std::make_shared<std::string>();
@@ -5821,9 +5844,10 @@ public:
 	}
 
 	/* The title started again with the state (hakuX loads a state as the game boots). */
-	void quickLoad(const std::string &statePath)
+	void quickLoad(const std::string &statePath, bool applying = false)
 	{
-		leaveAfterWrites("loading the state", [this, statePath]() { quickLoadNow(statePath); });
+		leaveAfterWrites(applying ? "applying the settings" : "loading the state", [this, statePath]() { quickLoadNow(statePath); },
+			applying ? "Applying Settings" : "");
 	}
 
 	void quickLoadNow(const std::string &statePath)
@@ -6003,7 +6027,7 @@ public:
 			qm.busy.clear();
 			if (qm.after == Quick::After::Apply) {
 				if (ok) {
-					quickLoad(qm.applyPath);
+					quickLoad(qm.applyPath, true);
 				} else {
 					showToast("Not applied (" + *qm.why + "): restart the game to apply the changes");
 				}
@@ -7754,7 +7778,7 @@ public:
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
 				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
-					"audio_resampler", "console_ram" } },
+					"audio_resampler", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {
@@ -7913,6 +7937,9 @@ public:
 		}
 		prefs.setGlobal(key, next);
 		afterGameChange(o);
+		if (key == "high_res" && next == "1") {
+			showToast("Internal resolutions above 6x unlocked. Performance may vary, and OGBox or the console may crash.");
+		}
 		if (key == "rain") {
 			rainOn = next == "1";
 		} else if (key == "theme") {
@@ -7972,7 +7999,11 @@ public:
 			a.step = [this, op](int by) { setValue(*op, by > 0 ? "1" : "0"); };
 		} else {
 			r.kind = ui::SetRow::Kind::Choice;
-			for (const ogbox::Choice &c : o.choices) {
+			/* 0.0.9: Internal resolution stops at 6x unless Settings > Advanced unlocks 7x to 12x */
+			const size_t shown = std::string(o.key) == "render_scale" && prefs.global("high_res") != "1"
+				? std::min<size_t>(6, o.choices.size()) : o.choices.size();
+			for (size_t ci = 0; ci < shown; ci++) {
+				const ogbox::Choice &c = o.choices[ci];
 				if (c.off) {
 					r.offChoices.push_back(static_cast<int>(r.choices.size()));
 				}
@@ -7984,16 +8015,28 @@ public:
 			if (std::string(o.key) == "theme" && v == "emerald") {
 				r.choice = 0;   // (0.0.2's Emerald: Dark now)
 			}
-			a.press = [this, op, v]() { setValue(*op, ogbox::Settings::step(*op, v, 1)); };
-			a.step = [this, op, v](int by) {
-				// no wrapping round at the ends: LEFT at the first stays
-				int at = 0;
-				for (size_t i = 0; i < op->choices.size(); i++) {
-					if (v == op->choices[i].value) {
+			if (r.choice < 0 && shown < o.choices.size()) {
+				r.choice = static_cast<int>(shown) - 1;   // (a 7x-12x kept from before, run at 6x now)
+			}
+			auto indexOf = [op, shown](const std::string &value) {
+				int at = static_cast<int>(shown) - 1;
+				for (size_t i = 0; i < shown; i++) {
+					if (value == op->choices[i].value) {
 						at = static_cast<int>(i);
 					}
 				}
-				const int to = std::max(0, std::min(static_cast<int>(op->choices.size()) - 1, at + by));
+				return at;
+			};
+			if (shown < o.choices.size()) {
+				a.press = [this, op, v, shown, indexOf]() {
+					setValue(*op, op->choices[static_cast<size_t>((indexOf(v) + 1) % static_cast<int>(shown))].value);
+				};
+			} else {
+				a.press = [this, op, v]() { setValue(*op, ogbox::Settings::step(*op, v, 1)); };
+			}
+			a.step = [this, op, v, shown, indexOf](int by) {
+				// no wrapping round at the ends: LEFT at the first stays
+				const int to = std::max(0, std::min(static_cast<int>(shown) - 1, indexOf(v) + by));
 				setValue(*op, op->choices[static_cast<size_t>(to)].value);
 			};
 		}
@@ -8145,9 +8188,11 @@ public:
 			break;
 		case SP_DATA:
 			actionRow("root", "Now", ogbox::storageRoot(), "Where OGBox keeps the Xbox hard disk, the caches, the covers and the "
-				"screenshots.", nullptr, rows, acts, ui::Icon::Folder);
+				"screenshots. A USB drive is recommended: the console slows a title's writes to its own storage down after a few GB, "
+				"which slows games; on a USB drive it doesn't.", nullptr, rows, acts, ui::Icon::Folder);
 			actionRow("free", "Free there", ogbox::freeSpaceText(ogbox::storageRoot()), "", nullptr, rows, acts);
-			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive; OGBox moves its "
+			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive (a USB drive is "
+				"recommended); OGBox moves its "
 				"data there and keeps using it.", [this]() { openStorage(false); }, rows, acts, ui::Icon::Usb);
 			break;
 		case SP_HDD:
@@ -8177,9 +8222,11 @@ public:
 			actionRow("ver", "OGBox", pshakux_build_label(), "", nullptr, rows, acts);
 			groupRow("Data folder", rows, acts);
 			actionRow("root", "Now", ogbox::storageRoot(), "Where OGBox keeps the Xbox hard disk, the caches, the covers and the "
-				"screenshots.", nullptr, rows, acts, ui::Icon::Folder);
+				"screenshots. A USB drive is recommended: the console slows a title's writes to its own storage down after a few GB, "
+				"which slows games; on a USB drive it doesn't.", nullptr, rows, acts, ui::Icon::Folder);
 			actionRow("free", "Free there", ogbox::freeSpaceText(ogbox::storageRoot()), "", nullptr, rows, acts);
-			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive; OGBox moves its "
+			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive (a USB drive is "
+				"recommended); OGBox moves its "
 				"data there and keeps using it.", [this]() { openStorage(false); }, rows, acts, ui::Icon::Usb);
 			actionRow("hddpath", "Xbox hard disk", hdd, "", nullptr, rows, acts, ui::Icon::Console);
 			groupRow("Credits", rows, acts);
@@ -8992,6 +9039,26 @@ public:
 			}
 			if (p & (PAD_CIRCLE | PAD_UP)) {
 				gp.states = false;
+			} else if ((p & PAD_TRIANGLE) && n) {
+				/* 0.0.9: a state deleted, "Where I left off" among them (the cache copies it alone used go
+				 * at the next save, which sweeps those no state uses) */
+				const ogbox::StateSlot st = ogbox::stateSlot(gp.info.key, slots[static_cast<size_t>(std::min(gp.stateSel, n - 1))]);
+				const std::string name = st.slot == ogbox::kQuitSlot ? std::string("Where I left off") : "Slot " + std::to_string(st.slot);
+				openPopup("Delete this state?", name + ", saved " + ogbox::dateText(st.mtime) + ".", { "Delete", "Go back" },
+					[this, st, name](int i) {
+						if (i != 0) {
+							return;
+						}
+						const bool ok = std::remove(st.path.c_str()) == 0;
+						std::remove(st.thumb.c_str());
+						pshakux_log("library: the state %s %s", st.path.c_str(), ok ? "deleted" : "could not be deleted");
+						showToast(ok ? name + " deleted" : "The state could not be deleted");
+						const int left = static_cast<int>(usedStateSlots(gp.info.key).size());
+						gp.stateSel = std::max(0, std::min(gp.stateSel, left - 1));
+						if (!left) {
+							gp.states = false;
+						}
+					});
 			} else if ((p & PAD_CROSS) && n && startPath.empty()) {
 				const ogbox::StateSlot st = ogbox::stateSlot(gp.info.key, slots[static_cast<size_t>(std::min(gp.stateSel, n - 1))]);
 				startState = st.path;
@@ -9139,7 +9206,7 @@ public:
 			}
 		}
 		v.actionSel = gp.pill;
-		v.footer = gp.states ? std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Load" }, { "O", "Back" } }
+		v.footer = gp.states ? std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Load" }, { "T", "Delete" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Open" }, { "O", "Back" } };
 		if (!gp.states && !slots.empty()) {
 			v.footer.insert(v.footer.begin() + 2, { "D", "Load State" });
