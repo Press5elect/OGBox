@@ -180,15 +180,17 @@ fi
 # without it the DSP interpreter runs). Rust's standard library is built again for the console's
 # target (ps5/rust/ps5/x86_64-unknown-freebsd.json: FreeBSD's, with emulated thread-locals, as the
 # console's clang makes them, and no dynamic linking), so the build takes a nightly toolchain,
-# pinned, with rust-src. Its patch (ps5/patches/dsp56300): the JIT's code in read-write-execute
-# memory, where the PS5 makes read+execute pages execute-only, which OGBox gives it
+# pinned, with rust-src. Its patches (ps5/patches/dsp56300): ogbox-ps5.patch, the JIT's code in
+# read-write-execute memory, where the PS5 makes read+execute pages execute-only, which OGBox gives it
 # (host-memory: ps5/hakux/apu/dsp_jit_mem_ps5.c). Six of std's imports that the
 # console's libkernel stub defines (and lld would export a definition of) are renamed in the
 # archive to ogbox_rs_<name>; ps5/hakux/compat/rust_std_stubs.c defines them and the calls the
-# console lacks. Its crates' licences go to $bld/dsp56300-THIRD-PARTY.txt (the notices).
+# console lacks. Then 0001-loop-back-after-a-return-to-la.patch (hakuX-lr's, 2026-11-08): a DO
+# loop whose last instruction is a subroutine call ran once, the return to LA+1 ending it. Its
+# crates' licences go to $bld/dsp56300-THIRD-PARTY.txt (the notices).
 dsp_toolchain=nightly-2026-11-05
 dsp_symbols="chown chroot lchown linkat setpgid pthread_setname_np"
-dsp_stamp="$dsp_toolchain b36db2c $(sha256sum "$ps5/patches/dsp56300/ogbox-ps5.patch" "$ps5/rust/ps5/x86_64-unknown-freebsd.json" | cut -c1-16 | tr '\n' ' ')"
+dsp_stamp="$dsp_toolchain b36db2c $(sha256sum "$ps5/patches/dsp56300/"*.patch "$ps5/rust/ps5/x86_64-unknown-freebsd.json" | cut -c1-16 | tr '\n' ' ')"
 if [[ $(cat "$bld/dsp56300.done" 2>/dev/null) != "$dsp_stamp" ]]; then
     rm -f "$sys/lib/libdsp56300_emu_ffi.a" "$sys/include/dsp56300.h"
     if ! command -v rustup >/dev/null; then
@@ -198,6 +200,10 @@ if [[ $(cat "$bld/dsp56300.done" 2>/dev/null) != "$dsp_stamp" ]]; then
         rustup toolchain install "$dsp_toolchain" --profile minimal --component rust-src >/dev/null 2>&1
         git -C "$src/dsp56300" checkout -q -- . && git -C "$src/dsp56300" clean -qfd -e .pshakux-revision
         git -C "$src/dsp56300" apply "$ps5/patches/dsp56300/ogbox-ps5.patch"
+        # then the fixes from elsewhere, in their names' order (0001-...: hakuX-lr's DO loop fix)
+        for patch in "$ps5/patches/dsp56300/"[0-9]*.patch; do
+            if [[ -e $patch ]]; then git -C "$src/dsp56300" apply "$patch"; fi
+        done
         rm -f "$src/dsp56300/rust-toolchain.toml"   # (its channel, 1.99.1, can't build std for a target)
         target_dir="$bld/dsp56300"
         # (unwinding: the crate catches its panics at the C boundary, logs them and stops the JIT, the
