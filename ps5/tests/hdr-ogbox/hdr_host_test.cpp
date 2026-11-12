@@ -26,7 +26,8 @@
 
 #define VKC(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { std::fprintf(stderr, "%s: %d\n", #x, (int)r_); std::exit(2); } } while (0)
 
-static const uint32_t W = 256, H = 6;   // a row each: grey ramp, colours, menus half / fully over, ...
+static const uint32_t W = 400, H = 300;   // rows 0-5 the test pixels (grey ramp, colours, menus half / fully over,
+                                          // ...), the rest black: the test screen's patterns are in the middle
 
 static VkInstance instance;
 static VkPhysicalDevice gpu;
@@ -148,6 +149,7 @@ static double pqCode(double nits)
 
 struct Push {
 	float white, peak, srgb, highlights;
+	float cal, level, unused0, unused1;   // the test screen: 1 the highlights' pattern, 2 the white level's
 };
 
 /* the codes R, G, B hdr.frag gives for a picture pixel p (B, G, R, A bytes as stored) and a menu
@@ -223,7 +225,12 @@ int main(int argc, char **argv)
 
 	/* the layers: rows of test pixels (B, G, R, A as the swapchain's B8G8R8A8 stores them) */
 	std::vector<uint8_t> pic(W * H * 4), ui(W * H * 4, 0);
-	for (uint32_t x = 0; x < W; x++) {
+	for (uint32_t y = 6; y < H; y++) {
+		for (uint32_t x = 0; x < W; x++) {
+			pic[(y * W + x) * 4 + 3] = 255;
+		}
+	}
+	for (uint32_t x = 0; x < 256; x++) {
 		const uint8_t v = static_cast<uint8_t>(x);
 		auto set = [&](std::vector<uint8_t> &img, uint32_t y, uint8_t b, uint8_t g, uint8_t r, uint8_t a) {
 			uint8_t *p = &img[(y * W + x) * 4];
@@ -264,7 +271,7 @@ int main(int argc, char **argv)
 	dlci.pBindings = bindings;
 	VkDescriptorSetLayout setLayout;
 	VKC(vkCreateDescriptorSetLayout(device, &dlci, nullptr, &setLayout));
-	VkPushConstantRange push{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
+	VkPushConstantRange push{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32 };
 	VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	plci.setLayoutCount = 1;
 	plci.pSetLayouts = &setLayout;
@@ -354,10 +361,12 @@ int main(int argc, char **argv)
 		const char *name;
 		Push k;
 	} cases[] = {
-		{ "white 203, highlights 1000", { 203.0f, 1000.0f, 0.0f, 1.0f } },
-		{ "white 203, highlights off", { 203.0f, 0.0f, 0.0f, 1.0f } },
-		{ "white 300, highlights 2000", { 300.0f, 2000.0f, 0.0f, 1.0f } },
-		{ "white 203, no game picture (the menus)", { 203.0f, 1000.0f, 0.0f, 0.0f } },
+		{ "white 203, highlights 1000", { 203.0f, 1000.0f, 0.0f, 1.0f, 0, 0, 0, 0 } },
+		{ "white 203, highlights off", { 203.0f, 0.0f, 0.0f, 1.0f, 0, 0, 0, 0 } },
+		{ "white 300, highlights 2000", { 300.0f, 2000.0f, 0.0f, 1.0f, 0, 0, 0, 0 } },
+		{ "white 203, no game picture (the menus)", { 203.0f, 1000.0f, 0.0f, 0.0f, 0, 0, 0, 0 } },
+		{ "test screen: highlights at 600 nits", { 203.0f, 1000.0f, 0.0f, 0.0f, 1, 600, 0, 0 } },
+		{ "test screen: white level 250 nits", { 250.0f, 1000.0f, 0.0f, 0.0f, 2, 250, 0, 0 } },
 	};
 	int failed = 0;
 	for (const auto &c : cases) {
@@ -419,7 +428,8 @@ int main(int argc, char **argv)
 		const uint32_t *words = static_cast<const uint32_t *>(down.mapped);
 		double worst = 0.0;
 		int bad = 0, at = -1;
-		for (uint32_t y = 0; y < H; y++) {
+		const uint32_t rows = c.k.cal > 0.5f ? 6 : H;   // the test screen: the rows outside its pattern
+		for (uint32_t y = 0; y < rows; y++) {
 			for (uint32_t x = 0; x < W; x++) {
 				const uint32_t w = words[y * W + x];
 				const double got[3] = { double((w >> 20) & 0x3FF), double((w >> 10) & 0x3FF), double(w & 0x3FF) };
@@ -453,9 +463,146 @@ int main(int argc, char **argv)
 			std::printf("    first at row %d x %d: got %u %u %u, want %.1f %.1f %.1f\n", at / int(W), at % int(W), (w >> 20) & 0x3FF,
 				(w >> 10) & 0x3FF, w & 0x3FF, want[0], want[1], want[2]);
 		}
+		/* the test screen's pattern: code by code at its landmarks */
+		auto code = [&](uint32_t x, uint32_t y) { return double((words[y * W + x] >> 20) & 0x3FF); };
+		auto landmark = [&](const char *what, uint32_t x, uint32_t y, double nits) {
+			const double got = code(x, y), want = pqCode(nits);
+			const bool ok = std::fabs(got - want) <= 1.0 && code(x, y) == double((words[y * W + x] >> 10) & 0x3FF) &&
+				code(x, y) == double(words[y * W + x] & 0x3FF);
+			std::printf("    %-46s %4.0f, want %6.1f (%g nits)%s\n", what, got, want, nits, ok ? "" : " FAIL");
+			bad += !ok;
+		};
+		if (c.k.cal > 0.5f && c.k.cal < 1.5f) {
+			const float side = 0.40f * H;
+			landmark("the X in the middle", W / 2, H / 2, c.k.level);
+			landmark("the square beside it", W / 2 + static_cast<uint32_t>(0.4f * side), H / 2, 10000.0);
+			landmark("outside the square", W / 2 + static_cast<uint32_t>(0.6f * side), H / 2, 0.0);
+		} else if (c.k.cal > 1.5f) {
+			const float cw = 0.64f * W, ch = 0.40f * H, x0 = (W - cw) * 0.5f, y0 = (H - ch) * 0.5f;
+			for (int k : { 0, 2, 5, 10 }) {
+				char what[64];
+				std::snprintf(what, sizeof(what), "grey step %d of 10", k);
+				landmark(what, static_cast<uint32_t>(x0 + (k + 0.5f) / 11.0f * cw), static_cast<uint32_t>(y0 + 0.2f * ch),
+					std::pow(k / 10.0, 2.2) * c.k.level);
+			}
+			landmark("the white patch", W / 2, static_cast<uint32_t>(y0 + 0.7f * ch), c.k.level);
+		}
 		failed += bad != 0;
 	}
-	/* the curve: no step, and rising, along the grey ramp with the highlights */
 	std::printf("hdr on the PC: %s\n", failed ? "FAILED" : "PASS (every pixel within a code of hdr.frag's maths in double precision)");
-	return failed ? 1 : 0;
+
+	/* ---- 0.0.9: adjust.frag (Brightness, Contrast, Colour) over the same rows, into the picture's
+	 * format (R8G8B8A8), its settings' values as ogbox_main.cpp makes its vec4 of them ---- */
+	const VkFormat rgba = VK_FORMAT_R8G8B8A8_UNORM;
+	Image src = makeImage(rgba, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	Image dst = makeImage(rgba, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+	std::vector<uint8_t> in(W * H * 4);
+	for (size_t i = 0; i < in.size(); i += 4) {   // the rows' pixels as R, G, B, A
+		in[i] = pic[i + 2];
+		in[i + 1] = pic[i + 1];
+		in[i + 2] = pic[i];
+		in[i + 3] = 255;
+	}
+	std::memcpy(upPic.mapped, in.data(), in.size());
+	VkDescriptorSetLayoutCreateInfo one{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	one.bindingCount = 1;
+	one.pBindings = bindings;
+	VkDescriptorSetLayout oneLayout;
+	VKC(vkCreateDescriptorSetLayout(device, &one, nullptr, &oneLayout));
+	VkPushConstantRange push16{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };   // smaaPipelineLayout's
+	plci.pSetLayouts = &oneLayout;
+	plci.pPushConstantRanges = &push16;
+	VkPipelineLayout adjustLayout;
+	VKC(vkCreatePipelineLayout(device, &plci, nullptr, &adjustLayout));
+	VkDescriptorPool pool2;
+	VKC(vkCreateDescriptorPool(device, &dpci, nullptr, &pool2));
+	dsai.descriptorPool = pool2;
+	dsai.pSetLayouts = &oneLayout;
+	VkDescriptorSet set2;
+	VKC(vkAllocateDescriptorSets(device, &dsai, &set2));
+	VkDescriptorImageInfo srcInfo{ sampler, src.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	writes[0].dstSet = set2;
+	writes[0].pImageInfo = &srcInfo;
+	vkUpdateDescriptorSets(device, 1, writes, 0, nullptr);
+	stages[1].module = shader(dir + "ogbox/adjust.frag.spv");
+	rci.pColorAttachmentFormats = &rgba;
+	gci.layout = adjustLayout;
+	VkPipeline adjustPipe;
+	VKC(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gci, nullptr, &adjustPipe));
+	const struct {
+		int brightness, contrast, colour;
+	} sets[] = { { 0, 0, 0 }, { 30, 0, 0 }, { -30, 0, 0 }, { 0, 20, 0 }, { 0, -40, 0 }, { 0, 0, 40 }, { 0, 0, -50 }, { 25, 15, -20 }, { 50, 50, 50 } };
+	int adjustFailed = 0;
+	for (const auto &a : sets) {
+		const float params[4] = { std::pow(2.0f, -a.brightness / 50.0f), 1.0f + a.contrast / 100.0f,
+			std::max(0.0f, 1.0f + a.colour / 50.0f), 0.0f };   // ogbox_main.cpp readPictureSettings
+		VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		VKC(vkResetCommandBuffer(cmd, 0));
+		VKC(vkBeginCommandBuffer(cmd, &bi));
+		VkBufferImageCopy region{};
+		region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.imageExtent = { W, H, 1 };
+		barrier(cmd, src.image, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+		vkCmdCopyBufferToImage(cmd, upPic.buffer, src.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		barrier(cmd, src.image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+		barrier(cmd, dst.image, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+		VkRenderingAttachmentInfo att{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+		att.imageView = dst.view;
+		att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+		ri.renderArea = { { 0, 0 }, { W, H } };
+		ri.layerCount = 1;
+		ri.colorAttachmentCount = 1;
+		ri.pColorAttachments = &att;
+		vkCmdBeginRendering(cmd, &ri);
+		VkViewport viewport{ 0, 0, float(W), float(H), 0, 1 };
+		VkRect2D scissor{ { 0, 0 }, { W, H } };
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, adjustPipe);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, adjustLayout, 0, 1, &set2, 0, nullptr);
+		vkCmdPushConstants(cmd, adjustLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params), params);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+		vkCmdEndRendering(cmd);
+		barrier(cmd, dst.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+		vkCmdCopyImageToBuffer(cmd, dst.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, down.buffer, 1, &region);
+		VKC(vkEndCommandBuffer(cmd));
+		VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+		si.commandBufferCount = 1;
+		si.pCommandBuffers = &cmd;
+		VKC(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+		VKC(vkQueueWaitIdle(queue));
+		const uint8_t *out = static_cast<const uint8_t *>(down.mapped);
+		double worst = 0.0;
+		int bad = 0;
+		for (uint32_t y = 0; y < 6; y++) {
+			for (uint32_t x = 0; x < W; x++) {
+				const uint8_t *p = &in[(y * W + x) * 4];
+				double c[3];
+				for (int i = 0; i < 3; i++) {
+					c[i] = (std::pow(p[i] / 255.0, double(params[0])) - 0.5) * params[1] + 0.5;
+				}
+				const double grey = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+				for (int i = 0; i < 3; i++) {
+					const double want = std::clamp(grey + (c[i] - grey) * params[2], 0.0, 1.0) * 255.0;
+					const double d = std::fabs(out[(y * W + x) * 4 + i] - want);
+					worst = std::max(worst, d);
+					bad += d > 1.0;
+				}
+			}
+		}
+		/* the grey ramp's black, middle and white */
+		const uint8_t *ramp = out;
+		std::printf("  brightness %+3d contrast %+3d colour %+3d: worst %.2f levels, %d off by more than one%s; grey 0 -> %u, 128 -> %u, 255 -> %u\n",
+			a.brightness, a.contrast, a.colour, worst, bad, bad ? " FAIL" : "", ramp[0], ramp[128 * 4], ramp[255 * 4]);
+		adjustFailed += bad != 0;
+	}
+	std::printf("adjust on the PC: %s\n", adjustFailed ? "FAILED" : "PASS (every pixel within a level of adjust.frag's maths)");
+	return failed || adjustFailed ? 1 : 0;
 }

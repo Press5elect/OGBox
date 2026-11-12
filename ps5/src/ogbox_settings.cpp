@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
+#include <string>
 
 #include <sys/stat.h>
 
@@ -30,6 +32,63 @@ constexpr const char *kSettingsFile = "/data/ogbox/settings.txt";
 constexpr const char *kGamesDir = "/data/ogbox/games";
 
 const std::vector<Choice> kOnOff = { { "0", "Off" }, { "1", "On" } };
+
+/* 0.0.9: a choice for each step of a range, its words made here and kept as long as the options;
+ * at 0 the words zero says, at the low end the words low says (nullptr: the number). */
+std::vector<Choice> rangeChoices(int from, int to, int step, const char *zero, const char *low = nullptr,
+	const char *unit = "", const std::vector<int> &extra = {})
+{
+	static std::deque<std::string> words;
+	std::vector<int> values;
+	for (int v = from; v <= to; v += step) {
+		values.push_back(v);
+	}
+	values.insert(values.end(), extra.begin(), extra.end());
+	std::sort(values.begin(), values.end());
+	std::vector<Choice> out;
+	for (int v : values) {
+		words.push_back(std::to_string(v));
+		const char *value = words.back().c_str();
+		if (v == 0 && zero) {
+			words.push_back(zero);
+		} else if (v == from && low) {
+			words.push_back(std::to_string(v) + " " + low);
+		} else {
+			words.push_back((from < 0 && v > 0 ? "+" : "") + std::to_string(v) + unit);
+		}
+		out.push_back({ value, words.back().c_str() });
+	}
+	return out;
+}
+
+} // namespace
+
+/* 0.0.9: HDR's white levels and peaks (the settings' choices, and Adjust HDR brightness's steps) */
+std::vector<Choice> hdrWhiteChoices()
+{
+	static const std::vector<Choice> c = [] {
+		std::vector<Choice> v = rangeChoices(80, 400, 10, nullptr, nullptr, " nits", { 203 });
+		for (Choice &x : v) {
+			if (std::strcmp(x.value, "203") == 0) {
+				x.label = "203 nits (reference)";
+			}
+		}
+		return v;
+	}();
+	return c;
+}
+
+std::vector<Choice> hdrPeakChoices()
+{
+	static const std::vector<Choice> c = [] {
+		std::vector<Choice> v = rangeChoices(400, 1000, 100, nullptr, nullptr, " nits", { 1250, 1500, 1750, 2000, 2500, 3000, 4000 });
+		v.insert(v.begin(), Choice{ "0", "Off" });
+		return v;
+	}();
+	return c;
+}
+
+namespace {
 
 std::vector<Option> makeOptions()
 {
@@ -73,20 +132,31 @@ std::vector<Option> makeOptions()
 		o.push_back(hdr);
 		Option white{ "hdr_white", Section::Graphics, "HDR white level",
 			"For HDR: how bright white is (the menus' white, and the game's ordinary whites). 203 nits is HDR's "
-			"reference level; raise it if the picture looks dim.",
-			{ { "100", "100 nits" }, { "150", "150 nits" }, { "203", "203 nits (reference)" }, { "250", "250 nits" },
-				{ "300", "300 nits" }, { "400", "400 nits" } }, "203", false };
+			"reference level; raise it if the picture looks dim. Adjust HDR brightness below shows it as you choose.",
+			hdrWhiteChoices(), "203", false };
 		white.now = true;
 		o.push_back(white);
 		Option peak{ "hdr_highlights", Section::Graphics, "HDR highlights",
 			"For HDR: how bright the game's brightest parts become (the sky, lights, fire: above about three "
-			"quarters of white), rising smoothly from the rest, which stays as it was. Set it near the TV's peak "
-			"brightness. Off: the SDR picture as it is, at the white level.",
-			{ { "0", "Off" }, { "600", "600 nits" }, { "1000", "1000 nits" }, { "1500", "1500 nits" }, { "2000", "2000 nits" },
-				{ "4000", "4000 nits" } }, "1000", false };
+			"quarters of white), rising smoothly from the rest, which stays as it was. Set it to the TV's peak "
+			"brightness (Adjust HDR brightness below finds it). Off: the SDR picture as it is, at the white level.",
+			hdrPeakChoices(), "1000", false };
 		peak.now = true;
 		o.push_back(peak);
 	}
+	/* 0.0.9: the game's picture lighter or darker, its contrast and its colour (adjust.frag, a pass over
+	 * the picture before it is scaled: ogbox_main.cpp recordPost); a game's own, at once in a game */
+	o.push_back({ "pic_brightness", Section::Graphics, "Brightness",
+		"Lightens (+) or darkens (-) the game's picture: its middle tones move, black stays black and white stays "
+		"white, so nothing is lost. For a game that is too dark or too bright. The menus are not changed.",
+		rangeChoices(-50, 50, 5, "0 (as the game)"), "0", true });
+	o.push_back({ "pic_contrast", Section::Graphics, "Contrast",
+		"Spreads the game's darks and lights apart (+) or brings them together (-), about the middle grey. Much more "
+		"than +20 loses detail in the darkest and brightest parts.",
+		rangeChoices(-50, 50, 5, "0 (as the game)"), "0", true });
+	o.push_back({ "pic_colour", Section::Graphics, "Colour",
+		"More (+) or less (-) colour in the game's picture; -50 is black and white.",
+		rangeChoices(-50, 50, 5, "0 (as the game)", "(black and white)"), "0", true });
 	/* 0.0.9: a pass over the picture before it is scaled (ogbox_main.cpp recordPost) */
 	o.push_back({ "deband", Section::Graphics, "Debanding",
 		"Smooths the colour bands in skies, fog and dark gradients, more visible at high internal resolutions; edges "

@@ -313,6 +313,15 @@ Added
   otherwise the picture stays SDR. OGBox now declares HDR to the console, so an HDR TV goes into HDR
   mode while OGBox runs, with this on or off. The framebuffers are switched as VLC for PS5 does
   (`ps5/patches/mesa-27/0019`), and the declaration is the one other PS5 homebrew shows working.
+- Adjust HDR brightness (Settings > Graphics, under HDR): a test screen for the TV. First the
+  highlights: an X in a square at the brightest the TV shows, raised until the X can no longer be
+  seen (the TV's peak); then the white level, the menus and a grey scale showing each step as it is
+  chosen.
+- Brightness, Contrast and Colour (Settings > Graphics, a game's own, changed at once from the
+  quick menu): for a game that is too dark, too bright or too strongly coloured. Brightness moves
+  the middle tones (black and white stay where they are, nothing is lost); Contrast spreads the
+  darks and lights about the middle grey; Colour from black and white (-50) to twice the colour
+  (+50). Only the game's picture changes, not the menus, in SDR and in HDR.
 
 Fixed
 - Games that wait for one of their threads to end no longer wait for ever: a thread's end now sets

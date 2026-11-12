@@ -47,6 +47,9 @@ struct Option {
 };
 
 const std::vector<Option> &options();
+/* 0.0.9: HDR's white levels and peaks ("0": Off), the settings' choices */
+std::vector<Choice> hdrWhiteChoices();
+std::vector<Choice> hdrPeakChoices();
 const Option *option(const std::string &key);
 
 class Settings {

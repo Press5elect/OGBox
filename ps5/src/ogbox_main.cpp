@@ -1167,8 +1167,23 @@ public:
 	std::string hdrAsked;             // the setting last acted on ("1" on)
 	int hdrRange{ -1 };               // the console's output when last read: 1 SDR, 2 HDR, else unknown
 	float hdrWhite{ 203.0f }, hdrPeak{ 1000.0f };
+	/* 0.0.9: Settings > Graphics > Adjust HDR brightness: the highlights' test (step 0: an X in a square
+	 * at the brightest, gone where the TV's peak is reached), then the white level's (step 1); the
+	 * values as the settings' choices, saved at the end */
+	struct HdrCal {
+		bool open{ false };
+		int step{ 0 };
+		std::string peak, white;
+	} hdrCal;
 	AaImage smaaEdges{}, smaaWeights{}, smaaOut{}, smaaArea{}, smaaSearch{};
 	AaImage postA{};
+	/* 0.0.9: Brightness, Contrast and Colour (adjust.frag, a game's own): a pass after Debanding's (into
+	 * postB when both are on, else postA); adjustParams its vec4 (the power, the contrast, the colour) */
+	AaImage postB{};
+	VkPipeline postAdjust{ VK_NULL_HANDLE };
+	VkDescriptorSet postFromA{ VK_NULL_HANDLE }, presentFromB{ VK_NULL_HANDLE };
+	bool adjustOn{ false }, postTwoNow{ false };
+	float adjustParams[4]{ 1.0f, 1.0f, 1.0f, 0.0f };
 	AaImage ssaaDown{};         // 0.0.9: SSAA + SMAA: the picture at the screen's size
 	uint32_t downW{ 0 }, downH{ 0 };
 	uint32_t postW{ 0 }, postH{ 0 };
@@ -2023,8 +2038,10 @@ public:
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
 			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaSmaa ? "SSAA + SMAA" : ssaaOn ? "SSAA" : quincunxOn ? "Quincunx" : "off",
 			sgsrOn ? "FSR1" : sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
-		pshakux_log("ogbox: debanding %s; SSAA down-sampling %s; CRT look %s", debandOn ? prefs.value("deband").c_str() : "off",
-			ssaaSharp ? "sharp" : "soft", crtMode == 2 ? "strong" : crtMode == 1 ? "light" : "off");
+		pshakux_log("ogbox: debanding %s; SSAA down-sampling %s; CRT look %s; brightness %s, contrast %s, colour %s",
+			debandOn ? prefs.value("deband").c_str() : "off", ssaaSharp ? "sharp" : "soft",
+			crtMode == 2 ? "strong" : crtMode == 1 ? "light" : "off", prefs.value("pic_brightness").c_str(),
+			prefs.value("pic_contrast").c_str(), prefs.value("pic_colour").c_str());
 		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
 		static std::vector<std::string> fromTrainer;
 		fromTrainer.clear();
@@ -2350,7 +2367,7 @@ public:
 		};
 		VkDescriptorSetLayoutCreateInfo layoutCI = vks::initializers::descriptorSetLayoutCreateInfo(bindings, 2);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &layoutCI, nullptr, &hdrSetLayout));
-		const VkPushConstantRange push{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
+		const VkPushConstantRange push{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32 };   // hdr.frag's metrics and cal
 		VkPipelineLayoutCreateInfo plCI = vks::initializers::pipelineLayoutCreateInfo(&hdrSetLayout, 1);
 		plCI.pushConstantRangeCount = 1;
 		plCI.pPushConstantRanges = &push;
@@ -2410,6 +2427,100 @@ public:
 		pshakux_log("presenter: HDR targets %ux%u", width, height);
 	}
 
+	/* ---- 0.0.9: Adjust HDR brightness (the test screen) ---- */
+	void openHdrCal()
+	{
+		if (!hdrOn) {
+			showToast(hdrPipeline == VK_NULL_HANDLE ? "HDR isn't offered by this console's graphics driver" :
+				prefs.global("hdr") != "1" ? "Turn HDR on first" : "HDR is off: the console is sending SDR");
+			return;
+		}
+		hdrCal.open = true;
+		hdrCal.step = 0;
+		hdrCal.peak = prefs.global("hdr_highlights");
+		if (std::atoi(hdrCal.peak.c_str()) <= 0) {
+			hdrCal.peak = "1000";
+		}
+		hdrCal.white = prefs.global("hdr_white");
+		pshakux_log("hdr test: opened (highlights %s, white %s nits)", hdrCal.peak.c_str(), hdrCal.white.c_str());
+	}
+
+	/* v stepped by in list (Off left out), from the nearest choice when v is none of them */
+	static std::string hdrCalStep(const std::vector<ogbox::Choice> &list, const std::string &v, int by)
+	{
+		const int n = static_cast<int>(list.size());
+		const int lo = n > 1 && std::string(list[0].value) == "0" ? 1 : 0;
+		int at = lo, best = 1 << 30;
+		for (int i = lo; i < n; i++) {
+			const int d = std::abs(std::atoi(list[static_cast<size_t>(i)].value) - std::atoi(v.c_str()));
+			if (d < best) {
+				best = d;
+				at = i;
+			}
+		}
+		return list[static_cast<size_t>(std::max(lo, std::min(n - 1, at + by)))].value;
+	}
+
+	void hdrCalInput(uint32_t nav)
+	{
+		if (!hdrOn) {
+			hdrCal.open = false;
+			return;
+		}
+		const bool peakStep = hdrCal.step == 0;
+		std::string &v = peakStep ? hdrCal.peak : hdrCal.white;
+		if (nav & (PAD_LEFT | PAD_RIGHT)) {
+			const std::string was = v;
+			v = hdrCalStep(peakStep ? ogbox::hdrPeakChoices() : ogbox::hdrWhiteChoices(), v, (nav & PAD_RIGHT) ? 1 : -1);
+			if (v == was) {
+				ui::listEdge();
+			}
+		}
+		if (nav & PAD_TRIANGLE) {
+			v = peakStep ? "1000" : "203";
+		}
+		if (nav & PAD_CROSS) {
+			if (peakStep) {
+				hdrCal.step = 1;
+			} else {
+				prefs.setGlobal("hdr_highlights", hdrCal.peak);
+				prefs.setGlobal("hdr_white", hdrCal.white);
+				hdrCal.open = false;
+				pshakux_log("hdr test: saved: highlights %s nits, white %s nits", hdrCal.peak.c_str(), hdrCal.white.c_str());
+				showToast("HDR: highlights " + hdrCal.peak + " nits, white " + hdrCal.white + " nits");
+			}
+		} else if (nav & PAD_CIRCLE) {
+			if (peakStep) {
+				hdrCal.open = false;
+				pshakux_log("hdr test: left without a change");
+			} else {
+				hdrCal.step = 0;
+			}
+		}
+	}
+
+	/* Over everything: black, the words above and below; hdr.frag draws the pattern in the middle. */
+	void drawHdrCal(ImDrawList *dl, ImVec2 S)
+	{
+		const bool peakStep = hdrCal.step == 0;
+		const ImU32 white = IM_COL32(235, 235, 235, 255), dim = IM_COL32(170, 170, 170, 255);
+		dl->AddRectFilled(ImVec2(0.0f, 0.0f), S, IM_COL32(0, 0, 0, 255));
+		const float x = ui::px(ui::grid::margin), w = S.x - 2.0f * x;
+		ui::text(dl, ui::F::Title, ui::px(40.0f), ImVec2(x, ui::px(64.0f)), white,
+			peakStep ? "Adjust HDR: highlights (1 of 2)" : "Adjust HDR: white level (2 of 2)");
+		ui::paragraph(dl, ui::F::Body, ui::px(22.0f), ImVec2(x, ui::px(128.0f)), dim, peakStep ?
+			"The square is as bright as your TV can show. Press LEFT or RIGHT until the X in it can only just no "
+			"longer be seen: that is your TV's peak, and the game's brightest parts will go up to it." :
+			"How bright white is: these words, the menus, and the game's ordinary whites. Choose what looks bright "
+			"but comfortable, like white paper in a well-lit room; 203 nits is HDR's reference. The grey steps should "
+			"all look different.", w, 4);
+		const std::string value = (peakStep ? hdrCal.peak : hdrCal.white) + " nits";
+		const ImVec2 vs = ui::measure(ui::F::Display, ui::px(46.0f), value.c_str());
+		ui::text(dl, ui::F::Display, ui::px(46.0f), ImVec2((S.x - vs.x) * 0.5f, S.y * 0.72f + ui::px(18.0f)), white, value.c_str());
+		ui::footer(dl, S, { { "LR", "Adjust" }, { "X", peakStep ? "Next" : "Save" }, { "O", peakStep ? "Cancel" : "Back" },
+			{ "T", "Default" } });
+	}
+
 	void destroyHdr()
 	{
 		destroyAaImage(hdrPicture);
@@ -2432,6 +2543,9 @@ public:
 		hdrWhite = static_cast<float>(std::max(80, std::min(500, std::atoi(prefs.global("hdr_white").c_str()))));
 		const int peak = std::atoi(prefs.global("hdr_highlights").c_str());
 		hdrPeak = peak > 0 ? static_cast<float>(peak) : 0.0f;
+		if (hdrCal.open && hdrCal.step == 1) {
+			hdrWhite = static_cast<float>(std::max(80, std::min(500, std::atoi(hdrCal.white.c_str()))));   // the menus show it
+		}
 		if (hdrOn && wsi_videoout_hdr10 && !wsi_videoout_hdr10()) {
 			hdrOn = false;   // the driver went back to SDR (a new swapchain's framebuffers refused HDR10)
 			pshakux_log("presenter: HDR output off: the driver's framebuffers are SDR again");
@@ -2544,7 +2658,11 @@ public:
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, hdrPipelineLayout, 0, 1, &hdrSet, 0, nullptr);
 		const VkFormat sc = swapChain.colorFormat;
 		const bool srgb = sc == VK_FORMAT_B8G8R8A8_SRGB || sc == VK_FORMAT_R8G8B8A8_SRGB || sc == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
-		const float metrics[4] = { hdrWhite, hdrPeak, srgb ? 1.0f : 0.0f, highlights ? 1.0f : 0.0f };
+		/* metrics; cal: the test screen's pattern (1 the highlights', 2 the white level's) and its level */
+		const bool cal = hdrCal.open;
+		const float metrics[8] = { hdrWhite, hdrPeak, srgb ? 1.0f : 0.0f, highlights ? 1.0f : 0.0f,
+			cal ? (hdrCal.step == 0 ? 1.0f : 2.0f) : 0.0f,
+			cal ? static_cast<float>(std::atoi((hdrCal.step == 0 ? hdrCal.peak : hdrCal.white).c_str())) : 0.0f, 0.0f, 0.0f };
 		vkCmdPushConstants(cmd, hdrPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 		vkCmdDraw(cmd, 3, 1, 0, 0);
 		vkCmdEndRendering(cmd);
@@ -2859,21 +2977,28 @@ public:
 	 * it can't be made. */
 	void preparePost(VkGraphicsPipelineCreateInfo pipelineCI)
 	{
-		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8);
-		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 3);
+		/* 0.0.9: three sets of the passes' layout (from the picture, SMAA's result, postA) and two of the
+		 * present's (postA, postB) */
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 5);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &postPool));
-		const VkDescriptorSetLayout two[2] = { smaaSetLayout, smaaSetLayout };
-		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, two, 2);
-		VkDescriptorSet sets[2];
+		const VkDescriptorSetLayout three[3] = { smaaSetLayout, smaaSetLayout, smaaSetLayout };
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, three, 3);
+		VkDescriptorSet sets[3];
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, sets));
 		postFromPicture = sets[0];
 		postFromSmaa = sets[1];
-		allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, &descriptorSetLayout, 1);
-		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &presentFromA));
+		postFromA = sets[2];
+		const VkDescriptorSetLayout presents[2] = { descriptorSetLayout, descriptorSetLayout };
+		allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, presents, 2);
+		VkDescriptorSet shown[2];
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, shown));
+		presentFromA = shown[0];
+		presentFromB = shown[1];
 		const struct {
 			const char *frag;
 			VkPipeline *out;
-		} passes[] = { { "ogbox/deband.frag.spv", &postDeband } };
+		} passes[] = { { "ogbox/deband.frag.spv", &postDeband }, { "ogbox/adjust.frag.spv", &postAdjust } };
 		for (const auto &pass : passes) {
 			std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
 				loadShader(getShadersPath() + "ogbox/present.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
@@ -2913,20 +3038,33 @@ public:
 	}
 
 	/* The pass's image at the picture's size, and the sets pointed at what it reads now. */
-	void ensurePost()
+	void ensurePost(bool two)
 	{
 		if (postW != picture.width || postH != picture.height) {
 			vkDeviceWaitIdle(device);
 			destroyAaImage(postA);
+			destroyAaImage(postB);
 			createAaImage(postA, picture.format, picture.width, picture.height,
 				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 			postW = picture.width;
 			postH = picture.height;
 			VkDescriptorImageInfo a{ sampler, postA.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(presentFromA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &a);
+			VkWriteDescriptorSet writes[2] = {
+				vks::initializers::writeDescriptorSet(presentFromA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &a),
+				vks::initializers::writeDescriptorSet(postFromA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &a),
+			};
+			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+			postValid = false;
+			pshakux_log("presenter: the picture passes' image %ux%u", postW, postH);
+		}
+		if (two && postB.image == VK_NULL_HANDLE) {
+			vkDeviceWaitIdle(device);
+			createAaImage(postB, picture.format, picture.width, picture.height,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			VkDescriptorImageInfo b{ sampler, postB.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(presentFromB, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &b);
 			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 			postValid = false;
-			pshakux_log("presenter: debanding's image %ux%u", postW, postH);
 		}
 		if (postPictureView != picture.view) {
 			VkDescriptorImageInfo color{ sampler, picture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -2977,23 +3115,35 @@ public:
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
 	}
 
-	/* Debanding over a new picture (or SMAA's result of it): the set the present pass reads then
-	 * (VK_NULL_HANDLE: it is off). An unchanged picture keeps its result. */
+	/* Debanding, then (0.0.9) Brightness, Contrast and Colour, over a new picture (or SMAA's result of
+	 * it): the set the present pass reads then (VK_NULL_HANDLE: both are off). An unchanged picture
+	 * keeps its result. */
 	VkDescriptorSet recordPost(VkCommandBuffer cmd, bool fromSmaa)
 	{
-		if (!debandOn || postDeband == VK_NULL_HANDLE) {
+		const bool deband = debandOn && postDeband != VK_NULL_HANDLE;
+		const bool adjust = adjustOn && postAdjust != VK_NULL_HANDLE;
+		if (!deband && !adjust) {
 			return VK_NULL_HANDLE;
 		}
-		ensurePost();
-		if (!postValid || pictureChanged || fromSmaa != postFromSmaaNow) {
-			/* the step (debandStep); the dither half a level; the reach: 32 lines of the Xbox's 480,
-			 * at the picture's scale (a 16-bit band's width at most) */
-			const float params[4] = { debandStep, 0.5f / 255.0f, 32.0f * static_cast<float>(postH) / 480.0f, 0.0f };
-			postPass(cmd, postA, postDeband, fromSmaa ? postFromSmaa : postFromPicture, params);
+		const bool two = deband && adjust;
+		ensurePost(two);
+		if (!postValid || pictureChanged || fromSmaa != postFromSmaaNow || two != postTwoNow) {
+			VkDescriptorSet from = fromSmaa ? postFromSmaa : postFromPicture;
+			if (deband) {
+				/* the step (debandStep); the dither half a level; the reach: 32 lines of the Xbox's 480,
+				 * at the picture's scale (a 16-bit band's width at most) */
+				const float params[4] = { debandStep, 0.5f / 255.0f, 32.0f * static_cast<float>(postH) / 480.0f, 0.0f };
+				postPass(cmd, postA, postDeband, from, params);
+				from = postFromA;
+			}
+			if (adjust) {
+				postPass(cmd, two ? postB : postA, postAdjust, from, adjustParams);
+			}
 			postValid = true;
 			postFromSmaaNow = fromSmaa;
+			postTwoNow = two;
 		}
-		return presentFromA;
+		return two ? presentFromB : presentFromA;
 	}
 
 	void destroySmaa()
@@ -3009,10 +3159,12 @@ public:
 		vkDestroyPipeline(device, pipelineSsaa, nullptr);
 		vkDestroyPipeline(device, pipelineQuincunx, nullptr);
 		vkDestroyPipeline(device, postDeband, nullptr);
+		vkDestroyPipeline(device, postAdjust, nullptr);
 		vkDestroyPipeline(device, pipelineCrt, nullptr);
 		vkDestroyPipeline(device, ssaaToImage, nullptr);
 		destroyAaImage(ssaaDown);
 		destroyAaImage(postA);
+		destroyAaImage(postB);
 		vkDestroyDescriptorPool(device, postPool, nullptr);
 		vkDestroyPipelineLayout(device, smaaPipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, smaaSetLayout, nullptr);
@@ -3683,6 +3835,10 @@ public:
 		ui::setScrollInput(menuPad.right_y);   // 0.0.6: long text scrolls with the right stick
 		const uint32_t pressed = menuPad.pressed;
 		const uint32_t nav = navPressed();   // 0.0.3: with the D-pad's repeats, L2 / R2 as presses
+		if (hdrCal.open) {
+			hdrCalInput(nav);   // 0.0.9: Adjust HDR brightness has the controller while it is open
+			return;
+		}
 		/* 0.1.53: one owner of the controller a frame: the keyboard (0.0.3), a list of choices, the
 		 * game page, the hard disk */
 		if (kb.isOpen()) {
@@ -7245,7 +7401,9 @@ public:
 		switch (page) {
 		case SP_PICTURE:
 			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
-				"deband", "crt", "crop_overscan", "show_fps" } }, { "HDR", { "hdr", "hdr_white", "hdr_highlights" } } };
+				"deband", "crt", "crop_overscan", "show_fps" } },
+				{ "Brightness and colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
+				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
@@ -7323,6 +7481,14 @@ public:
 		quincunxOn = prefs.value("fxaa") == "quincunx";   // 0.0.9
 		debandOn = prefs.value("deband") == "low" || prefs.value("deband") == "high";
 		debandStep = (prefs.value("deband") == "high" ? 5.0f : 2.0f) / 255.0f;
+		/* 0.0.9: Brightness, Contrast and Colour (adjust.frag's vec4) */
+		const int brightness = std::atoi(prefs.value("pic_brightness").c_str());
+		const int contrast = std::atoi(prefs.value("pic_contrast").c_str());
+		const int colour = std::atoi(prefs.value("pic_colour").c_str());
+		adjustOn = brightness != 0 || contrast != 0 || colour != 0;
+		adjustParams[0] = std::pow(2.0f, -static_cast<float>(brightness) / 50.0f);
+		adjustParams[1] = 1.0f + static_cast<float>(contrast) / 100.0f;
+		adjustParams[2] = std::max(0.0f, 1.0f + static_cast<float>(colour) / 50.0f);
 		postValid = false;
 		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
 		sharpOn = prefs.value("upscale") == "sharp";
@@ -7336,7 +7502,7 @@ public:
 	static bool liveKey(const std::string &k)
 	{
 		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality",
-			"deband", "ssaa_filter", "crt" };
+			"deband", "ssaa_filter", "crt", "pic_brightness", "pic_contrast", "pic_colour" };
 		for (const char *x : keys) {
 			if (k == x) {
 				return true;
@@ -7613,6 +7779,15 @@ public:
 		}
 		const std::string hdd = boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd;
 		switch (page) {
+		case SP_PICTURE:
+			/* 0.0.9: the HDR test screen, under the HDR group: in the library's settings (where its input is
+			 * read: libraryInput), not a game's */
+			if (library && !forGame && hdrPipeline != VK_NULL_HANDLE) {
+				actionRow("hdrcal", "Adjust HDR brightness", hdrOn ? "open" : "needs HDR on",
+					"A test screen for your TV: its peak brightness for the highlights, then the white level, shown as "
+					"you choose them.", [this]() { openHdrCal(); }, rows, acts, ui::Icon::Gear);
+			}
+			break;
 		case SP_NETWORK:
 			shareRows(rows, acts);
 			break;
@@ -8637,6 +8812,9 @@ public:
 	{
 		ImDrawList *dl = ImGui::GetOverlayDrawList();
 		const ImVec2 S(static_cast<float>(width), static_cast<float>(height));
+		if (hdrCal.open) {
+			drawHdrCal(dl, S);   // 0.0.9
+		}
 		static double popSince = 0.0;
 		static bool popWas = false;
 		if (pop.open && !popWas) {

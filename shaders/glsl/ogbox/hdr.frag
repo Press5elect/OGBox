@@ -16,9 +16,13 @@
 //    knee (no step), and every colour scaled by its luminance's gain, so hues keep and no channel
 //    passes the peak; metrics.y at or below the white: none.
 // metrics.z 1: the layers are sampled through sRGB views (already linear).
+// cal (Settings > Graphics > Adjust HDR brightness, ogbox_main.cpp's test screen): .x 1 the highlights'
+// test: a square in the middle at PQ's top (10000 nits, which a TV shows at its brightest) with an X in
+// it at .y nits; where .y reaches the TV's peak the X can no longer be seen. .x 2 the white level's: a
+// grey scale of SDR's eleven tenths and a white patch below it, at the white level .y. Over the menus.
 layout (set = 0, binding = 0) uniform sampler2D u_picture;
 layout (set = 0, binding = 1) uniform sampler2D u_ui;     // premultiplied (ImGui's blending over clear 0)
-layout (push_constant) uniform PC { vec4 metrics; } pc;
+layout (push_constant) uniform PC { vec4 metrics; vec4 cal; } pc;
 layout (location = 0) in vec2 v_uv;
 layout (location = 0) out vec4 o;
 
@@ -43,9 +47,42 @@ vec3 decode(vec3 c)
 	return pc.metrics.z > 0.5 ? c : pow(max(c, vec3(0.0)), vec3(2.2));
 }
 
+/* the test screen's pattern at p (screen pixels) for a screen of size s: true, and its nits, inside it */
+bool pattern(vec2 p, vec2 s, out float nits)
+{
+	vec2 c = s * 0.5;
+	if (pc.cal.x < 1.5) {
+		float side = 0.40 * s.y;
+		vec2 d = (p - c) / side;                     // -0.5 .. 0.5 across the square
+		if (max(abs(d.x), abs(d.y)) >= 0.5) {
+			return false;
+		}
+		bool x = max(abs(d.x), abs(d.y)) < 0.3 && min(abs(d.x - d.y), abs(d.x + d.y)) < 0.07;
+		nits = x ? pc.cal.y : 10000.0;
+		return true;
+	}
+	vec2 size = vec2(0.64 * s.x, 0.40 * s.y);
+	vec2 d = (p - (c - size * 0.5)) / size;          // 0 .. 1 across the chart
+	if (any(lessThan(d, vec2(0.0))) || any(greaterThanEqual(d, vec2(1.0)))) {
+		return false;
+	}
+	float level = 1.0;
+	if (d.y < 0.42) {
+		float k = d.x * 11.0;
+		level = fract(k) < 0.06 || d.y > 0.38 ? 0.0 : floor(k) / 10.0;   // eleven patches, black between
+	}
+	nits = pow(level, 2.2) * pc.cal.y;
+	return true;
+}
+
 void main()
 {
 	ivec2 at = ivec2(gl_FragCoord.xy);
+	float test;
+	if (pc.cal.x > 0.5 && pattern(gl_FragCoord.xy, vec2(textureSize(u_ui, 0)), test)) {
+		o = vec4(pq(vec3(test)), 1.0);   // grey: the same in BT.2020
+		return;
+	}
 	vec3 picture = texelFetch(u_picture, at, 0).rgb;
 	vec4 ui = texelFetch(u_ui, at, 0);
 	float white = max(pc.metrics.x, 1.0);
