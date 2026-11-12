@@ -26,11 +26,162 @@ F	6A006A02894660885E648B0DE88998006A00	6A006A01894660885E648B0DE88998006A00
 # 55530041: the game proper is sc3.xbe (default.xbe, the menu, starts it): its D3D present
 # parameters' presentation interval, D3DPRESENT_INTERVAL_TWO (or TWO_OR_IMMEDIATE with its vsync
 # setting off: add eax, 0x80000002 after the setting's mask), made ONE (ONE_OR_IMMEDIATE), in both.
-# The menu's too: it persists its display for sc3.xbe (MmPersistContiguousMemory, AvSetSavedData-
-# Address) and sc3.xbe's D3D takes the menu's interval with it (its swaps went on at TWO_OR_IMMEDIATE,
-# 0x141, with sc3.xbe's alone patched). The engine moves its world by the time a frame took.
+# The interval the swaps go by is not the device's: the engine's D3D driver keeps a table of the
+# render states it sets, and its slot 17 is D3DRS_PRESENTATIONINTERVAL (state 0x7F, stored straight
+# into D3D's render state 127, the interval the swap reads) with the value 0x80000002
+# (TWO_OR_IMMEDIATE): its swaps went on at TWO (0x141) with the present parameters patched, in the
+# menu as in sc3.xbe. That value made 0x80000001 (ONE_OR_IMMEDIATE) in both, and the present
+# parameters' too, so every path says ONE. The engine moves its world by the time a frame took.
+# Its Bink videos (the menu's logos, the game's cut scenes) don't: their loop draws a frame and
+# goes to the next at once, waiting for the movie's time (while BinkWait) only when its caller
+# asks (seldom), so at 60 frames a second they played twice as fast. The wait made
+# unconditional in both (the je before the BinkWait loop made two nops); a video still drawn
+# at once by its first and last frame waits at most one of its frames there.
 P	55530041	*	pog5553004160	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
 T	default.xbe
 F	F7D81BC025000000800502000080A340DC4C00	F7D81BC025000000800501000080A340DC4C00
+F	C740447F0000008888B5050000C780F800000002000080	C740447F0000008888B5050000C780F800000001000080
+F	8B7C246885FF740D8B561852E810FC320085C075EF	8B7C246885FF90908B561852E810FC320085C075EF
 T	sc3.xbe
 F	F7D81BC025000000800502000080A330746200	F7D81BC025000000800501000080A330746200
+F	C740447F0000008888B5050000C780F800000002000080	C740447F0000008888B5050000C780F800000001000080
+F	395D0C740CFF7618E8FDF2420085C075EF	395D0C9090FF7618E8FDF2420085C075EF
+#
+# 4D53000D: the same renderer as 4D5300D1's. Its frame interval (refreshes per frame; 2 is 30 frames a
+# second, renderer +0x1cc) made 1 where the game sets it: SetFrameRate (n = round(refresh / fps),
+# clamped to 1-3: the clamp now always 1) and the in-game menus' start (the menu screens' base class
+# saves the setting, sets 2 outright and puts it back when the menu closes: 2 made 1). The movie
+# player's own setting (2, saved and put back around each XMV) is left as it is, so the videos are
+# shown at 30 frames a second as before; the XMV decoder hands over a new frame only once the
+# display's vblank count (D3DDevice_GetDisplayFieldStatus) reaches its time, so they would keep their
+# speed at any interval. The game's world moves in turns of 1/15 s counted from the real time
+# (rdtsc), and each frame draws it at the frame's predicted display time (last vblank + frames
+# queued * the frame time, n / refresh, which follows n) or the real time if later, so its speed
+# stays as it was.
+P	4D53000D	*	pog4D53000D60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	83F9017D07B901000000EB0A83F9037E05B903000000	83F9019090B901000000EB0A83F9037E05B903000000
+F	8B89CC0100006A006A02898EA00000008818	8B89CC0100006A006A01898EA00000008818
+#
+# 54540008: the engine's frame settings (set when a race loads: numviews, the "numviews" parameter
+# = the number of screens) pick 60 frames a second for one screen and 30 for two to four: one
+# screen: rate 60.0, 1 refresh a frame (ONE_OR_IMMEDIATE); more: rate 30.0, 2 (TWO_OR_IMMEDIATE).
+# The jge that takes the 30 branch (numviews >= 2) made two nops, so every race takes the
+# one-screen settings. One screen already ran at 60: this changes split screen only. The game's
+# time is a fixed step of 1 / (rate) a frame, set from those same settings (1/60 with 1 refresh a
+# frame, as for one screen), and the code that depends on the frame interval reads the interval
+# those settings set (2 / interval, interval == 1 cases), so its speed stays as it was. Its Bink
+# videos wait for the movie's time after every frame (while BinkWait), and the start-up movies'
+# state sets its own interval (not this one): they keep their own rate.
+P	54540008	*	pog5454000860	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	B9020000003BC1BB0100000057C74654000080BF885E60895E587D1233FF897E40897E44B800007042895E5C	B9020000003BC1BB0100000057C74654000080BF885E60895E58909033FF897E40897E44B800007042895E5C
+#
+# 54540079: the engine runs the race with a fixed time step, not the real time: its time manager's
+# Seconds (the step every system moves by) is 1/fps each frame, fps the race's setting, the refresh
+# rate times 0.5 (30, 25 at 50 Hz), with its "framelock" 2; the front end's states already use
+# fps 60 and framelock 1 (the engine's own -framerate 60 does the same), and the frame rate is held
+# by D3D's presentation interval, which the engine's SetPresentInterval sets: index 2
+# (TWO_OR_IMMEDIATE) at the graphics' start and again when a layer that uses index 4 (ONE) is
+# left. The race's fps made the refresh rate times 1.0 (the fmul's 0.5 constant made the 1.0
+# beside it, both loads in the older build, the one load in the later one) and its framelock 1;
+# the interval index 2 made 1 (ONE_OR_IMMEDIATE) in both places (at the start: the call's dummy
+# argument push and the flag store rearranged, same stack and same store). Index 1 is the one the
+# game's own code treats as 60 a second: it halves per-frame smoothing rates and counts two frames
+# per 30 Hz step when the index is 1. Each frame then moves the world by 1/60 s at 60 frames a
+# second: its speed stays as it was (as at 30, a frame that takes longer than 1/60 s slows the
+# game rather than skips). Its Bink videos wait for the movie's own time (the player spins on
+# BinkWait after each frame), so they keep their own rate. Two builds: v1/v2 (x87 code) and
+# v5/v6 (SSE code), each its own records.
+P	54540079	1	pog5454007960	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	DB0500E547008944240CD80D78194100D95E44DB0500E547008946588D44240850D80D78194100895E54	DB0500E547008944240CD80D7C194100D95E44DB0500E54700895E588D44240850D80D7C194100895E54
+F	8B35CC074D005383CE08578935CC074D00E8A78A1000	830DCC074D00088B35CC074D00536A0190E8A78A1000
+F	6A006A02E88CA22700	6A006A01E88CA22700
+P	54540079	2	pog5454007960	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	DB0500E547008944240CD80D78194100D95E44DB0500E547008946588D44240850D80D78194100895E54	DB0500E547008944240CD80D7C194100D95E44DB0500E54700895E588D44240850D80D7C194100895E54
+F	8B35CC074D005383CE08578935CC074D00E8A78A1000	830DCC074D00088B35CC074D00536A0190E8A78A1000
+F	6A006A02E88CA22700	6A006A01E88CA22700
+P	54540079	5	pog545400796b	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	F30F2A0D804E4B00F30F1005187C4400F30F59C8F30F114E44F30F2A0D804E4B00F30F59C8F30F10051C7C4400894654F30F114E4C894E58	F30F2A0D804E4B00F30F10051C7C4400F30F59C8F30F114E44F30F2A0D804E4B00F30F59C8F30F10051C7C4400894654F30F114E4C894658
+F	8B35A87650005383CE08578935A8765000E827CF1100	830DA8765000088B35A8765000536A0190E827CF1100
+F	6A006A02E82C962A00	6A006A01E82C962A00
+P	54540079	6	pog545400796b	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	F30F2A0D804E4B00F30F1005187C4400F30F59C8F30F114E44F30F2A0D804E4B00F30F59C8F30F10051C7C4400894654F30F114E4C894E58	F30F2A0D804E4B00F30F10051C7C4400F30F59C8F30F114E44F30F2A0D804E4B00F30F59C8F30F10051C7C4400894654F30F114E4C894658
+F	8B35A87650005383CE08578935A8765000E827CF1100	830DA8765000088B35A8765000536A0190E827CF1100
+F	6A006A02E82C962A00	6A006A01E82C962A00
+#
+# 41560020 (both its releases: their code is the same) and 4156004E. The cap: after a level loads the
+# session asks for D3DPRESENT_INTERVAL_TWO_OR_IMMEDIATE (push 0x80000002 then its own
+# SetPresentationInterval, which puts it in the present parameters' +0x30 and Resets the device; the
+# boot and the menus before a first level are at ONE, the loading screens at ONE_OR_IMMEDIATE): that
+# push made 0x80000001 (ONE_OR_IMMEDIATE), as the loading screens have it. The console command that
+# toggles ONE/TWO is left as it was.
+# Speed: in single player the session runs exactly one game tic a drawn frame (com_ticNumber goes up
+# by one a frame when gameLocal.isMultiplayer is false), and RunFrame's step (msec, a global the
+# game's physics, timers and scripts all read) is the frame's measured real time (Common::Frame:
+# Sys_Milliseconds minus the last frame's, clamped to 99): the game moves by the real time. Only
+# msecLowClip (on by default, in play and not in a cinematic) raises a step under 33 ms to 33: at 60
+# frames a second that would be twice the speed. Its bound made 16 (the PC game's own tic): at 60
+# (16 or 17 ms a frame) the step is the real time again. Multiplayer is untouched (its msec is 33
+# a 30 Hz tic, as before).
+# Turning: the right stick is read as mouse counts once a frame (curve(stick) * 16, no time in it),
+# and MouseMove adds them to the view angles as they are: per frame, so at 60 the view would turn
+# twice as fast. 41560020: the yaw delta and the pitch's factor scaled by msec * 0.030056 (a float
+# already in .rdata, ~1/33.3): 1.0 at 33 ms, 0.5 at 16.7 ms; done in a call (the 8-byte load of
+# the pitch's aim-assist factor at the call's place, made again first) to code put in four of the
+# int3 gaps between functions (x87: fild msec, fmul the constant, the product on the stack for two
+# mulss; eax and the flags kept). msec, not the frame's time, so that in multiplayer (MouseMove
+# once a 33 ms tic there) the factor stays 1. 4156004E already did this, with whole 30 Hz frames
+# (frame ms / 33, an integer: 0 at 16 ms, so no turning at all at 60): that made the float
+# frame ms * 0.030056, in place.
+# Aim assist's hard lock turns the view toward its target by aa_lockSpeed degrees a frame (x4 with
+# its flag): that speed scaled by the same factor (a 5-byte call where it is loaded, three gaps).
+# Videos: Bink movies (logos, attract, in-game screens) are decoded by their own thread, which takes
+# a new frame only when BinkWait says it is time (and sleeps a fifth of a frame between asks); the
+# drawing loop shows whatever frame is ready. They keep their own rate whatever the game's.
+# Most of these records carry addresses (calls and jumps between the gaps, globals), so each title's
+# set fits its own code only; each find is unique in its file.
+# The gaps' jumps and calls are relative to where the records land, so each entry also carries its
+# XBE's CRC-32 (C): another release, even with the same bytes, is refused rather than mis-jumped.
+P	41560020	3	pog4156002060	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	E3D8DE97
+T	default.xbe
+F	6802000080885F20E8	6801000080885F20E8
+F	741183F8217D0CC705C0BF500021000000EB0F83F8	741183F8107D0CC705C0BF500010000000EB0F83F8
+F	1804000083C408C3CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC	1804000083C408C3F30F1005A86C59005050E9930C0000
+F	7F888818040000C3CCCCCCCCCCCCCCCCCCCCCC	7F888818040000C3DB05D0D35000E9C3020000
+F	83C404E9E1EF3500CCCCCCCCCCCCCCCCCCCCCCCCCCCC	83C404E9E1EF3500D80D70FA4A00D91C24E9B2010000
+F	8604040000015EC3CCCCCCCCCCCCCCCCCCCCCCCCCC	8604040000015EC3F30F591424F30F5904245858C3
+F	F30F59D0F30F1005A86C5900F30F59CE	F30F59D0E860F9FFFF909090F30F59CE
+F	94005B00FDB001C3CCCCCCCCCCCCCCCCCCCCCCCCCC	94005B00FDB001C35050DB05D0D35000E96392FFFF
+F	5A00E8C0030000C3CCCCCCCCCCCCCCCCCCCCCCCCCCCC	5A00E8C0030000C3D80D70FA4A00D84828E9D2AD0000
+F	332A005F5EC20400CCCCCCCCCCCCCCCCCCCCCC	332A005F5EC20400D91C24F30F102C245858C3
+F	A19C775100F30F106828F30F5C5C	A19C775100E893120000F30F5C5C
+P	41560020	5	pog4156002060	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	8492C5A9
+T	default.xbe
+F	6802000080885F20E8	6801000080885F20E8
+F	741183F8217D0CC705C0BF500021000000EB0F83F8	741183F8107D0CC705C0BF500010000000EB0F83F8
+F	1804000083C408C3CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC	1804000083C408C3F30F1005A86C59005050E9930C0000
+F	7F888818040000C3CCCCCCCCCCCCCCCCCCCCCC	7F888818040000C3DB05D0D35000E9C3020000
+F	83C404E9E1EF3500CCCCCCCCCCCCCCCCCCCCCCCCCCCC	83C404E9E1EF3500D80D70FA4A00D91C24E9B2010000
+F	8604040000015EC3CCCCCCCCCCCCCCCCCCCCCCCCCC	8604040000015EC3F30F591424F30F5904245858C3
+F	F30F59D0F30F1005A86C5900F30F59CE	F30F59D0E860F9FFFF909090F30F59CE
+F	94005B00FDB001C3CCCCCCCCCCCCCCCCCCCCCCCCCC	94005B00FDB001C35050DB05D0D35000E96392FFFF
+F	5A00E8C0030000C3CCCCCCCCCCCCCCCCCCCCCCCCCCCC	5A00E8C0030000C3D80D70FA4A00D84828E9D2AD0000
+F	332A005F5EC20400CCCCCCCCCCCCCCCCCCCCCC	332A005F5EC20400D91C24F30F102C245858C3
+F	A19C775100F30F106828F30F5C5C	A19C775100E893120000F30F5C5C
+P	4156004E	2	pog4156004E60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	E5E5A12F
+T	default.xbe
+F	6802000080895C246C	6801000080895C246C
+F	741183F8217D0CC7050C67530021000000EB0F83F8	741183F8107D0CC7050C67530010000000EB0F83F8
+F	8B0D0C675300B8E1830F3EF7E9C1FA038BCAC1E91F03CA8B1500015400F30F105A28F30F2AC9	F30F2A0D0C675300F30F590DC8994D008B1500015400F30F105A289090909090909090909090
+F	4004000083C408C3CCCCCCCCCCCCCCCCCCCCCCCCCC	4004000083C408C35050DB050C675300E9A30E0000
+F	88864004000059C3CCCCCCCCCCCCCCCCCCCCCCCCCCCC	88864004000059C3D80DC8994D00D84828E9B2050000
+F	862C040000015EC3CCCCCCCCCCCCCCCCCCCCCC	862C040000015EC3D91C24F30F102C245858C3
+F	A120115400F30F106828894C2434	A120115400E8F1F5FFFF894C2434
