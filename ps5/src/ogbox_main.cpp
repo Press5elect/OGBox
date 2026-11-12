@@ -631,6 +631,75 @@ void vfsLog(const char *line)
 	pshakux_log("%s", line);   // the layer's lines begin with "vfs: "
 }
 
+std::string readLastGame();
+
+/* 0.0.9: a file on the share of at least 8 MB (a disc image), within depth folders down; "" for none. */
+std::string firstLargeFile(const std::string &folder, int depth)
+{
+	ps5vfs_dir *dir = ps5vfs_opendir(folder.c_str());
+	if (!dir) {
+		return std::string();
+	}
+	std::vector<std::string> subs;
+	std::string found;
+	struct ps5vfs_dirent e;
+	for (unsigned n = 0; found.empty() && n < 400 && ps5vfs_readdir(dir, &e) == 1; n++) {
+		if (!e.name || e.name[0] == '.') {
+			continue;
+		}
+		if (e.is_directory) {
+			subs.push_back(folder + "/" + e.name);
+		} else if (e.size >= (8 << 20)) {
+			found = folder + "/" + e.name;
+		}
+	}
+	ps5vfs_closedir(dir);
+	for (size_t i = 0; found.empty() && depth > 0 && i < subs.size() && i < 16; i++) {
+		found = firstLargeFile(subs[i], depth - 1);
+	}
+	return found;
+}
+
+/* 0.0.9: a NAS whose disks have spun down takes seconds to answer the first read of a game (the
+ * game's start waited for its share, "waiting for the share"): when OGBox starts (not when it
+ * starts again for a game or back from one), each share mounted is read a little in the
+ * background, the last game's image where it is on that share, else the first large file found,
+ * at its start and somewhere inside (what the NAS keeps in its memory doesn't wake its disks), so
+ * the disks are turning by the time a game is started. */
+void wakeShares(const std::vector<std::string> &mounts)
+{
+	const std::string last = readLastGame();
+	std::thread([mounts, last]() {
+		for (const std::string &m : mounts) {
+			const double t0 = now_seconds();
+			std::string file = last.rfind(m + "/", 0) == 0 ? last : std::string();
+			if (file.empty()) {
+				file = firstLargeFile(m, 2);
+			}
+			if (file.empty()) {
+				pshakux_log("ogbox: share %s: no large file on it to read (to wake its disks)", m.c_str());
+				continue;
+			}
+			size_t got = 0;
+			if (FILE *f = ps5vfs_fopen(file.c_str(), "rb")) {
+				std::vector<char> buf(64 * 1024);
+				got = ps5vfs_fread(buf.data(), 1, buf.size(), f);
+				struct stat st;
+				if (ps5vfs_fstat(f, &st) == 0 && st.st_size > static_cast<off_t>(4 * buf.size())) {
+					std::mt19937_64 rng(static_cast<uint64_t>(t0 * 1e6));
+					const off_t at = static_cast<off_t>(rng() % static_cast<uint64_t>(st.st_size - static_cast<off_t>(buf.size())));
+					if (ps5vfs_fseeko(f, at & ~static_cast<off_t>(4095), SEEK_SET) == 0) {
+						got += ps5vfs_fread(buf.data(), 1, buf.size(), f);
+					}
+				}
+				ps5vfs_fclose(f);
+			}
+			pshakux_log("ogbox: share %s woken: %zu KiB of %s read in %.1f s", m.c_str(), got / 1024, file.c_str(),
+				now_seconds() - t0);
+		}
+	}).detach();
+}
+
 /* The virtual file layer: its stand-in file, its log, the shares of network.cfg (a commented
  * example is written the first time). */
 void startFileLayer()
@@ -709,8 +778,8 @@ void startFileLayer()
 		/* 0.0.3: mounted as the settings edit them (ogbox_shares): each at /smb/<its name> */
 		ogbox::ShareFile file;
 		int mounted = 0;
+		std::vector<std::string> taken;
 		if (ogbox::readShares(chosen, file)) {
-			std::vector<std::string> taken;
 			for (ogbox::Share &share : file.shares) {
 				std::string why;
 				if (ogbox::mountShare(share, file, taken, &why)) {
@@ -723,6 +792,9 @@ void startFileLayer()
 		}
 		g_networkStatus = std::to_string(mounted) + " share(s) from " + chosen;
 		pshakux_log("ogbox: %s", g_networkStatus.c_str());
+		if (!taken.empty() && !pshakux_relaunched()) {
+			wakeShares(taken);   // 0.0.9: a NAS's disks spun up while the game list is shown
+		}
 	}
 }
 
@@ -1054,6 +1126,16 @@ public:
 	ogbox::TapLatch tapLatch[PAD_PLAYERS];    // a tap shorter than a frame still reaches the game
 	std::string toast;
 	double toastUntil{ 0.0 };
+	/* 0.0.9: an exit (back to the game list, the game's next XBE, a state, a restart, OGBox closing)
+	 * waits here for what is still on its way to the disk, its bar along the bottom (leaveAfterWrites) */
+	struct Leave {
+		bool active{ false };
+		std::function<void()> then;
+		std::string what;            // "going back to the game list"...
+		double since{ 0.0 }, lastLog{ 0.0 };
+		uint64_t cacheFirst{ 0 };    // the cache drives' bytes held when it began (the bar's start)
+		bool cacheLeft{ false };     // CIRCLE: the cache drives' unwritten bytes left (the game copies them again)
+	} leave;
 	// a small list of choices over a screen (a confirmation, a place, an action)
 	struct Popup {
 		bool open{ false };
@@ -1584,8 +1666,10 @@ public:
 			openPopup("Close OGBox?", "Are you sure?", { "No", "Yes, close it" }, [this](int i) {
 				if (i == 1) {
 					pshakux_log("library: Quit OGBox (CIRCLE, confirmed)");
-					prefs.flush();   // 0.0.7: settings not yet written
-					quit = true;
+					leaveAfterWrites("OGBox closes", [this]() {
+						prefs.flush();   // 0.0.7: settings not yet written
+						quit = true;
+					});
 				}
 			});
 			return;
@@ -1623,8 +1707,10 @@ public:
 		}
 		case LibraryEntry::Quit:
 			pshakux_log("library: Quit OGBox");
-			prefs.flush();   // 0.0.7: settings not yet written
-			quit = true;
+			leaveAfterWrites("OGBox closes", [this]() {
+				prefs.flush();   // 0.0.7: settings not yet written
+				quit = true;
+			});
 			break;
 		case LibraryEntry::Settings:
 			openSettings(std::string(), std::string());
@@ -1768,7 +1854,129 @@ public:
 		}
 	}
 
+	/* 0.0.9: then() once nothing is left on its way to the disk: at once when nothing is, else with
+	 * the game paused and a bar along the bottom, a frame at a time (pollLeave): the game's writes
+	 * (a save among them) and its files' syncs and closes always, a save sync to a share or USB drive
+	 * to the end of the save it is copying, the cache drives' held bytes unless CIRCLE leaves them
+	 * (the game finds those files missing and copies them again). */
+	void leaveAfterWrites(const char *what, std::function<void()> then)
+	{
+		if (leave.active) {
+			return;
+		}
+		PshxWrites w;
+		const bool writing = pshx_core_writes(&w);
+		const bool syncing = ogbox::saveSyncRunning();
+		if (!writing && !syncing) {
+			then();
+			return;
+		}
+		relaunchAsked = true;   // no second exit meanwhile (the guest's own reboot among them)
+		if (pshx_core_state() != PSHX_CORE_IDLE) {
+			pshx_core_pause(true);
+		}
+		if (syncing) {
+			ogbox::saveSyncAskStop();
+		}
+		leave = Leave{};
+		leave.active = true;
+		leave.then = std::move(then);
+		leave.what = what;
+		leave.since = leave.lastLog = now_seconds();
+		leave.cacheFirst = w.cache_bytes;
+		pshakux_log("ogbox: %s: waiting for the disk first (the game's writes %u, syncs and closes %u, the cache "
+			"drives %.1f MiB held%s)", what, w.writes, w.closes, static_cast<double>(w.cache_bytes) / 1048576.0,
+			syncing ? ", a save sync" : "");
+	}
+
+	static std::string leafName(const char *path)
+	{
+		const std::string s = path ? path : "";
+		const size_t slash = s.find_last_of("\\/");
+		return slash == std::string::npos ? s : s.substr(slash + 1);
+	}
+
+	/* What is still being written, for the bar; true when only the cache drives' bytes are left. */
+	bool leaveView(ui::WriteBarView *v, const PshxWrites &w, bool syncing)
+	{
+		std::vector<std::string> parts;
+		if (w.writes || w.closes) {
+			const unsigned n = w.writes + w.closes;
+			std::string part = "The game's files: " + std::to_string(n) + " to finish";
+			if (w.closing[0]) {
+				part += " (" + leafName(w.closing) + ")";
+			}
+			parts.push_back(part);
+		}
+		if (syncing) {
+			parts.push_back("Your saves: the copy under way finishing");
+		}
+		if (w.cache_bytes && !leave.cacheLeft) {
+			char mb[32];
+			std::snprintf(mb, sizeof(mb), "%.1f MB", static_cast<double>(w.cache_bytes) / 1e6);
+			std::string part = std::string("The game's cache drive: ") + mb + " left";
+			if (w.cache_file[0]) {
+				part += " (" + leafName(w.cache_file) + ")";
+			}
+			parts.push_back(part);
+		}
+		const bool cacheOnly = !w.writes && !w.closes && !syncing && w.cache_bytes;
+		v->title = "Saving before " + leave.what;
+		v->detail.clear();
+		for (size_t i = 0; i < parts.size(); i++) {
+			v->detail += (i ? " \xC2\xB7 " : "") + parts[i];
+		}
+		v->fraction = cacheOnly && leave.cacheFirst
+			? 1.0f - static_cast<float>(static_cast<double>(w.cache_bytes) / static_cast<double>(leave.cacheFirst)) : -1.0f;
+		v->canSkip = cacheOnly;
+		return cacheOnly;
+	}
+
+	/* Each frame while an exit waits: its then() once nothing is left. */
+	void pollLeave()
+	{
+		if (!leave.active) {
+			return;
+		}
+		PshxWrites w;
+		pshx_core_writes(&w);
+		const bool syncing = ogbox::saveSyncRunning();
+		const double now = now_seconds();
+		const bool saves = w.writes || w.closes || syncing;
+		if (!saves && (!w.cache_bytes || leave.cacheLeft)) {
+			pshakux_log("ogbox: %s: the disk's writes done after %.1f s%s", leave.what.c_str(), now - leave.since,
+				leave.cacheLeft && w.cache_bytes ? " (the cache drives' last bytes left)" : "");
+			std::function<void()> then = std::move(leave.then);
+			leave.active = false;
+			then();
+			return;
+		}
+		if (now - leave.lastLog >= 5.0) {
+			leave.lastLog = now;
+			pshakux_log("ogbox: %s: still writing (the game's writes %u, syncs and closes %u, the cache drives %.1f MiB)",
+				leave.what.c_str(), w.writes, w.closes, static_cast<double>(w.cache_bytes) / 1048576.0);
+		}
+	}
+
+	/* The controller while an exit waits: CIRCLE leaves the cache drives' bytes when only they are left. */
+	void leaveInput(uint32_t pressed)
+	{
+		PshxWrites w;
+		pshx_core_writes(&w);
+		const bool cacheOnly = !w.writes && !w.closes && !ogbox::saveSyncRunning() && w.cache_bytes;
+		if ((pressed & PAD_CIRCLE) && cacheOnly && !leave.cacheLeft) {
+			leave.cacheLeft = true;
+			pshakux_log("ogbox: %s: the cache drives' last %.1f MiB left (CIRCLE)", leave.what.c_str(),
+				static_cast<double>(w.cache_bytes) / 1048576.0);
+		}
+	}
+
 	void relaunchToLibrary()
+	{
+		leaveAfterWrites("going back to the game list", [this]() { relaunchToLibraryNow(); });
+	}
+
+	void relaunchToLibraryNow()
 	{
 		relaunchAsked = true;
 		const char *args[] = { "--back", nullptr };   // 0.1.43: straight to the list, fading in
@@ -1783,6 +1991,11 @@ public:
 	/* The guest rebooted into another XBE: the title starts again with the same disc, hard disk and
 	 * options, and hakuX's "relaunch" (it boots the XBE the launch data names). */
 	void relaunchForGuest()
+	{
+		leaveAfterWrites("the game's next part", [this]() { relaunchForGuestNow(); });
+	}
+
+	void relaunchForGuestNow()
 	{
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--relaunch" };
@@ -3749,6 +3962,10 @@ public:
 		menuButtons(menuPad);
 		ui::setScrollInput(menuPad.right_y);
 		lightBars(false);
+		if (leave.active) {
+			leaveInput(menuPad.pressed);   // 0.0.9: an exit waiting for the disk has the controller
+			return;
+		}
 		if (shareWait.active) {
 			if ((menuPad.pressed & PAD_CIRCLE) && !relaunchAsked) {
 				pshakux_log("ogbox: waiting for the share given up (CIRCLE)");
@@ -3946,6 +4163,10 @@ public:
 	{
 		ui::setScrollInput(menuPad.right_y);   // 0.0.6: long text scrolls with the right stick
 		const uint32_t pressed = menuPad.pressed;
+		if (leave.active) {
+			leaveInput(pressed);   // 0.0.9: an exit waiting for the disk has the controller
+			return;
+		}
 		const uint32_t nav = navPressed();   // 0.0.3: with the D-pad's repeats, L2 / R2 as presses
 		if (hdrCal.open) {
 			hdrCalInput(nav);   // 0.0.9: Adjust HDR brightness has the controller while it is open
@@ -4506,6 +4727,7 @@ public:
 		}
 		feedControllers();
 		hdrUpdate();   // 0.0.9: HDR output turned on or off between frames
+		pollLeave();   // 0.0.9: an exit waiting for the disk
 		/* every screen reads the controller itself (ogbox_ui draws them): ImGui's navigation gets none of it */
 		std::memset(ImGui::GetIO().NavInputs, 0, sizeof(ImGui::GetIO().NavInputs));
 		if (library) {
@@ -5601,6 +5823,11 @@ public:
 	/* The title started again with the state (hakuX loads a state as the game boots). */
 	void quickLoad(const std::string &statePath)
 	{
+		leaveAfterWrites("loading the state", [this, statePath]() { quickLoadNow(statePath); });
+	}
+
+	void quickLoadNow(const std::string &statePath)
+	{
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--loadstate", statePath };
 		if (!runKey.empty()) {
@@ -5621,6 +5848,11 @@ public:
 	}
 
 	void quickRestart()
+	{
+		leaveAfterWrites("restarting the game", [this]() { quickRestartNow(); });
+	}
+
+	void quickRestartNow()
 	{
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd };
@@ -8946,6 +9178,13 @@ public:
 		}
 		if (!toast.empty() && now_seconds() < toastUntil) {
 			ui::drawToast(dl, S, toast, static_cast<float>(std::min(1.0, (toastUntil - now_seconds()) / 0.4)));
+		}
+		if (leave.active) {   // 0.0.9: an exit waiting for the disk
+			PshxWrites w;
+			pshx_core_writes(&w);
+			ui::WriteBarView v;
+			leaveView(&v, w, ogbox::saveSyncRunning());
+			ui::drawWriteBar(dl, S, v, static_cast<float>(std::min(1.0, (now_seconds() - leave.since) / 0.25)));
 		}
 	}
 

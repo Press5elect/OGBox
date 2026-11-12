@@ -514,6 +514,15 @@ struct PopupView {
 };
 void drawPopup(ImDrawList *dl, ImVec2 screen, const PopupView &v, float appear);
 void drawToast(ImDrawList *dl, ImVec2 screen, const std::string &text, float alpha);
+/* OGBox 0.0.9: along the bottom while OGBox waits for what is still being written to the disk before
+ * it closes or changes game: what (title), how far (detail), a bar (fraction 0-1; below 0 it moves:
+ * under way, no end known), and CIRCLE's hint when what is left may be left. */
+struct WriteBarView {
+	std::string title, detail;
+	float fraction{ -1.0f };
+	bool canSkip{ false };
+};
+void drawWriteBar(ImDrawList *dl, ImVec2 screen, const WriteBarView &v, float appear);
 
 /* A colour for a name (a game without a cover): one of a few dark, saturated ones. */
 ImU32 tintFor(const std::string &name);

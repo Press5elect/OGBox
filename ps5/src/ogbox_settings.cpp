@@ -99,8 +99,11 @@ std::vector<Option> makeOptions()
 	 * over. */
 	// ---- Graphics: how the picture looks
 	o.push_back({ "render_scale", Section::Graphics, "Internal resolution",
-		"1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen.",
-		{ { "1", "1x (Xbox default)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" } },
+		"1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen. Above that the "
+		"picture is drawn larger than the screen and shrunk to it, smoother, at a much higher cost: up to 12x "
+		"(a 720p game stops at 6x).",
+		{ { "1", "1x (Xbox default)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" },
+			{ "7", "7x" }, { "8", "8x" }, { "9", "9x" }, { "10", "10x" }, { "11", "11x" }, { "12", "12x" } },
 		"1", true });
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",

@@ -98,6 +98,8 @@ bool saveSyncRunning();
 /* A game is about to start (the hard disk becomes its): a sync under way stops before its next save,
  * and this waits for it (the save it was copying is whole). */
 void saveSyncFinish();
+/* OGBox 0.0.9: OGBox is closing: the same stop, without the wait (saveSyncRunning says when it ended). */
+void saveSyncAskStop();
 
 std::string bytesText(uint64_t bytes);
 std::string dateText(int64_t mtime);
