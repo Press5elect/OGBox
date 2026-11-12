@@ -424,6 +424,10 @@ struct FrameGen::Impl {
 		for (Img &r : ring) dropImage(r);
 		dropImage(made);
 		method = FgMethod::Off;
+		/* 0.0.9: the size goes too: width() 0 is "not made" (made again at the next frame), width() with
+		 * method Off is "failed while running" (ogbox_main.cpp frameGenFor). Kept, a change in the quick menu
+		 * (refreshFrameGen: destroy, then made again) read as a failure and frame generation went off. */
+		w = h = 0;
 		count = 0;
 		searched = false;
 		newest = 1;

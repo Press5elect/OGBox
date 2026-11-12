@@ -106,14 +106,14 @@ std::vector<Option> makeOptions()
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
 		"Smooths jagged edges. FXAA: the lightest and softest. SMAA: sharper. SSAA: the best picture quality, but it "
 		"may tank performance. SSAA + SMAA: SSAA, then SMAA over the result for the edges it leaves. Quincunx: the "
-		"original Xbox's own, very smooth and soft (it raises the internal resolution to the screen's at least; "
+		"original Xbox's default, very smooth and soft (it raises the internal resolution to the screen's at least; "
 		"Sharpening brings back detail).",
 		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" }, { "ssaa_smaa", "SSAA + SMAA" },
 			{ "quincunx", "Quincunx" } }, "0", true });
 	/* 0.0.9: SSAA's down-sampling filter (ssaa.frag: the box average, or Lanczos-2) */
 	o.push_back({ "ssaa_filter", Section::Graphics, "SSAA down-sampling",
-		"For SSAA: how the larger picture is shrunk to the screen. Soft: an even average (the default). Sharp: a "
-		"Lanczos filter: crisper edges and less shimmer on fine patterns, with a faint halo along hard edges.",
+		"For SSAA: Soft: default. Sharp: a Lanczos filter, crisper edges and less shimmer on fine patterns, with a "
+		"faint halo along hard edges.",
 		{ { "soft", "Soft" }, { "sharp", "Sharp (Lanczos)" } }, "soft", true });
 	/* 0.0.9: the CRT look (crt.frag), the picture's last pass */
 	o.push_back({ "crt", Section::Graphics, "CRT look",
@@ -131,15 +131,12 @@ std::vector<Option> makeOptions()
 		hdr.now = true;
 		o.push_back(hdr);
 		Option white{ "hdr_white", Section::Graphics, "HDR white level",
-			"For HDR: how bright white is (the menus' white, and the game's ordinary whites). 203 nits is HDR's "
-			"reference level; raise it if the picture looks dim. Adjust HDR brightness below shows it as you choose.",
+			"203 nits is HDR's reference level; raise it if the picture looks dim.",
 			hdrWhiteChoices(), "203", false };
 		white.now = true;
 		o.push_back(white);
 		Option peak{ "hdr_highlights", Section::Graphics, "HDR highlights",
-			"For HDR: how bright the game's brightest parts become (the sky, lights, fire: above about three "
-			"quarters of white), rising smoothly from the rest, which stays as it was. Set it to the TV's peak "
-			"brightness (Adjust HDR brightness below finds it). Off: the SDR picture as it is, at the white level.",
+			"Set it to the TV's peak brightness. Off: the SDR picture.",
 			hdrPeakChoices(), "1000", false };
 		peak.now = true;
 		o.push_back(peak);
@@ -147,16 +144,15 @@ std::vector<Option> makeOptions()
 	/* 0.0.9: the game's picture lighter or darker, its contrast and its colour (adjust.frag, a pass over
 	 * the picture before it is scaled: ogbox_main.cpp recordPost); a game's own, at once in a game */
 	o.push_back({ "pic_brightness", Section::Graphics, "Brightness",
-		"Lightens (+) or darkens (-) the game's picture: its middle tones move, black stays black and white stays "
-		"white, so nothing is lost. For a game that is too dark or too bright. The menus are not changed.",
-		rangeChoices(-50, 50, 5, "0 (as the game)"), "0", true });
+		"For a game that is too dark or too bright.",
+		rangeChoices(-50, 50, 5, "0 (default)"), "0", true });
 	o.push_back({ "pic_contrast", Section::Graphics, "Contrast",
 		"Spreads the game's darks and lights apart (+) or brings them together (-), about the middle grey. Much more "
 		"than +20 loses detail in the darkest and brightest parts.",
-		rangeChoices(-50, 50, 5, "0 (as the game)"), "0", true });
+		rangeChoices(-50, 50, 5, "0 (default)"), "0", true });
 	o.push_back({ "pic_colour", Section::Graphics, "Colour",
 		"More (+) or less (-) colour in the game's picture; -50 is black and white.",
-		rangeChoices(-50, 50, 5, "0 (as the game)", "(black and white)"), "0", true });
+		rangeChoices(-50, 50, 5, "0 (default)", "(monochrome)"), "0", true });
 	/* 0.0.9: a pass over the picture before it is scaled (ogbox_main.cpp recordPost) */
 	o.push_back({ "deband", Section::Graphics, "Debanding",
 		"Smooths the colour bands in skies, fog and dark gradients, more visible at high internal resolutions; edges "
@@ -208,7 +204,7 @@ std::vector<Option> makeOptions()
 	/* 0.0.9: the mip levels' bias (hakuX's NC_HLE_LODBIAS) */
 	o.push_back({ "lod_bias", Section::Graphics, "Texture sharpness",
 		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
-		"patterns may shimmer. Takes effect at the game's next start.",
+		"patterns may shimmer.",
 		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });

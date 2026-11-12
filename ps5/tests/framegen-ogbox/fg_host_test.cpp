@@ -196,6 +196,14 @@ int main(int argc, char **argv)
 		std::printf("%-7s t = 1 gave the newest frame as it is: %s\n", method.name, same ? "ok" : "FAILED");
 		failed += same ? 0 : 1;
 		fg.destroy();
+		/* 0.0.9: a change in the quick menu (ogbox_main.cpp refreshFrameGen): destroyed, it has no size (so
+		 * frameGenFor makes it again rather than taking it for one that failed), and it is made again */
+		const bool gone = !fg.ready() && fg.width() == 0 && fg.height() == 0;
+		const bool again = fg.create(in, method.m, W, H) && fg.ready() && fg.width() == W && fg.height() == H;
+		std::printf("%-7s destroyed (as a change in the quick menu does): no size %s; made again: %s\n", method.name,
+			gone ? "ok" : "FAILED", again ? "ok" : "FAILED");
+		failed += (gone && again) ? 0 : 1;
+		fg.destroy();
 	}
 	std::printf("framegen on the PC: %s\n", failed ? "FAILED" : "all ok");
 	return failed ? 1 : 0;

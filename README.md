@@ -295,29 +295,29 @@ Added
 - Quincunx anti-aliasing, the original Xbox's own: each pixel is its middle and its four corners,
   very smooth edges and a softer picture, as on the console. It raises the internal resolution to
   the screen's at least.
-- Debanding (Settings > Graphics): smooths the colour bands in skies, fog and dark gradients that
+- Debanding (Settings > Picture and Sound): smooths the colour bands in skies, fog and dark gradients that
   show at high internal resolutions, keeping edges and detail. Low for 32-bit colour's fine steps,
   High for 16-bit colour's wider ones.
 - SSAA + SMAA (Anti-aliasing): SSAA, then SMAA over its result for the edges it leaves.
-- SSAA down-sampling (Settings > Graphics): Sharp (Lanczos) shrinks SSAA's larger picture with
+- SSAA down-sampling (Settings > Picture and Sound): Sharp (Lanczos) shrinks SSAA's larger picture with
   crisper edges and less shimmer on fine patterns than Soft, the even average (the default).
-- Texture sharpness (Settings > Graphics): textures stay sharper into the distance, more so at a
+- Texture sharpness (Settings > Picture and Sound): textures stay sharper into the distance, more so at a
   higher internal resolution; some games' fine patterns may shimmer. Off by default.
-- CRT look (Settings > Graphics): the scanlines between the game's own lines, as a TV of the time
+- CRT look (Settings > Picture and Sound): the scanlines between the game's own lines, as a TV of the time
   showed them, and with Strong the screen's red, green and blue stripes; the picture keeps its
   brightness. Best on a 4K screen.
-- HDR (Settings > Graphics): the picture goes to an HDR TV as HDR10 (BT.2020 colours, the PQ
-  curve), with the game's brightest parts raised toward HDR highlights (Off, or 600 to 4000 nits;
+- HDR (Settings > Picture and Sound): the picture goes to an HDR TV as HDR10 (BT.2020 colours, the PQ
+  curve), with the game's brightest parts raised toward HDR highlights (Off, or 400 to 4000 nits;
   1000 by default) and white at the HDR white level (203 nits, HDR's reference, by default). The
   menus stay at the white level. It needs the console's own HDR setting on and a TV that takes HDR;
   otherwise the picture stays SDR. OGBox now declares HDR to the console, so an HDR TV goes into HDR
   mode while OGBox runs, with this on or off. The framebuffers are switched as VLC for PS5 does
   (`ps5/patches/mesa-27/0019`), and the declaration is the one other PS5 homebrew shows working.
-- Adjust HDR brightness (Settings > Graphics, under HDR): a test screen for the TV. First the
+- Adjust HDR brightness (Settings > Picture and Sound, under HDR): a test screen for the TV. First the
   highlights: an X in a square at the brightest the TV shows, raised until the X can no longer be
   seen (the TV's peak); then the white level, the menus and a grey scale showing each step as it is
   chosen.
-- Brightness, Contrast and Colour (Settings > Graphics, a game's own, changed at once from the
+- Brightness, Contrast and Colour (Settings > Picture and Sound, a game's own, changed at once from the
   quick menu): for a game that is too dark, too bright or too strongly coloured. Brightness moves
   the middle tones (black and white stay where they are, nothing is lost); Contrast spreads the
   darks and lights about the middle grey; Colour from black and white (-50) to twice the colour

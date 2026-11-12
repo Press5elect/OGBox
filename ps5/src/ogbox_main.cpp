@@ -1167,6 +1167,19 @@ public:
 	std::string hdrAsked;             // the setting last acted on ("1" on)
 	int hdrRange{ -1 };               // the console's output when last read: 1 SDR, 2 HDR, else unknown
 	float hdrWhite{ 203.0f }, hdrPeak{ 1000.0f };
+	/* 0.0.9: the presenter's time a pass on the GPU, by stage (timestamps at its stages' ends, read once the
+	 * pass's slot is done), and on the CPU between passes; a line every 10 s (collectPassTimes) */
+	static constexpr uint32_t kStamps = 6;   // the start, the picture in, its passes, scaled, the menus, the end
+	VkQueryPool passQueries{ VK_NULL_HANDLE };
+	bool passStamped[8]{};
+	double stampNs{ 1.0 };
+	uint64_t stampMask{ ~0ull };
+	struct PassTimes {
+		double sum[kStamps]{}, worst[kStamps]{};
+		uint64_t passes{ 0 }, over8{ 0 }, over16{ 0 };
+		double gapSum{ 0.0 }, gapWorst{ 0.0 }, lastAt{ 0.0 }, logAt{ 0.0 };
+		uint64_t gaps{ 0 }, gapsLong{ 0 };
+	} passTimes;
 	/* 0.0.9: Settings > Graphics > Adjust HDR brightness: the highlights' test (step 0: an X in a square
 	 * at the brightest, gone where the TV's peak is reached), then the white level's (step 1); the
 	 * values as the settings' choices, saved at the end */
@@ -2108,6 +2121,7 @@ public:
 		vkDestroyPipeline(device, pipelineLogo, nullptr);
 		destroySmaa();
 		destroyHdr();
+		vkDestroyQueryPool(device, passQueries, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -2427,6 +2441,90 @@ public:
 		pshakux_log("presenter: HDR targets %ux%u", width, height);
 	}
 
+	/* ---- 0.0.9: the presenter's time a pass (passTimes) ---- */
+	void preparePassTimes()
+	{
+		const VkPhysicalDeviceLimits &limits = vulkanDevice->properties.limits;
+		const uint32_t family = vulkanDevice->queueFamilyIndices.graphics;
+		const uint32_t bits = family < vulkanDevice->queueFamilyProperties.size() ?
+			vulkanDevice->queueFamilyProperties[family].timestampValidBits : 0;
+		if (!limits.timestampComputeAndGraphics || !bits || limits.timestampPeriod <= 0.0f ||
+			drawCmdBuffers.size() > sizeof(passStamped) / sizeof(passStamped[0])) {
+			pshakux_log("presenter: no GPU timestamps here (%u bits, %.2f ns a tick): its passes' times are the CPU's only",
+				bits, static_cast<double>(limits.timestampPeriod));
+			return;
+		}
+		VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+		qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+		qi.queryCount = kStamps * static_cast<uint32_t>(drawCmdBuffers.size());
+		if (vkCreateQueryPool(device, &qi, nullptr, &passQueries) != VK_SUCCESS) {
+			passQueries = VK_NULL_HANDLE;
+			return;
+		}
+		stampNs = static_cast<double>(limits.timestampPeriod);
+		stampMask = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
+		pshakux_log("presenter: its passes timed on the GPU (%u-bit timestamps, %.2f ns a tick): a line every 10 s", bits, stampNs);
+	}
+
+	void stampPass(VkCommandBuffer cmd, uint32_t at)
+	{
+		if (passQueries != VK_NULL_HANDLE) {
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, passQueries, currentBuffer * kStamps + at);
+		}
+	}
+
+	/* At a pass's start (its slot's fence waited): the last pass of this slot, counted; every 10 s, a line */
+	void collectPassTimes()
+	{
+		PassTimes &pt = passTimes;
+		const double now = now_seconds();
+		if (pt.lastAt > 0.0) {
+			const double gap = (now - pt.lastAt) * 1000.0;
+			pt.gapSum += gap;
+			pt.gapWorst = std::max(pt.gapWorst, gap);
+			pt.gaps++;
+			pt.gapsLong += gap > 12.5 ? 1 : 0;   // a refresh and a half at 120 Hz
+		}
+		pt.lastAt = now;
+		if (passQueries != VK_NULL_HANDLE && passStamped[currentBuffer]) {
+			uint64_t t[kStamps] = {};
+			if (vkGetQueryPoolResults(device, passQueries, currentBuffer * kStamps, kStamps, sizeof(t), t, sizeof(uint64_t),
+					VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+				const auto ms = [this, &t](uint32_t a, uint32_t b) {
+					return static_cast<double>((t[b] - t[a]) & stampMask) * stampNs / 1e6;
+				};
+				for (uint32_t i = 1; i < kStamps; i++) {
+					const double d = ms(i - 1, i);
+					pt.sum[i] += d;
+					pt.worst[i] = std::max(pt.worst[i], d);
+				}
+				const double total = ms(0, kStamps - 1);
+				pt.sum[0] += total;
+				pt.worst[0] = std::max(pt.worst[0], total);
+				pt.passes++;
+				pt.over8 += total > 8.33 ? 1 : 0;
+				pt.over16 += total > 16.67 ? 1 : 0;
+			}
+		}
+		if (pt.logAt == 0.0) {
+			pt.logAt = now;
+		} else if (now - pt.logAt >= 10.0) {
+			const double n = static_cast<double>(std::max<uint64_t>(pt.passes, 1));
+			const double g = static_cast<double>(std::max<uint64_t>(pt.gaps, 1));
+			pshakux_log("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
+				"GPU a pass %.2f ms (the worst %.2f, %llu over 8.3 ms, %llu over 16.7): the picture in %.2f (frame generation, "
+				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's)",
+				static_cast<unsigned long long>(pt.gaps), now - pt.logAt, static_cast<double>(pt.gaps) / (now - pt.logAt),
+				pt.gapSum / g, pt.gapWorst, static_cast<unsigned long long>(pt.gapsLong), pt.sum[0] / n, pt.worst[0],
+				static_cast<unsigned long long>(pt.over8), static_cast<unsigned long long>(pt.over16), pt.sum[1] / n, pt.sum[2] / n,
+				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n);
+			const double lastAt = pt.lastAt;
+			pt = PassTimes{};
+			pt.lastAt = lastAt;
+			pt.logAt = now;
+		}
+	}
+
 	/* ---- 0.0.9: Adjust HDR brightness (the test screen) ---- */
 	void openHdrCal()
 	{
@@ -2509,11 +2607,10 @@ public:
 		ui::text(dl, ui::F::Title, ui::px(40.0f), ImVec2(x, ui::px(64.0f)), white,
 			peakStep ? "Adjust HDR: highlights (1 of 2)" : "Adjust HDR: white level (2 of 2)");
 		ui::paragraph(dl, ui::F::Body, ui::px(22.0f), ImVec2(x, ui::px(128.0f)), dim, peakStep ?
-			"The square is as bright as your TV can show. Press LEFT or RIGHT until the X in it can only just no "
-			"longer be seen: that is your TV's peak, and the game's brightest parts will go up to it." :
-			"How bright white is: these words, the menus, and the game's ordinary whites. Choose what looks bright "
-			"but comfortable, like white paper in a well-lit room; 203 nits is HDR's reference. The grey steps should "
-			"all look different.", w, 4);
+			"Press LEFT or RIGHT until the X in it can only just no longer be seen: that is your TV's peak, and the "
+			"game's brightest parts will go up to it." :
+			"Choose what looks bright but comfortable, 203 nits is HDR's reference. The grey steps should all look "
+			"different.", w, 4);
 		const std::string value = (peakStep ? hdrCal.peak : hdrCal.white) + " nits";
 		const ImVec2 vs = ui::measure(ui::F::Display, ui::px(46.0f), value.c_str());
 		ui::text(dl, ui::F::Display, ui::px(46.0f), ImVec2((S.x - vs.x) * 0.5f, S.y * 0.72f + ui::px(18.0f)), white, value.c_str());
@@ -3176,6 +3273,7 @@ public:
 	{
 		VulkanExampleBase::prepare();
 		preparePresenter();
+		preparePassTimes();
 		loadLogo();
 		prepared = true;
 		if (configured) {
@@ -3472,8 +3570,13 @@ public:
 	void buildCommandBuffer()
 	{
 		VkCommandBuffer cmdBuffer = drawCmdBuffers[currentBuffer];
+		collectPassTimes();   // 0.0.9: this slot's last pass (its fence waited in prepareFrame)
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 		VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuffer, &cmdBufInfo));
+		if (passQueries != VK_NULL_HANDLE) {
+			vkCmdResetQueryPool(cmdBuffer, passQueries, currentBuffer * kStamps, kStamps);
+			stampPass(cmdBuffer, 0);
+		}
 		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 		pictureChanged = upload || fgShow;
 		if (fgPush) {
@@ -3499,6 +3602,7 @@ public:
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
 			picture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
+		stampPass(cmdBuffer, 1);   // the picture in: frame generation's, or the game's upload
 		const bool gamePicture = havePicture && !showingLogo && picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		/* 0.0.9: the size the game's picture takes on the screen, known before the passes (SSAA + SMAA
 		 * draws at it); SSAA + SMAA over a picture no larger than that is SMAA */
@@ -3518,6 +3622,7 @@ public:
 		const bool comboNow = ssaaSmaa && gameLarger &&
 			recordSsaaSmaa(cmdBuffer, postSet != VK_NULL_HANDLE ? postSet : descriptorSet,
 				static_cast<uint32_t>(std::lround(gameW)), static_cast<uint32_t>(std::lround(gameH)));
+		stampPass(cmdBuffer, 2);   // its passes: SMAA, Debanding, Brightness and Colour, SSAA + SMAA
 		/* 0.0.9: HDR output: the picture and the menus into layers of their own (resolveHdr) */
 		const bool hdrNow = hdrOn;
 		if (hdrNow) {
@@ -3603,6 +3708,7 @@ public:
 			}
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 		}
+		stampPass(cmdBuffer, 3);   // scaled to the screen (the filter, or the CRT look)
 		if (hdrNow) {
 			endHdrLayer(cmdBuffer, hdrPicture);
 			beginHdrLayer(cmdBuffer, hdrUi);
@@ -3610,10 +3716,16 @@ public:
 			drawUI(cmdBuffer);
 			ui.coverage = false;
 			endHdrLayer(cmdBuffer, hdrUi);
+			stampPass(cmdBuffer, 4);   // the menus
 			resolveHdr(cmdBuffer, !library && havePicture && !showingLogo);
 		} else {
 			drawUI(cmdBuffer);
+			stampPass(cmdBuffer, 4);
 			endDynamicRendering(cmdBuffer);
+		}
+		stampPass(cmdBuffer, 5);   // the end (HDR's pixels and their copy, when it is on)
+		if (passQueries != VK_NULL_HANDLE) {
+			passStamped[currentBuffer] = true;
 		}
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
@@ -7380,7 +7492,7 @@ public:
 	static const char *setPageName(int page)
 	{
 		switch (page) {
-		case SP_PICTURE: return "Picture and sound";
+		case SP_PICTURE: return "Picture and Sound";
 		case SP_CONTROLLER: return "Controller";
 		case SP_XBOX: return "XBOX";
 		case SP_ADVANCED: return "Advanced";
@@ -7402,7 +7514,7 @@ public:
 		case SP_PICTURE:
 			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
 				"deband", "crt", "crop_overscan", "show_fps" } },
-				{ "Brightness and colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
+				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
 				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
@@ -7784,8 +7896,8 @@ public:
 			 * read: libraryInput), not a game's */
 			if (library && !forGame && hdrPipeline != VK_NULL_HANDLE) {
 				actionRow("hdrcal", "Adjust HDR brightness", hdrOn ? "open" : "needs HDR on",
-					"A test screen for your TV: its peak brightness for the highlights, then the white level, shown as "
-					"you choose them.", [this]() { openHdrCal(); }, rows, acts, ui::Icon::Gear);
+					"A test screen for your TV: its peak brightness for the highlights, then the white level.",
+					[this]() { openHdrCal(); }, rows, acts, ui::Icon::Gear);
 			}
 			break;
 		case SP_NETWORK:
