@@ -25,8 +25,12 @@ F	6A006A02894660885E648B0DE88998006A00	6A006A01894660885E648B0DE88998006A00
 #
 # 55530041: the game proper is sc3.xbe (default.xbe, the menu, starts it): its D3D present
 # parameters' presentation interval, D3DPRESENT_INTERVAL_TWO (or TWO_OR_IMMEDIATE with its vsync
-# setting off: add eax, 0x80000002 after the setting's mask), made ONE (ONE_OR_IMMEDIATE). The engine
-# moves its world by the time a frame took.
+# setting off: add eax, 0x80000002 after the setting's mask), made ONE (ONE_OR_IMMEDIATE), in both.
+# The menu's too: it persists its display for sc3.xbe (MmPersistContiguousMemory, AvSetSavedData-
+# Address) and sc3.xbe's D3D takes the menu's interval with it (its swaps went on at TWO_OR_IMMEDIATE,
+# 0x141, with sc3.xbe's alone patched). The engine moves its world by the time a frame took.
 P	55530041	*	pog5553004160	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	F7D81BC025000000800502000080A340DC4C00	F7D81BC025000000800501000080A340DC4C00
 T	sc3.xbe
 F	F7D81BC025000000800502000080A330746200	F7D81BC025000000800501000080A330746200
