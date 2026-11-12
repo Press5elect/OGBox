@@ -347,4 +347,42 @@ void drawToast(ImDrawList *dl, ImVec2 S, const std::string &s, float a)
 	paragraph(dl, F::Body, fs, ImVec2(p0.x + px(46.0f), p0.y + px(17.0f)), alpha(p.text, a), s, maxW, 3);
 }
 
+void drawWriteBar(ImDrawList *dl, ImVec2 S, const WriteBarView &v, float appear)
+{
+	const float a = std::max(0.0f, std::min(1.0f, appear));
+	if (a <= 0.0f) {
+		return;
+	}
+	const Palette &p = P();
+	const float margin = px(48.0f), h = px(118.0f);
+	const float rise = px(24.0f) * (1.0f - easeOut(a));
+	const ImVec2 p0(margin, S.y - margin - h + rise), p1(S.x - margin, S.y - margin + rise);
+	shadow(dl, p0, p1, px(grid::rLarge), px(40.0f), 0.6f * a);
+	panel(dl, p0, p1, px(grid::rLarge), alpha(p.surface2, a), alpha(p.border, a));
+	const float x = p0.x + px(36.0f), w = p1.x - p0.x - px(72.0f);
+	float hintW = 0.0f;
+	const Hint skip{ "O", "leave now" };
+	if (v.canSkip) {
+		hintW = hint(nullptr, ImVec2(0, 0), skip, 0, true);
+		hint(dl, ImVec2(p1.x - px(36.0f) - hintW, p0.y + px(26.0f)), skip, alpha(p.textFaint, a));
+	}
+	textFit(dl, F::Heading, px(21.0f), ImVec2(x, p0.y + px(22.0f)), alpha(p.text, a), v.title,
+		w - hintW - (hintW > 0.0f ? px(24.0f) : 0.0f));
+	textFit(dl, F::Body, px(17.0f), ImVec2(x, p0.y + px(54.0f)), alpha(p.textDim, a), v.detail, w);
+	/* the bar: its track, and what is done (or, with no end known, a stretch that goes along it) */
+	const float by = p0.y + h - px(28.0f), bh = px(6.0f);
+	dl->AddRectFilled(ImVec2(x, by), ImVec2(x + w, by + bh), alpha(p.border, a), bh * 0.5f);
+	float f0 = 0.0f, f1 = 0.0f;
+	if (v.fraction >= 0.0f) {
+		f1 = std::min(1.0f, v.fraction);
+	} else {
+		const float t = static_cast<float>(std::fmod(ImGui::GetTime(), 1.6) / 1.6);
+		f0 = std::max(0.0f, t * 1.3f - 0.3f);
+		f1 = std::min(1.0f, t * 1.3f);
+	}
+	if (f1 > f0) {
+		dl->AddRectFilled(ImVec2(x + w * f0, by), ImVec2(x + w * f1, by + bh), alpha(p.accent, a), bh * 0.5f);
+	}
+}
+
 } // namespace ui

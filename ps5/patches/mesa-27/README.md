@@ -34,6 +34,17 @@ the PS epilog; the SMEM cache line size used for uploads; and addrlib 10.9.
 Mesa's licences apply to all of them (the PS5 winsys is MIT, like the code around it;
 PS5CEMU-HAR's patches are published under GPL-3.0). Crux2's own changes: Crux2 by Press5elect.
 
+OGBox 0.0.9 adds `0019-wsi-videoout-HDR10-framebuffers-on-request.patch` (OGBox's, after
+[VLC for PS5](https://github.com/ZiZc3/VLC)'s `patches/mesa/0001-videoout-hdr10.patch`, GPL-3.0
+like VLC for PS5; the WSI code it changes is MIT). `wsi_videoout_set_hdr10(1)` retypes every registered set of
+framebuffers in place as HDR10 (pixel format `0x8100070400000000`: 10:10:10:2 in the buffers' B, G, R
+order, BT.2020, PQ), and `(0)` back to SDR; a set registered later follows, or every set goes back to
+SDR (`wsi_videoout_hdr10()` says which). `wsi_videoout_output_range()` reads the output's dynamic
+range (1 SDR, 2 HDR). `sceVideoOutSubmitChangeBufferAttribute2` and `sceVideoOutGetOutputStatus` are
+reached through weak hooks the title answers after looking them up by NID (`HuViW4HnrOw`,
+`utPrVdxio-8`), as 0017 does. VideoOut takes the HDR10 type only from a title whose `param.json`
+attribute carries `0x20000000` (`0x80290003` without it).
+
 OGBox 0.1.28 adds `0018-radv-ps5-back-a-large-buffer-with-several-direct-memory-ranges.patch`:
 PS5_Mesa's own commit 53cc83ff82b (Mihawk, newer than PS5_Vulkan's pin), with its one conflict
 against `0001-diagnostic-breadcrumbs` merged (the breadcrumb kept before the fallback). A large

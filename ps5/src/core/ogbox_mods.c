@@ -51,6 +51,7 @@ typedef struct Mod {
     char dir[1024];    /* 0.0.3: the folder it's in (mods/<key> or mods/<title ID>) */
     char name[128];
     char description[384];
+    char author[64];   /* mod.txt "author:" (the game page shows it, as a patch's) */
     int refresh;
     bool on;
     bool gamefix;      /* 0.0.3: "gamefix: true": always on, can't be turned off (the Mods screen greys it) */
@@ -311,6 +312,8 @@ static void load_mod(const char *dir, const char *id)
                 copy(m->name, sizeof(m->name), value);
             } else if (!strcmp(key, "description")) {
                 copy(m->description, sizeof(m->description), value);
+            } else if (!strcmp(key, "author")) {
+                copy(m->author, sizeof(m->author), value);
             } else if (!strcmp(key, "refresh")) {
                 m->refresh = atoi(value);
             } else if (!strcmp(key, "edit") && m->nedits < MOD_EDITS) {
@@ -1309,6 +1312,7 @@ int ogbox_mods_catalog(const char *key, OgboxModEntry *out, int max)
         copy(e->id, sizeof(e->id), g_mods[i].id);
         copy(e->name, sizeof(e->name), g_mods[i].name);
         copy(e->description, sizeof(e->description), g_mods[i].description);
+        copy(e->author, sizeof(e->author), g_mods[i].author);
         e->refresh = g_mods[i].refresh;
         e->on = g_mods[i].on;
         e->gamefix = g_mods[i].gamefix;

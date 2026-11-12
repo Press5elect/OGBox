@@ -190,3 +190,31 @@ extern "C" int ps5_title_videoout_vrr_unpeg(int32_t handle)
 	}();
 	return unpeg ? unpeg(handle) : -1;
 }
+
+// 0.0.9: HDR output (ps5/patches/mesa-27/0019): the driver retypes the framebuffers through
+// sceVideoOutSubmitChangeBufferAttribute2 and reads the output's dynamic range through
+// sceVideoOutGetOutputStatus, both looked up here by their NIDs as the variable refresh one is.
+// -1 when the console has no such function: HDR is then refused, and the output reads as unknown.
+extern "C" int ps5_title_videoout_change_attribute(int32_t handle, int32_t set, const void *attribute)
+{
+	using ChangeFn = int (*)(int32_t, int32_t, const void *, const void *);
+	static const ChangeFn change = [] {
+		const ChangeFn found = reinterpret_cast<ChangeFn>(
+			PS5SystemModules::FindFunction("libSceVideoOut", "sceVideoOutSubmitChangeBufferAttribute2", "HuViW4HnrOw"));
+		ps5px_log("display: sceVideoOutSubmitChangeBufferAttribute2 %s", found ? "found" : "not on this console: no HDR output");
+		return found;
+	}();
+	return change ? change(handle, set, attribute, nullptr) : -1;
+}
+
+extern "C" int ps5_title_videoout_output_status(int32_t handle, void *status)
+{
+	using StatusFn = int (*)(int32_t, void *);
+	static const StatusFn get = [] {
+		const StatusFn found = reinterpret_cast<StatusFn>(
+			PS5SystemModules::FindFunction("libSceVideoOut", "sceVideoOutGetOutputStatus", "utPrVdxio-8"));
+		ps5px_log("display: sceVideoOutGetOutputStatus %s", found ? "found" : "not on this console: the output's range unknown");
+		return found;
+	}();
+	return get ? get(handle, status) : -1;
+}

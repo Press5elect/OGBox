@@ -852,6 +852,19 @@ void pshx_core_quiesce(void)
     pshakux_log("core: the emulated GPU's work done (%d)", r);
 }
 
+bool pshx_core_writes(PshxWrites *w)
+{
+    NcIoPending p;
+    nc_io_pending(&p);
+    memset(w, 0, sizeof(*w));
+    w->writes = p.writes;
+    w->closes = p.closes;
+    w->cache_bytes = p.held;
+    snprintf(w->closing, sizeof(w->closing), "%s", p.closing);
+    snprintf(w->cache_file, sizeof(w->cache_file), "%s", p.writing);
+    return w->writes || w->closes || w->cache_bytes;
+}
+
 bool pshx_core_trainer_message(int *kind, unsigned *led, char *text, unsigned text_size)
 {
     NcTrainerMessage m;

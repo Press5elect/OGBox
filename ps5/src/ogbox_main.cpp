@@ -126,6 +126,11 @@
 
 extern "C" int pshakux_props_load(const char *path);
 extern "C" int pshakux_prop_set(const char *name, const char *value);
+/* 0.0.9: HDR output: the graphics driver's (ps5/patches/mesa-27/0019); weak, so a driver without them
+ * links and reads as no HDR */
+extern "C" int wsi_videoout_set_hdr10(int enable) __attribute__((weak));
+extern "C" int wsi_videoout_hdr10(void) __attribute__((weak));
+extern "C" int wsi_videoout_output_range(void) __attribute__((weak));
 
 namespace {
 
@@ -626,6 +631,75 @@ void vfsLog(const char *line)
 	pshakux_log("%s", line);   // the layer's lines begin with "vfs: "
 }
 
+std::string readLastGame();
+
+/* 0.0.9: a file on the share of at least 8 MB (a disc image), within depth folders down; "" for none. */
+std::string firstLargeFile(const std::string &folder, int depth)
+{
+	ps5vfs_dir *dir = ps5vfs_opendir(folder.c_str());
+	if (!dir) {
+		return std::string();
+	}
+	std::vector<std::string> subs;
+	std::string found;
+	struct ps5vfs_dirent e;
+	for (unsigned n = 0; found.empty() && n < 400 && ps5vfs_readdir(dir, &e) == 1; n++) {
+		if (!e.name || e.name[0] == '.') {
+			continue;
+		}
+		if (e.is_directory) {
+			subs.push_back(folder + "/" + e.name);
+		} else if (e.size >= (8 << 20)) {
+			found = folder + "/" + e.name;
+		}
+	}
+	ps5vfs_closedir(dir);
+	for (size_t i = 0; found.empty() && depth > 0 && i < subs.size() && i < 16; i++) {
+		found = firstLargeFile(subs[i], depth - 1);
+	}
+	return found;
+}
+
+/* 0.0.9: a NAS whose disks have spun down takes seconds to answer the first read of a game (the
+ * game's start waited for its share, "waiting for the share"): when OGBox starts (not when it
+ * starts again for a game or back from one), each share mounted is read a little in the
+ * background, the last game's image where it is on that share, else the first large file found,
+ * at its start and somewhere inside (what the NAS keeps in its memory doesn't wake its disks), so
+ * the disks are turning by the time a game is started. */
+void wakeShares(const std::vector<std::string> &mounts)
+{
+	const std::string last = readLastGame();
+	std::thread([mounts, last]() {
+		for (const std::string &m : mounts) {
+			const double t0 = now_seconds();
+			std::string file = last.rfind(m + "/", 0) == 0 ? last : std::string();
+			if (file.empty()) {
+				file = firstLargeFile(m, 2);
+			}
+			if (file.empty()) {
+				pshakux_log("ogbox: share %s: no large file on it to read (to wake its disks)", m.c_str());
+				continue;
+			}
+			size_t got = 0;
+			if (FILE *f = ps5vfs_fopen(file.c_str(), "rb")) {
+				std::vector<char> buf(64 * 1024);
+				got = ps5vfs_fread(buf.data(), 1, buf.size(), f);
+				struct stat st;
+				if (ps5vfs_fstat(f, &st) == 0 && st.st_size > static_cast<off_t>(4 * buf.size())) {
+					std::mt19937_64 rng(static_cast<uint64_t>(t0 * 1e6));
+					const off_t at = static_cast<off_t>(rng() % static_cast<uint64_t>(st.st_size - static_cast<off_t>(buf.size())));
+					if (ps5vfs_fseeko(f, at & ~static_cast<off_t>(4095), SEEK_SET) == 0) {
+						got += ps5vfs_fread(buf.data(), 1, buf.size(), f);
+					}
+				}
+				ps5vfs_fclose(f);
+			}
+			pshakux_log("ogbox: share %s woken: %zu KiB of %s read in %.1f s", m.c_str(), got / 1024, file.c_str(),
+				now_seconds() - t0);
+		}
+	}).detach();
+}
+
 /* The virtual file layer: its stand-in file, its log, the shares of network.cfg (a commented
  * example is written the first time). */
 void startFileLayer()
@@ -704,8 +778,8 @@ void startFileLayer()
 		/* 0.0.3: mounted as the settings edit them (ogbox_shares): each at /smb/<its name> */
 		ogbox::ShareFile file;
 		int mounted = 0;
+		std::vector<std::string> taken;
 		if (ogbox::readShares(chosen, file)) {
-			std::vector<std::string> taken;
 			for (ogbox::Share &share : file.shares) {
 				std::string why;
 				if (ogbox::mountShare(share, file, taken, &why)) {
@@ -718,6 +792,9 @@ void startFileLayer()
 		}
 		g_networkStatus = std::to_string(mounted) + " share(s) from " + chosen;
 		pshakux_log("ogbox: %s", g_networkStatus.c_str());
+		if (!taken.empty() && !pshakux_relaunched()) {
+			wakeShares(taken);   // 0.0.9: a NAS's disks spun up while the game list is shown
+		}
 	}
 }
 
@@ -835,6 +912,10 @@ public:
 	std::vector<uint8_t> logoPixels;
 	uint32_t logoWidth{ 0 }, logoHeight{ 0 };
 	bool showingLogo{ false };  // the picture is the logo, not a game's frame
+	// OGBox 0.0.9: the startup video (ogbox_intro.h) in the boot screen's place, when OGBox starts
+	ogbox::IntroPlayer intro;
+	bool introTried{ false }, introOn{ false }, introStarted{ false }, showingIntro{ false };
+	uint64_t introSerial{ ~0ull };
 	uint64_t framesDrawn{ 0 }, picturesTaken{ 0 };
 	uint32_t players{ 0 };
 	double quitHeldSince{ -1.0 };
@@ -1038,10 +1119,24 @@ public:
 	bool touchWas[PAD_PLAYERS]{};
 	ogbox::PadMap padMap;                     // Settings > Controller, the game's own on top
 	int rumblePercent{ 100 };
+	float buzzLarge{ 0.0f }, buzzSmall{ 0.0f };   // 0.0.9: the buzz's motors (player 1's, until buzzUntil)
+	uint32_t lightBarWas[PAD_PLAYERS]{ 1u << 31, 1u << 31, 1u << 31, 1u << 31 };   // 0.0.9: as last set (bit 31: none)
+	uint32_t lightBarPlayers{ 0 };            // the controllers the light bars were set for
 	double buzzUntil{ 0.0 };                  // 0.0.6: the settings' test buzz stops then                 // 0.0.6: Settings > Controller > Rumble strength
 	ogbox::TapLatch tapLatch[PAD_PLAYERS];    // a tap shorter than a frame still reaches the game
 	std::string toast;
 	double toastUntil{ 0.0 };
+	/* 0.0.9: an exit (back to the game list, the game's next XBE, a state, a restart, OGBox closing)
+	 * waits here for what is still on its way to the disk, its bar along the bottom (leaveAfterWrites) */
+	struct Leave {
+		bool active{ false };
+		std::function<void()> then;
+		std::string what;            // "going back to the game list"...
+		std::string title;           // the bar's own title ("" for "Saving before " + what)
+		double since{ 0.0 }, lastLog{ 0.0 };
+		uint64_t cacheFirst{ 0 };    // the cache drives' bytes held when it began (the bar's start)
+		bool cacheLeft{ false };     // CIRCLE: the cache drives' unwritten bytes left (the game copies them again)
+	} leave;
 	// a small list of choices over a screen (a confirmation, a place, an action)
 	struct Popup {
 		bool open{ false };
@@ -1113,13 +1208,81 @@ public:
 	 * into images of its own, then shown as the picture is) and SSAA (the resolution scale raised
 	 * above the screen, the picture averaged down over every texel a pixel covers) */
 	bool smaaOn{ false }, ssaaOn{ false };
+	/* 0.0.9: Quincunx (the Xbox's own anti-aliasing, quincunx.frag, a scaler like SSAA); and Debanding
+	 * (deband.frag), a pass at the picture's size before it is scaled, after SMAA, into postA */
+	bool quincunxOn{ false }, debandOn{ false };
+	float debandStep{ 0.0f };   // a band's step: Low 2 levels of 255 (32-bit colour), High 5 (16-bit)
+	VkPipeline pipelineQuincunx{ VK_NULL_HANDLE }, postDeband{ VK_NULL_HANDLE };
+	/* 0.0.9: SSAA's Sharp down-sampling (ssaa.frag's Lanczos-2); SSAA + SMAA (the picture averaged down
+	 * to the screen's size into ssaaDown first, SMAA over that, shown 1:1); the CRT look (crt.frag, the
+	 * last pass, in place of the scaling filters: the game's own lines, picture.height / coreScale) */
+	bool ssaaSharp{ false }, ssaaSmaa{ false };
+	int crtMode{ 0 };           // 0 off, 1 light, 2 strong
+	int coreScale{ 1 };         // the core's resolution scale this run (the CRT's line count)
+	VkPipeline pipelineCrt{ VK_NULL_HANDLE }, ssaaToImage{ VK_NULL_HANDLE };
+	bool downValid{ false };    // ssaaDown and SMAA's result over it hold the current picture
+	VkDescriptorPool postPool{ VK_NULL_HANDLE };
+	VkDescriptorSet postFromPicture{ VK_NULL_HANDLE }, postFromSmaa{ VK_NULL_HANDLE }, presentFromA{ VK_NULL_HANDLE };
+	VkImageView postPictureView{ VK_NULL_HANDLE }, postSmaaView{ VK_NULL_HANDLE };
+	bool postValid{ false };
+	bool postFromSmaaNow{ false };   // what the passes last read: SMAA's result, or the picture
 	bool cropOn{ false };       // 0.1.59: the overscan cropped (3/80 a side, hakuX-lr's)
 	struct AaImage {
 		VkImage image{ VK_NULL_HANDLE };
 		VkDeviceMemory memory{ VK_NULL_HANDLE };
 		VkImageView view{ VK_NULL_HANDLE };
 	};
+	/* 0.0.9: HDR output (Settings > Picture > HDR). The driver retypes the framebuffers as HDR10
+	 * (ps5/patches/mesa-27/0019: BT.2020 and the PQ curve, as VLC-PS5 does; param.json's attribute
+	 * 0x20000000 lets VideoOut take it). The frame is drawn as for an SDR screen, the picture into
+	 * hdrPicture and the menus into hdrUi; hdr.frag makes HDR10's pixels of both in hdrTen (the menus
+	 * at the white's level, the game's highlights raised toward the peak), copied into the framebuffer
+	 * (the same 32-bit pixels, as VLC-PS5 copies its own). */
+	AaImage hdrPicture{}, hdrUi{}, hdrTen{};
+	uint32_t hdrW{ 0 }, hdrH{ 0 };
+	VkDescriptorSetLayout hdrSetLayout{ VK_NULL_HANDLE };
+	VkPipelineLayout hdrPipelineLayout{ VK_NULL_HANDLE };
+	VkDescriptorPool hdrPool{ VK_NULL_HANDLE };
+	VkDescriptorSet hdrSet{ VK_NULL_HANDLE };
+	VkPipeline hdrPipeline{ VK_NULL_HANDLE };
+	bool hdrOn{ false };              // the framebuffers are HDR10: each frame is drawn for them
+	bool hdrAskedOnce{ false };
+	std::string hdrAsked;             // the setting last acted on ("1" on)
+	int hdrRange{ -1 };               // the console's output when last read: 1 SDR, 2 HDR, else unknown
+	float hdrWhite{ 203.0f }, hdrPeak{ 1000.0f };
+	/* 0.0.9: the presenter's time a pass on the GPU, by stage (timestamps at its stages' ends, read once the
+	 * pass's slot is done), and on the CPU between passes; a line every 10 s (collectPassTimes) */
+	static constexpr uint32_t kStamps = 6;   // the start, the picture in, its passes, scaled, the menus, the end
+	VkQueryPool passQueries{ VK_NULL_HANDLE };
+	bool passStamped[8]{};
+	double stampNs{ 1.0 };
+	uint64_t stampMask{ ~0ull };
+	struct PassTimes {
+		double sum[kStamps]{}, worst[kStamps]{};
+		uint64_t passes{ 0 }, over8{ 0 }, over16{ 0 };
+		double gapSum{ 0.0 }, gapWorst{ 0.0 }, lastAt{ 0.0 }, logAt{ 0.0 };
+		uint64_t gaps{ 0 }, gapsLong{ 0 };
+	} passTimes;
+	/* 0.0.9: Settings > Graphics > Adjust HDR brightness: the highlights' test (step 0: an X in a square
+	 * at the brightest, gone where the TV's peak is reached), then the white level's (step 1); the
+	 * values as the settings' choices, saved at the end */
+	struct HdrCal {
+		bool open{ false };
+		int step{ 0 };
+		std::string peak, white;
+	} hdrCal;
 	AaImage smaaEdges{}, smaaWeights{}, smaaOut{}, smaaArea{}, smaaSearch{};
+	AaImage postA{};
+	/* 0.0.9: Brightness, Contrast and Colour (adjust.frag, a game's own): a pass after Debanding's (into
+	 * postB when both are on, else postA); adjustParams its vec4 (the power, the contrast, the colour) */
+	AaImage postB{};
+	VkPipeline postAdjust{ VK_NULL_HANDLE };
+	VkDescriptorSet postFromA{ VK_NULL_HANDLE }, presentFromB{ VK_NULL_HANDLE };
+	bool adjustOn{ false }, postTwoNow{ false };
+	float adjustParams[4]{ 1.0f, 1.0f, 1.0f, 0.0f };
+	AaImage ssaaDown{};         // 0.0.9: SSAA + SMAA: the picture at the screen's size
+	uint32_t downW{ 0 }, downH{ 0 };
+	uint32_t postW{ 0 }, postH{ 0 };
 	uint32_t smaaW{ 0 }, smaaH{ 0 };
 	VkImageView smaaPictureView{ VK_NULL_HANDLE };   // the picture the sets were written for
 	bool smaaValid{ false };                         // smaaOut holds the current picture
@@ -1504,8 +1667,10 @@ public:
 			openPopup("Close OGBox?", "Are you sure?", { "No", "Yes, close it" }, [this](int i) {
 				if (i == 1) {
 					pshakux_log("library: Quit OGBox (CIRCLE, confirmed)");
-					prefs.flush();   // 0.0.7: settings not yet written
-					quit = true;
+					leaveAfterWrites("OGBox closes", [this]() {
+						prefs.flush();   // 0.0.7: settings not yet written
+						quit = true;
+					});
 				}
 			});
 			return;
@@ -1543,8 +1708,10 @@ public:
 		}
 		case LibraryEntry::Quit:
 			pshakux_log("library: Quit OGBox");
-			prefs.flush();   // 0.0.7: settings not yet written
-			quit = true;
+			leaveAfterWrites("OGBox closes", [this]() {
+				prefs.flush();   // 0.0.7: settings not yet written
+				quit = true;
+			});
 			break;
 		case LibraryEntry::Settings:
 			openSettings(std::string(), std::string());
@@ -1688,7 +1855,130 @@ public:
 		}
 	}
 
+	/* 0.0.9: then() once nothing is left on its way to the disk: at once when nothing is, else with
+	 * the game paused and a bar along the bottom, a frame at a time (pollLeave): the game's writes
+	 * (a save among them) and its files' syncs and closes always, a save sync to a share or USB drive
+	 * to the end of the save it is copying, the cache drives' held bytes unless CIRCLE leaves them
+	 * (the game finds those files missing and copies them again). */
+	void leaveAfterWrites(const char *what, std::function<void()> then, const char *title = "")
+	{
+		if (leave.active) {
+			return;
+		}
+		PshxWrites w;
+		const bool writing = pshx_core_writes(&w);
+		const bool syncing = ogbox::saveSyncRunning();
+		if (!writing && !syncing) {
+			then();
+			return;
+		}
+		relaunchAsked = true;   // no second exit meanwhile (the guest's own reboot among them)
+		if (pshx_core_state() != PSHX_CORE_IDLE) {
+			pshx_core_pause(true);
+		}
+		if (syncing) {
+			ogbox::saveSyncAskStop();
+		}
+		leave = Leave{};
+		leave.active = true;
+		leave.then = std::move(then);
+		leave.what = what;
+		leave.title = title;
+		leave.since = leave.lastLog = now_seconds();
+		leave.cacheFirst = w.cache_bytes;
+		pshakux_log("ogbox: %s: waiting for the disk first (the game's writes %u, syncs and closes %u, the cache "
+			"drives %.1f MiB held%s)", what, w.writes, w.closes, static_cast<double>(w.cache_bytes) / 1048576.0,
+			syncing ? ", a save sync" : "");
+	}
+
+	static std::string leafName(const char *path)
+	{
+		const std::string s = path ? path : "";
+		const size_t slash = s.find_last_of("\\/");
+		return slash == std::string::npos ? s : s.substr(slash + 1);
+	}
+
+	/* What is still being written, for the bar; true when only the cache drives' bytes are left. */
+	bool leaveView(ui::WriteBarView *v, const PshxWrites &w, bool syncing)
+	{
+		std::vector<std::string> parts;
+		if (w.writes || w.closes) {
+			const unsigned n = w.writes + w.closes;
+			std::string part = "The game's files: " + std::to_string(n) + " to finish";
+			if (w.closing[0]) {
+				part += " (" + leafName(w.closing) + ")";
+			}
+			parts.push_back(part);
+		}
+		if (syncing) {
+			parts.push_back("Your saves: the copy under way finishing");
+		}
+		if (w.cache_bytes && !leave.cacheLeft) {
+			char mb[32];
+			std::snprintf(mb, sizeof(mb), "%.1f MB", static_cast<double>(w.cache_bytes) / 1e6);
+			std::string part = std::string("The game's cache drive: ") + mb + " left";
+			if (w.cache_file[0]) {
+				part += " (" + leafName(w.cache_file) + ")";
+			}
+			parts.push_back(part);
+		}
+		const bool cacheOnly = !w.writes && !w.closes && !syncing && w.cache_bytes;
+		v->title = leave.title.empty() ? "Saving before " + leave.what : leave.title;
+		v->detail.clear();
+		for (size_t i = 0; i < parts.size(); i++) {
+			v->detail += (i ? " \xC2\xB7 " : "") + parts[i];
+		}
+		v->fraction = cacheOnly && leave.cacheFirst
+			? 1.0f - static_cast<float>(static_cast<double>(w.cache_bytes) / static_cast<double>(leave.cacheFirst)) : -1.0f;
+		v->canSkip = cacheOnly;
+		return cacheOnly;
+	}
+
+	/* Each frame while an exit waits: its then() once nothing is left. */
+	void pollLeave()
+	{
+		if (!leave.active) {
+			return;
+		}
+		PshxWrites w;
+		pshx_core_writes(&w);
+		const bool syncing = ogbox::saveSyncRunning();
+		const double now = now_seconds();
+		const bool saves = w.writes || w.closes || syncing;
+		if (!saves && (!w.cache_bytes || leave.cacheLeft)) {
+			pshakux_log("ogbox: %s: the disk's writes done after %.1f s%s", leave.what.c_str(), now - leave.since,
+				leave.cacheLeft && w.cache_bytes ? " (the cache drives' last bytes left)" : "");
+			std::function<void()> then = std::move(leave.then);
+			leave.active = false;
+			then();
+			return;
+		}
+		if (now - leave.lastLog >= 5.0) {
+			leave.lastLog = now;
+			pshakux_log("ogbox: %s: still writing (the game's writes %u, syncs and closes %u, the cache drives %.1f MiB)",
+				leave.what.c_str(), w.writes, w.closes, static_cast<double>(w.cache_bytes) / 1048576.0);
+		}
+	}
+
+	/* The controller while an exit waits: CIRCLE leaves the cache drives' bytes when only they are left. */
+	void leaveInput(uint32_t pressed)
+	{
+		PshxWrites w;
+		pshx_core_writes(&w);
+		const bool cacheOnly = !w.writes && !w.closes && !ogbox::saveSyncRunning() && w.cache_bytes;
+		if ((pressed & PAD_CIRCLE) && cacheOnly && !leave.cacheLeft) {
+			leave.cacheLeft = true;
+			pshakux_log("ogbox: %s: the cache drives' last %.1f MiB left (CIRCLE)", leave.what.c_str(),
+				static_cast<double>(w.cache_bytes) / 1048576.0);
+		}
+	}
+
 	void relaunchToLibrary()
+	{
+		leaveAfterWrites("going back to the game list", [this]() { relaunchToLibraryNow(); });
+	}
+
+	void relaunchToLibraryNow()
 	{
 		relaunchAsked = true;
 		const char *args[] = { "--back", nullptr };   // 0.1.43: straight to the list, fading in
@@ -1703,6 +1993,11 @@ public:
 	/* The guest rebooted into another XBE: the title starts again with the same disc, hard disk and
 	 * options, and hakuX's "relaunch" (it boots the XBE the launch data names). */
 	void relaunchForGuest()
+	{
+		leaveAfterWrites("the game's next part", [this]() { relaunchForGuestNow(); });
+	}
+
+	void relaunchForGuestNow()
 	{
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--relaunch" };
@@ -1946,11 +2241,13 @@ public:
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
-		if (ssaaOn) {
+		if (ssaaOn || quincunxOn) {
 			/* SSAA: the scale that draws a 480-line picture at 1.5 times the screen's height or more
 			 * (4x on a 1080p screen, 6x on a 4K one; hakuX keeps a wider picture within 3840 at
-			 * scales above 4), or the setting's if higher */
-			const int want = std::min(6, std::max(1, static_cast<int>(std::ceil(1.5 * height / 480.0))));
+			 * scales above 4), or the setting's if higher. 0.0.9: Quincunx: the screen's height at
+			 * least, 2x at least (3x on a 1080p screen, 5x on a 4K one) */
+			const double over = ssaaOn ? 1.5 : 1.0;
+			const int want = std::min(6, std::max(2, static_cast<int>(std::ceil(over * height / 480.0))));
 			for (std::string &option : fromSettings) {
 				if (option.rfind("scale=", 0) == 0 && std::atoi(option.c_str() + 6) < want) {
 					option = "scale=" + std::to_string(want);
@@ -1961,11 +2258,18 @@ public:
 		for (const std::string &option : fromSettings) {
 			argv.push_back(option.c_str());
 			said += " " + option;
+			if (option.rfind("scale=", 0) == 0) {
+				coreScale = std::max(1, std::atoi(option.c_str() + 6));   // 0.0.9: the CRT look's line count
+			}
 		}
 		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s%s, anti-aliasing %s, upscaling %s, FPS counter %s",
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
-			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaOn ? "SSAA" : "off",
+			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaSmaa ? "SSAA + SMAA" : ssaaOn ? "SSAA" : quincunxOn ? "Quincunx" : "off",
 			sgsrOn ? "FSR1" : sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
+		pshakux_log("ogbox: debanding %s; SSAA down-sampling %s; CRT look %s; brightness %s, contrast %s, colour %s",
+			debandOn ? prefs.value("deband").c_str() : "off", ssaaSharp ? "sharp" : "soft",
+			crtMode == 2 ? "strong" : crtMode == 1 ? "light" : "off", prefs.value("pic_brightness").c_str(),
+			prefs.value("pic_contrast").c_str(), prefs.value("pic_colour").c_str());
 		/* 0.1.54: the game's trainer (core/ogbox_trainers.h), run by hakuX before the game */
 		static std::vector<std::string> fromTrainer;
 		fromTrainer.clear();
@@ -2031,6 +2335,8 @@ public:
 		vkDestroyPipeline(device, pipelineSharp, nullptr);
 		vkDestroyPipeline(device, pipelineLogo, nullptr);
 		destroySmaa();
+		destroyHdr();
+		vkDestroyQueryPool(device, passQueries, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -2251,7 +2557,8 @@ public:
 			const char *file;
 			VkPipeline *out;
 		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp }, { "ogbox/logo.frag.spv", &pipelineLogo },
-			{ "ogbox/ssaa.frag.spv", &pipelineSsaa } };
+			{ "ogbox/ssaa.frag.spv", &pipelineSsaa }, { "ogbox/quincunx.frag.spv", &pipelineQuincunx },
+			{ "ogbox/crt.frag.spv", &pipelineCrt } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
 			pipelineCI.pStages = stages.data();
@@ -2261,6 +2568,431 @@ public:
 			}
 		}
 		prepareSmaa(pipelineCI, rasterization);
+		preparePost(pipelineCI);
+		prepareHdr(pipelineCI, stages[0]);
+	}
+
+	// ---- 0.0.9: HDR output -----------------------------------------------------------------------
+	/* hdr.frag's pipeline: the presenter's triangle over the whole frame, into hdrTen's format; the
+	 * images are made when HDR is first turned on (ensureHdrImages). None (HDR not offered) without
+	 * the driver's calls or a 10-bit target. */
+	void prepareHdr(VkGraphicsPipelineCreateInfo pipelineCI, VkPipelineShaderStageCreateInfo vertex)
+	{
+		if (!wsi_videoout_set_hdr10 || !wsi_videoout_output_range) {
+			pshakux_log("presenter: HDR output not offered (the graphics driver has no HDR10 framebuffers)");
+			return;
+		}
+		VkFormatProperties props{};
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_A2R10G10B10_UNORM_PACK32, &props);
+		const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+		if ((props.optimalTilingFeatures & need) != need) {
+			pshakux_log("presenter: HDR output not offered (no 10-bit target: features %#x)",
+				static_cast<unsigned>(props.optimalTilingFeatures));
+			return;
+		}
+		const VkDescriptorSetLayoutBinding bindings[2] = {
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 0),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 1),
+		};
+		VkDescriptorSetLayoutCreateInfo layoutCI = vks::initializers::descriptorSetLayoutCreateInfo(bindings, 2);
+		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &layoutCI, nullptr, &hdrSetLayout));
+		const VkPushConstantRange push{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32 };   // hdr.frag's metrics and cal
+		VkPipelineLayoutCreateInfo plCI = vks::initializers::pipelineLayoutCreateInfo(&hdrSetLayout, 1);
+		plCI.pushConstantRangeCount = 1;
+		plCI.pPushConstantRanges = &push;
+		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &plCI, nullptr, &hdrPipelineLayout));
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 1);
+		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &hdrPool));
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(hdrPool, &hdrSetLayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &hdrSet));
+
+		const VkFormat ten = VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+		std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+			vertex,
+			loadShader(getShadersPath() + "ogbox/hdr.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT),
+		};
+		VkPipelineRenderingCreateInfoKHR renderingCI{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+		renderingCI.colorAttachmentCount = 1;
+		renderingCI.pColorAttachmentFormats = &ten;
+		pipelineCI.pNext = &renderingCI;
+		pipelineCI.layout = hdrPipelineLayout;
+		pipelineCI.stageCount = 2;
+		pipelineCI.pStages = stages.data();
+		pipelineCI.pDepthStencilState = nullptr;
+		if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &hdrPipeline) != VK_SUCCESS) {
+			hdrPipeline = VK_NULL_HANDLE;
+		}
+		pshakux_log("presenter: HDR output %s", hdrPipeline != VK_NULL_HANDLE ? "offered (Settings > Picture > HDR)" :
+			"not offered (hdr.frag's pipeline cannot be made)");
+	}
+
+	/* hdrPicture, hdrUi (the swapchain's format, so every pipeline drawing to the screen draws to them)
+	 * and hdrTen at the frame's size. The GPU idle. */
+	void ensureHdrImages()
+	{
+		if (hdrW == width && hdrH == height && hdrTen.image != VK_NULL_HANDLE) {
+			return;
+		}
+		destroyAaImage(hdrPicture);
+		destroyAaImage(hdrUi);
+		destroyAaImage(hdrTen);
+		const VkImageUsageFlags layer = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		createAaImage(hdrPicture, swapChain.colorFormat, width, height, layer);
+		createAaImage(hdrUi, swapChain.colorFormat, width, height, layer);
+		createAaImage(hdrTen, VK_FORMAT_A2R10G10B10_UNORM_PACK32, width, height,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+		VkDescriptorImageInfo infos[2] = {
+			{ pointSampler, hdrPicture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+			{ pointSampler, hdrUi.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		};
+		const VkWriteDescriptorSet writes[2] = {
+			vks::initializers::writeDescriptorSet(hdrSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &infos[0]),
+			vks::initializers::writeDescriptorSet(hdrSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, &infos[1]),
+		};
+		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+		hdrW = width;
+		hdrH = height;
+		pshakux_log("presenter: HDR targets %ux%u", width, height);
+	}
+
+	/* ---- 0.0.9: the presenter's time a pass (passTimes) ---- */
+	void preparePassTimes()
+	{
+		const VkPhysicalDeviceLimits &limits = vulkanDevice->properties.limits;
+		const uint32_t family = vulkanDevice->queueFamilyIndices.graphics;
+		const uint32_t bits = family < vulkanDevice->queueFamilyProperties.size() ?
+			vulkanDevice->queueFamilyProperties[family].timestampValidBits : 0;
+		if (!limits.timestampComputeAndGraphics || !bits || limits.timestampPeriod <= 0.0f ||
+			drawCmdBuffers.size() > sizeof(passStamped) / sizeof(passStamped[0])) {
+			pshakux_log("presenter: no GPU timestamps here (%u bits, %.2f ns a tick): its passes' times are the CPU's only",
+				bits, static_cast<double>(limits.timestampPeriod));
+			return;
+		}
+		VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+		qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+		qi.queryCount = kStamps * static_cast<uint32_t>(drawCmdBuffers.size());
+		if (vkCreateQueryPool(device, &qi, nullptr, &passQueries) != VK_SUCCESS) {
+			passQueries = VK_NULL_HANDLE;
+			return;
+		}
+		stampNs = static_cast<double>(limits.timestampPeriod);
+		stampMask = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
+		pshakux_log("presenter: its passes timed on the GPU (%u-bit timestamps, %.2f ns a tick): a line every 10 s", bits, stampNs);
+	}
+
+	void stampPass(VkCommandBuffer cmd, uint32_t at)
+	{
+		if (passQueries != VK_NULL_HANDLE) {
+			vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, passQueries, currentBuffer * kStamps + at);
+		}
+	}
+
+	/* At a pass's start (its slot's fence waited): the last pass of this slot, counted; every 10 s, a line */
+	void collectPassTimes()
+	{
+		PassTimes &pt = passTimes;
+		const double now = now_seconds();
+		if (pt.lastAt > 0.0) {
+			const double gap = (now - pt.lastAt) * 1000.0;
+			pt.gapSum += gap;
+			pt.gapWorst = std::max(pt.gapWorst, gap);
+			pt.gaps++;
+			pt.gapsLong += gap > 12.5 ? 1 : 0;   // a refresh and a half at 120 Hz
+		}
+		pt.lastAt = now;
+		if (passQueries != VK_NULL_HANDLE && passStamped[currentBuffer]) {
+			uint64_t t[kStamps] = {};
+			if (vkGetQueryPoolResults(device, passQueries, currentBuffer * kStamps, kStamps, sizeof(t), t, sizeof(uint64_t),
+					VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+				const auto ms = [this, &t](uint32_t a, uint32_t b) {
+					return static_cast<double>((t[b] - t[a]) & stampMask) * stampNs / 1e6;
+				};
+				for (uint32_t i = 1; i < kStamps; i++) {
+					const double d = ms(i - 1, i);
+					pt.sum[i] += d;
+					pt.worst[i] = std::max(pt.worst[i], d);
+				}
+				const double total = ms(0, kStamps - 1);
+				pt.sum[0] += total;
+				pt.worst[0] = std::max(pt.worst[0], total);
+				pt.passes++;
+				pt.over8 += total > 8.33 ? 1 : 0;
+				pt.over16 += total > 16.67 ? 1 : 0;
+			}
+		}
+		if (pt.logAt == 0.0) {
+			pt.logAt = now;
+		} else if (now - pt.logAt >= 10.0) {
+			const double n = static_cast<double>(std::max<uint64_t>(pt.passes, 1));
+			const double g = static_cast<double>(std::max<uint64_t>(pt.gaps, 1));
+			pshakux_log("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
+				"GPU a pass %.2f ms (the worst %.2f, %llu over 8.3 ms, %llu over 16.7): the picture in %.2f (frame generation, "
+				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's)",
+				static_cast<unsigned long long>(pt.gaps), now - pt.logAt, static_cast<double>(pt.gaps) / (now - pt.logAt),
+				pt.gapSum / g, pt.gapWorst, static_cast<unsigned long long>(pt.gapsLong), pt.sum[0] / n, pt.worst[0],
+				static_cast<unsigned long long>(pt.over8), static_cast<unsigned long long>(pt.over16), pt.sum[1] / n, pt.sum[2] / n,
+				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n);
+			const double lastAt = pt.lastAt;
+			pt = PassTimes{};
+			pt.lastAt = lastAt;
+			pt.logAt = now;
+		}
+	}
+
+	/* ---- 0.0.9: Adjust HDR brightness (the test screen) ---- */
+	void openHdrCal()
+	{
+		if (!hdrOn) {
+			showToast(hdrPipeline == VK_NULL_HANDLE ? "HDR isn't offered by this console's graphics driver" :
+				prefs.global("hdr") != "1" ? "Turn HDR on first" : "HDR is off: the console is sending SDR");
+			return;
+		}
+		hdrCal.open = true;
+		hdrCal.step = 0;
+		hdrCal.peak = prefs.global("hdr_highlights");
+		if (std::atoi(hdrCal.peak.c_str()) <= 0) {
+			hdrCal.peak = "1000";
+		}
+		hdrCal.white = prefs.global("hdr_white");
+		pshakux_log("hdr test: opened (highlights %s, white %s nits)", hdrCal.peak.c_str(), hdrCal.white.c_str());
+	}
+
+	/* v stepped by in list (Off left out), from the nearest choice when v is none of them */
+	static std::string hdrCalStep(const std::vector<ogbox::Choice> &list, const std::string &v, int by)
+	{
+		const int n = static_cast<int>(list.size());
+		const int lo = n > 1 && std::string(list[0].value) == "0" ? 1 : 0;
+		int at = lo, best = 1 << 30;
+		for (int i = lo; i < n; i++) {
+			const int d = std::abs(std::atoi(list[static_cast<size_t>(i)].value) - std::atoi(v.c_str()));
+			if (d < best) {
+				best = d;
+				at = i;
+			}
+		}
+		return list[static_cast<size_t>(std::max(lo, std::min(n - 1, at + by)))].value;
+	}
+
+	void hdrCalInput(uint32_t nav)
+	{
+		if (!hdrOn) {
+			hdrCal.open = false;
+			return;
+		}
+		const bool peakStep = hdrCal.step == 0;
+		std::string &v = peakStep ? hdrCal.peak : hdrCal.white;
+		if (nav & (PAD_LEFT | PAD_RIGHT)) {
+			const std::string was = v;
+			v = hdrCalStep(peakStep ? ogbox::hdrPeakChoices() : ogbox::hdrWhiteChoices(), v, (nav & PAD_RIGHT) ? 1 : -1);
+			if (v == was) {
+				ui::listEdge();
+			}
+		}
+		if (nav & PAD_TRIANGLE) {
+			v = peakStep ? "1000" : "203";
+		}
+		if (nav & PAD_CROSS) {
+			if (peakStep) {
+				hdrCal.step = 1;
+			} else {
+				prefs.setGlobal("hdr_highlights", hdrCal.peak);
+				prefs.setGlobal("hdr_white", hdrCal.white);
+				hdrCal.open = false;
+				pshakux_log("hdr test: saved: highlights %s nits, white %s nits", hdrCal.peak.c_str(), hdrCal.white.c_str());
+				showToast("HDR: highlights " + hdrCal.peak + " nits, white " + hdrCal.white + " nits");
+			}
+		} else if (nav & PAD_CIRCLE) {
+			if (peakStep) {
+				hdrCal.open = false;
+				pshakux_log("hdr test: left without a change");
+			} else {
+				hdrCal.step = 0;
+			}
+		}
+	}
+
+	/* Over everything: black, the words above and below; hdr.frag draws the pattern in the middle. */
+	void drawHdrCal(ImDrawList *dl, ImVec2 S)
+	{
+		const bool peakStep = hdrCal.step == 0;
+		const ImU32 white = IM_COL32(235, 235, 235, 255), dim = IM_COL32(170, 170, 170, 255);
+		dl->AddRectFilled(ImVec2(0.0f, 0.0f), S, IM_COL32(0, 0, 0, 255));
+		const float x = ui::px(ui::grid::margin), w = S.x - 2.0f * x;
+		ui::text(dl, ui::F::Title, ui::px(40.0f), ImVec2(x, ui::px(64.0f)), white,
+			peakStep ? "Adjust HDR: highlights (1 of 2)" : "Adjust HDR: white level (2 of 2)");
+		ui::paragraph(dl, ui::F::Body, ui::px(22.0f), ImVec2(x, ui::px(128.0f)), dim, peakStep ?
+			"Press LEFT or RIGHT until the X in it can only just no longer be seen: that is your TV's peak, and the "
+			"game's brightest parts will go up to it." :
+			"Choose what looks bright but comfortable, 203 nits is HDR's reference. The grey steps should all look "
+			"different.", w, 4);
+		const std::string value = (peakStep ? hdrCal.peak : hdrCal.white) + " nits";
+		const ImVec2 vs = ui::measure(ui::F::Display, ui::px(46.0f), value.c_str());
+		ui::text(dl, ui::F::Display, ui::px(46.0f), ImVec2((S.x - vs.x) * 0.5f, S.y * 0.72f + ui::px(18.0f)), white, value.c_str());
+		ui::footer(dl, S, { { "LR", "Adjust" }, { "X", peakStep ? "Next" : "Save" }, { "O", peakStep ? "Cancel" : "Back" },
+			{ "T", "Default" } });
+	}
+
+	void destroyHdr()
+	{
+		destroyAaImage(hdrPicture);
+		destroyAaImage(hdrUi);
+		destroyAaImage(hdrTen);
+		vkDestroyPipeline(device, hdrPipeline, nullptr);
+		vkDestroyPipelineLayout(device, hdrPipelineLayout, nullptr);
+		vkDestroyDescriptorPool(device, hdrPool, nullptr);
+		vkDestroyDescriptorSetLayout(device, hdrSetLayout, nullptr);
+	}
+
+	/* Before each frame: Settings > Picture > HDR acted on when it changes (and at the start). On only
+	 * while the console sends HDR (its own HDR setting, and a TV that takes it); the framebuffers
+	 * change between frames, the GPU idle, so no frame is shown as the other kind. */
+	void hdrUpdate()
+	{
+		if (hdrPipeline == VK_NULL_HANDLE) {
+			return;
+		}
+		hdrWhite = static_cast<float>(std::max(80, std::min(500, std::atoi(prefs.global("hdr_white").c_str()))));
+		const int peak = std::atoi(prefs.global("hdr_highlights").c_str());
+		hdrPeak = peak > 0 ? static_cast<float>(peak) : 0.0f;
+		if (hdrCal.open && hdrCal.step == 1) {
+			hdrWhite = static_cast<float>(std::max(80, std::min(500, std::atoi(hdrCal.white.c_str()))));   // the menus show it
+		}
+		if (hdrOn && wsi_videoout_hdr10 && !wsi_videoout_hdr10()) {
+			hdrOn = false;   // the driver went back to SDR (a new swapchain's framebuffers refused HDR10)
+			pshakux_log("presenter: HDR output off: the driver's framebuffers are SDR again");
+		}
+		const std::string want = prefs.global("hdr");
+		if (!hdrAskedOnce || want != hdrAsked) {
+			const bool first = !hdrAskedOnce;
+			hdrAskedOnce = true;
+			hdrAsked = want;
+			if (want == "1" && !hdrOn) {
+				hdrRange = wsi_videoout_output_range();
+				if (hdrRange != 2) {
+					pshakux_log("presenter: HDR output asked for, but the console's output is %s: the picture stays SDR",
+						hdrRange == 1 ? "SDR" : "of an unknown range");
+					if (!first) {
+						showToast(hdrRange == 1 ? "HDR: the console is sending SDR (its HDR setting, or the TV)" :
+							"HDR: the console did not say what it sends; staying SDR");
+					}
+				} else {
+					vkDeviceWaitIdle(device);
+					ensureHdrImages();
+					const int rc = wsi_videoout_set_hdr10(1);
+					hdrOn = rc == 0;
+					pshakux_log("presenter: HDR output %s (white %.0f nits, highlights %s)", hdrOn ? "on" : "refused by VideoOut",
+						hdrWhite, hdrPeak > hdrWhite ? (std::to_string(static_cast<int>(hdrPeak)) + " nits").c_str() : "off");
+					if (!hdrOn && !first) {
+						showToast("HDR: the console refused it; staying SDR");
+					}
+				}
+			} else if (want != "1" && hdrOn) {
+				vkDeviceWaitIdle(device);
+				const int rc = wsi_videoout_set_hdr10(0);
+				hdrOn = rc != 0;   // refused: the framebuffers stay HDR10, and so are the frames
+				pshakux_log("presenter: HDR output %s", hdrOn ? "kept: VideoOut refused SDR" : "off");
+			}
+		}
+		if (hdrOn && (hdrW != width || hdrH != height)) {
+			vkDeviceWaitIdle(device);
+			ensureHdrImages();
+		}
+	}
+
+	/* A layer of the HDR frame (hdrPicture or hdrUi), drawn as the screen is (with the depth buffer,
+	 * which the pipelines name), cleared: black, or (the menus) transparent. */
+	void beginHdrLayer(VkCommandBuffer cmd, const AaImage &layer)
+	{
+		const VkImageSubresourceRange colour{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, layer.image, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			colour);
+		vks::tools::insertImageMemoryBarrier(cmd, depthStencil.image, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VkImageSubresourceRange{ VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 });
+		VkRenderingAttachmentInfoKHR colourAttachment{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		colourAttachment.imageView = layer.view;
+		colourAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colourAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colourAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colourAttachment.clearValue.color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+		VkRenderingAttachmentInfoKHR depthAttachment{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		depthAttachment.imageView = depthStencil.view;
+		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		VkRenderingInfoKHR info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+		info.renderArea = { { 0, 0 }, { width, height } };
+		info.layerCount = 1;
+		info.colorAttachmentCount = 1;
+		info.pColorAttachments = &colourAttachment;
+		info.pDepthAttachment = &depthAttachment;
+		info.pStencilAttachment = &depthAttachment;
+		vkCmdBeginRendering(cmd, &info);
+	}
+
+	void endHdrLayer(VkCommandBuffer cmd, const AaImage &layer)
+	{
+		vkCmdEndRendering(cmd);
+		vks::tools::insertImageMemoryBarrier(cmd, layer.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 });
+	}
+
+	/* The two layers made HDR10's pixels in hdrTen, copied into the framebuffer, which is presented.
+	 * highlights: the game's picture is showing (its highlights raised). */
+	void resolveHdr(VkCommandBuffer cmd, bool highlights)
+	{
+		const VkImageSubresourceRange colour{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, hdrTen.image, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, colour);
+		VkRenderingAttachmentInfoKHR target{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		target.imageView = hdrTen.view;
+		target.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		target.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // every pixel written
+		target.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		VkRenderingInfoKHR info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+		info.renderArea = { { 0, 0 }, { width, height } };
+		info.layerCount = 1;
+		info.colorAttachmentCount = 1;
+		info.pColorAttachments = &target;
+		vkCmdBeginRendering(cmd, &info);
+		const VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f };
+		const VkRect2D scissor{ { 0, 0 }, { width, height } };
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, hdrPipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, hdrPipelineLayout, 0, 1, &hdrSet, 0, nullptr);
+		const VkFormat sc = swapChain.colorFormat;
+		const bool srgb = sc == VK_FORMAT_B8G8R8A8_SRGB || sc == VK_FORMAT_R8G8B8A8_SRGB || sc == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+		/* metrics; cal: the test screen's pattern (1 the highlights', 2 the white level's) and its level */
+		const bool cal = hdrCal.open;
+		const float metrics[8] = { hdrWhite, hdrPeak, srgb ? 1.0f : 0.0f, highlights ? 1.0f : 0.0f,
+			cal ? (hdrCal.step == 0 ? 1.0f : 2.0f) : 0.0f,
+			cal ? static_cast<float>(std::atoi((hdrCal.step == 0 ? hdrCal.peak : hdrCal.white).c_str())) : 0.0f, 0.0f, 0.0f };
+		vkCmdPushConstants(cmd, hdrPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+		vkCmdEndRendering(cmd);
+		vks::tools::insertImageMemoryBarrier(cmd, hdrTen.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, colour);
+		/* the framebuffer: after the acquire (whose semaphore the submit waits for at the colour output
+		 * stage, which this barrier follows) */
+		const VkImage frame = swapChain.images[currentImageIndex];
+		vks::tools::insertImageMemoryBarrier(cmd, frame, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, colour);
+		VkImageCopy region{};
+		region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.extent = { width, height, 1 };
+		vkCmdCopyImage(cmd, hdrTen.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		vks::tools::insertImageMemoryBarrier(cmd, frame, VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, colour);
 	}
 
 	// ---- 0.1.58: SMAA 1x (iryoku/smaa, MIT: shaders/glsl/ogbox/SMAA.hlsl, third_party/smaa) -------
@@ -2400,23 +3132,24 @@ public:
 		return smaaEdge != VK_NULL_HANDLE && smaaWeight != VK_NULL_HANDLE && smaaBlend != VK_NULL_HANDLE;
 	}
 
-	/* The passes' images at the picture's size, and the sets pointed at the picture of now. */
-	void ensureSmaa()
+	/* The passes' images at the source's size, and the sets pointed at the source of now: the picture,
+	 * or (0.0.9, SSAA + SMAA) the picture averaged down to the screen's size. */
+	void ensureSmaa(VkImageView src, uint32_t srcW, uint32_t srcH)
 	{
-		if (picture.view == VK_NULL_HANDLE) {
+		if (src == VK_NULL_HANDLE) {
 			return;
 		}
-		if (smaaW != picture.width || smaaH != picture.height) {
+		if (smaaW != srcW || smaaH != srcH) {
 			vkDeviceWaitIdle(device);
 			destroyAaImage(smaaEdges);
 			destroyAaImage(smaaWeights);
 			destroyAaImage(smaaOut);
 			const VkImageUsageFlags rt = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-			createAaImage(smaaEdges, VK_FORMAT_R8G8_UNORM, picture.width, picture.height, rt);
-			createAaImage(smaaWeights, VK_FORMAT_R8G8B8A8_UNORM, picture.width, picture.height, rt);
-			createAaImage(smaaOut, picture.format, picture.width, picture.height, rt);
-			smaaW = picture.width;
-			smaaH = picture.height;
+			createAaImage(smaaEdges, VK_FORMAT_R8G8_UNORM, srcW, srcH, rt);
+			createAaImage(smaaWeights, VK_FORMAT_R8G8B8A8_UNORM, srcW, srcH, rt);
+			createAaImage(smaaOut, picture.format, srcW, srcH, rt);
+			smaaW = srcW;
+			smaaH = srcH;
 			smaaPictureView = VK_NULL_HANDLE;
 			smaaValid = false;
 			VkDescriptorImageInfo edges{ sampler, smaaEdges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -2434,14 +3167,14 @@ public:
 			vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
 			pshakux_log("presenter: SMAA's images %ux%u", smaaW, smaaH);
 		}
-		if (smaaPictureView != picture.view) {
-			VkDescriptorImageInfo color{ sampler, picture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		if (smaaPictureView != src) {
+			VkDescriptorImageInfo color{ sampler, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 			const VkWriteDescriptorSet writes[] = {
 				vks::initializers::writeDescriptorSet(smaaEdgeSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color),
 				vks::initializers::writeDescriptorSet(smaaBlendSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color),
 			};
 			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
-			smaaPictureView = picture.view;
+			smaaPictureView = src;
 			smaaValid = false;
 		}
 	}
@@ -2485,7 +3218,7 @@ public:
 	/* The three passes over a new picture (an unchanged one keeps its result). */
 	void recordSmaa(VkCommandBuffer cmd)
 	{
-		ensureSmaa();
+		ensureSmaa(picture.view, picture.width, picture.height);
 		if (smaaValid && !pictureChanged) {
 			return;
 		}
@@ -2493,6 +3226,236 @@ public:
 		smaaPass(cmd, smaaWeights, smaaWeight, smaaWeightSet);
 		smaaPass(cmd, smaaOut, smaaBlend, smaaBlendSet);
 		smaaValid = true;
+	}
+
+	/* 0.0.9: SSAA + SMAA: the picture (or Debanding's result of it, srcSet) averaged down into ssaaDown at
+	 * the size it takes on the screen (vw x vh), then SMAA's three passes over that, into smaaOut; true
+	 * when smaaOut holds it (false: the pass can't be made, SSAA alone). An unchanged picture keeps it. */
+	bool recordSsaaSmaa(VkCommandBuffer cmd, VkDescriptorSet srcSet, uint32_t vw, uint32_t vh)
+	{
+		if (ssaaToImage == VK_NULL_HANDLE || !smaaReady() || !vw || !vh) {
+			return false;
+		}
+		if (downW != vw || downH != vh) {
+			vkDeviceWaitIdle(device);
+			destroyAaImage(ssaaDown);
+			createAaImage(ssaaDown, picture.format, vw, vh, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			downW = vw;
+			downH = vh;
+			downValid = false;
+			pshakux_log("presenter: SSAA + SMAA's image %ux%u", vw, vh);
+		}
+		ensureSmaa(ssaaDown.view, vw, vh);
+		if (downValid && smaaValid && !pictureChanged) {
+			return true;
+		}
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, ssaaDown.image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, range);
+		VkRenderingAttachmentInfoKHR color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		color.imageView = ssaaDown.view;
+		color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		VkRenderingInfoKHR info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+		info.renderArea = { { 0, 0 }, { vw, vh } };
+		info.layerCount = 1;
+		info.colorAttachmentCount = 1;
+		info.pColorAttachments = &color;
+		vkCmdBeginRendering(cmd, &info);
+		VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(vw), static_cast<float>(vh), 0.0f, 1.0f };
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		VkRect2D scissor{ { 0, 0 }, { vw, vh } };
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssaaToImage);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &srcSet, 0, nullptr);
+		const float metrics[4] = { ssaaSharp ? 1.0f : 0.0f, 0.0f, static_cast<float>(vw), static_cast<float>(vh) };
+		vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+		vkCmdEndRendering(cmd);
+		vks::tools::insertImageMemoryBarrier(cmd, ssaaDown.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
+		smaaPass(cmd, smaaEdges, smaaEdge, smaaEdgeSet);
+		smaaPass(cmd, smaaWeights, smaaWeight, smaaWeightSet);
+		smaaPass(cmd, smaaOut, smaaBlend, smaaBlendSet);
+		smaaValid = true;
+		downValid = true;
+		return true;
+	}
+
+	/* 0.0.9: Debanding's pipeline (SMAA's layout: a picture at binding 0, a vec4) and its sets; off if
+	 * it can't be made. */
+	void preparePost(VkGraphicsPipelineCreateInfo pipelineCI)
+	{
+		/* 0.0.9: three sets of the passes' layout (from the picture, SMAA's result, postA) and two of the
+		 * present's (postA, postB) */
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 5);
+		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &postPool));
+		const VkDescriptorSetLayout three[3] = { smaaSetLayout, smaaSetLayout, smaaSetLayout };
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, three, 3);
+		VkDescriptorSet sets[3];
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, sets));
+		postFromPicture = sets[0];
+		postFromSmaa = sets[1];
+		postFromA = sets[2];
+		const VkDescriptorSetLayout presents[2] = { descriptorSetLayout, descriptorSetLayout };
+		allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, presents, 2);
+		VkDescriptorSet shown[2];
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, shown));
+		presentFromA = shown[0];
+		presentFromB = shown[1];
+		const struct {
+			const char *frag;
+			VkPipeline *out;
+		} passes[] = { { "ogbox/deband.frag.spv", &postDeband }, { "ogbox/adjust.frag.spv", &postAdjust } };
+		for (const auto &pass : passes) {
+			std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+				loadShader(getShadersPath() + "ogbox/present.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+				loadShader(getShadersPath() + pass.frag, VK_SHADER_STAGE_FRAGMENT_BIT),
+			};
+			VkPipelineRenderingCreateInfoKHR renderingCI{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+			renderingCI.colorAttachmentCount = 1;
+			renderingCI.pColorAttachmentFormats = &picture.format;
+			pipelineCI.pNext = &renderingCI;
+			pipelineCI.layout = smaaPipelineLayout;
+			pipelineCI.stageCount = 2;
+			pipelineCI.pStages = stages.data();
+			pipelineCI.pDepthStencilState = nullptr;
+			if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, pass.out) != VK_SUCCESS) {
+				*pass.out = VK_NULL_HANDLE;
+				pshakux_log("presenter: %s cannot be made: that pass is off", pass.frag);
+			}
+		}
+		/* 0.0.9: SSAA + SMAA: ssaa.frag into an image at the screen's size (the present pipelines'
+		 * layout: one picture, a vec4) */
+		std::array<VkPipelineShaderStageCreateInfo, 2> down = {
+			loadShader(getShadersPath() + "ogbox/present.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+			loadShader(getShadersPath() + "ogbox/ssaa.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT),
+		};
+		VkPipelineRenderingCreateInfoKHR downCI{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+		downCI.colorAttachmentCount = 1;
+		downCI.pColorAttachmentFormats = &picture.format;
+		pipelineCI.pNext = &downCI;
+		pipelineCI.layout = pipelineLayout;
+		pipelineCI.stageCount = 2;
+		pipelineCI.pStages = down.data();
+		pipelineCI.pDepthStencilState = nullptr;
+		if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &ssaaToImage) != VK_SUCCESS) {
+			ssaaToImage = VK_NULL_HANDLE;
+			pshakux_log("presenter: SSAA + SMAA's down-sampling pass cannot be made: it is SSAA alone");
+		}
+	}
+
+	/* The pass's image at the picture's size, and the sets pointed at what it reads now. */
+	void ensurePost(bool two)
+	{
+		if (postW != picture.width || postH != picture.height) {
+			vkDeviceWaitIdle(device);
+			destroyAaImage(postA);
+			destroyAaImage(postB);
+			createAaImage(postA, picture.format, picture.width, picture.height,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			postW = picture.width;
+			postH = picture.height;
+			VkDescriptorImageInfo a{ sampler, postA.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet writes[2] = {
+				vks::initializers::writeDescriptorSet(presentFromA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &a),
+				vks::initializers::writeDescriptorSet(postFromA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &a),
+			};
+			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+			postValid = false;
+			pshakux_log("presenter: the picture passes' image %ux%u", postW, postH);
+		}
+		if (two && postB.image == VK_NULL_HANDLE) {
+			vkDeviceWaitIdle(device);
+			createAaImage(postB, picture.format, picture.width, picture.height,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			VkDescriptorImageInfo b{ sampler, postB.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(presentFromB, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &b);
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+			postValid = false;
+		}
+		if (postPictureView != picture.view) {
+			VkDescriptorImageInfo color{ sampler, picture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(postFromPicture, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color);
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+			postPictureView = picture.view;
+			postValid = false;
+		}
+		if (smaaOut.view != VK_NULL_HANDLE && postSmaaView != smaaOut.view) {
+			VkDescriptorImageInfo color{ sampler, smaaOut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(postFromSmaa, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &color);
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+			postSmaaView = smaaOut.view;
+			postValid = false;
+		}
+	}
+
+	/* One pass into target at the picture's size (smaaPass's, with the pass's own vec4). */
+	void postPass(VkCommandBuffer cmd, AaImage &target, VkPipeline pipe, VkDescriptorSet set, const float params[4])
+	{
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vks::tools::insertImageMemoryBarrier(cmd, target.image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, range);
+		VkRenderingAttachmentInfoKHR color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
+		color.imageView = target.view;
+		color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		VkRenderingInfoKHR info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
+		info.renderArea = { { 0, 0 }, { postW, postH } };
+		info.layerCount = 1;
+		info.colorAttachmentCount = 1;
+		info.pColorAttachments = &color;
+		vkCmdBeginRendering(cmd, &info);
+		VkViewport viewport{ 0.0f, 0.0f, static_cast<float>(postW), static_cast<float>(postH), 0.0f, 1.0f };
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+		VkRect2D scissor{ { 0, 0 }, { postW, postH } };
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, smaaPipelineLayout, 0, 1, &set, 0, nullptr);
+		vkCmdPushConstants(cmd, smaaPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+			4 * sizeof(float), params);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+		vkCmdEndRendering(cmd);
+		vks::tools::insertImageMemoryBarrier(cmd, target.image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
+	}
+
+	/* Debanding, then (0.0.9) Brightness, Contrast and Colour, over a new picture (or SMAA's result of
+	 * it): the set the present pass reads then (VK_NULL_HANDLE: both are off). An unchanged picture
+	 * keeps its result. */
+	VkDescriptorSet recordPost(VkCommandBuffer cmd, bool fromSmaa)
+	{
+		const bool deband = debandOn && postDeband != VK_NULL_HANDLE;
+		const bool adjust = adjustOn && postAdjust != VK_NULL_HANDLE;
+		if (!deband && !adjust) {
+			return VK_NULL_HANDLE;
+		}
+		const bool two = deband && adjust;
+		ensurePost(two);
+		if (!postValid || pictureChanged || fromSmaa != postFromSmaaNow || two != postTwoNow) {
+			VkDescriptorSet from = fromSmaa ? postFromSmaa : postFromPicture;
+			if (deband) {
+				/* the step (debandStep); the dither half a level; the reach: 32 lines of the Xbox's 480,
+				 * at the picture's scale (a 16-bit band's width at most) */
+				const float params[4] = { debandStep, 0.5f / 255.0f, 32.0f * static_cast<float>(postH) / 480.0f, 0.0f };
+				postPass(cmd, postA, postDeband, from, params);
+				from = postFromA;
+			}
+			if (adjust) {
+				postPass(cmd, two ? postB : postA, postAdjust, from, adjustParams);
+			}
+			postValid = true;
+			postFromSmaaNow = fromSmaa;
+			postTwoNow = two;
+		}
+		return two ? presentFromB : presentFromA;
 	}
 
 	void destroySmaa()
@@ -2506,6 +3469,15 @@ public:
 		vkDestroyPipeline(device, smaaWeight, nullptr);
 		vkDestroyPipeline(device, smaaBlend, nullptr);
 		vkDestroyPipeline(device, pipelineSsaa, nullptr);
+		vkDestroyPipeline(device, pipelineQuincunx, nullptr);
+		vkDestroyPipeline(device, postDeband, nullptr);
+		vkDestroyPipeline(device, postAdjust, nullptr);
+		vkDestroyPipeline(device, pipelineCrt, nullptr);
+		vkDestroyPipeline(device, ssaaToImage, nullptr);
+		destroyAaImage(ssaaDown);
+		destroyAaImage(postA);
+		destroyAaImage(postB);
+		vkDestroyDescriptorPool(device, postPool, nullptr);
 		vkDestroyPipelineLayout(device, smaaPipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, smaaSetLayout, nullptr);
 		vkDestroyDescriptorPool(device, smaaPool, nullptr);
@@ -2516,10 +3488,12 @@ public:
 	{
 		VulkanExampleBase::prepare();
 		preparePresenter();
+		preparePassTimes();
 		loadLogo();
 		prepared = true;
 		if (configured) {
 			pshakux_log("ogbox: starting the core");
+			menuBuzz(0.7f, 0.18);   // 0.0.9: the start's buzz (PSWin's), if Settings > Interface > Vibration
 			pshx_core_start();
 		}
 	}
@@ -2549,6 +3523,49 @@ public:
 		logoPixels.assign(pixels, pixels + size_t(logoWidth) * logoHeight * 4);
 		stbi_image_free(pixels);
 		pshakux_log("presenter: logo %ux%u from %s, shown until the game's first frame", logoWidth, logoHeight, path.c_str());
+	}
+
+	/* 0.0.9: the startup video's frame for now into this frame's staging buffer (true: a new one
+	 * to upload). It starts at OGBox's start into the game list (Settings > Interface > Startup
+	 * video), and its clock with its first decoded frame. */
+	bool introFrame()
+	{
+		if (!introTried) {
+			introTried = true;
+			introOn = prefs.global("startup_video") != "0" &&
+				intro.open(getAssetPath() + "intro.ivf", getAssetPath() + "intro.wav");
+		}
+		if (!introOn) {
+			return false;
+		}
+		uint32_t w = 0, h = 0;
+		uint64_t serial = 0;
+		const uint8_t *pixels = intro.frame(&w, &h, &serial);
+		if (pixels && !introStarted && intro.ready()) {   // (the first frame up while a few more decode)
+			introStarted = true;
+			intro.start();
+		}
+		if (!pixels || serial == introSerial) {
+			return false;
+		}
+		Staging &s = staging[currentBuffer];
+		ensureStaging(s, VkDeviceSize(w) * h * 4);
+		std::memcpy(s.mapped, pixels, size_t(w) * h * 4);
+		ensurePicture(w, h);
+		showingIntro = true;
+		introSerial = serial;
+		return true;
+	}
+
+	/* 0.0.9: the startup video's end (its last frame, or CROSS / CIRCLE): the game list. */
+	void endIntro()
+	{
+		intro.close();
+		introOn = showingIntro = false;
+		screen = Screen::Library;
+		screenSince = now_seconds();
+		fadeSince = -2.0;   // the list fades in from its first frame
+		pshakux_log("intro: over");
 	}
 
 	/* The logo into this frame's staging buffer, once, while no game frame has come. */
@@ -2746,11 +3763,35 @@ public:
 		return aspect;
 	}
 
+	/* 0.0.9: the size the game's picture is drawn at (buildCommandBuffer's viewport for it: the screen at the
+	 * picture's shape, enlarged when the overscan is cropped) */
+	void pictureBox(float &w, float &h)
+	{
+		const float aspect = displayAspect();
+		w = static_cast<float>(width);
+		h = static_cast<float>(height);
+		if (w / h > aspect) {
+			w = std::floor(h * aspect + 0.5f);
+		} else {
+			h = std::floor(w / aspect + 0.5f);
+		}
+		if (cropOn) {
+			const float k = 1.0f / (1.0f - 2.0f * 3.0f / 80.0f);
+			w *= k;
+			h *= k;
+		}
+	}
+
 	void buildCommandBuffer()
 	{
 		VkCommandBuffer cmdBuffer = drawCmdBuffers[currentBuffer];
+		collectPassTimes();   // 0.0.9: this slot's last pass (its fence waited in prepareFrame)
 		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 		VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuffer, &cmdBufInfo));
+		if (passQueries != VK_NULL_HANDLE) {
+			vkCmdResetQueryPool(cmdBuffer, passQueries, currentBuffer * kStamps, kStamps);
+			stampPass(cmdBuffer, 0);
+		}
 		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 		pictureChanged = upload || fgShow;
 		if (fgPush) {
@@ -2776,16 +3817,39 @@ public:
 				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, range);
 			picture.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
-		const bool smaaNow = smaaOn && smaaReady() && havePicture && !showingLogo &&
-			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		stampPass(cmdBuffer, 1);   // the picture in: frame generation's, or the game's upload
+		const bool gamePicture = havePicture && !showingLogo && picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		/* 0.0.9: the size the game's picture takes on the screen, known before the passes (SSAA + SMAA
+		 * draws at it); SSAA + SMAA over a picture no larger than that is SMAA */
+		float gameW = 0.0f, gameH = 0.0f;
+		if (gamePicture) {
+			pictureBox(gameW, gameH);
+		}
+		const bool gameLarger = gamePicture && (static_cast<float>(picture.width) > gameW + 0.5f ||
+			static_cast<float>(picture.height) > gameH + 0.5f);
+		const bool smaaNow = (smaaOn || (ssaaSmaa && !gameLarger)) && smaaReady() && gamePicture;
 		if (smaaNow) {
 			recordSmaa(cmdBuffer);
 		}
-		beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
+		/* 0.0.9: Debanding, on the game's picture (not the logo, not the intro) */
+		const VkDescriptorSet postSet = gamePicture ? recordPost(cmdBuffer, smaaNow && smaaValid) : VK_NULL_HANDLE;
+		/* 0.0.9: SSAA + SMAA: down to the screen's size first (Debanding's result, if it is on), SMAA after */
+		const bool comboNow = ssaaSmaa && gameLarger &&
+			recordSsaaSmaa(cmdBuffer, postSet != VK_NULL_HANDLE ? postSet : descriptorSet,
+				static_cast<uint32_t>(std::lround(gameW)), static_cast<uint32_t>(std::lround(gameH)));
+		stampPass(cmdBuffer, 2);   // its passes: SMAA, Debanding, Brightness and Colour, SSAA + SMAA
+		/* 0.0.9: HDR output: the picture and the menus into layers of their own (resolveHdr) */
+		const bool hdrNow = hdrOn;
+		if (hdrNow) {
+			beginHdrLayer(cmdBuffer, hdrPicture);
+		} else {
+			beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
+		}
 		const bool splash = library && screen == Screen::Boot && showingLogo;
-		if ((havePicture || (showingLogo && (!library || splash))) &&
+		const bool introNow = showingIntro && library && screen == Screen::Boot;
+		if ((havePicture || (showingLogo && (!library || splash)) || introNow) &&
 			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-			const float aspect = displayAspect();
+			const float aspect = introNow ? static_cast<float>(picture.width) / static_cast<float>(picture.height) : displayAspect();
 			/* 0.1.26: the boot screen's logo in a box above its middle */
 			const float boxW = static_cast<float>(width), boxH = splash ? static_cast<float>(height) * 0.46f : static_cast<float>(height);
 			float w = boxW, h = boxH;
@@ -2814,6 +3878,12 @@ public:
 				if (smaaNow && smaaValid) {
 					set = smaaPresentSet;   // SMAA's result, scaled as the picture would be
 				}
+				if (postSet != VK_NULL_HANDLE) {
+					set = postSet;          // 0.0.9: debanded (SMAA's result, if it is on)
+				}
+				if (comboNow) {
+					set = smaaPresentSet;   // 0.0.9: SSAA + SMAA's result, at the screen's size already
+				}
 				if (fxaaOn && pipelineFxaa != VK_NULL_HANDLE) {
 					chosen = pipelineFxaa;
 				} else if (sgsrOn && smaller && pipelineSgsr != VK_NULL_HANDLE) {
@@ -2822,6 +3892,14 @@ public:
 					chosen = pipelineSharp;
 				} else if (ssaaOn && larger && pipelineSsaa != VK_NULL_HANDLE) {
 					chosen = pipelineSsaa;   // averaged down over every texel a pixel covers
+				} else if (quincunxOn && larger && pipelineQuincunx != VK_NULL_HANDLE) {
+					chosen = pipelineQuincunx;   // 0.0.9: the Xbox's own: the middle and the four corners
+				}
+				if (comboNow) {
+					chosen = pipeline;           // 0.0.9: shown as it is (1:1)
+				}
+				if (crtMode && pipelineCrt != VK_NULL_HANDLE) {
+					chosen = pipelineCrt;        // 0.0.9: the CRT look, the last pass, in place of the scaling
 				}
 			}
 			if (splash && pipelineLogo != VK_NULL_HANDLE) {
@@ -2833,14 +3911,37 @@ public:
 				const SplashTimes st = splashTimes(static_cast<float>(now_seconds() - screenSince));
 				const float params[4] = { st.logo, st.shine, 0.0f, 0.0f };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params), params);
-			} else if (chosen == pipelineSsaa || chosen == pipelineSharp) {
-				const float metrics[4] = { 0.0f, 0.0f, viewport.width, viewport.height };
+			} else if (chosen == pipelineSsaa || chosen == pipelineSharp || chosen == pipelineQuincunx) {
+				/* .x 1: SSAA's Sharp down-sampling (0.0.9) */
+				const float metrics[4] = { chosen == pipelineSsaa && ssaaSharp ? 1.0f : 0.0f, 0.0f, viewport.width, viewport.height };
+				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
+			} else if (chosen == pipelineCrt) {
+				/* the game's own lines (the picture's at its resolution scale), the strength, the viewport */
+				const float lines = std::max(120.0f, static_cast<float>(picture.height) / static_cast<float>(std::max(coreScale, 1)));
+				const float metrics[4] = { lines, crtMode == 2 ? 1.0f : 0.5f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			}
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 		}
-		drawUI(cmdBuffer);
-		endDynamicRendering(cmdBuffer);
+		stampPass(cmdBuffer, 3);   // scaled to the screen (the filter, or the CRT look)
+		if (hdrNow) {
+			endHdrLayer(cmdBuffer, hdrPicture);
+			beginHdrLayer(cmdBuffer, hdrUi);
+			ui.coverage = true;   // the layer's alpha the menus' cover (hdr.frag blends them by it)
+			drawUI(cmdBuffer);
+			ui.coverage = false;
+			endHdrLayer(cmdBuffer, hdrUi);
+			stampPass(cmdBuffer, 4);   // the menus
+			resolveHdr(cmdBuffer, !library && havePicture && !showingLogo);
+		} else {
+			drawUI(cmdBuffer);
+			stampPass(cmdBuffer, 4);
+			endDynamicRendering(cmdBuffer);
+		}
+		stampPass(cmdBuffer, 5);   // the end (HDR's pixels and their copy, when it is on)
+		if (passQueries != VK_NULL_HANDLE) {
+			passStamped[currentBuffer] = true;
+		}
 		VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuffer));
 	}
 
@@ -2860,7 +3961,13 @@ public:
 		/* 0.1.53: player 1's OPTIONS opens the quick menu (or, held, in the "OPTIONS held" mode); the
 		 * menu and its screens have the controller, and the game gets none while it is open */
 		pad_player(0, &menuPad);
+		menuButtons(menuPad);
 		ui::setScrollInput(menuPad.right_y);
+		lightBars(false);
+		if (leave.active) {
+			leaveInput(menuPad.pressed);   // 0.0.9: an exit waiting for the disk has the controller
+			return;
+		}
 		if (shareWait.active) {
 			if ((menuPad.pressed & PAD_CIRCLE) && !relaunchAsked) {
 				pshakux_log("ogbox: waiting for the share given up (CIRCLE)");
@@ -2869,6 +3976,9 @@ public:
 			return;
 		}
 		gameMenuControls();
+		if (ui::takeListEdge()) {
+			menuBuzz(0.4f, 0.08);   // 0.0.9: the quick menu's screens' lists too
+		}
 		const bool menu = qm.open || qm.sub != Quick::Sub::None;
 		const bool holdMode = prefs.global("quick_menu") == "options_hold";
 		const std::string quickMode = prefs.global("quick_menu");
@@ -2946,7 +4056,11 @@ public:
 			pshx_core_rumble(static_cast<unsigned>(player), &large, &small);
 			/* 0.0.6: Settings > Controller's rumble strength (a percent, PSWin's way) */
 			const float strength = menu ? 0.0f : static_cast<float>(rumblePercent) / 100.0f;
-			pad_player_vibrate(player, large * strength, small * strength);
+			if (player == 0 && buzzUntil > 0.0 && now_seconds() < buzzUntil) {
+				pad_player_vibrate(0, buzzLarge, buzzSmall);   // 0.0.9: a buzz of the menus' (the start's, the test's)
+			} else {
+				pad_player_vibrate(player, large * strength, small * strength);
+			}
 		}
 		struct pad first{};
 		pad_player(0, &first);
@@ -2973,9 +4087,93 @@ public:
 			pad_vibrate(0.0f, 0.0f);
 		}
 		pad_player(0, &menuPad);
+		menuButtons(menuPad);
+		libraryInput();
+		if (ui::takeListEdge()) {
+			menuBuzz(0.4f, 0.08);
+		}
+		lightBars(true);
+	}
+
+	/* ---- 0.0.9: the DualSense as PSWin has it in its menus -------------------------------------- */
+
+	/* Settings > Interface > Circle confirms: CROSS and CIRCLE swapped for the menus (the game's
+	 * controllers are never swapped). */
+	void menuButtons(struct pad &p)
+	{
+		const bool swap = prefs.global("circle_confirms") == "1";
+		ui::setSwapConfirm(swap);
+		if (!swap) {
+			return;
+		}
+		const auto swapped = [](uint32_t b) {
+			const uint32_t x = b & PAD_CROSS, o = b & PAD_CIRCLE;
+			b &= ~(PAD_CROSS | PAD_CIRCLE);
+			return b | (x ? PAD_CIRCLE : 0u) | (o ? PAD_CROSS : 0u);
+		};
+		p.pressed = swapped(p.pressed);
+		p.held = swapped(p.held);
+	}
+
+	/* Settings > Interface > Vibration: a short buzz on player 1's controller (PSWin's: the small
+	 * motor's tick, the large one only for strong ones), at the end of a list and when a game starts. */
+	void menuBuzz(float strength, double seconds)
+	{
+		if (prefs.global("menu_vibration") == "0") {
+			return;
+		}
+		buzzLarge = strength > 0.6f ? (strength - 0.6f) * 2.5f : 0.0f;
+		buzzSmall = strength;
+		pad_vibrate(buzzLarge, buzzSmall);
+		buzzUntil = now_seconds() + seconds;
+	}
+
+	/* Settings > Interface > Light bar: in the menus player 1's follows the menus' light (the chosen
+	 * game's colour, else the theme's accent), as PSWin's follows its accent; in a game, and for the
+	 * other players, each player's colour as the PS5 gives them (blue, red, green, pink). Set when it
+	 * changes; "console": left as the console has it. */
+	void lightBars(bool menus)
+	{
+		if (prefs.global("light_bar") == "console") {
+			return;
+		}
+		const uint32_t connected = pad_players();
+		if (connected != lightBarPlayers) {
+			lightBarPlayers = connected;
+			for (uint32_t &was : lightBarWas) {
+				was = 1u << 31;   // (a controller come or gone: its light bar again)
+			}
+		}
+		static const uint32_t kPlayer[PAD_PLAYERS] = { 0x0050FF, 0xFF2020, 0x20FF30, 0xFF30C8 };
+		for (int player = 0; player < PAD_PLAYERS; player++) {
+			if (!(connected & (1u << player))) {
+				continue;
+			}
+			uint32_t rgb = kPlayer[player];
+			if (menus && player == 0) {
+				const ImU32 c = themeCode ? ui::P().accent : ui::backdropLight();
+				rgb = ((c >> IM_COL32_R_SHIFT) & 0xFF) << 16 | ((c >> IM_COL32_G_SHIFT) & 0xFF) << 8 | ((c >> IM_COL32_B_SHIFT) & 0xFF);
+			}
+			if (rgb != lightBarWas[player]) {
+				lightBarWas[player] = rgb;
+				pad_player_light_bar(player, static_cast<uint8_t>(rgb >> 16), static_cast<uint8_t>(rgb >> 8), static_cast<uint8_t>(rgb));
+			}
+		}
+	}
+
+	void libraryInput()
+	{
 		ui::setScrollInput(menuPad.right_y);   // 0.0.6: long text scrolls with the right stick
 		const uint32_t pressed = menuPad.pressed;
+		if (leave.active) {
+			leaveInput(pressed);   // 0.0.9: an exit waiting for the disk has the controller
+			return;
+		}
 		const uint32_t nav = navPressed();   // 0.0.3: with the D-pad's repeats, L2 / R2 as presses
+		if (hdrCal.open) {
+			hdrCalInput(nav);   // 0.0.9: Adjust HDR brightness has the controller while it is open
+			return;
+		}
 		/* 0.1.53: one owner of the controller a frame: the keyboard (0.0.3), a list of choices, the
 		 * game page, the hard disk */
 		if (kb.isOpen()) {
@@ -3009,6 +4207,15 @@ public:
 		}
 		switch (screen) {
 		case Screen::Boot:
+			if (introOn) {   // 0.0.9: the startup video: CROSS or CIRCLE cuts it short
+				if (pressed & (PAD_CROSS | PAD_CIRCLE)) {
+					intro.skip();
+				}
+				if (intro.finished()) {
+					endIntro();
+				}
+				break;
+			}
 			/* CROSS or CIRCLE skips the splash (0.0.1: no longer said on it) */
 			if ((pressed & (PAD_CROSS | PAD_CIRCLE)) || now_seconds() - screenSince > kSplashLength) {
 				screen = Screen::Library;
@@ -3178,7 +4385,7 @@ public:
 			R r;
 			r.key = "m" + std::to_string(kindOf(m)) + ":" + m.id;
 			r.title = m.name;
-			r.sub = m.patch ? std::string("by ") + m.author : std::string();
+			r.sub = (m.patch || (!m.cheat && m.author[0])) ? std::string("by ") + m.author : std::string();
 			r.right = other ? std::string(m.on ? "Incompatible: left out" : "Incompatible")
 				: m.gamefix ? std::string("always on")
 				: m.cheat ? (m.once ? "once" : std::string())
@@ -3212,6 +4419,9 @@ public:
 				} else if (m.gamefix) {
 					help += "A game fix: OGBox always applies it, because the game doesn't run well on the PS5 without it. It can't be turned off.";
 				} else {
+					if (!m.cheat && m.author[0]) {
+						help += std::string("By ") + m.author + ". ";
+					}
 					help += m.cheat ? "Cheats apply while the game runs, from its next start." : "Mods change the game's code and files, from its next start.";
 				}
 				if (unchecked && !m.patch) {
@@ -3509,7 +4719,7 @@ public:
 		}
 		ui.visible = true;
 		VulkanExampleBase::prepareFrame();
-		upload = screen == Screen::Boot && fetchLogo();
+		upload = screen == Screen::Boot && (introFrame() || (!introOn && fetchLogo()));
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
 		framesDrawn++;
@@ -3521,6 +4731,8 @@ public:
 			return;
 		}
 		feedControllers();
+		hdrUpdate();   // 0.0.9: HDR output turned on or off between frames
+		pollLeave();   // 0.0.9: an exit waiting for the disk
 		/* every screen reads the controller itself (ogbox_ui draws them): ImGui's navigation gets none of it */
 		std::memset(ImGui::GetIO().NavInputs, 0, sizeof(ImGui::GetIO().NavInputs));
 		if (library) {
@@ -4053,6 +5265,19 @@ public:
 		}
 	}
 
+	/* 0.0.8: why a USB drive is recommended for the data folder (the data folder's screen) */
+	std::string storageAdvice() const
+	{
+		bool usb = false;
+		for (const ogbox::StoragePlace &p : storageList) {
+			usb |= p.path.rfind("/mnt/usb", 0) == 0;
+		}
+		const std::string why = "games write to the Xbox hard disk and the caches as they play, and the console slows a title's "
+			"writes to its own storage down after a few GB, which slows the game; on a USB drive it doesn't.";
+		return usb ? "A USB drive is recommended: " + why
+				   : "Recommended: plug in a USB drive and keep the data there (Another folder\xE2\x80\xA6 if it isn't listed): " + why;
+	}
+
 	/* The data folder's screen for its step: its words, its rows and what each does. */
 	void storageModel(ui::ListScreenView &v, std::vector<std::function<void()>> &acts)
 	{
@@ -4071,10 +5296,10 @@ public:
 			if (storageFirst) {
 				v.intro = "Where should OGBox keep its data? That is the Xbox's hard disk (your saves), the shader caches, the covers and "
 					"your screenshots: a few GB as you play. OGBox's settings stay on the console either way, and you can change this "
-					"later in Settings.";
+					"later in Settings. " + storageAdvice();
 			} else if (isFolder(now)) {
 				v.intro = "Now: " + now + " (" + ogbox::freeSpaceText(now) + "). Choose another place and OGBox moves your Xbox hard "
-					"disk, caches, covers and screenshots there.";
+					"disk, caches, covers and screenshots there. " + storageAdvice();
 			} else {   // 0.0.3: its drive unplugged
 				v.intro = "Now: " + now + ", which isn't there: is its drive plugged in? Your Xbox hard disk is on it.";
 				v.introWarn = true;
@@ -4287,7 +5512,11 @@ public:
 		} else {
 			switch (screen) {
 			case Screen::Notice: drawNotice(); break;
-			case Screen::Boot: drawBoot(); break;
+			case Screen::Boot:
+				if (!introOn) {
+					drawBoot();
+				}
+				break;
 			case Screen::Library:
 				if (gp.open) {
 					drawGamePageNew();
@@ -4482,7 +5711,12 @@ public:
 	/* A setting's row: its value one step on (by -1 or +1), the game's own (as Game Settings sets it) */
 	void quickStepOption(const ogbox::Option &o, int by)
 	{
-		const std::string next = ogbox::Settings::step(o, prefs.value(o.key), by);
+		std::string next = ogbox::Settings::step(o, prefs.value(o.key), by);
+		if (std::string(o.key) == "render_scale" && prefs.global("high_res") != "1") {
+			/* 0.0.9: 1x to 6x round, unless Settings > Advanced unlocks 7x to 12x */
+			const int at = std::max(1, std::min(6, std::atoi(prefs.value(o.key).c_str())));
+			next = std::to_string((at - 1 + by % 6 + 6) % 6 + 1);
+		}
 		prefs.setOverride(o.key, next == prefs.global(o.key) ? std::string() : next);
 		afterGameChange(o);
 	}
@@ -4501,7 +5735,7 @@ public:
 		mkdir(ogbox::storagePath("states").c_str(), 0777);
 		mkdir(ogbox::stateFolder(runKey).c_str(), 0777);
 		qm.applyPath = ogbox::stateFolder(runKey) + "/apply.state";
-		qm.busy = "Applying: the game restarts here";
+		qm.busy = "Applying Settings";
 		qm.after = Quick::After::Apply;
 		qm.result = std::make_shared<std::atomic<int>>(0);
 		qm.why = std::make_shared<std::string>();
@@ -4610,7 +5844,13 @@ public:
 	}
 
 	/* The title started again with the state (hakuX loads a state as the game boots). */
-	void quickLoad(const std::string &statePath)
+	void quickLoad(const std::string &statePath, bool applying = false)
+	{
+		leaveAfterWrites(applying ? "applying the settings" : "loading the state", [this, statePath]() { quickLoadNow(statePath); },
+			applying ? "Applying Settings" : "");
+	}
+
+	void quickLoadNow(const std::string &statePath)
 	{
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--loadstate", statePath };
@@ -4632,6 +5872,11 @@ public:
 	}
 
 	void quickRestart()
+	{
+		leaveAfterWrites("restarting the game", [this]() { quickRestartNow(); });
+	}
+
+	void quickRestartNow()
 	{
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd };
@@ -4782,7 +6027,7 @@ public:
 			qm.busy.clear();
 			if (qm.after == Quick::After::Apply) {
 				if (ok) {
-					quickLoad(qm.applyPath);
+					quickLoad(qm.applyPath, true);
 				} else {
 					showToast("Not applied (" + *qm.why + "): restart the game to apply the changes");
 				}
@@ -6212,6 +7457,10 @@ public:
 				to += (p & PAD_RIGHT) ? 1 : 0;
 				to -= (p & PAD_LEFT) ? 1 : 0;
 			}
+			if ((list && (((p & PAD_DOWN) && at >= n - 1) || ((p & PAD_UP) && at == 0 && cards.empty()))) ||
+				((p & PAD_RIGHT) && at >= n - 1) || ((p & PAD_LEFT) && at == 0)) {
+				ui::listEdge();   // 0.0.9: the list's end (Settings > Interface > Vibration)
+			}
 			to = std::max(0, std::min(n - 1, to));
 			if ((p & PAD_UP) && (!list || at == 0) && !cards.empty()) {
 				lastGame = selected;
@@ -6228,9 +7477,13 @@ public:
 			}
 			if ((p & PAD_LEFT) && at > 0) {
 				choose(cards[static_cast<size_t>(at - 1)]);
+			} else if (p & PAD_LEFT) {
+				ui::listEdge();
 			}
 			if ((p & PAD_RIGHT) && at + 1 < n) {
 				choose(cards[static_cast<size_t>(at + 1)]);
+			} else if (p & PAD_RIGHT) {
+				ui::listEdge();
 			}
 			if ((p & PAD_DOWN) && !games.empty()) {
 				lastCard = selected;
@@ -6495,7 +7748,7 @@ public:
 	static const char *setPageName(int page)
 	{
 		switch (page) {
-		case SP_PICTURE: return "Picture and sound";
+		case SP_PICTURE: return "Picture and Sound";
 		case SP_CONTROLLER: return "Controller";
 		case SP_XBOX: return "XBOX";
 		case SP_ADVANCED: return "Advanced";
@@ -6515,14 +7768,17 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "framegen", "aniso", "sharpen", "dither", "crop_overscan", "show_fps" } } };
+			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
+				"deband", "crt", "crop_overscan", "show_fps" } },
+				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
+				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
 				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
-					"audio_resampler", "console_ram" } },
+					"audio_resampler", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {
@@ -6553,7 +7809,8 @@ public:
 			return { { "Places", { "list_games", "list_internal", "list_usb", "list_ext", "list_network" } },
 				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
-			return { { "", { "theme", "rain", "quick_menu" } } };
+			/* 0.0.9: the DualSense in the menus (PSWin's) */
+			return { { "", { "theme", "rain", "quick_menu", "startup_video" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } } };
 		case SP_CONTROLLER:
 			/* 0.0.6: the buttons on the controller's picture, in its order (left column, then right) */
 			return { { "", { "pad_lt", "pad_lthumb", "pad_up", "pad_down", "pad_left", "pad_right", "pad_back", "pad_rt", "pad_y",
@@ -6584,7 +7841,23 @@ public:
 		/* 0.1.58: "fxaa" is the anti-aliasing: 0 off, 1 FXAA (as before), smaa, ssaa */
 		fxaaOn = prefs.on("fxaa");
 		smaaOn = prefs.value("fxaa") == "smaa";
-		ssaaOn = prefs.value("fxaa") == "ssaa";
+		ssaaOn = prefs.value("fxaa") == "ssaa" || prefs.value("fxaa") == "ssaa_smaa";
+		ssaaSmaa = prefs.value("fxaa") == "ssaa_smaa";   // 0.0.9
+		ssaaSharp = prefs.value("ssaa_filter") == "sharp";
+		crtMode = prefs.value("crt") == "strong" ? 2 : prefs.value("crt") == "light" ? 1 : 0;
+		downValid = false;
+		quincunxOn = prefs.value("fxaa") == "quincunx";   // 0.0.9
+		debandOn = prefs.value("deband") == "low" || prefs.value("deband") == "high";
+		debandStep = (prefs.value("deband") == "high" ? 5.0f : 2.0f) / 255.0f;
+		/* 0.0.9: Brightness, Contrast and Colour (adjust.frag's vec4) */
+		const int brightness = std::atoi(prefs.value("pic_brightness").c_str());
+		const int contrast = std::atoi(prefs.value("pic_contrast").c_str());
+		const int colour = std::atoi(prefs.value("pic_colour").c_str());
+		adjustOn = brightness != 0 || contrast != 0 || colour != 0;
+		adjustParams[0] = std::pow(2.0f, -static_cast<float>(brightness) / 50.0f);
+		adjustParams[1] = 1.0f + static_cast<float>(contrast) / 100.0f;
+		adjustParams[2] = std::max(0.0f, 1.0f + static_cast<float>(colour) / 50.0f);
+		postValid = false;
 		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
 		sharpOn = prefs.value("upscale") == "sharp";
 		showFps = prefs.value("show_fps") != "0";
@@ -6596,7 +7869,8 @@ public:
 	 * which restarts the game from a state saved where it is. */
 	static bool liveKey(const std::string &k)
 	{
-		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality" };
+		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality",
+			"deband", "ssaa_filter", "crt", "pic_brightness", "pic_contrast", "pic_colour" };
 		for (const char *x : keys) {
 			if (k == x) {
 				return true;
@@ -6612,10 +7886,10 @@ public:
 		}
 		const std::string k = o.key;
 		if (liveKey(k)) {
-			const bool ssaaWas = ssaaOn;
+			const bool ssaaWas = ssaaOn, quincunxWas = quincunxOn;
 			readPictureSettings();
 			refreshFrameGen(k);
-			if (ssaaOn != ssaaWas) {
+			if (ssaaOn != ssaaWas || quincunxOn != quincunxWas) {
 				markApply();   // (SSAA also raises the internal resolution, at the game's start)
 			}
 			return;
@@ -6647,7 +7921,9 @@ public:
 		const std::string key = o.key;
 		if (key == "pad_rumble") {   // 0.0.6: a short buzz at the new strength, as PSWin gives
 			const float k = static_cast<float>(std::atoi(next.c_str())) / 100.0f;
-			pad_vibrate(0.5f * k, 0.12f * k);
+			buzzLarge = 0.5f * k;
+			buzzSmall = 0.12f * k;
+			pad_vibrate(buzzLarge, buzzSmall);
 			buzzUntil = now_seconds() + 0.18;
 		}
 		if (forGame) {
@@ -6661,6 +7937,9 @@ public:
 		}
 		prefs.setGlobal(key, next);
 		afterGameChange(o);
+		if (key == "high_res" && next == "1") {
+			showToast("Internal resolutions above 6x unlocked. Performance may vary, and OGBox or the console may crash.");
+		}
 		if (key == "rain") {
 			rainOn = next == "1";
 		} else if (key == "theme") {
@@ -6720,7 +7999,11 @@ public:
 			a.step = [this, op](int by) { setValue(*op, by > 0 ? "1" : "0"); };
 		} else {
 			r.kind = ui::SetRow::Kind::Choice;
-			for (const ogbox::Choice &c : o.choices) {
+			/* 0.0.9: Internal resolution stops at 6x unless Settings > Advanced unlocks 7x to 12x */
+			const size_t shown = std::string(o.key) == "render_scale" && prefs.global("high_res") != "1"
+				? std::min<size_t>(6, o.choices.size()) : o.choices.size();
+			for (size_t ci = 0; ci < shown; ci++) {
+				const ogbox::Choice &c = o.choices[ci];
 				if (c.off) {
 					r.offChoices.push_back(static_cast<int>(r.choices.size()));
 				}
@@ -6732,16 +8015,28 @@ public:
 			if (std::string(o.key) == "theme" && v == "emerald") {
 				r.choice = 0;   // (0.0.2's Emerald: Dark now)
 			}
-			a.press = [this, op, v]() { setValue(*op, ogbox::Settings::step(*op, v, 1)); };
-			a.step = [this, op, v](int by) {
-				// no wrapping round at the ends: LEFT at the first stays
-				int at = 0;
-				for (size_t i = 0; i < op->choices.size(); i++) {
-					if (v == op->choices[i].value) {
+			if (r.choice < 0 && shown < o.choices.size()) {
+				r.choice = static_cast<int>(shown) - 1;   // (a 7x-12x kept from before, run at 6x now)
+			}
+			auto indexOf = [op, shown](const std::string &value) {
+				int at = static_cast<int>(shown) - 1;
+				for (size_t i = 0; i < shown; i++) {
+					if (value == op->choices[i].value) {
 						at = static_cast<int>(i);
 					}
 				}
-				const int to = std::max(0, std::min(static_cast<int>(op->choices.size()) - 1, at + by));
+				return at;
+			};
+			if (shown < o.choices.size()) {
+				a.press = [this, op, v, shown, indexOf]() {
+					setValue(*op, op->choices[static_cast<size_t>((indexOf(v) + 1) % static_cast<int>(shown))].value);
+				};
+			} else {
+				a.press = [this, op, v]() { setValue(*op, ogbox::Settings::step(*op, v, 1)); };
+			}
+			a.step = [this, op, v, shown, indexOf](int by) {
+				// no wrapping round at the ends: LEFT at the first stays
+				const int to = std::max(0, std::min(static_cast<int>(shown) - 1, indexOf(v) + by));
 				setValue(*op, op->choices[static_cast<size_t>(to)].value);
 			};
 		}
@@ -6871,6 +8166,15 @@ public:
 		}
 		const std::string hdd = boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd;
 		switch (page) {
+		case SP_PICTURE:
+			/* 0.0.9: the HDR test screen, under the HDR group: in the library's settings (where its input is
+			 * read: libraryInput), not a game's */
+			if (library && !forGame && hdrPipeline != VK_NULL_HANDLE) {
+				actionRow("hdrcal", "Adjust HDR brightness", hdrOn ? "open" : "needs HDR on",
+					"A test screen for your TV: its peak brightness for the highlights, then the white level.",
+					[this]() { openHdrCal(); }, rows, acts, ui::Icon::Gear);
+			}
+			break;
 		case SP_NETWORK:
 			shareRows(rows, acts);
 			break;
@@ -6884,9 +8188,11 @@ public:
 			break;
 		case SP_DATA:
 			actionRow("root", "Now", ogbox::storageRoot(), "Where OGBox keeps the Xbox hard disk, the caches, the covers and the "
-				"screenshots.", nullptr, rows, acts, ui::Icon::Folder);
+				"screenshots. A USB drive is recommended: the console slows a title's writes to its own storage down after a few GB, "
+				"which slows games; on a USB drive it doesn't.", nullptr, rows, acts, ui::Icon::Folder);
 			actionRow("free", "Free there", ogbox::freeSpaceText(ogbox::storageRoot()), "", nullptr, rows, acts);
-			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive; OGBox moves its "
+			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive (a USB drive is "
+				"recommended); OGBox moves its "
 				"data there and keeps using it.", [this]() { openStorage(false); }, rows, acts, ui::Icon::Usb);
 			break;
 		case SP_HDD:
@@ -6916,9 +8222,11 @@ public:
 			actionRow("ver", "OGBox", pshakux_build_label(), "", nullptr, rows, acts);
 			groupRow("Data folder", rows, acts);
 			actionRow("root", "Now", ogbox::storageRoot(), "Where OGBox keeps the Xbox hard disk, the caches, the covers and the "
-				"screenshots.", nullptr, rows, acts, ui::Icon::Folder);
+				"screenshots. A USB drive is recommended: the console slows a title's writes to its own storage down after a few GB, "
+				"which slows games; on a USB drive it doesn't.", nullptr, rows, acts, ui::Icon::Folder);
 			actionRow("free", "Free there", ogbox::freeSpaceText(ogbox::storageRoot()), "", nullptr, rows, acts);
-			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive; OGBox moves its "
+			actionRow("move", "Choose another place", "moves them there", "Choose another folder or drive (a USB drive is "
+				"recommended); OGBox moves its "
 				"data there and keeps using it.", [this]() { openStorage(false); }, rows, acts, ui::Icon::Usb);
 			actionRow("hddpath", "Xbox hard disk", hdd, "", nullptr, rows, acts, ui::Icon::Console);
 			groupRow("Credits", rows, acts);
@@ -7058,6 +8366,8 @@ public:
 			}
 			if (i >= 0) {
 				setRowSel = i;
+			} else {
+				ui::listEdge();
 			}
 		}
 		if (p & PAD_DOWN) {
@@ -7067,6 +8377,8 @@ public:
 			}
 			if (i < static_cast<int>(rows.size())) {
 				setRowSel = i;
+			} else {
+				ui::listEdge();
 			}
 		}
 		if (p & PAD_CIRCLE) {
@@ -7403,9 +8715,15 @@ public:
 		const int n = static_cast<int>(rows.size());
 		form.sel = std::max(0, std::min(n - 1, form.sel));
 		if (p & PAD_UP) {
+			if (form.sel == 0) {
+				ui::listEdge();
+			}
 			form.sel = std::max(0, form.sel - 1);
 		}
 		if (p & PAD_DOWN) {
+			if (form.sel >= n - 1) {
+				ui::listEdge();
+			}
 			form.sel = std::min(n - 1, form.sel + 1);
 		}
 		if (p & PAD_CIRCLE) {
@@ -7721,6 +9039,26 @@ public:
 			}
 			if (p & (PAD_CIRCLE | PAD_UP)) {
 				gp.states = false;
+			} else if ((p & PAD_TRIANGLE) && n) {
+				/* 0.0.9: a state deleted, "Where I left off" among them (the cache copies it alone used go
+				 * at the next save, which sweeps those no state uses) */
+				const ogbox::StateSlot st = ogbox::stateSlot(gp.info.key, slots[static_cast<size_t>(std::min(gp.stateSel, n - 1))]);
+				const std::string name = st.slot == ogbox::kQuitSlot ? std::string("Where I left off") : "Slot " + std::to_string(st.slot);
+				openPopup("Delete this state?", name + ", saved " + ogbox::dateText(st.mtime) + ".", { "Delete", "Go back" },
+					[this, st, name](int i) {
+						if (i != 0) {
+							return;
+						}
+						const bool ok = std::remove(st.path.c_str()) == 0;
+						std::remove(st.thumb.c_str());
+						pshakux_log("library: the state %s %s", st.path.c_str(), ok ? "deleted" : "could not be deleted");
+						showToast(ok ? name + " deleted" : "The state could not be deleted");
+						const int left = static_cast<int>(usedStateSlots(gp.info.key).size());
+						gp.stateSel = std::max(0, std::min(gp.stateSel, left - 1));
+						if (!left) {
+							gp.states = false;
+						}
+					});
 			} else if ((p & PAD_CROSS) && n && startPath.empty()) {
 				const ogbox::StateSlot st = ogbox::stateSlot(gp.info.key, slots[static_cast<size_t>(std::min(gp.stateSel, n - 1))]);
 				startState = st.path;
@@ -7868,7 +9206,7 @@ public:
 			}
 		}
 		v.actionSel = gp.pill;
-		v.footer = gp.states ? std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Load" }, { "O", "Back" } }
+		v.footer = gp.states ? std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Load" }, { "T", "Delete" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "LR", "Choose" }, { "X", "Open" }, { "O", "Back" } };
 		if (!gp.states && !slots.empty()) {
 			v.footer.insert(v.footer.begin() + 2, { "D", "Load State" });
@@ -7885,6 +9223,9 @@ public:
 	{
 		ImDrawList *dl = ImGui::GetOverlayDrawList();
 		const ImVec2 S(static_cast<float>(width), static_cast<float>(height));
+		if (hdrCal.open) {
+			drawHdrCal(dl, S);   // 0.0.9
+		}
 		static double popSince = 0.0;
 		static bool popWas = false;
 		if (pop.open && !popWas) {
@@ -7904,6 +9245,13 @@ public:
 		}
 		if (!toast.empty() && now_seconds() < toastUntil) {
 			ui::drawToast(dl, S, toast, static_cast<float>(std::min(1.0, (toastUntil - now_seconds()) / 0.4)));
+		}
+		if (leave.active) {   // 0.0.9: an exit waiting for the disk
+			PshxWrites w;
+			pshx_core_writes(&w);
+			ui::WriteBarView v;
+			leaveView(&v, w, ogbox::saveSyncRunning());
+			ui::drawWriteBar(dl, S, v, static_cast<float>(std::min(1.0, (now_seconds() - leave.since) / 0.25)));
 		}
 	}
 

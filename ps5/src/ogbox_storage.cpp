@@ -260,14 +260,20 @@ std::vector<StoragePlace> storagePlaces()
 		p.note = freeSpaceText(probe);
 		out.push_back(p);
 	};
-	add("This console", std::string(kConfigRoot), "/data", true);
-	add("This console, a folder of its own", "/data/OGBox", "/data", false);
+	/* 0.0.8: a USB drive first and recommended when one is plugged in: the Xbox hard disk and the caches
+	 * are written to as games play, and the console holds a title's writes to its own storage to about
+	 * 2 MiB/s after a burst of a few GiB (PS5_PayloadSDK platform/docs/PROBE.md, "Sustained writes"),
+	 * which stalls the game; on a USB drive it doesn't (tested against the internal drive) */
+	bool usbThere = false;
 	for (int i = 0; i < 8; i++) {
 		const std::string usb = "/mnt/usb" + std::to_string(i);
 		if (mounted(usb)) {
-			add("USB drive " + std::to_string(i), usb + "/OGBox", usb, false);
+			add("USB drive " + std::to_string(i), usb + "/OGBox", usb, !usbThere);
+			usbThere = true;
 		}
 	}
+	add("This console", std::string(kConfigRoot), "/data", !usbThere);
+	add("This console, a folder of its own", "/data/OGBox", "/data", false);
 	for (int i = 0; i < 2; i++) {
 		const std::string ext = "/mnt/ext" + std::to_string(i);
 		if (mounted(ext)) {

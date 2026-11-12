@@ -642,6 +642,15 @@ bool saveSyncRunning()
 	return g_syncRunning;
 }
 
+void saveSyncAskStop()
+{
+	std::lock_guard<std::mutex> lock(g_syncMutex);
+	if (g_syncRunning && !g_syncStop) {
+		g_syncStop = true;
+		pshakux_log("save sync: OGBox closes: the sync stops after the save it is copying");
+	}
+}
+
 void saveSyncFinish()
 {
 	std::unique_lock<std::mutex> lock(g_syncMutex);

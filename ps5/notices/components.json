@@ -457,8 +457,8 @@
    "id": "radv",
    "name": "RADV, ACO, NIR and Mesa's runtime, with the PS5 winsys and VideoOut WSI (PS5_Mesa), built with Crux2's patches (Mesa 27.0-devel and the PS5 fixes)",
    "licence": "MIT and other permissive licences (Mesa's notices)",
-   "copyright": "the Mesa authors; Mihawk for the PS5 parts; Press5elect for Crux2's patches",
-   "modifications": "Crux2's ps5/patches/mesa-27 (the same archive as Crux2's and Kelvin's: PS5_Vulkan's .deps/native/radv-crux2)",
+   "copyright": "the Mesa authors; Mihawk for the PS5 parts; Press5elect for Crux2's patches and OGBox's 0019; ZiZc3 (VLC for PS5, GPL-3.0) for 0019's way of switching the framebuffers to HDR10",
+   "modifications": "Crux2's ps5/patches/mesa-27 (the archive Crux2 and Kelvin link: PS5_Vulkan's .deps/native/radv-crux2), and OGBox 0.0.9's 0019-wsi-videoout-HDR10-framebuffers-on-request, after VLC for PS5's patches/mesa/0001-videoout-hdr10.patch",
    "texts": {
     "Mesa-license.rst": "../PS5_Mesa/docs/license.rst"
    },
@@ -680,6 +680,23 @@
    ],
    "texts": {
     "libpsl-copyright.txt": "/usr/share/doc/libpsl5t64/copyright"
+   }
+  },
+  {
+   "id": "libvpx",
+   "name": "libvpx (the startup video's VP9 decoder)",
+   "copyright": "The WebM Project authors (Google)",
+   "licence": "BSD-3-Clause",
+   "modifications": "none",
+   "source": {
+    "revision": "v0.40.2",
+    "url": "https://github.com/ps5-payload-dev/pacbrew-repo (release v0.40.2, prebuilt for the console)"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "texts": {
+    "libvpx-copyright.txt": "/usr/share/doc/libvpx9/copyright"
    }
   },
   {

@@ -129,6 +129,18 @@ bool pshx_core_trainer_message(int *kind, unsigned *led, char *text, unsigned te
  * work finished. Says each step in the boot log. */
 void pshx_core_quiesce(void);
 
+/* OGBox 0.0.9: what is still on its way to the console's disk, for an exit to wait for before the
+ * title is replaced (its bar says what): the game's writes still queued (a save among them), the
+ * files still to be synced and closed (closing: the one under way, the game's path for it), and
+ * the cache drives' bytes held in memory (cache_bytes; cache_file: the file they now go to). All
+ * zero when nothing is (and before a game ran). true while anything is. */
+typedef struct PshxWrites {
+    unsigned writes, closes;
+    uint64_t cache_bytes;
+    char closing[64], cache_file[64];
+} PshxWrites;
+bool pshx_core_writes(PshxWrites *w);
+
 /* One line about the run, for the boot log's heartbeat and an overlay: the state, frames
  * presented and taken, the guest's position when the CPU backend knows it. */
 void pshx_core_status(char *line, unsigned size);

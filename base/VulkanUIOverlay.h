@@ -72,6 +72,10 @@ namespace vks
 		VkDescriptorSet descriptorSet{ VK_NULL_HANDLE };
 		VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE };
 		VkPipeline pipeline{ VK_NULL_HANDLE };
+		// OGBox 0.0.9: the same, its alpha the menus' cover (src + dst * (1 - src)), for HDR output's menu layer
+		// (ogbox_main.cpp resolveHdr): drawn with it while coverage is set. pipeline's alpha stays as it was.
+		VkPipeline pipelineCoverage{ VK_NULL_HANDLE };
+		bool coverage{ false };
 
 		VkDeviceMemory fontMemory{ VK_NULL_HANDLE };
 		VkImage fontImage{ VK_NULL_HANDLE };

@@ -1,0 +1,28 @@
+name: 120 fps
+description: The game at 120 frames a second, for a 120 Hz screen (Settings > Graphics > Display refresh rate: 120 Hz). The game keeps its normal speed and the videos their own; it needs a lot more of the console, so lower the internal resolution if it can't keep up. It has the 60 FPS patch's changes in it: turn the 60 FPS patch off to use it.
+author: Press5elect
+refresh: 120
+
+# Splinter Cell Chaos Theory (55530041 v2). Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The 60 FPS patch's changes (a swap every vblank: the present parameters' interval and the
+# engine's D3D render-state table slot 17, D3DRS_PRESENTATIONINTERVAL, ONE_OR_IMMEDIATE instead of
+# TWO_OR_IMMEDIATE; the Bink movie loop always waits for the movie's time, so videos keep their
+# own rate), with the console's vblank at 120 Hz. The game proper's main loop (sc3.xbe 0x19E4F)
+# ticks the engine with the frame time from the CPU's counter, averaged over the last 6 frames
+# and held to 1/60 at least (0x47F384, 0.016666: a shorter frame waits until 1/60 s has passed
+# and counts as 1/60): that minimum made 0.008333. A view's smoothed frame time (0x1DD280, from
+# the level's DeltaSeconds) is held to 0.015 at least (0x4CAF74): that minimum made 0.0078125
+# (1/128, the constant at 0x482294). The engine's max tick rate is 0 (0x168E04), the menu's
+# loop (default.xbe 0x81138) takes the frame's real time without a minimum, and the physics
+# steps at a fixed 1/60 from the time that has added up (0x18147F): the speed stays.
+[default.xbe]
+0x001B52D5: 02 00 00 80 -> 01 00 00 80
+0x001B1F5A: 02 00 00 80 -> 01 00 00 80
+0x000152C5: 74 0D -> 90 90
+[sc3.xbe]
+0x00267454: 02 00 00 80 -> 01 00 00 80
+0x0026414D: 02 00 00 80 -> 01 00 00 80
+0x00014919: 74 0C -> 90 90
+0x0047F384: 23 87 88 3C -> 23 87 08 3C
+0x001DD2B4: F3 0F 10 05 74 AF 4C 00 -> F3 0F 10 05 94 22 48 00

@@ -713,6 +713,17 @@ def main():
                     f.write('T\t%s\n' % t)
                     target = t
                 f.write('\t'.join([r[0]] + list(r[2:])) + '\n')
+    # OGBox 0.0.9: OGBox's own patches (ps5/tools/gamedata-own-patches.txt, the same format) after the imported ones
+    own = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gamedata-own-patches.txt')
+    n_own = 0
+    if os.path.exists(own):
+        with open(own, encoding='utf-8') as src, open(os.path.join(out, 'patches.db'), 'a', encoding='utf-8') as f:
+            for line in src:
+                if line.startswith('#') or not line.strip():
+                    continue
+                f.write(line if line.endswith('\n') else line + '\n')
+                n_own += line.startswith('P\t')
+    print('patches: %d of OGBox\'s own (%s)' % (n_own, own))
     print('patches: %d JMP (%d not fetched), %d more from the JMP repository, %d OgXHD, %d IPS/BPS; %d IPS/BPS without a '
           'game: %s; %d repository files for a game not found' % (n_jmp, n_jmp_missing, n_repo, n_og, n_ips, len(unmatched),
           '; '.join(unmatched), n_unmatched_repo))

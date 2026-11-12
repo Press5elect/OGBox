@@ -1,0 +1,47 @@
+name: 120 fps
+description: The game at 120 frames a second, for a 120 Hz screen (Settings > Graphics > Display refresh rate: 120 Hz). The game keeps its normal speed, and its menus, loading screens and videos keep theirs. It needs a lot more of the console, so lower the internal resolution if it can't keep up. Turn the 60 fps mod off to use it.
+author: Press5elect
+refresh: 120
+
+# Breakdown (USA, 4E4D0009 v3). Copyright (c) 2026 Press5elect: any use of this mod or its
+# source, including through AI tools, requires credit to Press5elect.
+# hakuX's vblank at 120 Hz (refresh: 120); the frame limiter (0x18EA30) waits for the interval's
+# vblanks (0x434F60). The interval setter (0x21C50) now swaps 1 and 2: starting the game (its 2,
+# 0x1BF75) gives 1, 120 fps; the menus (their 1) give 2, 60 fps, as before; the boot's interval
+# (0x111D4) is 2 too. Menus step some animations a frame, so they stay at 60.
+[default.xbe]
+0x000111D4: 6A 01 -> 6A 02
+0x00021C54: 85 C0 7F 0B B8 01 00 00 00 -> 83 F0 03 A3 60 4F 43 00 C3
+# The main loop (0x11490) floors each frame's time at one 60 Hz vblank (max of the CPU ticks and
+# 0x18E7B0's ticks a vblank, 0x11539/0x11548): at 120 fps a frame would count as 1/60 s, the game
+# twice as fast. The floor is half a vblank now (a cave in padding, 0x14981: 0x18E7B0 x 0.5).
+0x00014981: CC CC CC CC CC CC CC CC CC CC CC CC -> E8 2A 9E 17 00 D8 0D BC C1 20 00 C3
+0x00011539: E8 72 D2 17 00 -> E8 43 34 00 00
+0x00011548: E8 63 D2 17 00 -> E8 34 34 00 00
+# The movie player's XMV library turns vblanks into ms by the display mode's rate (60 Hz; the
+# refresh mod doesn't change it): at 120 vblanks a second movies played twice as fast. Its ms a
+# vblank (59.94 Hz, and 1000/rate for others) halved.
+0x001DC121: F0 AE 10 00 -> 78 57 08 00
+0x001DC127: B8 00 00 E8 03 -> B8 00 00 F4 01
+# Held buttons' repeat (0x17F6F0) counts 60 Hz ticks as trunc(frame time x 61): 0 at 1/120 s, so
+# held directions never repeated. It counts 1/120 s ticks now (x 122, 0x214F10), with its waits
+# doubled (40, 120; every 6 and 10 ticks), and after a second held it repeats every 1/60 s as at
+# 60 fps (not every frame).
+0x0017F6F7: D8 0D EC 4E 22 00 -> D8 0D 10 4F 21 00
+0x0017F74B: 66 83 FD 3C 7F 12 66 83 FD 14 7E 2B 00 41 5A 80 79 5A 02 7E 05 88 59 5A 8B F2 66 83 FD 14 7E 17 -> 66 83 FD 28 7E 31 00 41 5A 66 83 FD 78 7E 06 00 41 5A 00 41 5A 80 79 5A 05 7E 05 88 59 5A 8B F2
+0x0017F771: 04 -> 09
+# Rumble patterns (0x157A30) and their graph (0x156C00) step whole 60 Hz ticks a frame (frame time
+# / 1/60, at least 1 for rumble: twice as fast at 120, 0 for the graph: stuck). They take the
+# ticks the frame's time crosses now, from the time they keep (a cave in padding, 0x14921/41/61).
+0x00014921: CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC -> D9 C0 D8 0D 70 07 21 00 E8 16 B0 19 00 EB 11
+0x00014941: CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC -> 50 D8 25 38 BD 29 00 D8 0D 70 07 21 00 EB 11
+0x00014961: CC CC CC CC CC CC CC CC CC CC CC -> E8 DE AF 19 00 59 2B C8 8B C1 C3
+0x00158250: D9 05 60 BB 29 00 D8 25 90 0F 21 00 D8 3D 38 BD 29 00 E8 DD 76 05 00 83 F8 01 7D 05 B8 01 00 00 00 -> D9 47 E0 E8 C9 C6 EB FF EB 17 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90
+0x00156D2B: D9 05 60 BB 29 00 D8 25 90 0F 21 00 D8 3D 38 BD 29 00 E8 02 8C 05 00 -> D9 05 A8 D6 42 00 D8 05 38 BD 29 00 E8 E5 DB EB FF 90 90 90 90 90 90
+0x00156DFA: D9 05 60 BB 29 00 D8 25 90 0F 21 00 D8 3D 38 BD 29 00 E8 33 8B 05 00 -> D9 05 A8 D6 42 00 D8 05 38 BD 29 00 E8 16 DB EB FF 90 90 90 90 90 90
+# A HUD pulse (0x12C030, 0x12C300) adds its elapsed 60 Hz ticks every frame: its speed was the
+# frame rate's. It adds elapsed x frame time x 1800 now, its speed at 30 fps (the game's own), at
+# any rate (a cave in padding, 0x12DD1).
+0x00012DD1: CC CC CC CC CC CC CC CC CC CC CC CC CC -> D8 0D 3C BD 29 00 D8 0D BC 10 21 00 C3
+0x0012C05D: D8 35 60 BB 29 00 -> E8 6F 6D EE FF 90
+0x0012C35E: D8 35 60 BB 29 00 -> E8 6E 6A EE FF 90

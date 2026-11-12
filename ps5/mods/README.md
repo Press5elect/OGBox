@@ -67,7 +67,16 @@ disc). OGBox checks what it can against the disc before a mod or a cheat can be 
 
 ## The mods
 
-- `45410083.2/60fps-test`: BLACK (USA), the 60 fps test without injected code (Press5elect).
+- `45410083.2/60fps`: BLACK (USA), 60 fps at its normal speed: the frame time, the Flash menus and HUD, physics,
+  ragdolls, recoil, sway, zoom and breaking glass as at 30, after TGP482/BLACK-XBERecomp's hooks (Press5elect).
+- `45410083.2/120fps`: BLACK (USA), the same at 120 fps for a 120 Hz screen (a quarter of a 30 Hz frame: rest
+  limit 1/16, fourth roots, counts every fourth frame), its movies' ms a vblank halved (Press5elect).
 - `4D530051.2/orphan-free-fix`: Conker: Live and Reloaded (v2), a game fix: a texture release that no
   heap owns is skipped instead of crashing the game (Press5elect).
 - `4E4D0009.3/60fps`: Breakdown (USA, v3), 60 fps: the game's frame interval 1 vblank instead of 2 (Press5elect).
+- `4E4D0009.3/120fps`: Breakdown (USA, v3), 120 fps for a 120 Hz screen: play at 1 vblank, menus at 2 (60 fps), the
+  frame time's floor half a 60 Hz vblank, its movies' ms a vblank halved, held-button repeat, rumble and a HUD
+  pulse counted in time instead of frames (Press5elect).
+- `55530041.2/120fps`: Splinter Cell Chaos Theory (v2), 120 fps for a 120 Hz screen: the 60 FPS patch's
+  changes with the main loop's 1/60 s minimum frame made 1/120 and a view's 0.015 s minimum 1/128
+  (Press5elect).

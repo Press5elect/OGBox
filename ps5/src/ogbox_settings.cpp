@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
+#include <string>
 
 #include <sys/stat.h>
 
@@ -31,6 +33,63 @@ constexpr const char *kGamesDir = "/data/ogbox/games";
 
 const std::vector<Choice> kOnOff = { { "0", "Off" }, { "1", "On" } };
 
+/* 0.0.9: a choice for each step of a range, its words made here and kept as long as the options;
+ * at 0 the words zero says, at the low end the words low says (nullptr: the number). */
+std::vector<Choice> rangeChoices(int from, int to, int step, const char *zero, const char *low = nullptr,
+	const char *unit = "", const std::vector<int> &extra = {})
+{
+	static std::deque<std::string> words;
+	std::vector<int> values;
+	for (int v = from; v <= to; v += step) {
+		values.push_back(v);
+	}
+	values.insert(values.end(), extra.begin(), extra.end());
+	std::sort(values.begin(), values.end());
+	std::vector<Choice> out;
+	for (int v : values) {
+		words.push_back(std::to_string(v));
+		const char *value = words.back().c_str();
+		if (v == 0 && zero) {
+			words.push_back(zero);
+		} else if (v == from && low) {
+			words.push_back(std::to_string(v) + " " + low);
+		} else {
+			words.push_back((from < 0 && v > 0 ? "+" : "") + std::to_string(v) + unit);
+		}
+		out.push_back({ value, words.back().c_str() });
+	}
+	return out;
+}
+
+} // namespace
+
+/* 0.0.9: HDR's white levels and peaks (the settings' choices, and Adjust HDR brightness's steps) */
+std::vector<Choice> hdrWhiteChoices()
+{
+	static const std::vector<Choice> c = [] {
+		std::vector<Choice> v = rangeChoices(80, 400, 10, nullptr, nullptr, " nits", { 203 });
+		for (Choice &x : v) {
+			if (std::strcmp(x.value, "203") == 0) {
+				x.label = "203 nits (reference)";
+			}
+		}
+		return v;
+	}();
+	return c;
+}
+
+std::vector<Choice> hdrPeakChoices()
+{
+	static const std::vector<Choice> c = [] {
+		std::vector<Choice> v = rangeChoices(400, 1000, 100, nullptr, nullptr, " nits", { 1250, 1500, 1750, 2000, 2500, 3000, 4000 });
+		v.insert(v.begin(), Choice{ "0", "Off" });
+		return v;
+	}();
+	return c;
+}
+
+namespace {
+
 std::vector<Option> makeOptions()
 {
 	std::vector<Option> o;
@@ -40,14 +99,73 @@ std::vector<Option> makeOptions()
 	 * over. */
 	// ---- Graphics: how the picture looks
 	o.push_back({ "render_scale", Section::Graphics, "Internal resolution",
-		"1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen.",
-		{ { "1", "1x (Xbox default)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" } },
+		"1x: the Xbox's default. 2x for a 1080p screen, 3x for a 1440p screen, 4x for a 4K screen. Above that the "
+		"picture is drawn larger than the screen and shrunk to it, smoother, at a much higher cost (7x to 12x: "
+		"Settings > Advanced).",
+		{ { "1", "1x (Xbox default)" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" },
+			{ "7", "7x" }, { "8", "8x" }, { "9", "9x" }, { "10", "10x" }, { "11", "11x" }, { "12", "12x" } },
 		"1", true });
+	/* 0.0.9: 7x to 12x only when asked for (Settings > Advanced) */
+	o.push_back({ "high_res", Section::Performance, "Internal resolutions above 6x",
+		"Unlocks Internal resolution's 7x to 12x. Warning: performance may vary, and it may crash OGBox or the "
+		"console. A 720p game stops at 6x.",
+		{ { "0", "Off" }, { "1", "On" } }, "0", false });
 	/* 0.1.58: the anti-aliasing (the key stays "fxaa": its "1" is FXAA, as before) */
 	o.push_back({ "fxaa", Section::Graphics, "Anti-aliasing",
 		"Smooths jagged edges. FXAA: the lightest and softest. SMAA: sharper. SSAA: the best picture quality, but it "
-		"may tank performance.",
-		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" } }, "0", true });
+		"may tank performance. SSAA + SMAA: SSAA, then SMAA over the result for the edges it leaves. Quincunx: the "
+		"original Xbox's default, very smooth and soft (it raises the internal resolution to the screen's at least; "
+		"Sharpening brings back detail).",
+		{ { "0", "Off" }, { "1", "FXAA" }, { "smaa", "SMAA" }, { "ssaa", "SSAA" }, { "ssaa_smaa", "SSAA + SMAA" },
+			{ "quincunx", "Quincunx" } }, "0", true });
+	/* 0.0.9: SSAA's down-sampling filter (ssaa.frag: the box average, or Lanczos-2) */
+	o.push_back({ "ssaa_filter", Section::Graphics, "SSAA down-sampling",
+		"For SSAA: Soft: default. Sharp: a Lanczos filter, crisper edges and less shimmer on fine patterns, with a "
+		"faint halo along hard edges.",
+		{ { "soft", "Soft" }, { "sharp", "Sharp (Lanczos)" } }, "soft", true });
+	/* 0.0.9: the CRT look (crt.frag), the picture's last pass */
+	o.push_back({ "crt", Section::Graphics, "CRT look",
+		"The picture as a TV of the time showed it: the scanlines between the game's own lines (and, Strong, the "
+		"screen's red, green and blue stripes). Replaces the upscaling filter. Best on a 4K screen.",
+		{ { "off", "Off" }, { "light", "Light" }, { "strong", "Strong" } }, "off", true });
+	/* 0.0.9: HDR output (ogbox_main.cpp hdrUpdate, hdr.frag; the driver's ps5/patches/mesa-27/0019).
+	 * The app's, for the menus too: not a game's own. */
+	{
+		Option hdr{ "hdr", Section::Graphics, "HDR",
+			"Sends the picture to the TV as HDR10, with the game's brightest parts brighter (HDR highlights). Needs "
+			"the console's own HDR on (Settings > Screen and Video > Video Output) and a TV that takes HDR; without "
+			"them the picture stays SDR. The TV goes into HDR mode while OGBox runs whether this is on or off.",
+			kOnOff, "0", false };
+		hdr.now = true;
+		o.push_back(hdr);
+		Option white{ "hdr_white", Section::Graphics, "HDR white level",
+			"203 nits is HDR's reference level; raise it if the picture looks dim.",
+			hdrWhiteChoices(), "203", false };
+		white.now = true;
+		o.push_back(white);
+		Option peak{ "hdr_highlights", Section::Graphics, "HDR highlights",
+			"Set it to the TV's peak brightness. Off: the SDR picture.",
+			hdrPeakChoices(), "1000", false };
+		peak.now = true;
+		o.push_back(peak);
+	}
+	/* 0.0.9: the game's picture lighter or darker, its contrast and its colour (adjust.frag, a pass over
+	 * the picture before it is scaled: ogbox_main.cpp recordPost); a game's own, at once in a game */
+	o.push_back({ "pic_brightness", Section::Graphics, "Brightness",
+		"For a game that is too dark or too bright.",
+		rangeChoices(-50, 50, 5, "0 (default)"), "0", true });
+	o.push_back({ "pic_contrast", Section::Graphics, "Contrast",
+		"Spreads the game's darks and lights apart (+) or brings them together (-), about the middle grey. Much more "
+		"than +20 loses detail in the darkest and brightest parts.",
+		rangeChoices(-50, 50, 5, "0 (default)"), "0", true });
+	o.push_back({ "pic_colour", Section::Graphics, "Colour",
+		"More (+) or less (-) colour in the game's picture; -50 is black and white.",
+		rangeChoices(-50, 50, 5, "0 (default)", "(monochrome)"), "0", true });
+	/* 0.0.9: a pass over the picture before it is scaled (ogbox_main.cpp recordPost) */
+	o.push_back({ "deband", Section::Graphics, "Debanding",
+		"Smooths the colour bands in skies, fog and dark gradients, more visible at high internal resolutions; edges "
+		"and detail are kept. Low: the fine steps of 32-bit colour. High: the wider ones of 16-bit colour.",
+		{ { "0", "Off" }, { "low", "Low" }, { "high", "High" } }, "0", true });
 	o.push_back({ "aspect", Section::Graphics, "Aspect ratio", "",
 		{ { "auto", "Auto" }, { "4:3", "4:3" }, { "16:9", "16:9" }, { "stretch", "Stretch to the screen" } },
 		"auto", true });
@@ -91,6 +209,11 @@ std::vector<Option> makeOptions()
 	/* 0.0.4: anisotropic filtering and sharpening (hakuX's NC_HLE_ANISO and NC_HLE_SHARPEN) */
 	o.push_back({ "aniso", Section::Graphics, "Anisotropic filtering", "",
 		{ { "0", "Default" }, { "2", "2x" }, { "4", "4x" }, { "8", "8x" }, { "16", "16x" } }, "0", true });
+	/* 0.0.9: the mip levels' bias (hakuX's NC_HLE_LODBIAS) */
+	o.push_back({ "lod_bias", Section::Graphics, "Texture sharpness",
+		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
+		"patterns may shimmer.",
+		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
@@ -264,6 +387,13 @@ std::vector<Option> makeOptions()
 		o.push_back(rain);
 	}
 	{
+		/* 0.0.9: the startup video (ogbox_intro.h): the X behind black glass, cracked and shattered */
+		Option intro{ "startup_video", Section::Interface, "Startup video",
+			"The cracked-glass intro with sound when OGBox starts. CROSS or CIRCLE skips it.", kOnOff, "1", false };
+		intro.now = true;
+		o.push_back(intro);
+	}
+	{
 		/* 0.0.1: the updater (Crux2's) */
 		Option up{ "update_check", Section::Interface, "Look for updates at start",
 			"Asks GitHub whether a newer OGBox is out each time OGBox starts, and offers it with what is new. "
@@ -294,6 +424,25 @@ std::vector<Option> makeOptions()
 		layout.text = true;
 		layout.now = true;
 		o.push_back(layout);
+	}
+	{
+		/* 0.0.9: the DualSense in the menus, as PSWin has it */
+		Option vib{ "menu_vibration", Section::Interface, "Vibration",
+			"A short buzz at the end of a list and when a game starts. The games' own rumble is Settings > Controller's.",
+			kOnOff, "1", false };
+		vib.now = true;
+		o.push_back(vib);
+		Option swap{ "circle_confirms", Section::Interface, "Circle confirms",
+			"Circle confirms and Cross goes back, in OGBox's menus only (the games' buttons stay as they are).",
+			kOnOff, "0", false };
+		swap.now = true;
+		o.push_back(swap);
+		Option bar{ "light_bar", Section::Interface, "Light bar",
+			"The controller's light: in the menus, the chosen game's colour (or the theme's); in a game, each player's "
+			"colour, as the PS5 gives them: blue, red, green, pink. Left as the console has it: from the next start.",
+			{ { "colours", "Menu and player colours" }, { "console", "Left as the console has it" } }, "colours", false };
+		bar.now = true;
+		o.push_back(bar);
 	}
 	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
 	{
@@ -617,7 +766,14 @@ std::vector<std::string> Settings::coreArgs() const
 	if (on("uncapped")) {
 		a.push_back("uncap");
 	}
-	a.push_back("scale=" + value("render_scale"));
+	{
+		/* 0.0.9: above 6x only with Settings > Advanced > Internal resolutions above 6x on */
+		int scale = std::atoi(value("render_scale").c_str());
+		if (scale > 6 && global("high_res") != "1") {
+			scale = 6;
+		}
+		a.push_back("scale=" + std::to_string(std::max(1, scale)));
+	}
 	// the console's video settings (AppPrefs.videoFlags) and its language (xboxLanguage)
 	unsigned flags = 0;
 	const std::string format = value("screen_format");
@@ -705,6 +861,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("sharpen") == "30" || value("sharpen") == "60" || value("sharpen") == "90") {
 		a.push_back("NC_HLE_SHARPEN=" + value("sharpen"));
+	}
+	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
+		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");

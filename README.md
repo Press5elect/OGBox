@@ -9,15 +9,19 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 0.0.8:**
-- Compressed `.cso` images (the original Xbox's, Stellar's) and extracted games (a folder with its
-  `default.xbe`, or any `.xbe`): the same copy of a game works on an original Xbox and in OGBox.
-- Saves kept in sync between consoles through a network share, as in Crux2.
-- Sound that cut in and out in a game that filters its sounds, frames shown twice at 60 fps, frame
-  drops, and fixes for two more games.
+**What's new in 1.0.0:**
+- 60 FPS patches of OGBox's own for eight games, and 120 fps mods for five on a 120 Hz screen, each
+  keeping the game's speed and its videos at their own rate.
+- HDR output, Brightness, Contrast and Colour per game, Quincunx, SSAA + SMAA, Debanding, Texture
+  sharpness, the CRT look, internal resolution up to 12x, and a startup video.
+- A safe exit that waits for what is still being written, the data folder on a USB drive
+  recommended, and DualSense settings for the menus.
+- Fixes in hakuX's graphics, kernel and sound: stencil shadows, render targets over adjacent
+  memory, a hang in 720p, save states that didn't load, and a kernel checked against Cxbx-Reloaded's
+  test suite.
 
-**Latest release: [v0.0.8](https://github.com/Press5elect/OGBox/releases/tag/v0.0.8).** Download
-`OGBox-v0.0.8.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v1.0.0](https://github.com/Press5elect/OGBox/releases/tag/v1.0.0).** Download
+`OGBox-v1.0.0.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -33,7 +37,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 0.0.8 is the eighth public release, after a long run of
+This is **experimental** software. 1.0.0 is the ninth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
@@ -64,8 +68,11 @@ run before it is kept as `ogbox-boot.previous.log`). Please attach both when you
    named `elevation-off.txt` in the title folder.
 3. **Start it** from the PS5 home screen. Press CROSS past the experimental notice. The first time,
    OGBox asks where to keep its data (the emulated Xbox hard disk, caches, covers and screenshots):
-   the console's storage, a folder of your own, a USB drive or extended storage. You can change it
-   later in Settings > Data folder, and OGBox moves everything for you.
+   the console's storage, a folder of your own, a USB drive or extended storage. A USB drive is
+   recommended (OGBox lists it first): games write to the Xbox hard disk and the caches as they
+   play, and the console slows a title's writes to its own storage down after a few GB, which slows
+   the game; on a USB drive it doesn't. You can change it later in Settings > Data folder, and
+   OGBox moves everything for you.
 4. **Pick a game.** Your games show as covers, or as a list if you prefer (Settings > Game list).
    - **L1 / R1** switch between the **Internal**, **USB** and **Network** tabs.
    - The **D-pad** moves along your games. **UP** goes to the strip above them: the folders, the
@@ -286,7 +293,65 @@ trademarks of Sony Interactive Entertainment. This project is not affiliated wit
 
 ## Release notes
 
-### 0.0.9 (in progress)
+### 1.0.0
+
+Added
+- 60 FPS patches of OGBox's own (the game's Patches, off until turned on), for title IDs `45410012`,
+  `4D5300D1`, `55530041`, `4D53000D`, `54540008`, `54540079` (versions 1, 2, 5, 6), `41560020`
+  (versions 3, 5) and `4156004E`. Each keeps the game's speed (its clock is the real time, or its
+  step follows the frame rate) and its videos at their own rate; patches that place code check the
+  XBE's CRC-32.
+- 120 fps mods for a 120 Hz screen (Settings > Graphics > Display refresh rate: 120 Hz; the 60 fps
+  patch or mod off): `4E4D0009` (version 3; menus at 60), `55530041` (version 2) and `45410083`
+  (version 2), with `54540082` and `545400A4`'s from before; `45410083` also gets its full 60 fps
+  mod (physics, ragdolls, recoil, sway, zoom and glass at the speed they have at 30). A mod shows its
+  author on the game page.
+- An exit, back to the game list, a restart or a state load first waits for what is still on its way
+  to the disk, with a bar at the bottom saying what.
+- Internal resolution up to 12x; above 6x needs Settings > Advanced > Internal resolutions above 6x
+  (performance may vary, and it may crash).
+- Network shares are woken when OGBox starts, so a NAS's disks are turning by the time a game
+  starts.
+- A game's save states, "where you left off" too, can be deleted (TRIANGLE); the quick menu's apply
+  says "Applying Settings".
+- Choosing where to keep data lists a USB drive first, recommended: the console slows a title's
+  writes to its own storage after a few GB, which slows the game; on a USB drive it doesn't.
+- DualSense in the menus (Settings > Interface > DualSense): Vibration, Circle confirms and the
+  light bar.
+- A cache drive's writes are held in memory and written behind the game.
+- A startup video: the OGBox X glows behind black glass, three blows crack it and it shatters, with
+  its own sound (8 seconds; CROSS or CIRCLE skips it, Settings > Interface > Startup video turns it
+  off). Its sources and how to make it again are in `ps5/art/intro`.
+- Quincunx anti-aliasing, the original Xbox's own: each pixel is its middle and its four corners,
+  very smooth edges and a softer picture, as on the console. It raises the internal resolution to
+  the screen's at least.
+- Debanding (Settings > Picture and Sound): smooths the colour bands in skies, fog and dark gradients that
+  show at high internal resolutions, keeping edges and detail. Low for 32-bit colour's fine steps,
+  High for 16-bit colour's wider ones.
+- SSAA + SMAA (Anti-aliasing): SSAA, then SMAA over its result for the edges it leaves.
+- SSAA down-sampling (Settings > Picture and Sound): Sharp (Lanczos) shrinks SSAA's larger picture with
+  crisper edges and less shimmer on fine patterns than Soft, the even average (the default).
+- Texture sharpness (Settings > Picture and Sound): textures stay sharper into the distance, more so at a
+  higher internal resolution; some games' fine patterns may shimmer. Off by default.
+- CRT look (Settings > Picture and Sound): the scanlines between the game's own lines, as a TV of the time
+  showed them, and with Strong the screen's red, green and blue stripes; the picture keeps its
+  brightness. Best on a 4K screen.
+- HDR (Settings > Picture and Sound): the picture goes to an HDR TV as HDR10 (BT.2020 colours, the PQ
+  curve), with the game's brightest parts raised toward HDR highlights (Off, or 400 to 4000 nits;
+  1000 by default) and white at the HDR white level (203 nits, HDR's reference, by default). The
+  menus stay at the white level. It needs the console's own HDR setting on and a TV that takes HDR;
+  otherwise the picture stays SDR. OGBox now declares HDR to the console, so an HDR TV goes into HDR
+  mode while OGBox runs, with this on or off. The framebuffers are switched as VLC for PS5 does
+  (`ps5/patches/mesa-27/0019`), and the declaration is the one other PS5 homebrew shows working.
+- Adjust HDR brightness (Settings > Picture and Sound, under HDR): a test screen for the TV. First the
+  highlights: an X in a square at the brightest the TV shows, raised until the X can no longer be
+  seen (the TV's peak); then the white level, the menus and a grey scale showing each step as it is
+  chosen.
+- Brightness, Contrast and Colour (Settings > Picture and Sound, a game's own, changed at once from the
+  quick menu): for a game that is too dark, too bright or too strongly coloured. Brightness moves
+  the middle tones (black and white stay where they are, nothing is lost); Contrast spreads the
+  darks and lights about the middle grey; Colour from black and white (-50) to twice the colour
+  (+50). Only the game's picture changes, not the menus, in SDR and in HDR.
 
 Fixed
 - Games that wait for one of their threads to end no longer wait for ever: a thread's end now sets
@@ -306,6 +371,18 @@ Fixed
   creation, string and number routines, stack walks, kernel queues, I/O completion ports, directory
   objects, raised statuses, `XcPKDecPrivate`; and the console's results where ours differed: Latin-1
   case, string conversion limits, DES and RSA edge cases, section page counts, suspend counts.
+- Stencil shadows extruded to infinity (`41560020`) drew wedges, spikes and flickering patches:
+  exact depth now takes a primitive clipped at the eye from clip space.
+- A hang a few hundred frames in at 720p (`4E4D0003`): the scanline register counts the video mode's
+  lines.
+- Save states that didn't load ("too many open files"), and the quick menu's apply with them.
+- The 120 fps mods' movies of `54540082` and `545400A4` played twice as fast.
+- From hakuX-lr (PortareOS): kernel calls' faults go to the game's exception handlers, NV097's
+  inline attribute methods, the pipeline table recycled when it fills, 2D blits clipped as the NV2A
+  does, render targets across adjacent blocks of memory, and the DSP's loops that end in a call.
+- Textures drawn from render targets of other sizes and layouts.
+- Frame generation turning itself off after a change from the quick menu.
+- A game that jumps to an address with nothing there stops with a report instead of closing OGBox.
 
 ### 0.0.8
 

@@ -121,6 +121,13 @@ struct Hint {
 };
 /* A key and its words; its width. */
 float hint(ImDrawList *dl, ImVec2 p, const Hint &h, ImU32 col, bool measureOnly = false);
+/* 0.0.9: Settings > Interface > Circle confirms (PSWin's): the menus' CROSS and CIRCLE are swapped,
+ * and the hints' and buttons' X and O keycaps with them (keycap() itself draws the buttons as they are). */
+void setSwapConfirm(bool on);
+/* 0.0.9: a list stepped against its end (listStep, or a screen's own list saying so), for the
+ * menus' end-of-list buzz: true once after it happened. */
+void listEdge();
+bool takeListEdge();
 /* The hints along the foot of the screen, and words at its right. */
 void footer(ImDrawList *dl, ImVec2 screen, const std::vector<Hint> &hints, const std::string &right = std::string());
 
@@ -247,6 +254,9 @@ struct Backdrop {
 	float strength{ 1.0f };
 };
 void backdrop(ImDrawList *dl, ImVec2 size, const Backdrop &b);
+/* 0.0.9: the colour of the backdrop's light as last drawn (the chosen game's, else the accent):
+ * the DualSense's light bar in the menus. */
+ImU32 backdropLight();
 
 // ---- the game list ----------------------------------------------------------------------------
 
@@ -504,6 +514,15 @@ struct PopupView {
 };
 void drawPopup(ImDrawList *dl, ImVec2 screen, const PopupView &v, float appear);
 void drawToast(ImDrawList *dl, ImVec2 screen, const std::string &text, float alpha);
+/* OGBox 0.0.9: along the bottom while OGBox waits for what is still being written to the disk before
+ * it closes or changes game: what (title), how far (detail), a bar (fraction 0-1; below 0 it moves:
+ * under way, no end known), and CIRCLE's hint when what is left may be left. */
+struct WriteBarView {
+	std::string title, detail;
+	float fraction{ -1.0f };
+	bool canSkip{ false };
+};
+void drawWriteBar(ImDrawList *dl, ImVec2 screen, const WriteBarView &v, float appear);
 
 /* A colour for a name (a game without a cover): one of a few dark, saturated ones. */
 ImU32 tintFor(const std::string &name);

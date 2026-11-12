@@ -326,6 +326,12 @@ namespace vks
 		}
 #endif
 		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device->logicalDevice, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline));
+		// OGBox 0.0.9: HDR output's menu layer needs the menus' cover in its alpha
+		blendAttachmentState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		blendAttachmentState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		if (vkCreateGraphicsPipelines(device->logicalDevice, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipelineCoverage) != VK_SUCCESS) {
+			pipelineCoverage = VK_NULL_HANDLE;
+		}
 	}
 
 	/** Update vertex and index buffer containing the imGui elements when required */
@@ -422,7 +428,8 @@ namespace vks
 
 		ImGuiIO& io = ImGui::GetIO();
 		
-		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			coverage && pipelineCoverage != VK_NULL_HANDLE ? pipelineCoverage : pipeline);
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 		VkDescriptorSet bound = descriptorSet;
 
@@ -485,6 +492,7 @@ namespace vks
 		vkDestroyDescriptorPool(device->logicalDevice, descriptorPool, nullptr);
 		vkDestroyPipelineLayout(device->logicalDevice, pipelineLayout, nullptr);
 		vkDestroyPipeline(device->logicalDevice, pipeline, nullptr);
+		vkDestroyPipeline(device->logicalDevice, pipelineCoverage, nullptr);
 	}
 
 	bool UIOverlay::header(const char *caption)
