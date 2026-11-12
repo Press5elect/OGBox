@@ -1,0 +1,32 @@
+# OGBox: patches of OGBox's own (Press5elect), in patches.db's format (import-gamedata.py's header): the
+# importer adds them after the imported ones. Each is found by its bytes (F), so another release of the
+# same code takes it too, and one without them is refused, not changed.
+#
+# 45410012: the engine's vsyncInterval setting, 2 (every second refresh: 30 frames a second) by default
+# (its settings' constructor, mov [esi+0x154], 2), and its value as the renderer is given it (mov ecx,
+# [edx+0x154], in the block the video settings go to the renderer in) made 1. The game's logic moves in
+# fixed steps of 1/60 s (its frame: ticks = (real time + what was left) * 60), two a frame at 30, one at
+# 60: its speed stays as it was.
+P	45410012	*	pog4541001260	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	C7865401000002000000889E58010000	C7865401000001000000889E58010000
+F	8B50308B8A54010000894C242C	8B5030B90100000090894C242C
+#
+# 4D5300D1: the renderer's frame interval (refresh rates per frame: 2 is 30 frames a second) made 1
+# where it is set: SetFrameRate (n = ceil(refresh / fps), clamped to 1-3: the clamp now always 1)
+# and the two places that set 2 outright (each saves the setting first and puts it back after).
+# The renderer's frame time (n / refresh) follows n, and the game's time is the real time (or
+# the frame's predicted display time from it), so its speed stays as it was.
+P	4D5300D1	*	pog4D5300D160	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	default.xbe
+F	83F9017D07B901000000EB0A83F9037E05B903000000	83F9019090B901000000EB0A83F9037E05B903000000
+F	6A006A026A008BCE899424A4000000898424A8000000	6A006A016A008BCE899424A4000000898424A8000000
+F	6A006A02894660885E648B0DE88998006A00	6A006A01894660885E648B0DE88998006A00
+#
+# 55530041: the game proper is sc3.xbe (default.xbe, the menu, starts it): its D3D present
+# parameters' presentation interval, D3DPRESENT_INTERVAL_TWO (or TWO_OR_IMMEDIATE with its vsync
+# setting off: add eax, 0x80000002 after the setting's mask), made ONE (ONE_OR_IMMEDIATE). The engine
+# moves its world by the time a frame took.
+P	55530041	*	pog5553004160	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+T	sc3.xbe
+F	F7D81BC025000000800502000080A330746200	F7D81BC025000000800501000080A330746200
