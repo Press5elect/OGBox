@@ -9,3 +9,9 @@ refresh: 120
 # 120 Hz: a frame each vblank. The game's clock is real time, so its speed stays.
 [default.xbe]
 0x002738BC: 39 0D D4 27 5F 00 74 ED -> 39 0D D4 27 5F 00 90 90
+# Its movies (D:\movies\logos.xmv, intro.xmv) go by XMV's clock: the vblanks since the movie's start
+# times its ms a vblank, from the display mode's rate (60: 1000/59.94 ms in 16.16; else 1000/rate),
+# and D3D still says 60 while hakuX's vblank comes 120 times a second: the movies played twice as
+# fast. Its ms a vblank halved (the same XMV code as 4E4D0009's 120 fps mod).
+0x003126E1: F0 AE 10 00 -> 78 57 08 00
+0x003126E7: B8 00 00 E8 03 -> B8 00 00 F4 01
