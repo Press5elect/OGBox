@@ -598,7 +598,7 @@
   },
   {
    "id": "hakux-lr",
-   "name": "hakuX-lr (PortareOS's hakuX fork): its HLE GPU accuracy work (two-sided lighting, colour sign and key, convolution filters, line width, dithering, antialiasing control, window clip, DOT_ZW / BRDF, texture formats), its APU (the sinc resampler, SSE2/AVX2 mixing, stereo downmix and 3D routing, guards), CHD images, disc, DVD security, cheat, SEH and kernel-pool fixes, and kernel exports (the stack walks, XcPKDecPrivate, the kernel queues, I/O completion ports and directory objects, these two without its IRP model), merged into hakuX-native",
+   "name": "hakuX-lr (PortareOS's hakuX fork): its HLE GPU accuracy work (two-sided lighting, colour sign and key, convolution filters, line width, dithering, antialiasing control, window clip, DOT_ZW / BRDF, texture formats), its APU (the sinc resampler, SSE2/AVX2 mixing, stereo downmix and 3D routing, guards), CHD images, disc, DVD security, cheat, SEH and kernel-pool fixes, and kernel exports (the stack walks, XcPKDecPrivate, the kernel queues, I/O completion ports and directory objects; since 1.0.1 every export, with its IRP model, drivers and device queues, continuations, thread notify routines, interlocked lists, HAL interrupt masks and the runtime library's string, number and printf routines), and since 1.0.1 its priority boosts after waits, the reserved top of RAM, large-page RAM aliases, EEPROM over SMBus, unbuffered overlapped disk transfers, MTRRCAP, and NV2A fixes (logic ops, register-combiner precision, point sizes, specular colour and alpha, GL-style clamps and LOD limits, context DMA bases, P8 palettes, the NV039 notifier, R16B16 and X1R5G5B5 clears, fill modes and smoothing, cylindrical wrap, the PVIDEO overlay), the APU's resampler lookahead and voice modulation and filter state, and the native CPU's opt-in Intel RSQRT corrections for AMD processors, merged into hakuX-native",
    "licence": "GPL-3.0-or-later",
    "copyright": "PortareOS (portare-ch) and the hakuX-lr contributors; rfandango and the hakuX contributors",
    "modifications": "taken commit by commit onto hakuX-native's native CPU by Press5elect, 2026: its libretro core, Linux front end, KVM backend and DSP56300 JIT (a Rust crate) left out",
@@ -610,7 +610,24 @@
    ],
    "source": {
     "url": "https://github.com/portare-ch/hakuX-lr",
-    "revision": "3cc0d0ccab"
+    "revision": "9d23fc01a7 (master, 2026-11-10), with its pull requests #172 (28f97d698a) and #219 (abc20f8ee8, b3be753455, 8f46056300)"
+   }
+  },
+  {
+   "id": "bochs-rsqrt",
+   "name": "Bochs' RSQRT tables (bochs/cpu/sse_rcp.cc), in the native CPU's opt-in Intel RSQRT corrections for AMD processors (hakuX-native's native/cpu/intel_rsqrt_table.inc, by way of hakuX-lr's #219)",
+   "licence": "LGPL-2.1-or-later (used under 2.1)",
+   "copyright": "Copyright (c) 2003-2018 Stanislav Shwartsman",
+   "modifications": "the entries shifted right by three and the two exponent-parity tables made one (hakuX-lr)",
+   "texts": {
+    "LGPL-2.1.txt": "build/hakux-src/licenses/LGPL-2.1.txt"
+   },
+   "artifacts": [
+    "eboot.bin"
+   ],
+   "source": {
+    "url": "https://github.com/bochs-emu/Bochs (bochs/cpu/sse_rcp.cc)",
+    "revision": "the file's git blob e8a777a0d94be9ae49c7f6407bba5de17748cb77"
    }
   },
   {
