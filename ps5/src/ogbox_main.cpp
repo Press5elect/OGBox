@@ -7773,7 +7773,7 @@ public:
 				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
 				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } } };
 		case SP_XBOX:
-			return { { "", { "language", "av_pack", "screen_format" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
+			return { { "", { "language", "av_pack", "screen_format", "hdd_size" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
