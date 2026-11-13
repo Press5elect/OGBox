@@ -275,6 +275,7 @@ native core's work tree (oldest first; author: subject):
              pointers logged
   0de2aba411 Claude: Diagnostics: blit clip cuts, inline attribute methods, targets carried over adjacent
              blocks, slow writes
+  9303bcb443 Claude: io: wback's files headed as OGBox's own (Press5elect, GPL-3.0-or-later)
 
 diff --git a/hw/xbox/hle/core/probe.c b/hw/xbox/hle/core/probe.c
 index 86d2228dea2d6dcf95657d46447ec66b2bad946e..055c1700793e807a4dfeeb487252245bf3e70779 100644
@@ -35557,12 +35558,16 @@ index 2dc6503c49590608d53cb9307610738c29cf9fc9..6abd02e4996ed535af6d8d0a4c34b7b0
  static uint32_t timer_of(NcKernel *k, uint32_t handle)
 diff --git a/native/kernel/wback.c b/native/kernel/wback.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab96e8ce04ca6878b45f025d16fc8f03b6822040
+index 0000000000000000000000000000000000000000..11727a249d17d8b2e1ec771688fac58f9644150f
 --- /dev/null
 +++ b/native/kernel/wback.c
-@@ -0,0 +1,843 @@
-+/* Copyright (C) 2026-present PortareOS */
-+/* SPDX-License-Identifier: GPL-2.0-or-later */
+@@ -0,0 +1,847 @@
++/*
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by
++ * Press5elect" (github.com/Press5elect/OGBox, NOTICE).
++ */
 +/*
 + * OGBox 0.0.9: a cache drive's writes held in memory and written to the host files behind the game.
 + *
@@ -36406,12 +36411,16 @@ index 0000000000000000000000000000000000000000..ab96e8ce04ca6878b45f025d16fc8f03
 +}
 diff --git a/native/kernel/wback.h b/native/kernel/wback.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d540c40d48be3ebaf5d00f8983c33082c7f70a61
+index 0000000000000000000000000000000000000000..16e1674b4fc91e867c76cc4685a7fd46752965dd
 --- /dev/null
 +++ b/native/kernel/wback.h
-@@ -0,0 +1,62 @@
-+/* Copyright (C) 2026-present PortareOS */
-+/* SPDX-License-Identifier: GPL-2.0-or-later */
+@@ -0,0 +1,66 @@
++/*
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by
++ * Press5elect" (github.com/Press5elect/OGBox, NOTICE).
++ */
 +/*
 + * OGBox 0.0.9: a cache drive's writes held in memory and written to the host files behind the
 + * game (wback.c). io.c holds a cache drive's writes here (nc_wb_write) and asks here for what the
@@ -42412,12 +42421,16 @@ index 0000000000000000000000000000000000000000..6b93d8e37477abcbe1f968cca311eacb
 +}
 diff --git a/tests/native/linux/wback.c b/tests/native/linux/wback.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4f67db3de269930a2855bd86867b39be187d8bba
+index 0000000000000000000000000000000000000000..887a7f97452a3135012632f5ed907f696ad4be14
 --- /dev/null
 +++ b/tests/native/linux/wback.c
-@@ -0,0 +1,384 @@
-+/* Copyright (C) 2026-present PortareOS */
-+/* SPDX-License-Identifier: GPL-2.0-or-later */
+@@ -0,0 +1,388 @@
++/*
++ * Copyright (C) 2026 Press5elect
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by
++ * Press5elect" (github.com/Press5elect/OGBox, NOTICE).
++ */
 +/*
 + * Tests for the cache drives' write-back (native/kernel/wback.c), on the host's file system with
 + * a slow writer (nc_wb_test_delay_us): what a game reads, sizes and finds after a quit.
