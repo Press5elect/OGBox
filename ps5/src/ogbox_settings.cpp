@@ -291,6 +291,15 @@ std::vector<Option> makeOptions()
 		"1920x1080 in the few games that offer it. Much heavier: use resolution scale 1x.", kOnOff, "0", true });
 	o.push_back({ "pal60", Section::Video, "PAL 60 Hz",
 		"European games run at 60 Hz instead of 50 Hz where they offer it.", kOnOff, "0", true });
+	/* OGBox: the Xbox hard disk's size the kernel reports (hakuX's NC_HDD_SIZE_GB): the folder has no
+	 * size of its own; a retail-sized E: holding more than it had nothing free for a game */
+	o.push_back({ "hdd_size", Section::Console, "Hard disk size",
+		"The size games see. Automatic: E: (saves and downloads) as large as what it holds plus the free space "
+		"of an empty Xbox hard disk, never more than this console has free. A fixed size can leave E: full, "
+		"and a large one shows games more free space than an Xbox ever had.",
+		{ { "auto", "Automatic" }, { "8", "8 GB (the Xbox's)" }, { "16", "16 GB" }, { "32", "32 GB" },
+			{ "64", "64 GB" }, { "128", "128 GB" } },
+		"auto", false });
 	o.push_back({ "av_pack", Section::Video, "Video cable", "",
 		{ { "hdtv", "HDTV (component): all modes" }, { "standard", "Standard AV (composite): 480i only" },
 			{ "svideo", "S-Video: 480i only" } },
@@ -822,6 +831,9 @@ std::vector<std::string> Settings::coreArgs() const
 	a.push_back(std::string("asyncpipe=") + (on("async_shaders") ? "1" : "0"));
 	a.push_back(std::string("prebuild=") + (on("prebuild_shaders") ? "1" : "0"));
 	a.push_back(std::string("devtime=") + (on("fast_drive") ? "0" : "1"));
+	if (value("hdd_size") != "auto" && !value("hdd_size").empty()) {   // OGBox: the hard disk's size
+		a.push_back("NC_HDD_SIZE_GB=" + value("hdd_size"));
+	}
 	// 0.1.47: the RAM; Auto: 128 MB when a patch on for the game needs it (ogbox_patches.c)
 	const std::string ram = value("console_ram");
 	const bool patch128 = !gameKey.empty() && ogbox_patches_need_128(gameKey.c_str());

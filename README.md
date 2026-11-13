@@ -9,19 +9,16 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 1.0.0:**
-- 60 FPS patches of OGBox's own for eight games, and 120 fps mods for five on a 120 Hz screen, each
-  keeping the game's speed and its videos at their own rate.
-- HDR output, Brightness, Contrast and Colour per game, Quincunx, SSAA + SMAA, Debanding, Texture
-  sharpness, the CRT look, internal resolution up to 12x, and a startup video.
-- A safe exit that waits for what is still being written, the data folder on a USB drive
-  recommended, and DualSense settings for the menus.
-- Fixes in hakuX's graphics, kernel and sound: stencil shadows, render targets over adjacent
-  memory, a hang in 720p, save states that didn't load, and a kernel checked against Cxbx-Reloaded's
-  test suite.
+**What's new in 1.0.1:**
+- Settings > Xbox > Hard disk size: Automatic (the default) gives E: room again once it holds more
+  than an Xbox's 4.9 GB.
+- Stencil shadows that were missing in one game, and white streaks that crossed another's picture
+  since the first public builds, are fixed.
+- The kernel now has all 337 of the Xbox kernel's functions, and more of hakuX-lr's kernel, GPU and
+  sound fixes are merged.
 
-**Latest release: [v1.0.0](https://github.com/Press5elect/OGBox/releases/tag/v1.0.0).** Download
-`OGBox-v1.0.0.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v1.0.1](https://github.com/Press5elect/OGBox/releases/tag/v1.0.1).** Download
+`OGBox-v1.0.1.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -37,7 +34,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 1.0.0 is the ninth public release, after a long run of
+This is **experimental** software. 1.0.1 is the tenth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
@@ -128,7 +125,7 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   compiling shaders in the background, and building cached shaders at start.
 - **Audio:** the resampler (Normal, Sinc or Linear). Sound is mixed the fast way, as xemu does by default.
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
-  when such a patch is on), Fast disc drive and the clock.
+  when such a patch is on), Fast disc drive, the clock and the hard disk's size.
 - **Video modes:** screen format, 480p, 720p, 1080i, PAL 60 and the video cable.
 - **Network:** off, LAN, XLink Kai or Insignia.
 - **Game list:** which places show, covers, layout (list or a grid of covers), names, sort order,
@@ -292,6 +289,36 @@ covers Press5elect's code and logo only, not hakuX's or xemu's. `NOTICE` has it 
 trademarks of Sony Interactive Entertainment. This project is not affiliated with either.
 
 ## Release notes
+
+### 1.0.1
+
+Added
+- Hard disk size (Settings > Xbox): the size the emulated Xbox hard disk reports to games.
+  Automatic (the default) makes E: (saves and downloads) as large as what it holds plus the free
+  space of an empty Xbox hard disk (about 4.9 GB), never more than your storage has free; 8 GB is
+  the Xbox's layout, as before; 16, 32, 64 or 128 GB give E: everything beyond the other
+  partitions.
+
+Fixed
+- E: was reported as a full drive once it held more than an Xbox's 4.9 GB, so games found no room
+  for saves (hakuX's kernel reported the retail size whatever the folder held).
+- Missing stencil shadows (`45410012`): shadow volumes that count in the stencil buffer without
+  writing depth use the GPU's own depth, not exact depth's.
+- White streaks across the picture (`4D5300D1`), there since the first public builds: exact depth
+  keeps the game's own depth only for primitives at one depth (the flickering sky it was made for),
+  the GPU's for everything else.
+- The kernel has all 337 of the Xbox kernel's functions: the driver model (I/O requests, drivers,
+  device queues), kernel calls that run several of the game's routines in turn, thread notify
+  routines, `PsCreateSystemThread`, `PsQueryStatistics`, interlocked lists, HAL interrupt masks,
+  software interrupts and the runtime library's string, number and `printf` functions.
+- Merged from hakuX-lr (PortareOS): priority boosts after waits, `KeQuerySystemTime` in the game's
+  code, the MTRR capabilities of a Pentium III, unbuffered overlapped disk transfers, the top 128
+  KiB of RAM reserved at boot, RAM through large pages, EEPROM over SMBus; the NV2A's logic ops,
+  register-combiner precision, point sizes, specular colour and alpha, GL-style clamps and texture
+  LOD limits, context DMA bases, P8 palettes, the NV039 notifier, `R16B16` textures, `X1R5G5B5`
+  clears, methods skipped while no graphics class is bound, wireframe and point fill modes and
+  smoothing, the PVIDEO overlay and cylindrical texture wrap (off by default); a sound no longer
+  ends a frame early, and save states keep each voice's modulation and filter state.
 
 ### 1.0.0
 

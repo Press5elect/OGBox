@@ -4,14 +4,15 @@ OGBox is developed by Press5elect.
 
 Repository: https://github.com/Press5elect/OGBox
 
-This record is current to OGBox 1.0.0.
+This record is current to OGBox 1.0.1.
 
 ## The OGBox-specific PS5 work
 
 The following components contain OGBox's own PS5 implementation work, written by Press5elect:
 
 - **Native CPU backend**: `native/cpu/cpu_native.c` and `native/cpu/codepatch.c` in the hakuX tree
-  (`Press5elect/hakux-native`: branch `ps5-native`, and `tiers3` for 1.0.0's work), with the
+  (`Press5elect/hakux-native`: branch `ps5-native`, `tiers3` for 1.0.0's work and `tiers5` for
+  1.0.1's), with the
   PS5 half of the CPU in `ps5/patches/hakux/ps5.patch`.
 - **PS5 kernel-call integration**: the gate between the Xbox's kernel calls and the emulator's kernel
   (`hw/xbox/hle/core/`, `native/kernel/`), and the platform layer in `ps5/src/platform/`.
@@ -68,6 +69,15 @@ The following components contain OGBox's own PS5 implementation work, written by
   - textures sampled from render targets of other sizes and layouts;
   - the kernel functions and corrections measured against Cxbx-Reloaded's kernel test suite that
     are not hakuX-lr's (below), such as Latin-1 case (`native/kernel/rtl.c`, `rtl_case.h`).
+- **Fixes in hakuX's GPU** (1.0.1), in hakuX-native and the patch:
+  - shadow volumes that count in the stencil buffer without writing depth (z-pass) drawn with the
+    rasterizer's depth, not exact depth's (`hw/xbox/hle/vk/draw.c`);
+  - exact depth keeping the game's own depth only for primitives at one depth, the rasterizer's
+    for the rest (`hw/xbox/hle/shader/ff.h`), tested in `tests/hle/test_psh.c`;
+  - the draw log's stencil, cull and blend state, and the stencil probe (`HAKUX_HLE_PROBE_STENCIL`).
+- **The hard disk's size** (1.0.1): the data drive's size, automatic or set
+  (`native/kernel/io.c` in hakuX-native), and Settings > Xbox > Hard disk size
+  (`ps5/src/ogbox_settings.cpp`).
 - **DualSense in the menus** (1.0.0): Vibration, Circle confirms and the light bar
   (`ogbox_main.cpp`), as PSWin (also by Press5elect) has them.
 - **Game patches of OGBox's own** (1.0.0): 60 FPS patches found by reading each game's own
@@ -97,10 +107,19 @@ Among it:
     (`native/kernel/contig_run.c`), the DSP JIT's loop fix (`ps5/patches/dsp56300/0001`), CHD
     images, and kernel exports (the stack walks, `XcPKDecPrivate`, the kernel queues, I/O
     completion ports and directory objects);
+  - hakuX-lr again in 1.0.1: the kernel's remaining functions (IRPs, drivers and device queues,
+    continuations, thread notify routines, interlocked lists, HAL interrupt masks, the runtime
+    library's printf family), priority boosts after waits, the reserved top of RAM, large-page RAM
+    aliases, EEPROM over SMBus, NV2A fixes (logic ops, register-combiner precision, point sizes,
+    clamps and LOD limits, fill modes, cylindrical wrap, the PVIDEO overlay and others), two APU
+    fixes, and the native CPU's opt-in Intel RSQRT corrections for AMD processors (its open pull
+    request #219);
   - xbased (crazyriddler, by way of Prodigy488's xbased-modern-gui): the never-initialized critical
     section, MMX with a `0x66` prefix, and the vertex alignment and three-component attribute fixes;
   - open pull requests to hakuX by Jbbrack03, Robby Czesany and Möhle Jonas;
 - xemu's MCPX work (pull request #3105 by raddad772);
+- Bochs' RSQRT tables (Stanislav Shwartsman, LGPL-2.1-or-later), by way of hakuX-lr
+  (`native/cpu/intel_rsqrt_table.inc`);
 - Cxbx-Reloaded: its rules for which rdtsc instructions to patch (reimplemented), and its kernel
   test suite, used to check the kernel (not carried);
 - the dsp56300 DSP JIT (Matt Borgerson), and libchdr (Romain Tisserand and its contributors);
