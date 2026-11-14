@@ -208,7 +208,7 @@ add_library(hakux_hle OBJECT
 	${NC_HLE}/pb/pbstate.c ${NC_HLE}/pb/pusher.c ${NC_HLE}/pb/objslot.c ${NC_HLE}/pb/wclip.c ${NC_HLE}/pb/blitclip.c
 	${NC_HLE}/shader/ff_gen.c ${NC_HLE}/shader/ffhw.c ${NC_HLE}/shader/glsl_compile.c
 	${NC_HLE}/shader/psh.c ${NC_HLE}/shader/vsh.c
-	${NC_HLE}/tex/xdk_res.c ${NC_HLE}/tex/xg_swizzle.c
+	${NC_HLE}/tex/xdk_res.c ${NC_HLE}/tex/xg_swizzle.c ${NC_HLE}/tex/texpack.c
 	${NC_HLE}/uma/uma.c
 	${NC_HLE}/util/thread.c
 	${NC_HLE}/vk/back.c ${NC_HLE}/vk/display.c ${NC_HLE}/vk/batch.c ${NC_HLE}/vk/compat.c

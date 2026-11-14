@@ -374,9 +374,14 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
         }
         const char kind = f[0][0];
         if (kind == 'C' && nf >= 2) {
+            /* 1.0.2: a C line may name several releases (up to three CRC-32s): any of them */
             const uint32_t want = (uint32_t)strtoul(f[1], NULL, 16),
                            have = g_original_crc ? g_original_crc : ogbox_crc32(work.data, work.size);
-            if (want != have) {
+            bool any = false;
+            for (unsigned c = 1; c < nf; c++) {
+                any = any || (uint32_t)strtoul(f[c], NULL, 16) == have;
+            }
+            if (!any) {
                 if (why && why_len) {
                     snprintf(why, why_len, "it was made for the file of CRC-32 %08x, this disc's is %08x", want, have);
                 }
@@ -630,15 +635,31 @@ void ogbox_patches_set_disc_crc(const char *key, uint32_t crc)
     g_crc = crc;
 }
 
-/* An entry's release check (its C line, before its first target), 0 when it has none. */
-static uint32_t entry_crc(const Entry *e)
+/* An entry's release check (its C line, before its first target), 0 when it has none. 1.0.2: a C
+ * line may name several releases (CRC-32s split by tabs): disc when it is one of them, else the
+ * first. */
+static uint32_t entry_crc(const Entry *e, uint32_t disc)
 {
     for (unsigned k = 0; k < e->nlines; k++) {
         if (e->lines[k][0] == 'T' && e->lines[k][1] == '\t') {
             break;
         }
         if (e->lines[k][0] == 'C' && e->lines[k][1] == '\t') {
-            return (uint32_t)strtoul(e->lines[k] + 2, NULL, 16);
+            const char *p = e->lines[k] + 2;
+            const uint32_t first = (uint32_t)strtoul(p, NULL, 16);
+            for (char *end; *p; p = end) {
+                const uint32_t c = (uint32_t)strtoul(p, &end, 16);
+                if (end == p) {
+                    break;
+                }
+                if (c == disc) {
+                    return disc;
+                }
+                while (*end == '\t' || *end == ' ') {
+                    end++;
+                }
+            }
+            return first;
         }
     }
     return 0;
@@ -681,7 +702,7 @@ int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
         /* 0.0.2: one made for another release of the game (its CRC-32 another: 0.1.52 left it out of
          * the list) is listed, greyed out, with the others the release check found (the screen
          * doesn't let it be turned on) */
-        const uint32_t crc = disc ? entry_crc(&g_db[i]) : 0;
+        const uint32_t crc = disc ? entry_crc(&g_db[i], disc) : 0;
         out[n] = g_db[i].p;
         copyf(out[n].fit_why, sizeof(out[n].fit_why), fit_of(key, g_db[i].p.id, &out[n].fit));
         if (crc && crc != disc && out[n].fit != OGBOX_FIT_NO) {

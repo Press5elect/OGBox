@@ -50,6 +50,13 @@ CATEGORIES = {
 # larger (sharper, at no risk), while 720p patches move the game's memory layout (most clear the XBE's
 # 64 MB limit), multiply the GPU's work with the scale and are the patches most often noted as broken.
 DROPPED = ('720p',)
+# OGBox 1.0.2: imported patches that one of OGBox's own (gamedata-own-patches.txt) replaces, by their id:
+# left out, with their IPS/BPS files. 4B4E0004's 60 FPS patches: the frame interval alone (shells
+# bounced for ever at 60, the movies' subtitles ran twice as fast); OGBox's corrects both.
+SUPERSEDED = {
+    'pbebfdb5b': '4B4E0004 60 FPS (icup321): pog4B4E000460',
+    'pe1eee74d': '4B4E0004 60FPS (Esppiral): pog4B4E000460',
+}
 
 
 def category_of(text):
@@ -693,6 +700,11 @@ def main():
 
     records_out, merged = merge_duplicates(records_out, os.path.join(out, 'files'))
     records_out.sort(key=lambda r: (r[0], r[3], r[4].lower()))
+    for r in [r for r in records_out if r[2] in SUPERSEDED]:
+        for rec in r[10]:
+            if rec[0] in ('I', 'B') and os.path.exists(os.path.join(out, 'files', rec[2])):
+                os.remove(os.path.join(out, 'files', rec[2]))
+    records_out = [r for r in records_out if r[2] not in SUPERSEDED]
     if a.merge_log:
         with open(a.merge_log, 'w', encoding='utf-8') as f:
             for best, rest in MERGE_LOG:

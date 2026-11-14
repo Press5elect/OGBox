@@ -1225,3 +1225,35 @@ std::vector<std::pair<double, std::string>> recentlyPlayed(size_t n)
 }
 
 } // namespace ogbox
+
+/* OGBox 1.0.2: hakuX's texture dumps and replacements (hw/xbox/hle/tex/texpack.h) read and write
+ * PNG through stb_image and stb_image_write, built in here; registered before main() runs (the core
+ * reads the codec at a game's first texture) */
+extern "C" {
+typedef unsigned char *(*HleTexpackLoadFn)(const char *path, int *w, int *h);
+typedef void (*HleTexpackFreeFn)(void *p);
+typedef bool (*HleTexpackSaveFn)(const char *path, int w, int h, const unsigned char *rgba);
+void hle_texpack_set_codec(HleTexpackLoadFn load, HleTexpackFreeFn free_fn, HleTexpackSaveFn save);
+}
+
+namespace {
+
+unsigned char *texpackLoad(const char *path, int *w, int *h)
+{
+	int n = 0;
+	return stbi_load(path, w, h, &n, 4);
+}
+
+void texpackFree(void *p)
+{
+	stbi_image_free(p);
+}
+
+bool texpackSave(const char *path, int w, int h, const unsigned char *rgba)
+{
+	return stbi_write_png(path, w, h, 4, rgba, w * 4) != 0;
+}
+
+const bool kTexpackCodec = (hle_texpack_set_codec(texpackLoad, texpackFree, texpackSave), true);
+
+} // namespace

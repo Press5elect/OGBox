@@ -214,6 +214,18 @@ std::vector<Option> makeOptions()
 		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
 		"patterns may shimmer.",
 		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
+	/* OGBox 1.0.2: texture packs (hakuX's tex/texpack.h: NC_HLE_TEXPACK_DIR and NC_HLE_TEXDUMP_DIR,
+	 * <data folder>/textures/<title ID>, ogbox_main.cpp) */
+	o.push_back({ "tex_replace", Section::Graphics, "HD texture packs",
+		"Replaces the game's textures with the PNG and DDS files in the data folder's textures/<title ID> "
+		"folder, each named after the texture it replaces (tex_ and its 16-digit code, as the dumps are), at 1x "
+		"to 8x the texture's size.",
+		kOnOff, "1", true });
+	o.push_back({ "tex_dump", Section::Graphics, "Dump textures",
+		"Saves each texture the game uses, once, into textures/<title ID>/dump in the data folder: compressed "
+		"ones as DDS, the rest as PNG. Edit or upscale them and copy them to textures/<title ID> to make a "
+		"pack. Writing them can slow the game the first time it shows them.",
+		kOnOff, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
@@ -240,6 +252,14 @@ std::vector<Option> makeOptions()
 	o.push_back({ "audio_dsp", Section::Audio, "Audio processing",
 		"Fast: the game's voices mixed directly. Full DSP: the Xbox's own audio programs run; experimental.",
 		{ { "fast", "Fast" }, { "full", "Full DSP" } }, "fast", true });
+	/* OGBox 1.0.2: the game's own mix, its DSP program's (the GP's output: NC_APU_MON=gp), by default;
+	 * the fast mix's routing of the 3D and effect bins (6 and up) is a table of DirectSound's, and
+	 * the reverb send is left out of it, so some games' balance was off */
+	o.push_back({ "audio_mixing", Section::Audio, "Sound mixing",
+		"Default: the game's own sound program mixes, as on the console: voices, music and effects "
+		"balanced as the game sets them, with its reverb. Fast: OGBox mixes the voices itself; lighter, "
+		"without the game's effects. If the game's program stops making sound, that run switches to Fast.",
+		{ { "game", "Default" }, { "fast", "Fast" } }, "game", true });
 	/* the MCPX's own resampler (xemu PR #3105, measured on a console) is the default */
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"Normal: the Xbox's own 8-point interpolation. Sinc: cleaner highs than the Xbox. Linear: a little dull.",
@@ -852,8 +872,15 @@ std::vector<std::string> Settings::coreArgs() const
 	// never finish a frame, xemu issue #2901) and a setting saved as "full" before is not applied;
 	// the code stays (env NC_APU_DSP=1 in boot.txt still turns it on, for testing: then this says
 	// nothing)
+	// 1.0.2: Sound mixing: the game's own (its GP program's output; its EP program is not waited for)
+	// or Fast. boot.txt's env NC_APU_DSP still wins, for testing.
 	if (!std::getenv("NC_APU_DSP")) {
-		a.push_back("NC_APU_DSP=0");
+		if (value("audio_mixing") == "fast") {
+			a.push_back("NC_APU_DSP=0");
+		} else {
+			a.push_back("NC_APU_DSP=1");
+			a.push_back("NC_APU_MON=gp");
+		}
 	}
 	if (value("audio_resampler") == "linear" || value("audio_resampler") == "sinc") {
 		a.push_back("NC_APU_RESAMPLER=" + value("audio_resampler"));   // (the core's own default: mcpx)

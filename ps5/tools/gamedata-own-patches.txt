@@ -185,3 +185,149 @@ F	4004000083C408C3CCCCCCCCCCCCCCCCCCCCCCCCCC	4004000083C408C35050DB050C675300E9A
 F	88864004000059C3CCCCCCCCCCCCCCCCCCCCCCCCCCCC	88864004000059C3D80DC8994D00D84828E9B2050000
 F	862C040000015EC3CCCCCCCCCCCCCCCCCCCCCC	862C040000015EC3D91C24F30F102C245858C3
 F	A120115400F30F106828894C2434	A120115400E8F1F5FFFF894C2434
+#
+# 4B4E0004: the frame wait (after each frame the game blocks on the vblank until the count since the last
+# frame reaches the byte its setter keeps, then presents; the swap itself is D3DPRESENT_INTERVAL_IMMEDIATE)
+# is set to 2 by the 3D game's frame (push 2 before the setter's call) and at start-up, and to 1 by the
+# 2D screens (which already run at 60). Both pushes of 2 made 1. The game's time is the vblanks the frame
+# took (1 to 3: dt = n / refresh, its integer timers count n), so its speed stays as it was.
+# Shells (and the debris that shares their update): gravity was velocity += 10 / dt a frame (10 x fps,
+# so the per-second pull grew with the square of the frame rate: 4x at 60). It rests on a floor hit only
+# under 750, and at 60 it hit the floor again every few frames for ever, with the hit sound each time.
+# Now += n x 150 / the PAL factor (the game's own 1.0, or 1.2 at 50 Hz): exactly what it was at 30 (25 at
+# 50 Hz) a frame there, and the same pull at any rate.
+# Movies (CRI Sofdec .sfd) are timed by Sofdec's vblank server on the sound library's vblank thread, so
+# they keep their own rate. Their subtitles are not: the movie loop counts its own frames (30 a second)
+# against each line's start and end. Its call to the frame wait now goes to code in the padding after
+# two functions, which sets 2 for that frame, waits, and sets 1 back: movies are shown at 30, as before,
+# with their subtitles in time.
+# The code in the gaps is reached by relative calls and jumps, so each release has its own records and
+# its CRC-32 (C).
+P	4B4E0004	1	pog4B4E000460	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	AF561C90
+T	default.xbe
+F	E8BD1F00006A02E866E9040083C408C3	E8BD1F00006A01E866E9040083C408C3
+F	E8D8FF02006A02E831E80400	E8D8FF02006A01E831E80400
+F	33C0C39090909090909090909090909090E90BFEFFFF9090909090909090909090	33C0C3C6057F56DF0002E812020000EB05E90BFEFFFFC6057F56DF0001C3909090
+F	E855B90E00E8F9230200396C241C	E855B90E00E8DB210200396C241C
+F	E856F50A00D81D34222300DFE0F6C4447A0BD94328D80504552300EB0EE839F50A00D83D04552300D84328	D90540A96700D80D3C552300D83538A96700D84328EB149090909090909090909090909090909090909090
+P	4B4E0004	3	pog4B4E000460	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	DF0ACD98
+T	default.xbe
+F	E87D2000006A02E84651F7FF83C408C3	E87D2000006A01E84651F7FF83C408C3
+F	E838BA03006A02E80150F7FF	E838BA03006A01E80150F7FF
+F	33C05BC39090909090909090909090909090C6057D46550000	33C05BC3C6057F46550002E862020000EB26C6057D46550000
+F	B801000000C3909090909090909090908B4424048B4C2408	B801000000C3C6057F46550001C390908B4424048B4C2408
+F	E8B57D0E00E82FDBF3FF396C241C	E8B57D0E00E8C1D8F3FF396C241C
+F	E8C6D50B00D81D74442400DFE0F6C4447A0BD94328D80514782400EB0EE8A9D50B00D83D14782400D84328	D90584566900D80D4C782400D83578566900D84328EB149090909090909090909090909090909090909090
+#
+# 45410047 version 1 (CRC-32 E04A2C7A, and 7E84F7CC, the same at these sites): Nemesis2000's widescreen patch (Jay's PatchHub), made for the release of
+# CRC-32 45CF0576, whose C line kept it off this one. Both of its finds are in this release once, whole: the
+# projection's setup (its relative calls and the constants it reads, 1.21, 0.5, 1.0 and 0.75 at 0x1F4538,
+# 0x1F432C, 0x1F4120 and 0x1F4360, the same) and the HUD's scale pushes. The same bytes with this release's CRC.
+P	45410047	1	pog45410047ws	Widescreen	Widescreen	Nemesis2000	Ported to version 1 by Press5elect	OGBox	
+C	E04A2C7A	7E84F7CC
+T	default.xbe
+F	8B4558DB4020C74424200000803FDA701C8B450483F801D95C241C740F83F804740A83F802740583F8057516D944241CC7442420CDCC8C3FD80D38451F00D95C241C83F808740583F8097508C744241C56A9193F0FB797C40000008954241053DB442414D84C2424D80D2C431F00E8E79319008BD853E82BA71000D95C242853E8E1A71000D87C242C0FB787C40000008944242CD83D20411F00	C744241C0000803FD9E8D95C2420D9E8D95C242C8B450483F801740F83F804740A83F802740583F8057518C744241CEC51683FC7442420CDCC8C3FC744242C0000403F83F808740583F8097508C744241C56A9193F0FB797C40000008954241053DB442414D84C2424D80D2C431F00E8E69319008BD853E82AA71000D95C242853E8E0A71000D87C242C0FB787C40000008944242CD87C243890
+F	D91C24680000803F680000003F680000003F68000000BF68000000BFE8DFED01008BCE897E14E875F301005F5E5B8BE5	D91C24680000803F68AAAA2A3F680000003F68AAAA2ABF68000000BFE8DFED01008BCE897E14E875F301005F5E5B8BE5
+#
+# 4541009E: the D3D present interval is set only by its device reset (multisampling on in the front end,
+# off in a race: the reset flips the flag and makes the interval from it, ONE with it and
+# TWO_OR_IMMEDIATE, 0x80000002, without; CreateDevice says ONE). Made ONE in the front end (as it was)
+# and ONE_OR_IMMEDIATE in a race (and eax, 0x80000000; xor eax, 0x80000001). Jao12345's add of
+# 0x80000001 made the front end IMMEDIATE (no vsync). The race moves in fixed steps of 1/60 s
+# (steps = floor(time saved * 60), at least 1, the leftover kept, no interpolation) from the real
+# time. At 60 frames a second a frame is exactly a step (60 ticks of 1/3600 s), so the leftover sat
+# on the step boundary and a frame a fraction of a millisecond short had no step and the next two:
+# the same picture twice, then a jump, which looked like 30. The step now starts at half a step
+# saved (fcom 1/60 made fcom 1/120, a constant of the game's own): with the existing at-least-one
+# and leftover-not-below-0 that is one step a frame at 60, and as before below it (the leftover
+# catches up), so its speed stays as it was. Movies (VP6) go by a real-time stopwatch of their own.
+# The fcom names a constant by its address, so the records are for this release (C).
+P	4541009E	1	pog4541009E60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	A45A76CD
+T	default.xbe
+F	F7D81BC025FFFFFF7F0502000080C745C412000000	F7D81BC025000000803501000080C745C412000000
+F	D905DC7C4900D84508D815444B3C00DFE0F6C4057A18	D905DC7C4900D84508D81564773A00DFE0F6C4057A18
+#
+# 4541007B: the same engine as 4541009E's. The present interval made from the multisampling flag
+# (in the device reset) made ONE in the front end and ONE_OR_IMMEDIATE in a race (and eax,
+# 0x80000000; xor eax, 0x80000001), as for 4541009E. Its race clock (made with a step of 1/60 s)
+# took steps = floor(time / step + the fraction left), the fraction starting at 0; its time in
+# ticks of 1/4000 s is 67, 67, 66 a frame at 60, so even at a steady 60 the count went 1, 0, 1, 2,
+# 0, 1, 2: the same picture twice and then a jump. The tick rewritten in place: no step while less
+# than half a step is saved, at least one from half a step (its fraction then 0), otherwise as
+# before (the 4-steps case kept). One step a frame at 60 and as before below it, so its speed
+# stays as it was. Movies (VP6) go by a real-time stopwatch of their own. The rewritten tick calls
+# _ftol by a relative call and names its 0.5 by address, so the records are for this release (C).
+P	4541007B	7	pog4541007B60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	B9264B45
+T	default.xbe
+F	F7D81BC025FFFFFF7F05020000805F8945EC	F7D81BC0250000008035010000805F8945EC
+F	D9C057D84618D95E18D87620D8461CD9C0E89C33160085C08945FCDB45FC7D06D80580AE3C00D8E98BF88A450884C0D95E1CDDD8740CBF04000000C7461C00000000	D9C0D84618D95E18D87620D8461C57D9C0E89C33160085C0977510D815F4A93C00DFE09E720547D8E0EB06897DFCDA65FC807D0800D95E1C74076A045F83661C0090
+#
+# 45410047: its D3D presentation interval is TWO_OR_IMMEDIATE (30 frames a second): the device is
+# created with 0x80000002 (mov [esp+0x84], 0x80000002) and its Reset, which only the movie player
+# calls, sets 0x80000002 again when a movie closes (ONE, 1, while a movie plays: and eax, 0x80000001;
+# inc eax after (arg != 1) ? -1 : 0). Both made ONE_OR_IMMEDIATE (0x80000001): the create's
+# immediate, and the Reset's mask made 0x80000000, so movies still get ONE (1), as they did. The
+# earlier patch (the inc made a nop) left the create at TWO, so the game went to 60 only once a movie
+# had closed, and it gave movies DEFAULT (0).
+# The game's time is the real time (rdtsc), times its own 1.0167, at least a step (1/60) and at most
+# three a frame; its 1/60 steppers (0x8cabc: floor of the time saved) so never miss a step. But the
+# rest it keeps was taken after that minimum, so a frame shorter than 1/60 (none at 30) was counted
+# as 1/60 and never paid back: at 60 frames a second with uneven frame times the world ran fast
+# (4 % with 1 ms of jitter, 8 % with 2) and stepped twice now and then. The clamp rewritten in place:
+# the maximum first, the rest kept from the time before the minimum (not below 1/120), the minimum
+# after it, so a short frame is still one step and is paid back from the next. The same as before
+# below 60 frames a second. Movies (EA MAD) show a frame when the decoder has one, at ONE as before.
+# The rewrite names its constants by address and calls by a relative call, so the records are for
+# this release (C).
+P	45410047	1	pog4541004760	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	E04A2C7A	7E84F7CC
+T	default.xbe
+F	1BC025010000808D4C24044051C74424340000000089	1BC025000000808D4C24044051C74424340000000089
+F	C784248400000002000080E8	C784248400000001000080E8
+F	D9442418D80DB47A2000D80530A42C00E887F7FFFFD9054C31250085C07521D80DA8841F00D95C240CD815A8841F00DFE0F6C4417429DDD8D905A8841F00EB1FD80D90811F00D95C240CD81590811F00DFE0F6C4417408DDD8D90590811F00D944240CD8D9DFE0F6C4057A06DDD8D944240CD95C24188B442418	D9442418D80DB47A2000D80530A42C00E887F7FFFF85C0B9A8841F007405B990811F00D9054C312500D809D8D1DFE09E7304DDD9EB02DDD8D81594442000DFE09E7708DDD8D90594442000D9542418D811DFE09E7704DDD8D901D95C240C8B44240C909090909090909090909090909090909090909090909090
+#
+# 45410071: its D3D presentation interval is ONE in the front end and TWO_OR_IMMEDIATE (30 frames a
+# second) in game: eDisplayFrame's end switches its supersampling on in the front end and off in game,
+# and the Reset that does it sets the interval from that flag (AA ? 1 : 0x80000002: and eax,
+# 0x7fffffff; add eax, 0x80000002 after AA ? -1 : 0). Now AA ? 1 : 0x80000001 (and eax, 0x80000000;
+# add eax, 0x80000001): ONE_OR_IMMEDIATE in game, ONE in the front end as before. (The earlier patch,
+# add eax, 0x80000001, gave the front end 0x80000000, IMMEDIATE: no vsync.)
+# The game's time is the real time (rdtsc), at least a minimum frame time and at most three steps of
+# 1/60. Its SetTargetFps made that minimum 1/30 for in-engine cut scenes and in its online session
+# mode: at 60 frames a second those ran twice as fast. Both pushes of 30.0 made 60.0. Its frame-time
+# clamp is rewritten as for 45410047: the rest it keeps is taken before the minimum (not below 1/120),
+# so a frame shorter than 1/60 is paid back and the world no longer runs fast at 60 with uneven
+# frame times (3 % with 1 ms of jitter, 7 % with 2), with a step every frame. The same as before
+# below 60. The rewrite names its constants by address, so the records are for this release (C).
+P	45410071	1	pog4541007160	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	ECDB0671
+T	default.xbe
+F	F7D81BC025FFFFFF7F05020000805F8945E8	F7D81BC0250000008005010000805F8945E8
+F	680000F041E813BB1300	6800007042E813BB1300
+F	680000F041A3DC954400E89114F9FF	6800007042A3DC954400E89114F9FF
+F	D905188B4200A1B04D3A0085C0D84508D905C44D3A007520D80DB0183400D95DFCD815B0183400DFE0F6C4417428DDD8D905B0183400EB1ED80D5C403400D95DFCD81548904200DFE0F6C4417408DDD8D90548904200D945FCD8D9DFE0F6C4057A05DDD8D945FCD95D08D94508	D905188B4200D84508A1B04D3A0085C0B9B01834008BD1740AB95C403400BA48904200D905C44D3A00D809D8D1DFE09E7304DDD9EB02DDD8D81598373400DFE09E7708DDD8D90598373400D95508D812DFE09E7704DDD8D9029090909090909090909090909090909090909090
+#
+# 4541005A: 45410071's patch (pog4541007160) ported to this release of the same game. The code at
+# each site is the same as 45410071's instruction for instruction, only its addresses move (code by
+# +0x50 to -0xf0, .rdata/.data by -0x158 to -0x160):
+# - its D3D presentation interval is set by the AA-toggle Reset from the supersampling flag (AA ? 1 :
+#   0x80000002); the same bytes as 45410071, made AA ? 1 : 0x80000001 (and eax, 0x80000000; add eax,
+#   0x80000001): ONE_OR_IMMEDIATE in game, ONE in the front end as before.
+# - SetTargetFps(30.0) for in-engine cut scenes and for the online/LAN session mode: both pushes of
+#   30.0 made 60.0, as in 45410071 (the calls' displacements are this release's).
+# - the frame-time clamp is rewritten as for 45410071: the maximum first, the rest kept from the time
+#   before the minimum (not below 1/120, an existing read-only constant), the minimum after it, so a
+#   frame shorter than 1/60 is paid back and the world no longer runs fast at 60 with uneven frame
+#   times. The same as before below 60. The rewrite names its constants by address, so the records
+#   are for this release (C).
+P	4541005A	1	pog4541005A60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	EDF74C5F
+T	default.xbe
+F	F7D81BC025FFFFFF7F05020000805F8945E8	F7D81BC0250000008005010000805F8945E8
+F	680000F041E873BA1300	6800007042E873BA1300
+F	680000F041A37C944400E8B114F9FF	6800007042A37C944400E8B114F9FF
+F	D905BC894200A1504C3A0085C0D84508D905644C3A007520D80D50173400D95DFCD81550173400DFE0F6C4417428DDD8D90550173400EB1ED80DFC3E3400D95DFCD815E88E4200DFE0F6C4417408DDD8D905E88E4200D945FCD8D9DFE0F6C4057A05DDD8D945FCD95D08D94508	D905BC894200D84508A1504C3A0085C0B9501734008BD1740AB9FC3E3400BAE88E4200D905644C3A00D809D8D1DFE09E7304DDD9EB02DDD8D81538363400DFE09E7708DDD8D90538363400D95508D812DFE09E7704DDD8D9029090909090909090909090909090909090909090

@@ -4,15 +4,15 @@ OGBox is developed by Press5elect.
 
 Repository: https://github.com/Press5elect/OGBox
 
-This record is current to OGBox 1.0.1.
+This record is current to OGBox 1.0.2.
 
 ## The OGBox-specific PS5 work
 
 The following components contain OGBox's own PS5 implementation work, written by Press5elect:
 
 - **Native CPU backend**: `native/cpu/cpu_native.c` and `native/cpu/codepatch.c` in the hakuX tree
-  (`Press5elect/hakux-native`: branch `ps5-native`, `tiers3` for 1.0.0's work and `tiers5` for
-  1.0.1's), with the
+  (`Press5elect/hakux-native`: branch `ps5-native`, `tiers3` for 1.0.0's work, `tiers5` for
+  1.0.1's and `tiers6` for 1.0.2's), with the
   PS5 half of the CPU in `ps5/patches/hakux/ps5.patch`.
 - **PS5 kernel-call integration**: the gate between the Xbox's kernel calls and the emulator's kernel
   (`hw/xbox/hle/core/`, `native/kernel/`), and the platform layer in `ps5/src/platform/`.
@@ -78,6 +78,24 @@ The following components contain OGBox's own PS5 implementation work, written by
 - **The hard disk's size** (1.0.1): the data drive's size, automatic or set
   (`native/kernel/io.c` in hakuX-native), and Settings > Xbox > Hard disk size
   (`ps5/src/ogbox_settings.cpp`).
+- **Texture packs** (1.0.2): texture dumps and replacements keyed by a hash of each texture's
+  contents, size, format and mip levels, with DDS for compressed textures and PNG for the rest,
+  replacements at 1 to 8 times the size, and one shared GPU image a replacement
+  (`hw/xbox/hle/tex/texpack.c`, `hw/xbox/hle/pb/pbres.c` and `hw/xbox/hle/vk/draw.c` in
+  hakuX-native); Settings > Picture > Textures (`ps5/src/ogbox_settings.cpp`, `ogbox_main.cpp`,
+  the PNG codec in `ogbox_library.cpp`).
+- **The game's own sound mix** (1.0.2): the GP's output as the mix, with a fall-back to the fast mix
+  when the game's program stays silent (`native/dev/apu/` in hakuX-native), and Settings > Advanced
+  > Sound mixing.
+- **Fixes in hakuX's GPU and kernel** (1.0.2), in hakuX-native and the patch:
+  - a `BEGIN` while a draw is open keeps the draw (`hw/xbox/hle/pb/pbdraw.c`), found by reading
+    one game's renderers;
+  - a refused rename of a file still being written or closed waits and tries again
+    (`native/kernel/io.c`);
+  - diagnostics: the vertex-program log and the per-frame draw census (`HAKUX_HLE_VSHLOG`,
+    `HAKUX_HLE_CENSUS`).
+- **A patch for several releases** (1.0.2): a patch's release check may name up to three
+  releases (`ps5/src/core/ogbox_patches.c`).
 - **DualSense in the menus** (1.0.0): Vibration, Circle confirms and the light bar
   (`ogbox_main.cpp`), as PSWin (also by Press5elect) has them.
 - **Game patches of OGBox's own** (1.0.0): 60 FPS patches found by reading each game's own
@@ -88,7 +106,8 @@ The following components contain OGBox's own PS5 implementation work, written by
   - frame rate and picture mods for title IDs `54540082` and `545400A4`;
   - 60 and 120 fps mods for `4E4D0009`, `55530041` and `45410083`, whose `45410083` timing follows
     TGP482's recompilation (below);
-  - a game fix for `4D530051`.
+  - a game fix for `4D530051`;
+  - a frame pacing game fix for `45410049` (1.0.2).
 
 Each file names its authors in its header. OGBox's own files carry "OGBox by Press5elect".
 

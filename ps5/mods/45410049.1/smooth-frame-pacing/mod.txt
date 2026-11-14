@@ -1,0 +1,31 @@
+name: Smooth frame pacing
+description: The game's motion was uneven at 60 frames a second: some frames moved the action twice and others not at all. It now moves one step every frame (two in the 30 fps cut scenes), at the game's normal speed.
+author: Press5elect
+gamefix: true
+
+# Title 45410049 v1. Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+# The main loop (0x11CD0) runs fixed 1/60 s steps (0x2C530 returns the constant 1/60). It started
+# a 60.000 Hz timer (0xD7560 -> 0xD7DA0: D3D's timer callback every QPF/60 = 12222222 ticks) whose
+# callback (0xD7EA0) wakes the input thread (0xD7700), which queues one pad sample a tick (a queue
+# of 10, 0xD7AE0). Each frame, NextStep (0xD75E0) ran one step per sample queued since the last
+# frame (5 at most). The frames come at the vblank (59.94 Hz, interval ONE), the samples at 60 Hz
+# by a separate clock: when a tick fell near the moment the loop looked (on hakuX the vblank is
+# locked to the panel and the timer interrupt arrives 1-2 ms, now and then 10+ ms, late), frames
+# got 0 or 2 steps in turn: the same picture twice, then a jump (8 % of frames with 1 ms of jitter,
+# 16 % with 2, in long runs at 59.94 Hz; up to every frame at a bad phase).
+# NextStep is rewritten in place (its only callers are the loop, 0x11D4C and 0x11D97): the steps
+# now come from the time (QueryPerformanceCounter 0x1F5369, the same clock and period), counted
+# once a frame: floor(time not yet stepped / step), the rest carried, at most 5 as before; a
+# frame that would get one step less than its length expects (1, or 2 for a frame of 1.75 steps
+# or more) gets it once half a step is due, and the rest is then not kept below 0. So one step a
+# frame at 60 (two at 30), an extra one every ~17 s at 59.94 Hz, the speed as before. Each step
+# takes the queued pad samples (the newest last, by the queue's own pop 0xD7AA0 under its lock),
+# or keeps the last one when none came. V (this+0x1A54, a flag that was always 0) and the last
+# frame's time (this+0x1A58, a byte only this function read) are its state.
+[default.xbe]
+0x000D75E0: 56 8B F1 8B 86 CC 17 00 00 85 C0 0F 84 99 00 00 00 55 57 8D AE 34 1A 00 00 55 E8 01 59 11 00 8D 8E D0 17 00 00 83 C4 04 -> 56 57 8D B1 54 1A 00 00 8B 46 08 85 C0 74 0D 48 89 46 08 74 04 EB 6D 31 C0 5F 5E C3 50 50 54 E8 65 DD 11 00 5F 58 8B 4E
+0x000D7608: 85 C9 8D 7E 04 74 14 8B 87 C0 17 00 00 69 C0 60 02 00 00 03 C7 50 E8 3D 03 00 00 8B 87 C0 17 00 00 40 83 F8 0A 7C 02 33 -> 2C 89 F8 87 46 04 F7 D8 01 F8 89 CA C1 EA 02 F7 DA 8D 14 4A 39 D0 19 D2 52 89 F8 2B 06 01 C8 31 D2 F7 F1 59 83 F8 0A 77
+0x000D7630: C0 89 87 C0 17 00 00 8B 87 C8 17 00 00 48 55 89 87 C8 17 00 00 E8 C6 58 11 00 8B 86 54 1A 00 00 83 C4 04 85 C0 5F 5D 74 -> 22 48 78 C3 41 39 C8 75 0B 8D 0C 12 3B 4E 2C 72 03 40 EB 0B 85 C0 74 AF 83 F8 05 77 0B 29 D7 89 3E EB 0E 6A 01 58 EB F7
+0x000D7658: 1D 8A 86 58 1A 00 00 84 C0 0F 94 C0 88 86 58 1A 00 00 C7 86 5C 1A 00 00 00 00 00 00 5E C3 8B 8E 5C 1A 00 00 41 8B C1 83 -> 6A 05 58 6B 4E 2C 05 01 0E 89 46 08 8D 7E E0 81 EE 88 02 00 00 57 E8 8D 58 11 00 59 83 3E 00 74 11 8D 46 04 50 8D 8E 38
+0x000D7680: F8 05 89 8E 5C 1A 00 00 7C 0E C7 86 5C 1A 00 00 00 00 00 00 32 C0 5E C3 B0 01 5E C3 -> E8 FF FF E8 18 04 00 00 EB EA 57 E8 80 58 11 00 59 B0 01 E9 61 FF FF FF CC CC CC CC

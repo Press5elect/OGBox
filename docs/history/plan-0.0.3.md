@@ -1,5 +1,10 @@
 # OGBox: the fixes planned after 0.0.2 (5 November 2026)
 
+> **Status (1.0.2): historical.** This plan was worked through in the 0.0.3 to 1.0.0 releases; what was
+> done is in those releases' notes (`docs/releases/`), and what is still open is in
+> `docs/dev/open-work.md`. It is kept for its reasoning (what was researched, and why each step was
+> ordered as it was), not as a list of things to do.
+
 Research done for this plan:
 - the repository's issues;
 - upstream hakuX: still at the pinned `a7cdb5a975`, with nothing newer;
