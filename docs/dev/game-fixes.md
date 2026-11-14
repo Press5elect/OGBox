@@ -87,8 +87,7 @@ Its trees, dust and waterfalls came and went. Three game fixes were written and 
 emulator: the game sends `SET_BEGIN_END(prim)` again before each chunk of its inline quads and
 points and `END` once; hakuX reset the draw at each `BEGIN`, so only the last chunk was drawn.
 The fix keeps the chunks in one draw only for that case (inline quads or points, the same kind
-again): keeping every kind joined 54540082's strips into streaks, and drawing the open draw at
-each `BEGIN` broke its scenes altogether. What would have found it sooner:
+again); every other `BEGIN` resets as before. What would have found it sooner:
 
 - the bug was open in xemu's tracker, and fixed in a later xemu version: look there first;
 - it reproduced at 1x resolution with visibility tests forced: an early sign it was not a
