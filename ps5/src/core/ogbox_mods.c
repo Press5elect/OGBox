@@ -1233,6 +1233,30 @@ bool ogbox_game_info(const char *image, OgboxGameInfo *info)
     return ok;
 }
 
+/* OGBox 1.0.2: a disc image's default.xbe certificate's first n bytes (its title's keys for saves:
+ * ogbox_resign.h's certificateKeys); false if unread or shorter. */
+bool ogbox_game_certificate(const char *image, uint8_t *cert, size_t n)
+{
+    const int fd = ogbox_image_open(image);
+    if (fd < 0) {
+        return false;
+    }
+    NcDisc disc;
+    memset(&disc, 0, sizeof(disc));
+    NcDiscFile f;
+    uint8_t h[0x200];
+    bool ok = n <= 0x1000 && nc_disc_open(&disc, fd) && nc_disc_find(&disc, "\\default.xbe", &f) && f.size >= sizeof(h) &&
+              nc_disc_read(&disc, &f, 0, h, sizeof(h));
+    if (ok) {
+        const uint32_t base = le32(h + 0x104), cert_va = le32(h + 0x118);
+        ok = cert_va >= base && cert_va - base <= f.size && n <= f.size - (cert_va - base) &&
+             nc_disc_read(&disc, &f, cert_va - base, cert, (uint32_t)n);
+    }
+    disc_release(&disc);
+    ogbox_image_close(fd);
+    return ok;
+}
+
 bool ogbox_game_xbe_crc(const char *image, uint32_t *crc)
 {
     *crc = 0;

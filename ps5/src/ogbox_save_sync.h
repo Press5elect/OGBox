@@ -12,7 +12,8 @@
  *
  * The folder there is "<place>/OGBox/Saves/UDATA", laid out as the Xbox's E:\UDATA: a folder a
  * game (its title ID, 8 hex digits), in it a folder a save and the game's own files (TitleMeta.xbx,
- * TitleImage.xbx). An Xbox, or another emulator, can take its saves from there as they are.
+ * TitleImage.xbx). Its saves are signed as hakuX's kernel signs them (a console whose title keys are
+ * zero, ogbox_resign.h): other OGBox and hakuX installs take them as they are, a real Xbox doesn't.
  *
  * What is synced: each save folder as one (its files never mixed from two sides), and each file at
  * a game's top. How it decides, for each, by what each side was after the last sync (its files'

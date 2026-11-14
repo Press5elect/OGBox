@@ -117,6 +117,7 @@
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
+#include "ogbox_resign.h"
 #include "ogbox_ui.h"
 #include "ogbox_pad.h"
 #include "VulkanTexture.h"
@@ -2227,6 +2228,35 @@ public:
 		configureRun();
 	}
 
+	/* OGBox 1.0.2: the game's saves on the hard disk that another console signed (an Xbox, xemu, an
+	 * Xbox 360's backward compatibility) re-signed for this one before it starts (ogbox_resign.h), with
+	 * the keys of the user's own dumps in the data folder's console folder: mcpx.bin and bios.bin, and
+	 * that console's eeprom.bin (or hdkey.txt). Nothing without them; a file whose signature isn't that
+	 * console's is left as it is. Its title's keys come from the disc's certificate. */
+	void resignSavesFor(const std::string &image)
+	{
+		const std::string dir = ogbox::storagePath("console");
+		const ogbox::resign::SourceKeys source = ogbox::resign::readSourceKeys(dir);
+		if (!source.cert && !source.hd) {
+			return;
+		}
+		uint8_t cert[0x1D0];
+		if (!ogbox_game_certificate(image.c_str(), cert, sizeof(cert))) {
+			pshakux_log("saves: %s's certificate cannot be read: its saves aren't re-signed", image.c_str());
+			return;
+		}
+		const std::vector<ogbox::resign::TitleKey> keys = ogbox::resign::certificateKeys(cert, sizeof(cert));
+		uint8_t native[16];
+		ogbox::resign::nativeHdKey(boot.hdd, native);
+		const ogbox::resign::Report r = ogbox::resign::resignTitles(boot.hdd, keys, source, native, dir + "/checked.txt");
+		pshakux_log("saves: console dumps (%s): %d files of the game's %zu titles re-signed for this console, %d read, "
+			"%d unchanged since read before, %zu without a signature of that console's", source.note.c_str(), r.resigned,
+			keys.size(), r.checked, r.skipped, r.unsigned_.size());
+		for (size_t i = 0; i < r.unsigned_.size() && i < 12; i++) {
+			pshakux_log("saves:   left as it is: %s", r.unsigned_[i].c_str());
+		}
+	}
+
 	/* The core's arguments for this run (the settings, the game's own, its trainer, boot.txt's), and the
 	 * core configured with them. 0.0.6: from the constructor, or once a share being waited for answers. */
 	void configureRun()
@@ -2248,6 +2278,9 @@ public:
 				}
 				runXbeTime = info.xbe_time;
 			}
+		}
+		if (boot.image != "none") {
+			resignSavesFor(boot.image);
 		}
 		prefs.load(key);
 		runKey = key;   // 0.1.53: the quick menu's states and settings

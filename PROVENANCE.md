@@ -136,6 +136,9 @@ Among it:
   - xbased (crazyriddler, by way of Prodigy488's xbased-modern-gui): the never-initialized critical
     section, MMX with a `0x66` prefix, and the vertex alignment and three-component attribute fixes;
   - open pull requests to hakuX by Jbbrack03, Robby Czesany and Möhle Jonas;
+- hakuX's Android app's save re-signer (`SaveResigner.kt`, `ConsoleKeys.kt`, `XCrypto.kt`, rfandango
+  and its contributors, GPL-3.0-or-later), ported to C++ in 1.0.2 (`ps5/src/ogbox_resign.cpp`), with
+  the EEPROM keys' HMAC midstates xemu's `hw/xbox/eeprom_generation.c` gives;
 - xemu's MCPX work (pull request #3105 by raddad772);
 - Bochs' RSQRT tables (Stanislav Shwartsman, LGPL-2.1-or-later), by way of hakuX-lr
   (`native/cpu/intel_rsqrt_table.inc`);

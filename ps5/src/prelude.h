@@ -75,6 +75,7 @@
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
+#include "ogbox_resign.h"
 #include "ogbox_ui.h"         // OGBox 0.0.3: the menus' look
 #include "ogbox_shares.h"     // ... the network shares the settings edit
 #include "ogbox_pad.h"        // the DualSense as an Xbox controller (Settings > Controller)

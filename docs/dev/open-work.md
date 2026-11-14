@@ -13,6 +13,8 @@ done or something new is learned; delete what no longer applies.
 | The rename retry for write-behind files (`native/kernel/io.c`) | The failure was random; the run after the fix copied 25 tracks without it. The retry's own log line (`rename ... refused ...; tried N times more`) has not been seen, so the cause (the closer thread still syncing the file) is likely, not confirmed |
 | `4541005A` and `45410071` 60 FPS patches in online/LAN modes and in-engine cut scenes | The steps-per-frame fix was modelled, and races measured at 59.9 fps; the online speed change is carried over from analysis |
 | `45410049` game fix in modes that depend on lockstep timing | Fights and cut scenes confirmed smooth; online/LAN play not tried |
+| Saves re-signed from a console's (`ps5/src/ogbox_resign.cpp`, at a game's start) | Passed its PC test (`ps5/tests/resign`: HMAC/RC4 known answers, keys from dumps made as a console's under test keys, every signature layout, `.sig` holders, locked saves, `ContentMeta.xbx`, dates, the cache). Not run with a real console's dumps or saves; whether an Xbox 360's backward compatibility uses the Xbox's certificate key is not known (its HD key isn't an Xbox EEPROM's: `hdkey.txt`) |
+| `41560020` / `4156004E` pacing (the step rounded to the 120 Hz pickups) | Each release's rewritten bytes run on the PC at their own addresses against a model (21000 frames): steps off by more than 1 ms at 60 from 19-41 % to 0.6-1.8 %. Not yet on the console (test build EF) |
 | Texture packs with palette (P8) textures whose palette animates | Each palette is a different code: a pack needs one file per palette state |
 
 ## Known problems, cause not found

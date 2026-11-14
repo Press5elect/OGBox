@@ -49,6 +49,8 @@ void ogbox_image_close(int fd);
 bool ogbox_game_info(const char *image, OgboxGameInfo *info);
 /* 0.1.52: the CRC-32 of a disc image's default.xbe (the patches' release check); false if unread. */
 bool ogbox_game_xbe_crc(const char *image, uint32_t *crc);
+/* OGBox 1.0.2: the first n bytes (0x1000 at most) of a disc image's default.xbe certificate; false if unread. */
+bool ogbox_game_certificate(const char *image, uint8_t *cert, size_t n);
 
 /* 0.0.2: whether a mod, patch or cheat was made for the disc's release (a title ID and version can
  * stand for more than one: a USA and a European disc) */
