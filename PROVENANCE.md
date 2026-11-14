@@ -92,10 +92,21 @@ The following components contain OGBox's own PS5 implementation work, written by
     one game's renderers;
   - a refused rename of a file still being written or closed waits and tries again
     (`native/kernel/io.c`);
+  - render targets that share memory (`hw/xbox/hle/pb/pbdraw.c`): only the memory's last writer
+    lands, images land and are taken in in the order drawn, a draw sampling memory a newer image
+    lies over has that image land first, and a landing under a target drawn over since leaves
+    that target's image the newer; with the PC tests `tests/coh16k` and `tests/cohalias`, a model
+    of the console's memory;
+  - a swizzled target's surface clip is the scissor of the draws into it, as for a linear one;
+  - the panel's period taken again from the median of the vsync gaps when its first estimate was
+    wrong (`native/dev/nv2a.c`);
   - diagnostics: the vertex-program log and the per-frame draw census (`HAKUX_HLE_VSHLOG`,
     `HAKUX_HLE_CENSUS`).
 - **A patch for several releases** (1.0.2): a patch's release check may name up to three
   releases (`ps5/src/core/ogbox_patches.c`).
+- **Saves from a console re-signed** (1.0.2): at a game's start, its saves that another console
+  signed are re-signed with the keys of the user's own dumps (`ps5/src/ogbox_resign.cpp`, a port of
+  hakuX's app's re-signer, below), tested in `ps5/tests/resign`.
 - **DualSense in the menus** (1.0.0): Vibration, Circle confirms and the light bar
   (`ogbox_main.cpp`), as PSWin (also by Press5elect) has them.
 - **Game patches of OGBox's own** (1.0.0): 60 FPS patches found by reading each game's own
@@ -107,7 +118,9 @@ The following components contain OGBox's own PS5 implementation work, written by
   - 60 and 120 fps mods for `4E4D0009`, `55530041` and `45410083`, whose `45410083` timing follows
     TGP482's recompilation (below);
   - a game fix for `4D530051`;
-  - a frame pacing game fix for `45410049` (1.0.2).
+  - a frame pacing game fix for `45410049` (1.0.2);
+  - the 60 FPS patch's step for `41560020` and `4156004E` rounded to the picture's pickups, its
+    rewritten code checked on the PC at the game's own addresses (1.0.2).
 
 Each file names its authors in its header. OGBox's own files carry "OGBox by Press5elect".
 
@@ -136,6 +149,9 @@ Among it:
   - xbased (crazyriddler, by way of Prodigy488's xbased-modern-gui): the never-initialized critical
     section, MMX with a `0x66` prefix, and the vertex alignment and three-component attribute fixes;
   - open pull requests to hakuX by Jbbrack03, Robby Czesany and Möhle Jonas;
+- hakuX's Android app's save re-signer (`SaveResigner.kt`, `ConsoleKeys.kt`, `XCrypto.kt`, rfandango
+  and its contributors, GPL-3.0-or-later), ported to C++ in 1.0.2 (`ps5/src/ogbox_resign.cpp`), with
+  the EEPROM keys' HMAC midstates xemu's `hw/xbox/eeprom_generation.c` gives;
 - xemu's MCPX work (pull request #3105 by raddad772);
 - Bochs' RSQRT tables (Stanislav Shwartsman, LGPL-2.1-or-later), by way of hakuX-lr
   (`native/cpu/intel_rsqrt_table.inc`);

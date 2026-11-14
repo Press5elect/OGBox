@@ -6,7 +6,7 @@ fixed, what was tested on a PS5, the installation steps, and the build's version
 
 | Release | Date | Main points |
 | --- | --- | --- |
-| [`v1.0.2`](v1.0.2.md) | 2026-11-14 | HD texture packs and texture dumps; the game's own sound mix; more 60 FPS patches; flickering particles and billboards fixed |
+| [`v1.0.2`](v1.0.2.md) | 2026-11-14 | HD texture packs and texture dumps; the game's own sound mix; saves from a console re-signed; more 60 FPS patches; render targets sharing memory fixed |
 | [`v1.0.1`](v1.0.1.md) | 2026-11-13 | Hard disk size; stencil shadow and depth fixes; all 337 kernel functions; hakuX-lr merged again |
 | [`v1.0.0`](v1.0.0.md) | 2026-11-12 | HDR, more picture options, write-behind cache drives, 60 and 120 fps patches |
 | [`v0.0.8`](v0.0.8.md) | 2026-11-10 | See the [changelog](CHANGELOG.md) |

@@ -431,6 +431,15 @@ std::vector<Option> makeOptions()
 		up.now = true;
 		o.push_back(up);
 	}
+	{
+		/* 1.0.2: game fixes from GitHub (ogbox_fixes_fetch.h) */
+		Option fx{ "fixes_fetch", Section::Interface, "Download game fixes at start",
+			"Each time OGBox starts, fetches the newest game fixes, mods and XBE patches from OGBox's GitHub, "
+			"so a fixed game needs no new OGBox. Says which games got fixes.",
+			kOnOff, "1", false };
+		fx.now = true;
+		o.push_back(fx);
+	}
 	/* 0.0.6: which corner ("1", as before: the top right) */
 	o.push_back({ "show_fps", Section::Interface, "FPS counter",
 		"The frame rate and frame time in a corner while playing.",

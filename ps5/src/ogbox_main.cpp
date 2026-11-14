@@ -105,6 +105,7 @@
 #include "platform/ps5_sandbox.h"
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
+#include "ogbox_fixes_fetch.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
@@ -116,6 +117,7 @@
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
+#include "ogbox_resign.h"
 #include "ogbox_ui.h"
 #include "ogbox_pad.h"
 #include "VulkanTexture.h"
@@ -1168,6 +1170,13 @@ public:
 		std::vector<ogbox::SaveCopy> copies;
 		uint64_t cacheBytes{ 0 }, usedBytes{ 0 };
 		Screen back{ Screen::Library };
+		// 1.0.3: the right pane lists the saves on the sync place (Saves on <place>)
+		bool place{ false };
+		bool placeBusy{ false };              // being listed, or a deletion under way
+		bool placeListed{ false };            // the place answered
+		std::string placeName;
+		std::vector<ogbox::HddTitle> placeTitles;
+		std::vector<std::pair<int, int>> placeRows;   // the pane's rows: a game (save -1), then its saves
 	} hdd;
 	// 0.1.48: the data folder's screen (the first start's, and Settings > Data folder)
 	enum class StorageStep { Places, Browse, Confirm, Moving, Done };
@@ -2132,6 +2141,10 @@ public:
 			if (!boot.back && prefs.global("update_check") != "0") {
 				PS5Update::Check();
 			}
+			/* 1.0.2: the newest game fixes from GitHub, in the background (ogbox_fixes_fetch.h) */
+			if (!boot.back && prefs.global("fixes_fetch") != "0") {
+				ogbox::fixes::Start(pshakux_title_dir());
+			}
 			rainOn = prefs.on("rain");
 			themeCode = prefs.global("theme") == "code";   // 0.1.52
 			/* 0.0.8: the saves in sync with their place, at each start into the game list: when OGBox
@@ -2215,6 +2228,35 @@ public:
 		configureRun();
 	}
 
+	/* OGBox 1.0.2: the game's saves on the hard disk that another console signed (an Xbox, xemu, an
+	 * Xbox 360's backward compatibility) re-signed for this one before it starts (ogbox_resign.h), with
+	 * the keys of the user's own dumps in the data folder's console folder: mcpx.bin and bios.bin, and
+	 * that console's eeprom.bin (or hdkey.txt). Nothing without them; a file whose signature isn't that
+	 * console's is left as it is. Its title's keys come from the disc's certificate. */
+	void resignSavesFor(const std::string &image)
+	{
+		const std::string dir = ogbox::storagePath("console");
+		const ogbox::resign::SourceKeys source = ogbox::resign::readSourceKeys(dir);
+		if (!source.cert && !source.hd) {
+			return;
+		}
+		uint8_t cert[0x1D0];
+		if (!ogbox_game_certificate(image.c_str(), cert, sizeof(cert))) {
+			pshakux_log("saves: %s's certificate cannot be read: its saves aren't re-signed", image.c_str());
+			return;
+		}
+		const std::vector<ogbox::resign::TitleKey> keys = ogbox::resign::certificateKeys(cert, sizeof(cert));
+		uint8_t native[16];
+		ogbox::resign::nativeHdKey(boot.hdd, native);
+		const ogbox::resign::Report r = ogbox::resign::resignTitles(boot.hdd, keys, source, native, dir + "/checked.txt");
+		pshakux_log("saves: console dumps (%s): %d files of the game's %zu titles re-signed for this console, %d read, "
+			"%d unchanged since read before, %zu without a signature of that console's", source.note.c_str(), r.resigned,
+			keys.size(), r.checked, r.skipped, r.unsigned_.size());
+		for (size_t i = 0; i < r.unsigned_.size() && i < 12; i++) {
+			pshakux_log("saves:   left as it is: %s", r.unsigned_[i].c_str());
+		}
+	}
+
 	/* The core's arguments for this run (the settings, the game's own, its trainer, boot.txt's), and the
 	 * core configured with them. 0.0.6: from the constructor, or once a share being waited for answers. */
 	void configureRun()
@@ -2236,6 +2278,9 @@ public:
 				}
 				runXbeTime = info.xbe_time;
 			}
+		}
+		if (boot.image != "none") {
+			resignSavesFor(boot.image);
 		}
 		prefs.load(key);
 		runKey = key;   // 0.1.53: the quick menu's states and settings
@@ -5564,6 +5609,8 @@ public:
 			}
 			updateTick();
 			saveSyncTick();   // 0.0.8
+			placeTick();      // 1.0.3
+			fixesTick();      // 1.0.2
 		}
 		drawOverlays();
 	}
@@ -6039,6 +6086,58 @@ public:
 		default:
 			break;
 		}
+	}
+
+	/* 1.0.2: the game fixes fetched at start: which games got fixes, once, when no other popup is up */
+	bool fixesReady{ false };
+	ogbox::fixes::Report fixesReport;
+	void fixesTick()
+	{
+		if (!fixesReady) {
+			fixesReady = ogbox::fixes::Poll(fixesReport);
+			if (!fixesReady) {
+				return;
+			}
+			if (fixesReport.fixed.empty()) {
+				fixesReady = false;
+				fixesReport = {};
+				return;
+			}
+		}
+		if (pop.open) {
+			return;
+		}
+		/* one line a game, by its name in the game database (its title ID without one) */
+		std::vector<std::pair<std::string, std::string>> games;
+		for (const ogbox::fixes::Fixed &f : fixesReport.fixed) {
+			const ogbox::DiscRecord *rec = f.titleId ? ogbox::GameDb::get().byTitle(f.titleId, std::string(), 0) : nullptr;
+			std::string name = rec && !rec->name.empty() ? ogbox::shortName(rec->name) : f.key;
+			std::string what;
+			for (const std::string &w : f.what) {
+				what += (what.empty() ? "" : ", ") + w;
+			}
+			bool merged = false;
+			for (auto &g : games) {
+				if (g.first == name) {
+					g.second += ", " + what;
+					merged = true;
+				}
+			}
+			if (!merged) {
+				games.emplace_back(name, what);
+			}
+		}
+		std::string text;
+		for (size_t i = 0; i < games.size() && i < 12; i++) {
+			text += "\xE2\x80\xA2 " + games[i].first + ": " + games[i].second + "\n";
+		}
+		if (games.size() > 12) {
+			text += "and " + std::to_string(games.size() - 12) + " more games\n";
+		}
+		pshakux_log("fixes: the notice: %zu games", games.size());
+		openPopup("Game fixes downloaded", text + "They apply the next time each game starts.", { "OK" }, nullptr);
+		fixesReady = false;
+		fixesReport = {};
 	}
 
 	void showToast(const std::string &text)
@@ -6536,6 +6635,14 @@ public:
 		ogbox::SyncOutcome outcome;
 	};
 	std::shared_ptr<SyncNews> syncNews = std::make_shared<SyncNews>();
+	/* 1.0.3: a listing of the place's saves or a deletion there, done (on the job's thread) */
+	struct PlaceNews {
+		std::mutex mutex;
+		bool scanned{ false }, deleted{ false };
+		ogbox::PlaceSaves saves;
+		ogbox::DeletionOutcome deletion;
+	};
+	std::shared_ptr<PlaceNews> placeNews = std::make_shared<PlaceNews>();
 
 	ogbox::SyncPlace syncPlace() const
 	{
@@ -6594,6 +6701,89 @@ public:
 		}
 	}
 
+	/* 1.0.3: the place's jobs' news (called each frame, with saveSyncTick) */
+	void placeTick()
+	{
+		bool scanned = false, deleted = false;
+		ogbox::PlaceSaves saves;
+		ogbox::DeletionOutcome deletion;
+		{
+			std::lock_guard<std::mutex> lock(placeNews->mutex);
+			scanned = placeNews->scanned;
+			deleted = placeNews->deleted;
+			if (scanned) {
+				saves = std::move(placeNews->saves);
+			}
+			deletion = placeNews->deletion;
+			placeNews->scanned = placeNews->deleted = false;
+		}
+		if (scanned) {
+			hdd.placeBusy = false;
+			hdd.placeListed = saves.listed;
+			hdd.placeTitles = std::move(saves.titles);
+			hdd.placeRows.clear();
+			for (size_t t = 0; t < hdd.placeTitles.size(); t++) {
+				hdd.placeRows.push_back({ static_cast<int>(t), -1 });
+				for (size_t i = 0; i < hdd.placeTitles[t].saves.size(); i++) {
+					hdd.placeRows.push_back({ static_cast<int>(t), static_cast<int>(i) });
+				}
+			}
+			hdd.selS = std::min(hdd.selS, std::max(0, static_cast<int>(hdd.placeRows.size()) - 1));
+			if (hdd.place && hdd.placeRows.empty()) {
+				hdd.pane = 0;
+			} else if (hdd.place && hdd.selT == HA_PLACE) {
+				hdd.pane = 1;   // (as Bring saves in opens its list)
+			}
+			if (!saves.listed && hdd.place) {
+				showToast(hdd.placeName + " did not answer: its saves can't be listed now.");
+			}
+		}
+		if (deleted) {
+			hdd.placeBusy = false;
+			showToast(deletion.message);
+			if (screen == Screen::Hdd) {
+				hddRescan();
+				if (hdd.place) {
+					placeScan();
+				}
+			}
+		}
+	}
+
+	/* The saves on the sync place listed again (in the background). */
+	void placeScan()
+	{
+		const ogbox::SyncPlace place = syncPlace();
+		auto news = placeNews;
+		if (!ogbox::startPlaceScan(boot.hdd, place, [news](const ogbox::PlaceSaves &saves) {
+				std::lock_guard<std::mutex> lock(news->mutex);
+				news->scanned = true;
+				news->saves = saves;
+			})) {
+			hdd.placeBusy = false;
+			showToast("The saves are being synced with " + place.name + ": try again when it is done.");
+			return;
+		}
+		hdd.placeBusy = true;
+	}
+
+	/* A save (folder "": a game's saves) deleted on the place, and on the console when here. */
+	void placeDelete(const ogbox::SaveDeletion &what)
+	{
+		const ogbox::SyncPlace place = syncPlace();
+		auto news = placeNews;
+		if (!ogbox::startSaveDeletion(boot.hdd, place, what, [news](const ogbox::DeletionOutcome &o) {
+				std::lock_guard<std::mutex> lock(news->mutex);
+				news->deleted = true;
+				news->deletion = o;
+			})) {
+			showToast("The saves are being synced with " + place.name + ": try again when it is done.");
+			return;
+		}
+		hdd.placeBusy = true;
+		showToast("Deleting " + what.label + (what.here ? " here and on " : " on ") + place.name + "...");
+	}
+
 	/* The hard disk manager's Keep saves in sync with...: a place (a share, a USB drive), Sync now,
 	 * or off. */
 	void hddSyncMenu()
@@ -6642,9 +6832,11 @@ public:
 	/* ---- 0.1.53: the hard disk manager ----------------------------------------------------------
 	 * The games' saves on the emulated Xbox hard disk, by game (Crux2's card manager's layout): copy a
 	 * save out to the console's backups or a USB drive, move it there, delete it, bring saves in;
-	 * delete a game's own data; empty the cache drives. */
+	 * delete a game's own data; empty the cache drives. 1.0.3: while the saves are kept in sync, a
+	 * save (or a game's) deleted here and on the place, and the place's saves listed and deleted
+	 * there (Saves on <place>), so the next sync doesn't bring them back. */
 
-	enum HddAction { HA_SYNC, HA_IMPORT, HA_EXPORT_ALL, HA_CACHES, HA_COUNT };   // 0.0.8: HA_SYNC
+	enum HddAction { HA_SYNC, HA_PLACE, HA_IMPORT, HA_EXPORT_ALL, HA_CACHES, HA_COUNT };   // 0.0.8: HA_SYNC; 1.0.3: HA_PLACE
 
 	void openHdd(uint32_t onlyTitle)
 	{
@@ -6653,6 +6845,7 @@ public:
 		hdd.pane = 0;
 		hdd.selS = 0;
 		hdd.importing = false;
+		hdd.place = false;
 		hddRescan();
 		hdd.selT = HA_COUNT;
 		for (size_t i = 0; i < hdd.titles.size(); i++) {
@@ -6709,8 +6902,9 @@ public:
 	void hddInput(uint32_t pressed)
 	{
 		if (pressed & PAD_CIRCLE) {
-			if (hdd.importing) {
+			if (hdd.importing || hdd.place) {
 				hdd.importing = false;
+				hdd.place = false;
 				hdd.pane = 0;
 			} else if (hdd.pane == 1) {
 				hdd.pane = 0;
@@ -6729,10 +6923,15 @@ public:
 			if (pressed & PAD_UP) {
 				hdd.selT = (hdd.selT + rows - 1) % rows;
 				hdd.selS = 0;
+				hdd.place = false;
 			}
 			if (pressed & PAD_DOWN) {
 				hdd.selT = (hdd.selT + 1) % rows;
 				hdd.selS = 0;
+				hdd.place = false;
+			}
+			if ((pressed & PAD_RIGHT) && hdd.selT == HA_PLACE && hdd.place && !hdd.placeRows.empty()) {
+				hdd.pane = 1;
 			}
 			if ((pressed & PAD_RIGHT) && t && !t->saves.empty()) {
 				hdd.pane = 1;
@@ -6752,6 +6951,22 @@ public:
 								}
 								hddDone(ok, std::to_string(title.saves.size()) + " saves copied to " + p.name, why);
 							});
+						} else if (i == 1 && syncOn()) {
+							/* 1.0.3: kept in sync: deleted only here, the place's copies come back at the next sync */
+							const std::string place = syncPlace().name;
+							openPopup("Delete all its saves?", title.name + ": every save on the hard disk goes. The saves are kept in sync with " +
+								place + ": deleted only here, " + place + "'s copies come back at the next sync.",
+								{ "Delete here and on " + place, "Delete only here", "Go back" }, [this, title](int j) {
+									if (j == 0) {
+										ogbox::SaveDeletion d;
+										d.idText = title.idText;
+										d.label = "all the saves of " + title.name;
+										placeDelete(d);
+									} else if (j == 1) {
+										std::string why;
+										hddDone(ogbox::hddDeleteTitle(title, true, false, boot.hdd, why), "Its saves are deleted here", why);
+									}
+								});
 						} else if (i == 1 || i == 2) {
 							openPopup(i == 1 ? "Delete all its saves?" : "Delete its own data?",
 								title.name + (i == 1 ? ": every save on the hard disk goes." : ": its settings and caches go; the game makes them again."),
@@ -6770,6 +6985,20 @@ public:
 			}
 			if (hdd.selT == HA_SYNC) {
 				hddSyncMenu();
+			} else if (hdd.selT == HA_PLACE) {
+				if (!syncOn()) {
+					showToast("Choose where the saves are kept in sync first (Keep saves in sync with...).");
+				} else if (hdd.place && !hdd.placeBusy && !hdd.placeRows.empty()) {
+					hdd.pane = 1;
+				} else if (!hdd.placeBusy) {
+					hdd.place = true;
+					hdd.placeName = syncPlace().name;
+					hdd.placeListed = false;
+					hdd.placeTitles.clear();
+					hdd.placeRows.clear();
+					hdd.selS = 0;
+					placeScan();
+				}
 			} else if (hdd.selT == HA_IMPORT) {
 				hddPickPlace("Bring saves in from", [this](const ogbox::SavePlace &p) {
 					hdd.copies = ogbox::saveCopiesIn(p.path, boot.hdd);
@@ -6806,6 +7035,10 @@ public:
 			return;
 		}
 		// the right pane
+		if (hdd.place) {
+			hddPlaceInput(pressed);
+			return;
+		}
 		if (hdd.importing) {
 			const int rows = 1 + static_cast<int>(hdd.copies.size());
 			if (pressed & PAD_UP) {
@@ -6886,6 +7119,23 @@ public:
 						}
 						hddDone(ok, (i == 0 ? "Copied to " : "Moved to ") + p.name, why);
 					});
+				} else if (i == 2 && syncOn()) {
+					/* 1.0.3: kept in sync: deleted only here, the place's copy comes back at the next sync */
+					const std::string place = syncPlace().name;
+					openPopup("Delete the save?", save.name + " (" + title.name + "). The saves are kept in sync with " + place +
+						": deleted only here, " + place + "'s copy comes back at the next sync.",
+						{ "Delete here and on " + place, "Delete only here", "Go back" }, [this, title, save](int j) {
+							if (j == 0) {
+								ogbox::SaveDeletion d;
+								d.idText = title.idText;
+								d.folder = save.folder;
+								d.label = save.name + " (" + title.name + ")";
+								placeDelete(d);
+							} else if (j == 1) {
+								std::string why;
+								hddDone(ogbox::hddDeleteSave(save, why), "The save is deleted here", why);
+							}
+						});
 				} else if (i == 2) {
 					openPopup("Delete the save?", save.name + " (" + title.name + ")", { "Delete", "Go back" }, [this, save](int j) {
 						if (j == 0) {
@@ -6895,6 +7145,64 @@ public:
 					});
 				}
 			});
+	}
+
+	/* 1.0.3: the right pane's saves on the sync place: a game's row deletes all its saves there, a
+	 * save's row that save; one the console has too is deleted on both (deleted only there, the
+	 * next sync would send it back). */
+	void hddPlaceInput(uint32_t pressed)
+	{
+		const int n = static_cast<int>(hdd.placeRows.size());
+		if (pressed & PAD_LEFT) {
+			hdd.pane = 0;
+		}
+		if ((pressed & PAD_UP) && n) {
+			hdd.selS = (hdd.selS + n - 1) % n;
+		}
+		if ((pressed & PAD_DOWN) && n) {
+			hdd.selS = (hdd.selS + 1) % n;
+		}
+		if (!(pressed & PAD_CROSS) || !n || hdd.placeBusy) {
+			return;
+		}
+		const auto [ti, si] = hdd.placeRows[static_cast<size_t>(std::min(hdd.selS, n - 1))];
+		const ogbox::HddTitle title = hdd.placeTitles[static_cast<size_t>(ti)];
+		const std::string place = hdd.placeName;
+		ogbox::SaveDeletion d;
+		d.idText = title.idText;
+		d.there = true;
+		std::string head, body, choice;
+		if (si < 0) {
+			d.here = title.alsoHere;
+			d.label = "all the saves of " + title.name;
+			head = title.name;
+			body = std::to_string(title.saves.size()) + (title.saves.size() == 1 ? " save on " : " saves on ") + place + ", " +
+				ogbox::bytesText(title.bytes) + " \xC2\xB7 " + title.idText;
+			choice = d.here ? "Delete all its saves here and on " + place + "..." : "Delete all its saves on " + place + "...";
+		} else {
+			const ogbox::HddSave save = title.saves[static_cast<size_t>(si)];
+			d.folder = save.folder;
+			d.here = save.alsoHere;
+			d.label = save.name + " (" + title.name + ")";
+			head = save.name;
+			body = title.name + "   " + ogbox::dateText(save.mtime) + "   " + ogbox::bytesText(save.bytes) + "   " + save.folder;
+			choice = d.here ? "Delete it here and on " + place + "..." : "Delete it on " + place + "...";
+		}
+		if (d.here) {
+			body += ". This console has it too: deleted only on " + place + ", it would be sent back at the next sync.";
+		}
+		openPopup(head, body, { choice, "Go back" }, [this, d, place](int i) {
+			if (i != 0) {
+				return;
+			}
+			openPopup(d.folder.empty() ? "Delete all its saves?" : "Delete the save?",
+				d.label + (d.here ? ": deleted on this console and on " : ": deleted on ") + place + ". It can't be undone.",
+				{ "Delete", "Go back" }, [this, d](int j) {
+					if (j == 0) {
+						placeDelete(d);
+					}
+				});
+		});
 	}
 
 	void drawHdd()
@@ -6913,6 +7221,12 @@ public:
 			r.title = "Keep saves in sync with\xE2\x80\xA6";
 			r.right = syncOn() ? syncPlace().name + (ogbox::saveSyncRunning() ? " \xC2\xB7 syncing" : "") : "Off";
 			r.icon = ui::Icon::Network;
+			v.rows.push_back(r);
+			r = {};
+			r.key = "place";   // 1.0.3
+			r.title = syncOn() ? "Saves on " + syncPlace().name + "\xE2\x80\xA6" : "Saves on the sync place\xE2\x80\xA6";
+			r.right = syncOn() ? (hdd.place && hdd.placeBusy ? "listing" : "") : "Off";
+			r.icon = ui::Icon::Server;
 			v.rows.push_back(r);
 			r = {};
 			r.key = "import";
@@ -6953,7 +7267,37 @@ public:
 		v.sel = hdd.selT < HA_COUNT ? hdd.selT : hdd.selT + 1;
 		// the right: the saves of the game, or the copies to bring in, or what the action does
 		const ogbox::HddTitle *t = hddTitle();
-		if (hdd.importing) {
+		if (hdd.place) {
+			v.title2 = "On " + hdd.placeName + " \xC2\xB7 " + syncPlace().path + "/OGBox/Saves/UDATA";
+			if (hdd.placeBusy && hdd.placeRows.empty()) {
+				v.aside.text = "Listing the saves on " + hdd.placeName + "\xE2\x80\xA6";
+			} else if (!hdd.placeListed && !hdd.placeBusy) {
+				v.aside.text = hdd.placeName + " did not answer: its saves can't be listed now. Check the share in Settings, Network, "
+					"then press X again.";
+				v.aside.warn = true;
+			} else if (hdd.placeRows.empty()) {
+				v.aside.text = "No saves on " + hdd.placeName + ".";
+			}
+			for (const auto &[ti, si] : hdd.placeRows) {
+				const ogbox::HddTitle &pt = hdd.placeTitles[static_cast<size_t>(ti)];
+				R r;
+				if (si < 0) {
+					r.key = "t" + pt.idText;
+					r.title = pt.name;
+					r.sub = std::to_string(pt.saves.size()) + (pt.saves.size() == 1 ? " save \xC2\xB7 " : " saves \xC2\xB7 ") +
+						ogbox::bytesText(pt.bytes) + " \xC2\xB7 " + pt.idText;
+					r.icon = ui::Icon::Folder;
+				} else {
+					const ogbox::HddSave &sv = pt.saves[static_cast<size_t>(si)];
+					r.key = pt.idText + "/" + sv.folder;
+					r.title = sv.name;
+					r.sub = ogbox::dateText(sv.mtime) + " \xC2\xB7 " + ogbox::bytesText(sv.bytes) + " \xC2\xB7 " + sv.folder;
+					r.right = sv.alsoHere ? "also here" : "only there";
+					r.indent = 1;
+				}
+				v.rows2.push_back(r);
+			}
+		} else if (hdd.importing) {
 			v.title2 = "In " + hdd.importName + " \xC2\xB7 " + hdd.importPlace;
 			if (hdd.copies.empty()) {
 				v.aside.text = "No saves there. A save is a folder <title ID>/<save>, or UDATA/<title ID>/<save>.";
@@ -6998,7 +7342,10 @@ public:
 				"drive, as Crux2 keeps its memory cards: every console syncing with the same share has the same saves. "
 				"When OGBox starts, after each game, and with Sync now. A save changed on both sides: the newer is kept, "
 				"the other put in OGBox/Saves/.older (on this console: backups/older saves). A save deleted on one side "
-				"comes back from the other: delete it on both."
+				"comes back from the other: delete it on both (Delete offers it)."
+				: hdd.selT == HA_PLACE ? "The saves in OGBox/Saves/UDATA on the place the saves are kept in sync with, by game: "
+				"delete a save, or all of a game's, there (and here, when this console has it too), so the next sync doesn't "
+				"bring it back. Another console syncing with the same place sends its own copy back: delete it there too."
 				: hdd.selT == HA_IMPORT ? "Saves copied out of OGBox, or from another Xbox or emulator, as folders <title ID>/<save> "
 				"(or UDATA/<title ID>/<save>) in OGBox/saves on a USB drive, or in the data folder's backups/saves."
 				: hdd.selT == HA_EXPORT_ALL ? "Every game's saves copied to the data folder's backups/saves, or to OGBox/saves on a USB drive."
@@ -7006,6 +7353,7 @@ public:
 		}
 		v.sel2 = hdd.pane == 1 ? hdd.selS : -1;
 		v.footer = hdd.pane == 0 ? std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Open" }, { "T", "Copy, delete" }, { "O", "Back" } }
+			: hdd.place ? std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Delete" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Choose this" }, { "O", "Back" } };
 		bd.key = "hdd";
 		bd.blur = ui::Tex{};
@@ -7851,7 +8199,7 @@ public:
 				{ "Sticks and triggers", { "pad_sticks", "pad_invert_ly", "pad_invert_ry", "pad_dead_l", "pad_dead_r", "pad_dead_t" } },
 				{ "Rumble", { "pad_rumble" } } };
 		case SP_UPDATES:
-			return { { "", { "update_check" } } };
+			return { { "", { "update_check", "fixes_fetch" } } };
 		default:
 			return {};
 		}

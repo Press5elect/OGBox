@@ -18,8 +18,22 @@ Added
   `4541005A` (v1); Nemesis2000's widescreen patch for `45410047`, ported to version 1.
 - A patch can be for several releases of a game, and is then listed once.
 - A game fix for `45410049` (v1): smooth frame pacing.
+- Saves from a console (an Xbox, xemu, an Xbox 360's backward compatibility) re-signed for OGBox
+  when their game starts, with the user's own dumps in the data folder's `console` folder
+  (`mcpx.bin` and `bios.bin`, and that console's `eeprom.bin` or `hdkey.txt` for saves locked to
+  it), as hakuX's app does it. OGBox includes no key.
 
 Fixed
+- `4B4E0034`: white flashes, a white ground, blurred rectangles in attacks and long black shadow
+  spikes. Render targets that share memory now land in the order drawn, only the memory's last
+  writer lands, and a swizzled target's surface clip limits the draws into it (the shadow map's
+  1-texel border stays clear).
+- Uneven frame pacing (61-62 fps on a 120 Hz panel) when the panel's period was first measured
+  wrong: it is taken again from the median of the vsync gaps.
+- `41560020` (v3, v5) and `4156004E` (v2) at 60 FPS: movement uneven while the counter showed 60.
+  The step is now the time due rounded to the picture's 120 Hz pickups, the rest carried, so the
+  game's time is the real time (the 60 FPS patch's floor of 16 ms had also made it run a few per
+  cent fast).
 - Particles and billboards that came and went (`4D530039`: waterfalls, wheel dust, roadside
   trees): a game that sends `BEGIN` again before each chunk of a draw and `END` once had only its
   last chunk drawn.

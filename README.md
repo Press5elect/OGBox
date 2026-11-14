@@ -186,10 +186,27 @@ delete them, or bring them back in from the data folder's `backups/saves` or a U
 network share (or a USB drive). From then on your saves are kept the same both ways with
 `OGBox/Saves/UDATA` there: when OGBox starts, after each game, and with **Sync now**. Every PS5 that
 syncs with the same share has the same saves, as Crux2 does with its memory cards. The folder is
-laid out like the Xbox's own `E:\UDATA`, so an Xbox or another emulator can take saves from it. A
+laid out like the Xbox's own `E:\UDATA`; the saves in it are signed as OGBox signs them (see the
+next paragraph), so other OGBox and hakuX installs take them as they are, and a real Xbox doesn't. A
 save changed on both sides keeps the newer one, and the other goes to `OGBox/Saves/.older` (on the
 console, the data folder's `backups/older saves`), so nothing is lost. A save deleted on one side
-comes back from the other: delete it on both. Settings > Network turns it on or off.
+only comes back from the other, so while the saves are kept in sync, **Delete** in the hard disk
+manager asks whether to delete it **here and on** the share too (or only here). **Saves on
+<share>...** lists the saves on the share by game, those of other consoles too, and deletes a save,
+or all of a game's, there (and on this console when it has it as well), so the next sync doesn't
+bring it back. Deleting can't be undone; another PS5 syncing with the same share still has its own
+copy and sends it back, so delete it there too. Settings > Network turns the sync on or off.
+
+**Saves from a console.** Xbox games sign their saves with keys of the console's, which OGBox doesn't
+have (it signs as a console of its own), so a save made on an Xbox, in xemu or by an Xbox 360's
+backward compatibility is refused by the game ("Unable to load"). OGBox can re-sign them, as hakuX's
+Android app does, with your own dumps: put `mcpx.bin` (the MCPX 1.0 boot ROM, 512 bytes) and
+`bios.bin` (that console's BIOS) in the data folder's `console` folder, and for saves locked to the
+console that console's `eeprom.bin` too (an Xbox 360's HD key, as 32 hex digits, can go in
+`hdkey.txt` instead). Then copy the saves to the hard disk as usual (bring them in, sync or FTP):
+when the game starts, OGBox re-signs its saves that the other console signed, and leaves every other
+file as it is (the boot log's `saves:` lines say what it did). The keys are read when a game starts
+and never kept or sent anywhere; OGBox includes none.
 
 **The Xbox dashboard.** OGBox doesn't include it, but if your emulated hard disk has `xboxdash.xbe`
 on its C: drive (`hdd/Partition2` in the data folder), an **Xbox dashboard** entry appears on the

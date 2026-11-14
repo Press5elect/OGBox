@@ -123,7 +123,28 @@ struct Files {
 			folders.insert(folder);
 			return true;
 		};
-		io.remove = [this](const std::string &path) { return files.erase(path) == 1; };
+		io.remove = [this](const std::string &path) {
+			if (path.rfind("there", 0) == 0 && !thereAnswers) {
+				return false;
+			}
+			return files.erase(path) == 1;
+		};
+		io.removeFolder = [this](const std::string &folder) {
+			if (folder.rfind("there", 0) == 0 && !thereAnswers) {
+				return false;
+			}
+			for (const auto &[p, v] : files) {
+				if (p.rfind(folder + "/", 0) == 0) {
+					return false;   // (not empty)
+				}
+			}
+			for (const std::string &f : folders) {
+				if (f.rfind(folder + "/", 0) == 0) {
+					return false;
+				}
+			}
+			return folders.erase(folder) == 1 || !isFolder(folder);
+		};
 		io.stop = [this] { return stop; };
 		io.persist = [this](const std::string &records) { kept = records; };
 		return io;
@@ -281,6 +302,153 @@ void testCutOffCopyMadeAgain()
 	expect(fs.kept.find("\tS\n") == std::string::npos, "the next sync: the mark taken away");
 }
 
+/* ---- deleting (remove) and the other side's list (listThere) ---- */
+
+bool hasFolder(const Files &fs, const std::string &f)
+{
+	return fs.isFolder(f);
+}
+
+void testDeletedOnBothStaysDeleted()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/TitleMeta.xbx", "carbon");
+	fs.put(H + "/AAAA0001/SaveMeta.xbx", "career");
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	fs.put(H + "/AAAA0002/save.dat", "options");
+	run(fs, records);
+	const Removal d = remove(fs.io(), kFolders, &records, "4541009e", "AAAA0001", true, true);
+	expect(d.listed && d.ok && d.foundHere && d.foundThere, "delete on both: done on both");
+	expect(!hasFolder(fs, H + "/AAAA0001") && !hasFolder(fs, T + "/AAAA0001"), "delete on both: the folder gone on both");
+	expect(fs.get(H + "/AAAA0002/save.dat") == "options" && fs.get(T + "/AAAA0002/save.dat") == "options" &&
+			fs.get(T + "/TitleMeta.xbx") == "carbon",
+		"delete on both: the game's other save and its file left");
+	expect(!records.count("4541009e/aaaa0001") && records.count("4541009e/aaaa0002"), "delete on both: forgotten in the list");
+	expect(parseRecords(fs.kept).count("4541009e/aaaa0001") == 0, "delete on both: the list kept without it");
+	const Result r = run(fs, records);
+	expect(r.sent == 0 && r.brought == 0 && r.failed == 0 && r.unchanged == 2, "delete on both: the next sync copies nothing");
+	expect(fs.countUnder(H + "/AAAA0001") == 0 && fs.countUnder(T + "/AAAA0001") == 0, "delete on both: still gone after it");
+}
+
+void testDeletedOnOneSideComesBack()
+{
+	// what deleting on the hard disk only does (unchanged): the place's copy comes back
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	run(fs, records);
+	const Removal d = remove(fs.io(), kFolders, &records, "4541009e", "AAAA0001", true, false);
+	expect(d.ok && !hasFolder(fs, H + "/AAAA0001") && fs.get(T + "/AAAA0001/save.dat") == "progress 1", "delete here only: there left");
+	const Result r = run(fs, records);
+	expect(r.brought == 1 && fs.get(H + "/AAAA0001/save.dat") == "progress 1", "delete here only: brought back by the next sync");
+}
+
+void testDeletedGameOnBoth()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/TitleMeta.xbx", "carbon");
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	fs.put(H + "/AAAA0002/save.dat", "options");
+	fs.put("here/UDATA/4d530004/BBBB0001/save.dat", "another game");
+	run(fs, records);
+	fs.put(T + "/.part", "a half-written file of the share's");
+	const Removal d = remove(fs.io(), kFolders, &records, "4541009E", "", true, true);
+	expect(d.ok && !hasFolder(fs, H) && !hasFolder(fs, T), "delete a game on both: its folder gone on both (its hidden file too)");
+	expect(fs.get("there/OGBox/Saves/UDATA/4d530004/BBBB0001/save.dat") == "another game", "delete a game: the other game left");
+	bool any = false;
+	for (const auto &[key, rec] : records) {
+		any = any || key.rfind("4541009e/", 0) == 0;
+	}
+	expect(!any && records.count("4d530004/bbbb0001"), "delete a game: its saves forgotten, the other game's kept");
+	const Result r = run(fs, records);
+	expect(r.sent == 0 && r.brought == 0 && r.unchanged == 1, "delete a game on both: the next sync copies nothing");
+}
+
+void testDeletedOnlyThereNotBroughtHere()
+{
+	// a save only on the place (another console's, never brought here): deleted there
+	Files fs;
+	Records records;
+	fs.put(T + "/AAAA0009/save.dat", "a save of a game this console never played");
+	const Removal d = remove(fs.io(), kFolders, &records, "4541009e", "aaaa0009", false, true);
+	expect(d.ok && d.foundThere && !d.foundHere && !hasFolder(fs, T + "/AAAA0009"), "delete there: gone there");
+	const Result r = run(fs, records);
+	expect(r.brought == 0 && fs.countUnder("here") == 0, "delete there: nothing brought here");
+}
+
+void testDeleteTitleCaseOnEitherSide()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "same");
+	fs.put("there/OGBox/Saves/UDATA/4541009E/aaaa0001/save.dat", "same");
+	run(fs, records);
+	const Removal d = remove(fs.io(), kFolders, &records, "4541009e", "AAAA0001", true, true);
+	expect(d.ok && d.foundHere && d.foundThere && fs.countUnder("there/OGBox/Saves/UDATA/4541009E") == 0 && fs.countUnder(H) == 0,
+		"delete: each side's own spelling found");
+}
+
+void testDeleteRefusesOtherPaths()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "x");
+	fs.put("here/UDATA/other.txt", "x");
+	run(fs, records);
+	const size_t before = fs.files.size();
+	const char *names[] = { "..", ".", "../4541009e", "AAAA0001/save.dat", "a\\b", ".older" };
+	for (const char *n : names) {
+		expect(!remove(fs.io(), kFolders, &records, "4541009e", n, true, true).listed, n);
+	}
+	expect(!remove(fs.io(), kFolders, &records, "..", "", true, true).listed, "delete: a title ID of '..' refused");
+	expect(!remove(fs.io(), kFolders, &records, "4541009", "", true, true).listed, "delete: a short title ID refused");
+	expect(!remove(fs.io(), kFolders, &records, "", "", true, true).listed, "delete: no title ID refused");
+	expect(fs.files.size() == before, "delete refused: nothing taken away");
+}
+
+void testDeleteWhenThereDoesNotAnswer()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "x");
+	run(fs, records);
+	fs.thereAnswers = false;
+	const Removal d = remove(fs.io(), kFolders, &records, "4541009e", "AAAA0001", true, true);
+	expect(!d.listed && !d.ok && fs.get(H + "/AAAA0001/save.dat") == "x", "delete, the place not answering: nothing deleted here");
+	expect(records.count("4541009e/aaaa0001"), "delete, the place not answering: the list as it was");
+}
+
+void testListThere()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	run(fs, records);
+	fs.put(T + "/TitleMeta.xbx", "carbon");
+	fs.put(T + "/AAAA0009/SaveMeta.xbx", "another console's");
+	fs.put(T + "/AAAA0009/save.dat", "x");
+	fs.put("there/OGBox/Saves/UDATA/4D530004/BBBB0001/save.dat", "halo");
+	fs.put("there/OGBox/Saves/UDATA/notagame/x.dat", "x");
+	std::vector<ThereTitle> titles;
+	expect(listThere(fs.io(), kFolders, &titles) && titles.size() == 2, "list there: the two games (not a folder of another name)");
+	const ThereTitle *a = nullptr, *b = nullptr;
+	for (const ThereTitle &t : titles) {
+		(t.folder == "4541009e" ? a : b) = &t;
+	}
+	expect(a && b && a->here && !b->here && a->meta == T + "/TitleMeta.xbx" && a->saves.size() == 2, "list there: a game the console has");
+	if (a && a->saves.size() == 2) {
+		const ThereSave &newest = a->saves[0], &other = a->saves[1];
+		expect(newest.name == "AAAA0009" && !newest.here && newest.meta == T + "/AAAA0009/SaveMeta.xbx" && newest.sig.files == 2,
+			"list there: a save only there, newest first, its SaveMeta.xbx");
+		expect(other.name == "AAAA0001" && other.here, "list there: a save on both");
+	}
+	fs.thereAnswers = false;
+	titles.clear();
+	expect(!listThere(fs.io(), kFolders, &titles), "list there: the place not answering said");
+}
+
 } // namespace
 
 int main()
@@ -295,6 +463,14 @@ int main()
 	testThereDoesNotAnswer();
 	testStopsWhenAGameStarts();
 	testCutOffCopyMadeAgain();
+	testDeletedOnBothStaysDeleted();
+	testDeletedOnOneSideComesBack();
+	testDeletedGameOnBoth();
+	testDeletedOnlyThereNotBroughtHere();
+	testDeleteTitleCaseOnEitherSide();
+	testDeleteRefusesOtherPaths();
+	testDeleteWhenThereDoesNotAnswer();
+	testListThere();
 	std::printf("save sync: %d checks, %d failed\n", g_checks, g_failed);
 	return g_failed ? 1 : 0;
 }

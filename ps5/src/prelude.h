@@ -75,6 +75,7 @@
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
 #include "ogbox_saves.h"
+#include "ogbox_resign.h"
 #include "ogbox_ui.h"         // OGBox 0.0.3: the menus' look
 #include "ogbox_shares.h"     // ... the network shares the settings edit
 #include "ogbox_pad.h"        // the DualSense as an Xbox controller (Settings > Controller)
@@ -85,6 +86,7 @@
 // OGBox 0.0.1: the updater (Crux2's), at file scope too
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
+#include "ogbox_fixes_fetch.h"   // OGBox 1.0.2: game fixes from GitHub at start
 #include "VulkanTexture.h"
 #include <cctype>
 #include <cfloat>

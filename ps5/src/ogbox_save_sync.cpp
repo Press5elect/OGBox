@@ -430,6 +430,218 @@ Result sync(const Io &io, const Folders &folders, Records *records, time_t now)
 	return result;
 }
 
+std::string recordKey(const std::string &titleId, const std::string &name)
+{
+	return lower(titleId) + "/" + lower(name);
+}
+
+namespace {
+
+/* A folder's entry by its name, case aside (false: the folder can't be listed). */
+bool findEntry(const Io &io, const std::string &folder, const std::string &name, Entry *found, bool *exists)
+{
+	std::vector<Entry> entries;
+	*exists = false;
+	if (!io.list(folder, &entries)) {
+		return false;
+	}
+	const std::string want = lower(name);
+	for (const Entry &e : entries) {
+		if (lower(e.name) == want) {
+			*found = e;
+			*exists = true;
+			break;
+		}
+	}
+	return true;
+}
+
+/* A folder and everything in it (its hidden files too: a copy's half-written one). */
+bool removeTree(const Io &io, const std::string &folder, int depth)
+{
+	std::vector<Entry> entries;
+	if (depth > 8 || !io.list(folder, &entries)) {
+		return false;
+	}
+	bool ok = true;
+	for (const Entry &e : entries) {
+		if (e.name.empty() || e.name == "." || e.name == "..") {
+			continue;
+		}
+		const std::string p = join(folder, e.name);
+		ok = (e.dir ? removeTree(io, p, depth + 1) : io.remove(p)) && ok;
+	}
+	return ok && io.removeFolder && io.removeFolder(folder);
+}
+
+bool plainName(const std::string &name)
+{
+	return !name.empty() && name[0] != '.' && name.find('/') == std::string::npos && name.find('\\') == std::string::npos &&
+		name.find('\0') == std::string::npos;
+}
+
+} // namespace
+
+Removal remove(const Io &io, const Folders &folders, Records *records, const std::string &titleId, const std::string &name,
+	bool here, bool there)
+{
+	Removal r;
+	if (!isTitleFolder(titleId) || (!name.empty() && !plainName(name))) {
+		r.why = "not a save's name: " + titleId + "/" + name;
+		return r;
+	}
+	if (!here && !there) {
+		r.why = "no side to delete on";
+		return r;
+	}
+	/* each side's own spelling of the game's folder and the save, both looked up before anything
+	 * is deleted (a side that doesn't answer: nothing is) */
+	struct Target {
+		bool asked{ false }, found{ false }, dir{ false };
+		std::string path;
+	};
+	Target sides[2];   // there, here (deleted in that order)
+	const std::string roots[2] = { folders.there, folders.here };
+	const bool asked[2] = { there, here };
+	for (int i = 0; i < 2; i++) {
+		Target &t = sides[i];
+		t.asked = asked[i];
+		if (!t.asked) {
+			continue;
+		}
+		if (roots[i].empty()) {
+			r.why = i == 0 ? "no place to delete on" : "no hard disk to delete on";
+			return r;
+		}
+		Entry title, item;
+		bool hasTitle = false, hasItem = false;
+		if (!findEntry(io, roots[i], titleId, &title, &hasTitle)) {
+			if (i == 0) {
+				r.why = "the place did not answer";
+				return r;
+			}
+			continue;   // (the console's UDATA not made yet: nothing to delete there)
+		}
+		if (!hasTitle || !title.dir) {
+			continue;
+		}
+		const std::string titlePath = join(roots[i], title.name);
+		if (name.empty()) {
+			t.found = true;
+			t.dir = true;
+			t.path = titlePath;
+			continue;
+		}
+		if (!findEntry(io, titlePath, name, &item, &hasItem)) {
+			if (i == 0) {
+				r.why = "the place did not answer";
+				return r;
+			}
+			continue;
+		}
+		if (hasItem) {
+			t.found = true;
+			t.dir = item.dir;
+			t.path = join(titlePath, item.name);
+		}
+	}
+	r.listed = true;
+	r.foundThere = sides[0].found;
+	r.foundHere = sides[1].found;
+	r.ok = true;
+	for (int i = 0; i < 2; i++) {
+		const Target &t = sides[i];
+		if (!t.asked || !t.found) {
+			continue;
+		}
+		const bool done = t.dir ? removeTree(io, t.path, 0) : io.remove(t.path);
+		if (!done) {
+			r.ok = false;
+			r.why = std::string("not everything could be deleted ") + (i == 0 ? "there: " : "here: ") + t.path;
+			break;   // (the console's left whole: the next sync sends what the place lost back)
+		}
+	}
+	/* forgotten in the list: neither side has it now, nothing to remember of it */
+	if (records) {
+		if (name.empty()) {
+			const std::string prefix = lower(titleId) + "/";
+			for (auto it = records->lower_bound(prefix); it != records->end() && it->first.rfind(prefix, 0) == 0;) {
+				it = records->erase(it);
+			}
+		} else {
+			records->erase(recordKey(titleId, name));
+		}
+		if (io.persist) {
+			io.persist(formatRecords(*records));
+		}
+	}
+	return r;
+}
+
+bool listThere(const Io &io, const Folders &folders, std::vector<ThereTitle> *titles)
+{
+	std::vector<Entry> thereTitles, hereTitles;
+	if (!io.list(folders.there, &thereTitles)) {
+		return false;
+	}
+	io.list(folders.here, &hereTitles);
+	for (const Entry &e : thereTitles) {
+		if (!e.dir || !isTitleFolder(e.name)) {
+			continue;
+		}
+		ThereTitle t;
+		t.folder = e.name;
+		const std::string path = join(folders.there, e.name);
+		std::string hereTitle;
+		for (const Entry &h : hereTitles) {
+			if (h.dir && lower(h.name) == lower(e.name)) {
+				t.here = true;
+				hereTitle = join(folders.here, h.name);
+			}
+		}
+		std::set<std::string> hereSaves;
+		if (t.here) {
+			std::vector<Entry> hs;
+			io.list(hereTitle, &hs);
+			for (const Entry &h : hs) {
+				if (h.dir && !hidden(h.name)) {
+					hereSaves.insert(lower(h.name));
+				}
+			}
+		}
+		std::vector<Entry> entries;
+		if (!io.list(path, &entries)) {
+			continue;
+		}
+		for (const Entry &s : entries) {
+			if (hidden(s.name)) {
+				continue;
+			}
+			if (!s.dir) {
+				if (lower(s.name) == "titlemeta.xbx") {
+					t.meta = join(path, s.name);
+				}
+				continue;
+			}
+			ThereSave sv;
+			sv.name = s.name;
+			sv.here = hereSaves.count(lower(s.name)) != 0;
+			const std::string savePath = join(path, s.name);
+			std::vector<std::string> files;
+			sv.sig.exists = collect(io, savePath, std::string(), &files, &sv.sig, 0);
+			for (const std::string &f : files) {
+				if (lower(f) == "savemeta.xbx") {
+					sv.meta = join(savePath, f);
+				}
+			}
+			t.saves.push_back(sv);
+		}
+		std::sort(t.saves.begin(), t.saves.end(), [](const ThereSave &a, const ThereSave &b) { return a.sig.mtime > b.sig.mtime; });
+		titles->push_back(t);
+	}
+	return true;
+}
+
 std::string summary(const Result &result, const std::string &placeName)
 {
 	if (!result.listed) {

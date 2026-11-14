@@ -199,21 +199,14 @@ bool copyTree(const std::string &from, const std::string &to, std::string &why)
 	return ok;
 }
 
-/* A value of an Xbox .xbx text file (UTF-16LE with its BOM, "Key=value" lines), as ASCII
+/* A value of an Xbox .xbx text file's bytes (UTF-16LE with its BOM, "Key=value" lines), as ASCII
  * (other characters '?'). */
-std::string xbxValue(const std::string &file, const char *key)
+std::string xbxValueOf(const std::string &raw, const char *key)
 {
-	FILE *f = std::fopen(file.c_str(), "rb");
-	if (!f) {
-		return std::string();
-	}
-	std::vector<uint8_t> raw(4096);
-	raw.resize(std::fread(raw.data(), 1, raw.size(), f));
-	std::fclose(f);
 	std::string text;
-	size_t i = raw.size() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE ? 2 : 0;
+	size_t i = raw.size() >= 2 && uint8_t(raw[0]) == 0xFF && uint8_t(raw[1]) == 0xFE ? 2 : 0;
 	for (; i + 1 < raw.size(); i += 2) {
-		const unsigned c = raw[i] | raw[i + 1] << 8;
+		const unsigned c = uint8_t(raw[i]) | uint8_t(raw[i + 1]) << 8;
 		if (!c) {
 			break;
 		}
@@ -236,6 +229,19 @@ std::string xbxValue(const std::string &file, const char *key)
 		at = end + 1;
 	}
 	return std::string();
+}
+
+/* The same of a file on the console (its first 4 KB). */
+std::string xbxValue(const std::string &file, const char *key)
+{
+	FILE *f = std::fopen(file.c_str(), "rb");
+	if (!f) {
+		return std::string();
+	}
+	std::string raw(4096, '\0');
+	raw.resize(std::fread(&raw[0], 1, raw.size(), f));
+	std::fclose(f);
+	return xbxValueOf(raw, key);
 }
 
 bool hexId(const std::string &s, uint32_t &id)
@@ -662,7 +668,55 @@ void saveSyncFinish()
 	g_syncEnded.wait(lock, [] { return !g_syncRunning; });
 }
 
-bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::function<void(const SyncOutcome &)> done)
+namespace {
+
+/* The two sides of a sync with a place, and the list of what each had at its last sync. */
+savesync::Folders syncFolders(const std::string &hddRoot, const SyncPlace &place)
+{
+	savesync::Folders folders;
+	folders.here = child(usersPartition(hddRoot), "UDATA");
+	folders.there = place.path + "/OGBox/Saves/UDATA";
+	folders.olderHere = storagePath("backups") + "/older saves";
+	folders.olderThere = place.path + "/OGBox/Saves/.older";
+	return folders;
+}
+
+/* what each side was after the last sync with this place, in a list of the console's own */
+std::string recordsPath(const SyncPlace &place)
+{
+	uint32_t hash = 2166136261u;
+	for (const unsigned char c : place.path) {
+		hash = (hash ^ c) * 16777619u;
+	}
+	char name[48];
+	std::snprintf(name, sizeof(name), "/save-sync-%08x.txt", hash);
+	const std::string cache = storagePath("cache");
+	makeFolders(cache);
+	return cache + name;
+}
+
+bool syncRemoveFolder(const std::string &folder)
+{
+	return remotePath(folder) ? ps5vfs_remove(folder.c_str(), 1) == 0 : rmdir(folder.c_str()) == 0;
+}
+
+savesync::Io syncIo(const std::string &list)
+{
+	savesync::Io io;
+	io.list = syncList;
+	io.read = syncRead;
+	io.write = syncWrite;
+	io.makeFolder = syncMakeFolder;
+	io.remove = syncRemove;
+	io.removeFolder = syncRemoveFolder;
+	io.stop = [] { return g_syncStop.load(); };
+	io.persist = [list](const std::string &records) { syncWrite(list, records); };
+	return io;
+}
+
+/* A job with the place (a sync, a listing, a deletion) on a thread of its own, one at a time; what
+ * it returns is called once the next one can start (its done: the menu may start another then). */
+bool startSyncJob(std::function<std::function<void()>()> job)
 {
 	{
 		std::lock_guard<std::mutex> lock(g_syncMutex);
@@ -672,33 +726,31 @@ bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::func
 		g_syncRunning = true;
 		g_syncStop = false;
 	}
-	std::thread([hddRoot, place, done] {
-		savesync::Folders folders;
-		folders.here = child(usersPartition(hddRoot), "UDATA");
-		folders.there = place.path + "/OGBox/Saves/UDATA";
-		folders.olderHere = storagePath("backups") + "/older saves";
-		folders.olderThere = place.path + "/OGBox/Saves/.older";
-		/* what each side was after the last sync with this place, in a list of the console's own */
-		uint32_t hash = 2166136261u;
-		for (const unsigned char c : place.path) {
-			hash = (hash ^ c) * 16777619u;
+	std::thread([job] {
+		const std::function<void()> then = job();
+		{
+			std::lock_guard<std::mutex> lock(g_syncMutex);
+			g_syncRunning = false;
 		}
-		char name[48];
-		std::snprintf(name, sizeof(name), "/save-sync-%08x.txt", hash);
-		const std::string cache = storagePath("cache");
-		makeFolders(cache);
-		const std::string list = cache + name;
+		g_syncEnded.notify_all();
+		if (then) {
+			then();
+		}
+	}).detach();
+	return true;
+}
+
+} // namespace
+
+bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::function<void(const SyncOutcome &)> done)
+{
+	return startSyncJob([hddRoot, place, done] {
+		const savesync::Folders folders = syncFolders(hddRoot, place);
+		const std::string list = recordsPath(place);
 		std::string text;
 		syncRead(list, &text);
 		savesync::Records records = savesync::parseRecords(text);
-		savesync::Io io;
-		io.list = syncList;
-		io.read = syncRead;
-		io.write = syncWrite;
-		io.makeFolder = syncMakeFolder;
-		io.remove = syncRemove;
-		io.stop = [] { return g_syncStop.load(); };
-		io.persist = [list](const std::string &records) { syncWrite(list, records); };
+		const savesync::Io io = syncIo(list);
 		pshakux_log("save sync: %s with %s", folders.here.c_str(), folders.there.c_str());
 		const savesync::Result r = savesync::sync(io, folders, &records, std::time(nullptr));
 		for (const std::string &line : r.lines) {
@@ -706,16 +758,99 @@ bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::func
 		}
 		const std::string summary = savesync::summary(r, place.name);
 		pshakux_log("save sync: %s (%d unchanged)", summary.c_str(), r.unchanged);
-		if (done) {
-			done(SyncOutcome{ summary, r.listed, r.sent, r.brought, r.failed });
+		const SyncOutcome o{ summary, r.listed, r.sent, r.brought, r.failed };
+		return std::function<void()>([done, o] {
+			if (done) {
+				done(o);
+			}
+		});
+	});
+}
+
+bool startPlaceScan(const std::string &hddRoot, const SyncPlace &place, std::function<void(const PlaceSaves &)> done)
+{
+	return startSyncJob([hddRoot, place, done] {
+		const savesync::Folders folders = syncFolders(hddRoot, place);
+		const savesync::Io io = syncIo(recordsPath(place));
+		PlaceSaves out;
+		std::vector<savesync::ThereTitle> there;
+		out.listed = savesync::listThere(io, folders, &there);
+		const auto metaValue = [](const std::string &path, const char *key) {
+			std::string raw;
+			if (path.empty() || !syncRead(path, &raw)) {
+				return std::string();
+			}
+			raw.resize(std::min<size_t>(raw.size(), 4096));
+			return xbxValueOf(raw, key);
+		};
+		for (const savesync::ThereTitle &tt : there) {
+			HddTitle t;
+			if (!hexId(tt.folder, t.titleId)) {
+				continue;
+			}
+			t.idText = tt.folder;
+			t.path = folders.there + "/" + tt.folder;
+			t.alsoHere = tt.here;
+			t.name = gameName(t.titleId, metaValue(tt.meta, "TitleName"));
+			for (const savesync::ThereSave &ts : tt.saves) {
+				HddSave s;
+				s.folder = ts.name;
+				s.path = t.path + "/" + ts.name;
+				s.name = metaValue(ts.meta, "Name");
+				if (s.name.empty()) {
+					s.name = ts.name;
+				}
+				s.bytes = ts.sig.bytes;
+				s.mtime = ts.sig.mtime;
+				s.alsoHere = ts.here;
+				t.bytes += s.bytes;
+				t.mtime = std::max(t.mtime, s.mtime);
+				t.saves.push_back(s);
+			}
+			out.titles.push_back(t);
 		}
-		{
-			std::lock_guard<std::mutex> lock(g_syncMutex);
-			g_syncRunning = false;
+		std::sort(out.titles.begin(), out.titles.end(), [](const HddTitle &a, const HddTitle &b) {
+			return a.mtime != b.mtime ? a.mtime > b.mtime : strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+		});
+		pshakux_log("save sync: %s's saves: %s, %zu games", place.name.c_str(), out.listed ? "listed" : "it did not answer",
+			out.titles.size());
+		return std::function<void()>([done, out] {
+			if (done) {
+				done(out);
+			}
+		});
+	});
+}
+
+bool startSaveDeletion(const std::string &hddRoot, const SyncPlace &place, const SaveDeletion &what,
+	std::function<void(const DeletionOutcome &)> done)
+{
+	return startSyncJob([hddRoot, place, what, done] {
+		const savesync::Folders folders = syncFolders(hddRoot, place);
+		const std::string list = recordsPath(place);
+		std::string text;
+		syncRead(list, &text);
+		savesync::Records records = savesync::parseRecords(text);
+		const savesync::Io io = syncIo(list);
+		const savesync::Removal r = savesync::remove(io, folders, &records, what.idText, what.folder, what.here, what.there);
+		const std::string where = what.here && what.there ? "here and on " + place.name : what.there ? "on " + place.name : "here";
+		DeletionOutcome o;
+		o.ok = r.listed && r.ok;
+		if (!r.listed) {
+			o.message = "Not deleted: " + (r.why == "the place did not answer" ? place.name + " did not answer" : r.why) + ".";
+		} else if (!r.ok) {
+			o.message = "Not all deleted: " + r.why + ".";
+		} else {
+			o.message = (what.folder.empty() ? "Its saves are deleted " : "The save is deleted ") + where + ".";
 		}
-		g_syncEnded.notify_all();
-	}).detach();
-	return true;
+		pshakux_log("save sync: delete %s/%s (%s) %s: %s%s%s", what.idText.c_str(), what.folder.empty() ? "*" : what.folder.c_str(),
+			what.label.c_str(), where.c_str(), o.ok ? "done" : "failed", r.why.empty() ? "" : ": ", r.why.c_str());
+		return std::function<void()>([done, o] {
+			if (done) {
+				done(o);
+			}
+		});
+	});
 }
 
 std::string bytesText(uint64_t bytes)

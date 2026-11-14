@@ -26,7 +26,7 @@ the short form: the constraints that always apply, the everyday commands, and wh
 | `ps5/hakux/` | What replaces hakuX's Android parts on the PS5 |
 | `ps5/patches/hakux/ps5.patch` | Every change to hakuX, made from `Press5elect/hakux-native` |
 | `ps5/gamedata/`, `ps5/tools/gamedata-own-patches.txt` | The XBE patch database and OGBox's own patches |
-| `ps5/mods/` | Mods and game fixes (`<title ID>.<version>/<mod>/mod.txt`) |
+| `ps5/mods/` | Mods and game fixes (`<title ID>.<version>/<mod>/mod.txt`); consoles fetch them from main (`ps5/game-fixes.txt`) |
 | `ps5/tools/` | Build, test-build, patch, release and data tools |
 | `tests/` | PC tests (`tests/run-pc-tests.sh`) |
 | `vendor/hakuX`, `build/`, `dist/`, `.deps/` | Fetched or generated; not in the repository |
@@ -39,6 +39,7 @@ bash ps5/tools/build.sh                                      # developer build -
 ps5/tools/test-build.sh <TAG> ../hakux-native <branch> <out> # test build with a core branch, zipped
 ps5/tools/hakux-patch.sh ../hakux-native <ref>               # ps5.patch from the core's work tree
 tests/run-pc-tests.sh --fetch                                # every PC test
+python3 ps5/tools/game-fixes-index.py                        # after changing ps5/mods or ps5/gamedata
 python3 ps5/tools/stage-notices.py --check dist/PPSA99251    # the release check
 ```
 

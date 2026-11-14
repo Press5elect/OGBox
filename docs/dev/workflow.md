@@ -83,6 +83,15 @@ OGBox when the patch is regenerated.
   changelog, often names the cause (`BEGIN` without `END` was fixed in xemu 0.8.97).
 - **Videos are evidence.** A frame-by-frame look at a capture (ffmpeg, then compare frames) can
   show what a counter can't: whether something fades, pops, or switches on and off.
+- **Model the hardware on the PC before another console round.** 4B4E0034's flashes and white
+  lawn went through test builds with ever more logging, each fix guessed from the last log. A PC
+  test that runs the real decoder and coherence against a model of the NV2A's one memory
+  (hakux-native `tests/cohalias`) reproduced the logs' mechanisms in an afternoon and found three
+  more ways of the same bug; a random scenario by seed found the cases no one had thought of. A
+  scenario that fails without the change and passes with it is the evidence a console build then
+  confirms. Check the scenario against the game's own behaviour too: the first failures were the
+  model's (a file read into memory the next frames draw over, a frame flipped with the wrong
+  target bound).
 - **Sub-agents make confident mistakes.** Check an agent's patch against the code yourself: where
   its new code goes (is that function really unreachable?), what each skipped path leaves in the
   registers, and that the lines reproduce the patched file.
