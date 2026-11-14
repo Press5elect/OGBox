@@ -76,4 +76,8 @@ the test: some cost speed. Only the ones that have earned their keep are listed;
 - **Caps in the data are clues.** A value that never exceeds a round limit (no draw above 31
   quads) points at a batch boundary being mishandled.
 - **PC reproduction** when the logic doesn't need the console: the patch loader, the texture pack
-  module, the image readers all have host tests or can be linked into a small harness.
+  module, the image readers all have host tests or can be linked into a small harness. Render
+  targets sharing memory (a texture taken from memory instead of a target's image, an image
+  landing over the guest's data): hakux-native's `tests/cohalias`, a scenario of the title's
+  passes run against a model of the console's memory, with `-vv` for each landing, upload and
+  draw in order ([`hakux-fork.md`](hakux-fork.md)).

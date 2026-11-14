@@ -42,6 +42,14 @@ wording rules as OGBox's ([`workflow.md`](workflow.md)).
 
    (`hw/xbox/hle` uses xxHash with `XXH_INLINE_ALL`: no xxHash library is linked.) Logic that
    doesn't need the console can be tested with a small host harness linked against the one file.
+   The render targets' coherence (images against memory) has two such tests in hakux-native,
+   each running the real code on Linux x86-64 with 16 KiB host pages (the PS5's) and 4 KiB:
+   `tests/coh16k/run.sh` (the write tracking and guards: does each guest store count) and
+   `tests/cohalias/run.sh` (pbdraw.c's choice between a target's image and its memory, every
+   draw checked against a model of the console's memory; exit 1 when a draw read other bytes
+   than the console's would). Run both after a change to `pb/pbdraw.c`, `mem/barrier.c` or
+   `native/hle/dirty.c`; `SRC=<a worktree of the commit before>` shows a new scenario failing
+   without the change.
 3. Test build: `ps5/tools/test-build.sh <tag> <hakux-native> <branch>` in OGBox. It regenerates
    the patch for the build and puts the committed one back.
 4. A new source file is added to both build lists: OGBox's `ps5/cmake/hakux.cmake` and
