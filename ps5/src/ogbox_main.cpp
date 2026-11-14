@@ -2261,6 +2261,17 @@ public:
 				}
 			}
 		}
+		/* OGBox 1.0.2: the game's texture pack and dumps (hakuX's tex/texpack.h), in the data folder's
+		 * textures/<title ID> */
+		if (!key.empty()) {
+			const std::string tex = ogbox::storagePath("textures") + "/" + key.substr(0, key.find('.'));
+			if (prefs.on("tex_replace")) {
+				fromSettings.push_back("NC_HLE_TEXPACK_DIR=" + tex);
+			}
+			if (prefs.on("tex_dump")) {
+				fromSettings.push_back("NC_HLE_TEXDUMP_DIR=" + tex + "/dump");
+			}
+		}
 		std::string said;
 		for (const std::string &option : fromSettings) {
 			argv.push_back(option.c_str());
@@ -7793,7 +7804,7 @@ public:
 			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
 				"deband", "crt", "crop_overscan", "show_fps" } },
 				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
-				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } } };
+				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } }, { "Textures", { "tex_replace", "tex_dump" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format", "hdd_size" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };

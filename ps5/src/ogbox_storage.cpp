@@ -184,8 +184,9 @@ std::string storagePath(const char *part)
 
 const std::vector<const char *> &storageParts()
 {
-	/* 0.1.54: the save states, the saves copied out (0.1.53) and the trainers move with it too */
-	static const std::vector<const char *> parts = { "hdd", "cache", "covers", "shots", "states", "backups", "trainers" };
+	/* 0.1.54: the save states, the saves copied out (0.1.53) and the trainers move with it too;
+	 * 1.0.2: the texture packs and dumps */
+	static const std::vector<const char *> parts = { "hdd", "cache", "covers", "shots", "states", "backups", "trainers", "textures" };
 	return parts;
 }
 

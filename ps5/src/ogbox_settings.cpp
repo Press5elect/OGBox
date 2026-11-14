@@ -214,6 +214,18 @@ std::vector<Option> makeOptions()
 		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
 		"patterns may shimmer.",
 		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
+	/* OGBox 1.0.2: texture packs (hakuX's tex/texpack.h: NC_HLE_TEXPACK_DIR and NC_HLE_TEXDUMP_DIR,
+	 * <data folder>/textures/<title ID>, ogbox_main.cpp) */
+	o.push_back({ "tex_replace", Section::Graphics, "HD texture packs",
+		"Replaces the game's textures with the PNG and DDS files in the data folder's textures/<title ID> "
+		"folder, each named after the texture it replaces (tex_ and its 16-digit code, as the dumps are), at 1x "
+		"to 8x the texture's size.",
+		kOnOff, "1", true });
+	o.push_back({ "tex_dump", Section::Graphics, "Dump textures",
+		"Saves each texture the game uses, once, into textures/<title ID>/dump in the data folder: compressed "
+		"ones as DDS, the rest as PNG. Edit or upscale them and copy them to textures/<title ID> to make a "
+		"pack. Writing them can slow the game the first time it shows them.",
+		kOnOff, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
