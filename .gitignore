@@ -6,5 +6,4 @@ imgui.ini
 vendor/
 __pycache__/
 
-# notes for Claude Code: kept on the build machine only
-CLAUDE.md
+# (CLAUDE.md is in the repository since 1.0.2: agents' sessions start from a fresh clone)
