@@ -1,0 +1,63 @@
+name: Higher detail distance
+description: Trees and other roadside scenery appear about 1.5x as far ahead, so they no longer pop in just in front of the car. The game draws a little more per frame, which OGBox has room for. The road and car reflections are unchanged.
+author: Press5elect
+gamefix: true
+
+# Title 4D530039 v1. Copyright (c) 2026 Press5elect: any use of this mod
+# or its source, including through AI tools, requires credit to Press5elect.
+#
+# DETAIL DISTANCE. Each track's Data/Hotspot.dat (loader 0x26F2C0) holds, per game mode, 15 floats
+# interpolated along the spline (names: table 0x3C3358): trackViewDist, meshViewDist, meshFadeScale, ...
+# The per-view block at 0x29C8D6 hands them out: far clip = max(trackViewDist, meshViewDist); meshViewDist
+# to the mesh manager +0x24268 (far plane of the cull frustums at 0x274132/0x2741E0); meshFadeScale to
+# 0x49C89C. 0x49C89C times Mesh.prop's 0x49C8D8 is the on-screen size limit of the scenery bounding tree
+# (tests 0x572EC, 0x2AF94C, 0x2AFA58, 0x2B09C1, 0x2B0BB6, the only readers of 0x49C89C). The block is
+# rewritten (150 bytes, no jumps into it) to use meshViewDist*1.5 (.rdata 1.5 @0x3B84E0) for the frustum
+# and the far-clip max, and meshFadeScale*(2/3) (.rdata 0.6666667 @0x3B88CC) for the size limit: scenery
+# reaches ~1.5x the distance. trackViewDist and the car envmap pass are unchanged; the keyframe data is
+# only read, never written back. Fallback with no Hotspot.dat: the fade 1.0 at 0x29C99E becomes 2/3.
+#
+# OVERFLOW GUARD. The mesh manager (0x741720) holds five fixed inline lists built by 0x273C00 (24-byte
+# entries, counts inline): L0 count +0x0C cap 3096, L1 +0x12250 cap 1536, L2 +0x1B254 cap 1024,
+# L3 +0x21258 cap 256, L4 +0x22A5C cap 256. Each count sits right after the previous list's last entry,
+# so a full list that keeps adding overwrites the next list's count (2x without these checks crashed this way:
+# write AV at 0x274908). The game bounds-checks none of them. This mod detours all 13 add sites
+# (0x2747CA 0x27484B 0x274890 0x2748C3 0x2748F4 0x274940 0x274BFF 0x274C38 0x274C76 0x274C88 0x274F06,
+# and 0x10F276/0x10F764 inside 0x10F0D0) to small stubs at 0x2D7910, over a whole function that can never run (0x2D7910-0x2D7C19, int3
+# padding around it; no call, jump or dword anywhere in the file, read at every byte offset, points
+# at any of its bytes). Each stub compares the list's count
+# to its capacity and, when full, jumps to that site's own continue/skip path (0x274973, 0x274CBF,
+# 0x2747FD, 0x274C38, 0x2748C3, 0x274F37, 0x10F698, 0x10FB88), restoring edx/edi as the skipped writer would
+# have left them for the next list's writer (0x274890: edx = [esp+24h]; 0x274BFF, 0x274C76: edx =
+# [esp+14h], edi = [esp+24h]). So a full list drops its extra entries instead of overrunning,
+# at any scale. Lists fill in cull-tree order, not by distance, so a capped list drops arbitrary objects;
+# at 1.5x the lists almost never fill, and the checks are the hard guarantee that they cannot overflow.
+[default.xbe]
+0x0010F276: 8B 4C 24 70 8B 74 24 74 -> E9 E1 87 1C 00 90 90 90
+0x0010F764: 8B 4C 24 70 8B 74 24 74 -> E9 0C 83 1C 00 90 90 90
+0x002747CA: 8B 8E 5C 2A 02 00 -> E9 41 31 06 00 90
+0x0027484B: 8B 8E 58 12 02 00 -> E9 DB 30 06 00 90
+0x00274890: 8B 8E 5C 2A 02 00 -> E9 B1 30 06 00 90
+0x002748C3: 8B 8E 58 12 02 00 -> E9 A2 30 06 00 90
+0x002748F4: 8B 8E 54 B2 01 00 -> E9 8C 30 06 00 90
+0x00274940: 8B 8E 50 22 01 00 -> E9 5B 30 06 00 90
+0x00274BFF: 8B 8E 5C 2A 02 00 -> E9 B7 2D 06 00 90
+0x00274C38: 8B 8E 58 12 02 00 -> E9 A6 2D 06 00 90
+0x00274C76: 8B 8E 5C 2A 02 00 -> E9 83 2D 06 00 90
+0x00274C88: 8B 8E 54 B2 01 00 -> E9 99 2D 06 00 90
+0x00274F06: 8B 4E 0C 8B 1C 97 -> E9 36 2B 06 00 90
+0x0029C8DE: F3 0F 10 44 30 08 F3 0F 10 4C 30 0C 03 C6 0F 2F C8 76 03 0F 28 C1 F3 0F 10 4C 24 54 0F 2E C8 9F F6 C4 44 7B 16 8D 5C 24 -> 03 F0 F3 0F 10 4E 0C F3 0F 59 0D E0 84 3B 00 F3 0F 10 46 08 F3 0F 5F C1 F3 0F 10 4C 24 54 0F 2E C8 9F F6 C4 44 7B 16 8D
+0x0029C906: 40 F3 0F 11 44 24 54 E8 DE 5D 01 00 8B C3 E8 C7 5F 01 00 8B 4E 04 8B 95 60 15 00 00 6B C9 3C 8B 44 31 08 8B 4C 24 14 89 -> 5C 24 40 F3 0F 11 44 24 54 E8 DC 5D 01 00 8B C3 E8 C5 5F 01 00 8B 95 60 15 00 00 8B 4C 24 14 8B 46 08 89 84 8A D0 00 00
+0x0029C92E: 84 8A D0 00 00 00 8B 56 04 8B 85 28 15 00 00 6B D2 3C 8B 4C 32 0C 89 88 68 42 02 00 8B 56 04 6B D2 3C F3 0F 10 44 32 10 -> 00 F3 0F 10 46 0C F3 0F 59 05 E0 84 3B 00 8B 85 28 15 00 00 F3 0F 11 80 68 42 02 00 F3 0F 10 46 10 F3 0F 59 05 CC 88 3B
+0x0029C956: F3 0F 11 05 9C C8 49 00 8B 46 04 6B C0 3C F3 0F 10 44 30 14 EB 42 -> 00 F3 0F 11 05 9C C8 49 00 F3 0F 10 46 14 EB 48 90 90 90 90 90 90
+0x0029C9A2: 00 84 -> CC 88
+0x002D7910: 83 EC 0C 53 55 8B 6F 0C 33 DB 3B EB 89 5C 24 10 89 6C 24 10 0F 84 E9 02 00 00 83 FD 04 89 5C 24 08 0F 8C ED 01 00 00 8D -> 81 BE 5C 2A 02 00 00 01 00 00 0F 83 DD CE F9 FF 8B 8E 5C 2A 02 00 E9 A5 CE F9 FF 81 BE 58 12 02 00 00 01 00 00 0F 83 38
+0x002D7938: 55 FC C1 EA 02 42 89 54 24 0C C1 E2 02 89 54 24 08 8D A4 24 00 00 00 00 8B 17 F3 0F 10 01 F3 0F 58 44 1A 0C F3 0F 11 01 -> D0 F9 FF 8B 8E 58 12 02 00 E9 0B CF F9 FF 81 BE 5C 2A 02 00 00 01 00 00 0F 82 09 00 00 00 8B 54 24 24 E9 64 CF F9 FF 8B
+0x002D7960: F3 0F 10 44 1A 10 F3 0F 58 41 04 F3 0F 11 41 04 F3 0F 10 44 1A 14 F3 0F 58 41 08 F3 0F 11 41 08 F3 0F 10 04 1A F3 0F 58 -> 8E 5C 2A 02 00 E9 2C CF F9 FF 81 BE 58 12 02 00 00 01 00 00 0F 83 F9 CF F9 FF 8B 8E 58 12 02 00 E9 44 CF F9 FF 81 BE 54
+0x002D7988: 00 F3 0F 11 00 F3 0F 10 44 1A 04 F3 0F 58 40 04 F3 0F 11 40 04 F3 0F 10 44 1A 08 F3 0F 58 40 08 F3 0F 11 40 08 F3 0F 10 -> B2 01 00 00 04 00 00 0F 83 DE CF F9 FF 8B 8E 54 B2 01 00 E9 5A CF F9 FF 81 BE 50 22 01 00 00 06 00 00 0F 83 C3 CF F9 FF
+0x002D79B0: 44 1A 18 F3 0F 58 06 F3 0F 11 06 F3 0F 10 01 03 D3 8B 17 F3 0F 58 44 13 40 F3 0F 11 01 F3 0F 10 44 13 44 F3 0F 58 41 04 -> 8B 8E 50 22 01 00 E9 8B CF F9 FF 81 BE 5C 2A 02 00 00 01 00 00 0F 82 0D 00 00 00 8B 54 24 14 8B 7C 24 24 E9 60 D2 F9 FF
+0x002D79D8: F3 0F 11 41 04 F3 0F 10 44 13 48 F3 0F 58 41 08 F3 0F 11 41 08 F3 0F 10 44 13 34 F3 0F 58 00 F3 0F 11 00 F3 0F 10 44 13 -> 8B 8E 5C 2A 02 00 E9 22 D2 F9 FF 81 BE 58 12 02 00 00 01 00 00 0F 83 CC D2 F9 FF 8B 8E 58 12 02 00 E9 40 D2 F9 FF 81 BE
+0x002D7A00: 38 F3 0F 58 40 04 F3 0F 11 40 04 F3 0F 10 44 13 3C F3 0F 58 40 08 F3 0F 11 40 08 F3 0F 10 44 13 4C F3 0F 58 06 8D 54 13 -> 5C 2A 02 00 00 01 00 00 0F 82 0D 00 00 00 8B 54 24 14 8B 7C 24 24 E9 1D D2 F9 FF 8B 8E 5C 2A 02 00 E9 56 D2 F9 FF 81 BE
+0x002D7A28: 34 F3 0F 11 06 8B 17 F3 0F 10 01 8D AB 9C 00 00 00 F3 0F 58 44 2A D8 F3 0F 11 01 F3 0F 10 44 2A DC F3 0F 58 41 04 F3 0F -> 54 B2 01 00 00 04 00 00 0F 83 89 D2 F9 FF 8B 8E 54 B2 01 00 E9 4D D2 F9 FF 81 BE 0C 00 00 00 18 0C 00 00 0F 83 E6 D4 F9
+0x002D7A50: 11 41 04 F3 0F 10 44 2A E0 F3 0F 58 41 08 F3 0F 11 41 08 F3 0F 10 44 2A CC F3 0F 58 00 8D 54 2A CC F3 0F 11 00 F3 0F 10 -> FF 8B 4E 0C 8B 1C 97 E9 B0 D4 F9 FF 8B 4C 24 70 81 39 18 0C 00 00 0F 83 2C 7C E3 FF 8B 74 24 74 E9 09 78 E3 FF 8B 4C 24
+0x002D7A78: 42 04 F3 0F 58 40 04 F3 0F 11 40 04 F3 0F 10 42 08 F3 0F 58 40 08 -> 70 81 39 18 0C 00 00 0F 83 03 81 E3 FF 8B 74 24 74 E9 DE 7C E3 FF
