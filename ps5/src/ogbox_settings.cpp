@@ -244,10 +244,10 @@ std::vector<Option> makeOptions()
 	 * the fast mix's routing of the 3D and effect bins (6 and up) is a table of DirectSound's, and
 	 * the reverb send is left out of it, so some games' balance was off */
 	o.push_back({ "audio_mixing", Section::Audio, "Sound mixing",
-		"Game's own: the game's own sound program mixes, as on the console: voices, music and effects "
+		"Default: the game's own sound program mixes, as on the console: voices, music and effects "
 		"balanced as the game sets them, with its reverb. Fast: OGBox mixes the voices itself; lighter, "
 		"without the game's effects. If the game's program stops making sound, that run switches to Fast.",
-		{ { "game", "Game's own" }, { "fast", "Fast" } }, "game", true });
+		{ { "game", "Default" }, { "fast", "Fast" } }, "game", true });
 	/* the MCPX's own resampler (xemu PR #3105, measured on a console) is the default */
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"Normal: the Xbox's own 8-point interpolation. Sinc: cleaner highs than the Xbox. Linear: a little dull.",
