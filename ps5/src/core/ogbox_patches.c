@@ -378,7 +378,7 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
             const uint32_t want = (uint32_t)strtoul(f[1], NULL, 16),
                            have = g_original_crc ? g_original_crc : ogbox_crc32(work.data, work.size);
             bool any = false;
-            for (int c = 1; c < nf; c++) {
+            for (unsigned c = 1; c < nf; c++) {
                 any = any || (uint32_t)strtoul(f[c], NULL, 16) == have;
             }
             if (!any) {
