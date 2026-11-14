@@ -54,7 +54,8 @@ int main(int argc, char** argv)
 		return 2;
 	const std::string dir = argv[1], title = dir + "/title", record = dir + "/fetched.txt";
 	const std::string B = "https://example/ps5/";
-	system(("rm -rf '" + dir + "' && mkdir -p '" + title + "/mods/4D530039.1/old' '" + title + "/gamedata'").c_str());
+	if (system(("rm -rf '" + dir + "' && mkdir -p '" + title + "/mods/4D530039.1/old' '" + title + "/gamedata'").c_str()) != 0)
+		return 2;   // the test's folders could not be made
 	{ std::ofstream(title + "/gamedata/patches.db") << "# db\nP\t4D530039\t1\tpa\tFix A\tMisc\n"; }
 	{ std::ofstream(title + "/mods/4D530039.1/old/mod.txt") << "name: Shipped\n"; }
 
