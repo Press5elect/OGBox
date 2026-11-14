@@ -7778,7 +7778,7 @@ public:
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
 				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
-					"audio_resampler", "console_ram", "high_res" } },
+					"audio_mixing", "audio_resampler", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {

@@ -240,6 +240,14 @@ std::vector<Option> makeOptions()
 	o.push_back({ "audio_dsp", Section::Audio, "Audio processing",
 		"Fast: the game's voices mixed directly. Full DSP: the Xbox's own audio programs run; experimental.",
 		{ { "fast", "Fast" }, { "full", "Full DSP" } }, "fast", true });
+	/* OGBox 1.0.2: the game's own mix, its DSP program's (the GP's output: NC_APU_MON=gp), by default;
+	 * the fast mix's routing of the 3D and effect bins (6 and up) is a table of DirectSound's, and
+	 * the reverb send is left out of it, so some games' balance was off */
+	o.push_back({ "audio_mixing", Section::Audio, "Sound mixing",
+		"Game's own: the game's own sound program mixes, as on the console: voices, music and effects "
+		"balanced as the game sets them, with its reverb. Fast: OGBox mixes the voices itself; lighter, "
+		"without the game's effects. If the game's program stops making sound, that run switches to Fast.",
+		{ { "game", "Game's own" }, { "fast", "Fast" } }, "game", true });
 	/* the MCPX's own resampler (xemu PR #3105, measured on a console) is the default */
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"Normal: the Xbox's own 8-point interpolation. Sinc: cleaner highs than the Xbox. Linear: a little dull.",
@@ -852,8 +860,15 @@ std::vector<std::string> Settings::coreArgs() const
 	// never finish a frame, xemu issue #2901) and a setting saved as "full" before is not applied;
 	// the code stays (env NC_APU_DSP=1 in boot.txt still turns it on, for testing: then this says
 	// nothing)
+	// 1.0.2: Sound mixing: the game's own (its GP program's output; its EP program is not waited for)
+	// or Fast. boot.txt's env NC_APU_DSP still wins, for testing.
 	if (!std::getenv("NC_APU_DSP")) {
-		a.push_back("NC_APU_DSP=0");
+		if (value("audio_mixing") == "fast") {
+			a.push_back("NC_APU_DSP=0");
+		} else {
+			a.push_back("NC_APU_DSP=1");
+			a.push_back("NC_APU_MON=gp");
+		}
 	}
 	if (value("audio_resampler") == "linear" || value("audio_resampler") == "sinc") {
 		a.push_back("NC_APU_RESAMPLER=" + value("audio_resampler"));   // (the core's own default: mcpx)
