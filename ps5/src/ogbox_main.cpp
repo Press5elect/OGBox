@@ -105,6 +105,7 @@
 #include "platform/ps5_sandbox.h"
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
+#include "ogbox_fixes_fetch.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
@@ -2131,6 +2132,10 @@ public:
 			OGBoxUpdate::Start();
 			if (!boot.back && prefs.global("update_check") != "0") {
 				PS5Update::Check();
+			}
+			/* 1.0.2: the newest game fixes from GitHub, in the background (ogbox_fixes_fetch.h) */
+			if (!boot.back && prefs.global("fixes_fetch") != "0") {
+				ogbox::fixes::Start(pshakux_title_dir());
 			}
 			rainOn = prefs.on("rain");
 			themeCode = prefs.global("theme") == "code";   // 0.1.52
@@ -5564,6 +5569,7 @@ public:
 			}
 			updateTick();
 			saveSyncTick();   // 0.0.8
+			fixesTick();      // 1.0.2
 		}
 		drawOverlays();
 	}
@@ -6039,6 +6045,58 @@ public:
 		default:
 			break;
 		}
+	}
+
+	/* 1.0.2: the game fixes fetched at start: which games got fixes, once, when no other popup is up */
+	bool fixesReady{ false };
+	ogbox::fixes::Report fixesReport;
+	void fixesTick()
+	{
+		if (!fixesReady) {
+			fixesReady = ogbox::fixes::Poll(fixesReport);
+			if (!fixesReady) {
+				return;
+			}
+			if (fixesReport.fixed.empty()) {
+				fixesReady = false;
+				fixesReport = {};
+				return;
+			}
+		}
+		if (pop.open) {
+			return;
+		}
+		/* one line a game, by its name in the game database (its title ID without one) */
+		std::vector<std::pair<std::string, std::string>> games;
+		for (const ogbox::fixes::Fixed &f : fixesReport.fixed) {
+			const ogbox::DiscRecord *rec = f.titleId ? ogbox::GameDb::get().byTitle(f.titleId, std::string(), 0) : nullptr;
+			std::string name = rec && !rec->name.empty() ? ogbox::shortName(rec->name) : f.key;
+			std::string what;
+			for (const std::string &w : f.what) {
+				what += (what.empty() ? "" : ", ") + w;
+			}
+			bool merged = false;
+			for (auto &g : games) {
+				if (g.first == name) {
+					g.second += ", " + what;
+					merged = true;
+				}
+			}
+			if (!merged) {
+				games.emplace_back(name, what);
+			}
+		}
+		std::string text;
+		for (size_t i = 0; i < games.size() && i < 12; i++) {
+			text += "\xE2\x80\xA2 " + games[i].first + ": " + games[i].second + "\n";
+		}
+		if (games.size() > 12) {
+			text += "and " + std::to_string(games.size() - 12) + " more games\n";
+		}
+		pshakux_log("fixes: the notice: %zu games", games.size());
+		openPopup("Game fixes downloaded", text + "They apply the next time each game starts.", { "OK" }, nullptr);
+		fixesReady = false;
+		fixesReport = {};
 	}
 
 	void showToast(const std::string &text)
@@ -7851,7 +7909,7 @@ public:
 				{ "Sticks and triggers", { "pad_sticks", "pad_invert_ly", "pad_invert_ry", "pad_dead_l", "pad_dead_r", "pad_dead_t" } },
 				{ "Rumble", { "pad_rumble" } } };
 		case SP_UPDATES:
-			return { { "", { "update_check" } } };
+			return { { "", { "update_check", "fixes_fetch" } } };
 		default:
 			return {};
 		}

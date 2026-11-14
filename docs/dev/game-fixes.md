@@ -12,6 +12,22 @@ Prefer fixing the emulator when the game relies on hardware behaviour hakuX gets
 every game that does the same. A game fix is for what is specific to one game's code under
 emulation (a timing assumption, an unchecked buffer).
 
+## Reaching consoles without a new build
+
+OGBox fetches the game fixes main has each time it starts (Settings > Updates, "Download game
+fixes at start", on by default; `ps5/src/ogbox_fixes_fetch.cpp`). `ps5/game-fixes.txt` lists
+every file of `ps5/mods/` and of `ps5/gamedata/` (`patches.db`, `files/`) with its SHA-256 and
+size; a console fetches the files that differ from its title folder from
+`raw.githubusercontent.com/Press5elect/OGBox/main/ps5/<path>`, checks each against the list,
+and tells the player which games got fixes. A mod file it fetched that the list no longer has is
+removed (a withdrawn fix); files it didn't fetch are never removed.
+
+- After any change under `ps5/mods/` or `ps5/gamedata/`, run `ps5/tools/game-fixes-index.py`
+  and commit `ps5/game-fixes.txt` with it (the PC tests fail when it isn't current).
+- A fix reaches consoles when it is merged to main: that is a publication, so it needs the
+  owner's word like any push. Check it on the console with a test build first.
+- Only data travels this way. A fix that needs an emulator change still needs a build.
+
 ## The patch database
 
 - Records: `P` (title ID, version or `*`, id, category, name, author, note, source), `C` (the
@@ -69,8 +85,10 @@ full; read them before writing a similar one.
 Its trees, dust and waterfalls came and went. Three game fixes were written and withdrawn
 (longer draw distance, list bounds checks, a GPU-fence change) before the cause was found in the
 emulator: the game sends `SET_BEGIN_END(prim)` again before each chunk of its inline quads and
-`END` once; hakuX reset the draw at each `BEGIN`, so only the last chunk was drawn. What would
-have found it sooner:
+points and `END` once; hakuX reset the draw at each `BEGIN`, so only the last chunk was drawn.
+The fix keeps the chunks in one draw only for that case (inline quads or points, the same kind
+again): keeping every kind joined 54540082's strips into streaks, and drawing the open draw at
+each `BEGIN` broke its scenes altogether. What would have found it sooner:
 
 - the bug was open in xemu's tracker, and fixed in a later xemu version: look there first;
 - it reproduced at 1x resolution with visibility tests forced: an early sign it was not a
