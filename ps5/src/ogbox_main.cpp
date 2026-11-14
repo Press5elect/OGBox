@@ -1262,7 +1262,14 @@ public:
 		uint64_t passes{ 0 }, over8{ 0 }, over16{ 0 };
 		double gapSum{ 0.0 }, gapWorst{ 0.0 }, lastAt{ 0.0 }, logAt{ 0.0 };
 		uint64_t gaps{ 0 }, gapsLong{ 0 };
+		/* 1.0.2: the frame's copy (pshx_core_take_frame_into: a submit on the HLE GPU's one queue and a
+		 * wait for it, so behind whatever the HLE renderer queued before it), on the passes that took one */
+		double takeSum{ 0.0 }, takeWorst{ 0.0 };
+		uint64_t takes{ 0 }, takesLong{ 0 };
 	} passTimes;
+	/* 1.0.2: when this pass's acquire let it go (the display's pace): the gaps are counted from it, not
+	 * from the command buffer's start, which came after the frame's copy and its wait */
+	double passAcquiredAt{ 0.0 };
 	/* 0.0.9: Settings > Graphics > Adjust HDR brightness: the highlights' test (step 0: an X in a square
 	 * at the brightest, gone where the TV's peak is reached), then the white level's (step 1); the
 	 * values as the settings' choices, saved at the end */
@@ -2693,14 +2700,15 @@ public:
 	{
 		PassTimes &pt = passTimes;
 		const double now = now_seconds();
+		const double at = passAcquiredAt > 0.0 ? passAcquiredAt : now;
 		if (pt.lastAt > 0.0) {
-			const double gap = (now - pt.lastAt) * 1000.0;
+			const double gap = (at - pt.lastAt) * 1000.0;
 			pt.gapSum += gap;
 			pt.gapWorst = std::max(pt.gapWorst, gap);
 			pt.gaps++;
 			pt.gapsLong += gap > 12.5 ? 1 : 0;   // a refresh and a half at 120 Hz
 		}
-		pt.lastAt = now;
+		pt.lastAt = at;
 		if (passQueries != VK_NULL_HANDLE && passStamped[currentBuffer]) {
 			uint64_t t[kStamps] = {};
 			if (vkGetQueryPoolResults(device, passQueries, currentBuffer * kStamps, kStamps, sizeof(t), t, sizeof(uint64_t),
@@ -2728,11 +2736,14 @@ public:
 			const double g = static_cast<double>(std::max<uint64_t>(pt.gaps, 1));
 			pshakux_log("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
 				"GPU a pass %.2f ms (the worst %.2f, %llu over 8.3 ms, %llu over 16.7): the picture in %.2f (frame generation, "
-				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's)",
+				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's) | the frame's copy "
+				"%llu times, %.2f ms on average (the longest %.1f, %llu over 2 ms: the pass waited on the HLE GPU's queue)",
 				static_cast<unsigned long long>(pt.gaps), now - pt.logAt, static_cast<double>(pt.gaps) / (now - pt.logAt),
 				pt.gapSum / g, pt.gapWorst, static_cast<unsigned long long>(pt.gapsLong), pt.sum[0] / n, pt.worst[0],
 				static_cast<unsigned long long>(pt.over8), static_cast<unsigned long long>(pt.over16), pt.sum[1] / n, pt.sum[2] / n,
-				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n);
+				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, static_cast<unsigned long long>(pt.takes),
+				pt.takeSum / static_cast<double>(std::max<uint64_t>(pt.takes, 1)), pt.takeWorst,
+				static_cast<unsigned long long>(pt.takesLong));
 			const double lastAt = pt.lastAt;
 			pt = PassTimes{};
 			pt.lastAt = lastAt;
@@ -3611,8 +3622,17 @@ public:
 		uint32_t fw = 0, fh = 0;
 		pshx_core_display_pickup();   // 0.0.4: the guest's vblank keeps clear of it
 		// 0.0.4: the HLE GPU copies the frame straight into the staging buffer where it can
+		const double takeFrom = now_seconds();
 		if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
 			return;
+		}
+		{
+			/* 1.0.2: its wait (the copy queued behind the HLE renderer's work for the next frame) */
+			const double ms = (now_seconds() - takeFrom) * 1000.0;
+			passTimes.takeSum += ms;
+			passTimes.takeWorst = std::max(passTimes.takeWorst, ms);
+			passTimes.takes++;
+			passTimes.takesLong += ms > 2.0 ? 1 : 0;
 		}
 		ensurePicture(fw, fh);
 		fgFresh = true;
@@ -4719,6 +4739,7 @@ public:
 		}
 		ui.visible = true;
 		VulkanExampleBase::prepareFrame();
+		passAcquiredAt = now_seconds();
 		upload = screen == Screen::Boot && (introFrame() || (!introOn && fetchLogo()));
 		buildCommandBuffer();
 		VulkanExampleBase::submitFrame();
@@ -4758,6 +4779,7 @@ public:
 		// template's settings window.
 		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
 		VulkanExampleBase::prepareFrame();
+		passAcquiredAt = now_seconds();
 		pshx_core_display_vsync();    // 0.0.4: the display let the loop go (FIFO: once a refresh)
 		fetchPicture();
 		frameGenPlan();
