@@ -30,6 +30,7 @@ struct HddSave {
 	std::string path;       // on the console
 	uint64_t bytes{ 0 };
 	int64_t mtime{ 0 };
+	bool alsoHere{ false };  // (a save on the sync place) the hard disk has a save of that folder too
 };
 
 struct HddTitle {
@@ -41,6 +42,7 @@ struct HddTitle {
 	uint64_t bytes{ 0 };    // its saves'
 	int64_t mtime{ 0 };     // its newest save's
 	uint64_t dataBytes{ 0 };  // TDATA\<title ID>: the game's own data (settings, caches)
+	bool alsoHere{ false };   // (a game on the sync place) the hard disk has its folder too
 };
 
 /* The games with saves (or data) on the hard disk at hddRoot, the newest played first. */
@@ -100,6 +102,27 @@ bool saveSyncRunning();
 void saveSyncFinish();
 /* OGBox 0.0.9: OGBox is closing: the same stop, without the wait (saveSyncRunning says when it ended). */
 void saveSyncAskStop();
+
+/* The saves on the sync place, deleted there too (savesync::remove, listThere). Each is a job on a
+ * thread of its own, as a sync is, and never at the same time as one (false: a sync or another job
+ * is under way); done is called on that thread at its end. */
+struct PlaceSaves {
+	bool listed{ false };   // the place answered
+	std::vector<HddTitle> titles;   // laid out as hddScan's (paths there), the newest played first
+};
+bool startPlaceScan(const std::string &hddRoot, const SyncPlace &place, std::function<void(const PlaceSaves &)> done);
+struct SaveDeletion {
+	std::string idText;     // the game's folder (its title ID)
+	std::string folder;     // the save's folder; "" the game's whole folder (all its saves)
+	bool here{ true }, there{ true };
+	std::string label;      // its name, for the log and the message
+};
+struct DeletionOutcome {
+	bool ok{ false };
+	std::string message;    // for a toast
+};
+bool startSaveDeletion(const std::string &hddRoot, const SyncPlace &place, const SaveDeletion &what,
+	std::function<void(const DeletionOutcome &)> done);
 
 std::string bytesText(uint64_t bytes);
 std::string dateText(int64_t mtime);

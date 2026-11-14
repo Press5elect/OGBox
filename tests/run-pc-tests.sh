@@ -30,6 +30,7 @@ run pad tests/pad/run-pad-tests.sh build/pad-tests
 run shares tests/shares/run-shares-tests.sh build/shares-tests
 run update tests/update/run-update-tests.sh build/update-tests
 run fixes tests/fixes/run-fixes-tests.sh build/fixes-tests
+run savesync ps5/tests/savesync/run.sh build/savesync-tests
 run ui tests/ui/run-ui-tests.sh build/ui-tests
 run frontend tests/ui/check-frontend.sh
 if ((${#failed[@]})); then

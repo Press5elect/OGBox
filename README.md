@@ -189,7 +189,12 @@ syncs with the same share has the same saves, as Crux2 does with its memory card
 laid out like the Xbox's own `E:\UDATA`, so an Xbox or another emulator can take saves from it. A
 save changed on both sides keeps the newer one, and the other goes to `OGBox/Saves/.older` (on the
 console, the data folder's `backups/older saves`), so nothing is lost. A save deleted on one side
-comes back from the other: delete it on both. Settings > Network turns it on or off.
+only comes back from the other, so while the saves are kept in sync, **Delete** in the hard disk
+manager asks whether to delete it **here and on** the share too (or only here). **Saves on
+<share>...** lists the saves on the share by game, those of other consoles too, and deletes a save,
+or all of a game's, there (and on this console when it has it as well), so the next sync doesn't
+bring it back. Deleting can't be undone; another PS5 syncing with the same share still has its own
+copy and sends it back, so delete it there too. Settings > Network turns the sync on or off.
 
 **The Xbox dashboard.** OGBox doesn't include it, but if your emulated hard disk has `xboxdash.xbe`
 on its C: drive (`hdd/Partition2` in the data folder), an **Xbox dashboard** entry appears on the
