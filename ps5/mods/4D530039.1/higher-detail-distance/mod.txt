@@ -1,5 +1,5 @@
 name: Higher detail distance
-description: Trees and other roadside scenery appear about 1.5x as far ahead, so they no longer pop in just in front of the car. The game draws a little more per frame, which OGBox has room for. The road and car reflections are unchanged.
+description: Roadside scenery appears about 1.5x as far ahead, and the trees and undergrowth along the road about twice as far, so they no longer pop in just in front of the car. The road and car reflections are unchanged.
 author: Press5elect
 gamefix: true
 
@@ -32,6 +32,26 @@ gamefix: true
 # [esp+14h], edi = [esp+24h]). So a full list drops its extra entries instead of overrunning,
 # at any scale. Lists fill in cull-tree order, not by distance, so a capped list drops arbitrary objects;
 # at 1.5x the lists almost never fill, and the checks are the hard guarantee that they cannot overflow.
+#
+# UNDERGROWTH DISTANCE (v3). The trees and bushes along the road are not mesh-manager scenery: they are
+# the auto-undergrowth object 0x4E0798, loaded by 0xDA350 from each track's AutoUndergrowth.dat and
+# streamed cell by cell from AutoUndergrowthStream.dat. One header value R is both its stream radius
+# ([+0x1EE0]: 0xDA030 queues a cell when 1.05*(distance - cell radius) < R) and its draw distance
+# ([+0x1ED8]: cull frustum far at 0xDA9D9, vertex alpha fade over the last part of R at 0xDADD3/0xDAE04,
+# per-cell instance density (1 - d/R) at 0xDBACD). The loaded cells live in a fixed pool of N slots
+# whose sizes the file lists (+0x30, inline array of 128 at +0x68); a nearer cell evicts a farther one.
+# So R alone cannot be raised: the pool would stay full at about the old radius and trees would pop in
+# at the new one, denser than before. At 0xDA4CC this mod doubles R (stream radius and draw distance
+# together, so the fade and density ramps stretch with it; its squares at +0x1EDC/+0x1EE4 are then 4R^2
+# from the unchanged code) and, at 0xDA88A/0xDA8FA, allocates the pool twice as large and builds a
+# second set of N slots of the same sizes. It does this only when N <= 64 (2N fits the 128 slots) and
+# the pool is at most 3 MiB (at most 3 MiB more memory); otherwise that track keeps its original R and
+# pool. The value is written only to the object, never to the file data, and the loader reads it from
+# the file again on every load. The 128-entry list at +0x1FCC (count +0x1FC8, then another count at
+# +0x21CC) is filled by the stream update (0xDA100) and the draw pass (0xDABA5) without a bounds check:
+# both now stop at 128; when the stream list is full a new cell replaces the farthest queued one if it
+# is nearer, so the nearest cells still load first. Stubs at 0x2D7A8E-0x2D7BDB, in the same dead
+# function as above. No new float constants are used.
 [default.xbe]
 0x0010F276: 8B 4C 24 70 8B 74 24 74 -> E9 E1 87 1C 00 90 90 90
 0x0010F764: 8B 4C 24 70 8B 74 24 74 -> E9 0C 83 1C 00 90 90 90
@@ -61,3 +81,17 @@ gamefix: true
 0x002D7A28: 34 F3 0F 11 06 8B 17 F3 0F 10 01 8D AB 9C 00 00 00 F3 0F 58 44 2A D8 F3 0F 11 01 F3 0F 10 44 2A DC F3 0F 58 41 04 F3 0F -> 54 B2 01 00 00 04 00 00 0F 83 89 D2 F9 FF 8B 8E 54 B2 01 00 E9 4D D2 F9 FF 81 BE 0C 00 00 00 18 0C 00 00 0F 83 E6 D4 F9
 0x002D7A50: 11 41 04 F3 0F 10 44 2A E0 F3 0F 58 41 08 F3 0F 11 41 08 F3 0F 10 44 2A CC F3 0F 58 00 8D 54 2A CC F3 0F 11 00 F3 0F 10 -> FF 8B 4E 0C 8B 1C 97 E9 B0 D4 F9 FF 8B 4C 24 70 81 39 18 0C 00 00 0F 83 2C 7C E3 FF 8B 74 24 74 E9 09 78 E3 FF 8B 4C 24
 0x002D7A78: 42 04 F3 0F 58 40 04 F3 0F 11 40 04 F3 0F 10 42 08 F3 0F 58 40 08 -> 70 81 39 18 0C 00 00 0F 83 03 81 E3 FF 8B 74 24 74 E9 DE 7C E3 FF
+0x000DA100: 8B 86 C8 1F 00 00 89 94 86 CC 1F 00 00 FF 86 C8 1F 00 00 -> E9 59 DA 1F 00 90 90 90 90 90 90 90 90 90 90 90 90 90 90
+0x000DA4CC: 8B 85 E0 1E 00 00 89 85 D8 1E 00 00 -> E9 BD D5 1F 00 90 90 90 90 90 90 90
+0x000DA88A: 53 68 80 00 00 00 6A 04 52 -> E9 3E D2 1F 00 90 90 90 90
+0x000DA8FA: 8B 45 30 89 85 6C 1C 00 00 -> E9 EC D1 1F 00 90 90 90 90
+0x000DABA5: 8B 97 C8 1F 00 00 89 B4 97 CC 1F 00 00 FF 87 C8 1F 00 00 -> E9 11 D0 1F 00 90 90 90 90 90 90 90 90 90 90 90 90 90 90
+0x002D7A8E: F3 0F 11 40 08 F3 0F 10 42 18 F3 0F 58 06 F3 0F 11 06 8B 17 F3 0F 10 01 F3 0F 58 44 2A 0C 03 D5 F3 0F 11 01 F3 0F 10 42 -> 83 F9 40 77 2D 52 57 31 D2 85 C9 74 0F 8B 7C 88 FC 83 C7 3F 83 E7 C0 01 FA 49 EB ED 81 FA 00 00 30 00 5F 5A 77 0C F3 0F
+0x002D7AB6: 10 F3 0F 58 41 04 F3 0F 11 41 04 F3 0F 10 42 14 F3 0F 58 41 08 F3 0F 11 41 08 F3 0F 10 02 F3 0F 58 00 F3 0F 11 00 F3 0F -> 58 C0 F3 0F 11 85 E0 1E 00 00 F3 0F 11 85 D8 1E 00 00 E9 0B 2A E0 FF 53 68 80 00 00 00 6A 04 83 7D 30 40 77 0A 81 FA 00
+0x002D7ADE: 10 42 04 F3 0F 58 40 04 F3 0F 11 40 04 F3 0F 10 42 08 F3 0F 58 40 08 F3 0F 11 40 08 F3 0F 10 42 18 8B 54 24 0C F3 0F 58 -> 00 30 00 77 02 01 D2 52 E9 A8 2D E0 FF 8B 55 30 85 D2 74 5E 83 FA 40 77 59 89 CF 2B BD 68 1C 00 00 81 FF 00 00 30 00 77
+0x002D7B06: 06 81 C3 D0 00 00 00 4A F3 0F 11 06 89 54 24 0C 0F 85 34 FE FF FF 8B 5C 24 08 8B 6C 24 10 3B DD 7D 7B 8B 54 24 08 6B DB -> 49 31 F6 8B 7C 24 10 C6 40 E4 01 8B 3C B7 89 78 DC 8D 50 DC 89 48 E0 89 58 E8 89 58 EC 89 CF 81 E7 FF FF FF 0F 89 48 FC
+0x002D7B2E: 34 2B EA 8B 17 F3 0F 10 01 F3 0F 58 44 1A 0C F3 0F 11 01 F3 0F 10 44 1A 10 F3 0F 58 41 04 03 D3 F3 0F 11 41 04 F3 0F 10 -> 88 18 C7 40 F0 01 00 00 00 89 58 F8 89 78 F4 8B 3A 89 50 0C 01 F9 46 83 C0 38 3B 75 30 72 BC D1 65 30 8B 45 30 89 85 6C
+0x002D7B56: 42 14 F3 0F 58 41 08 F3 0F 11 41 08 F3 0F 10 02 F3 0F 58 00 F3 0F 11 00 F3 0F 10 42 04 F3 0F 58 40 04 F3 0F 11 40 04 F3 -> 1C 00 00 E9 A5 2D E0 FF 8B 86 C8 1F 00 00 3D 80 00 00 00 73 12 89 94 86 CC 1F 00 00 FF 86 C8 1F 00 00 E9 96 25 E0 FF 57
+0x002D7B7E: 0F 10 42 08 F3 0F 58 40 08 F3 0F 11 40 08 F3 0F 10 42 18 F3 0F 58 06 83 C3 34 4D F3 0F 11 06 75 92 8B 6C 24 10 83 FD 01 -> BF 7F 00 00 00 89 F8 8B 8E C8 21 00 00 F3 0F 10 49 5E 4F 78 16 8B 8C BE CC 1F 00 00 0F 2F 49 5E 73 F0 F3 0F 10 49 5E 89
+0x002D7BA6: 7E 6B F3 0F 10 05 00 84 3B 00 F3 0F 2A CD F3 0F 5E C1 F3 0F 10 09 F3 0F 59 C8 F3 0F 11 09 F3 0F 10 49 04 F3 0F 59 C8 F3 -> F8 EB E7 5F 0F 2F C8 76 07 89 94 86 CC 1F 00 00 E9 58 25 E0 FF 8B 97 C8 1F 00 00 81 FA 80 00 00 00 73 0D 89 B4 97 CC 1F
+0x002D7BCE: 0F 11 49 04 F3 0F 10 49 08 F3 0F 59 C8 -> 00 00 FF 87 C8 1F 00 00 E9 DD 2F E0 FF
