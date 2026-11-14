@@ -230,3 +230,38 @@ C	E04A2C7A
 T	default.xbe
 F	8B4558DB4020C74424200000803FDA701C8B450483F801D95C241C740F83F804740A83F802740583F8057516D944241CC7442420CDCC8C3FD80D38451F00D95C241C83F808740583F8097508C744241C56A9193F0FB797C40000008954241053DB442414D84C2424D80D2C431F00E8E79319008BD853E82BA71000D95C242853E8E1A71000D87C242C0FB787C40000008944242CD83D20411F00	C744241C0000803FD9E8D95C2420D9E8D95C242C8B450483F801740F83F804740A83F802740583F8057518C744241CEC51683FC7442420CDCC8C3FC744242C0000403F83F808740583F8097508C744241C56A9193F0FB797C40000008954241053DB442414D84C2424D80D2C431F00E8E69319008BD853E82AA71000D95C242853E8E0A71000D87C242C0FB787C40000008944242CD87C243890
 F	D91C24680000803F680000003F680000003F68000000BF68000000BFE8DFED01008BCE897E14E875F301005F5E5B8BE5	D91C24680000803F68AAAA2A3F680000003F68AAAA2ABF68000000BFE8DFED01008BCE897E14E875F301005F5E5B8BE5
+#
+# 4541009E: the D3D present interval is set only by its device reset (multisampling on in the front end,
+# off in a race: the reset flips the flag and makes the interval from it, ONE with it and
+# TWO_OR_IMMEDIATE, 0x80000002, without; CreateDevice says ONE). Made ONE in the front end (as it was)
+# and ONE_OR_IMMEDIATE in a race (and eax, 0x80000000; xor eax, 0x80000001). Jao12345's add of
+# 0x80000001 made the front end IMMEDIATE (no vsync). The race moves in fixed steps of 1/60 s
+# (steps = floor(time saved * 60), at least 1, the leftover kept, no interpolation) from the real
+# time. At 60 frames a second a frame is exactly a step (60 ticks of 1/3600 s), so the leftover sat
+# on the step boundary and a frame a fraction of a millisecond short had no step and the next two:
+# the same picture twice, then a jump, which looked like 30. The step now starts at half a step
+# saved (fcom 1/60 made fcom 1/120, a constant of the game's own): with the existing at-least-one
+# and leftover-not-below-0 that is one step a frame at 60, and as before below it (the leftover
+# catches up), so its speed stays as it was. Movies (VP6) go by a real-time stopwatch of their own.
+# The fcom names a constant by its address, so the records are for this release (C).
+P	4541009E	1	pog4541009E60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	A45A76CD
+T	default.xbe
+F	F7D81BC025FFFFFF7F0502000080C745C412000000	F7D81BC025000000803501000080C745C412000000
+F	D905DC7C4900D84508D815444B3C00DFE0F6C4057A18	D905DC7C4900D84508D81564773A00DFE0F6C4057A18
+#
+# 4541007B: the same engine as 4541009E's. The present interval made from the multisampling flag
+# (in the device reset) made ONE in the front end and ONE_OR_IMMEDIATE in a race (and eax,
+# 0x80000000; xor eax, 0x80000001), as for 4541009E. Its race clock (made with a step of 1/60 s)
+# took steps = floor(time / step + the fraction left), the fraction starting at 0; its time in
+# ticks of 1/4000 s is 67, 67, 66 a frame at 60, so even at a steady 60 the count went 1, 0, 1, 2,
+# 0, 1, 2: the same picture twice and then a jump. The tick rewritten in place: no step while less
+# than half a step is saved, at least one from half a step (its fraction then 0), otherwise as
+# before (the 4-steps case kept). One step a frame at 60 and as before below it, so its speed
+# stays as it was. Movies (VP6) go by a real-time stopwatch of their own. The rewritten tick calls
+# _ftol by a relative call and names its 0.5 by address, so the records are for this release (C).
+P	4541007B	7	pog4541007B60	60 FPS	60 FPS	Press5elect	60 FPS	OGBox	
+C	B9264B45
+T	default.xbe
+F	F7D81BC025FFFFFF7F05020000805F8945EC	F7D81BC0250000008035010000805F8945EC
+F	D9C057D84618D95E18D87620D8461CD9C0E89C33160085C08945FCDB45FC7D06D80580AE3C00D8E98BF88A450884C0D95E1CDDD8740CBF04000000C7461C00000000	D9C0D84618D95E18D87620D8461C57D9C0E89C33160085C0977510D815F4A93C00DFE09E720547D8E0EB06897DFCDA65FC807D0800D95E1C74076A045F83661C0090
