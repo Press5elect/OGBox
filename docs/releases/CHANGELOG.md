@@ -24,6 +24,12 @@ Added
   it), as hakuX's app does it. OGBox includes no key.
 
 Fixed
+- `4B4E0034`: white flashes, a white ground, blurred rectangles in attacks and long black shadow
+  spikes. Render targets that share memory now land in the order drawn, only the memory's last
+  writer lands, and a swizzled target's surface clip limits the draws into it (the shadow map's
+  1-texel border stays clear).
+- Uneven frame pacing (61-62 fps on a 120 Hz panel) when the panel's period was first measured
+  wrong: it is taken again from the median of the vsync gaps.
 - `41560020` (v3, v5) and `4156004E` (v2) at 60 FPS: movement uneven while the counter showed 60.
   The step is now the time due rounded to the picture's 120 Hz pickups, the rest carried, so the
   game's time is the real time (the 60 FPS patch's floor of 16 ms had also made it run a few per
