@@ -92,6 +92,15 @@ OGBox when the patch is regenerated.
   confirms. Check the scenario against the game's own behaviour too: the first failures were the
   model's (a file read into memory the next frames draw over, a frame flipped with the wrong
   target bound).
+- **Run the PC tests with CI's compilers** (`CC=gcc CXX=g++`). Clang passed a test that ignored
+  `system()`'s result; glibc marks it `warn_unused_result`, and g++ under `-Werror` failed CI on
+  the 1.0.2 release's pull request.
+- **A 60 FPS patch must check how the game measures time.** On the emulator the game's loop wakes
+  after a flip 1-2 ms late, now and then 12-21 ms (45410049's notes), so a game whose step is its
+  measured frame time moves unevenly at a steady 60 on the counter (41560020: its step now rounded
+  to the picture's 120 Hz pickups, the rest carried), and one that counts fixed ticks by the clock
+  gets frames of 0 and 2 ticks (4541009E, 45410049). At 30 a game's own floor (a 33 ms minimum
+  step) can hide it. Model the frame times on the PC before the console round.
 - **Sub-agents make confident mistakes.** Check an agent's patch against the code yourself: where
   its new code goes (is that function really unreachable?), what each skipped path leaves in the
   registers, and that the lines reproduce the patched file.
