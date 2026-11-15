@@ -9,16 +9,19 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 1.0.1:**
-- Settings > Xbox > Hard disk size: Automatic (the default) gives E: room again once it holds more
-  than an Xbox's 4.9 GB.
-- Stencil shadows that were missing in one game, and white streaks that crossed another's picture
-  since the first public builds, are fixed.
-- The kernel now has all 337 of the Xbox kernel's functions, and more of hakuX-lr's kernel, GPU and
-  sound fixes are merged.
+**What's new in 1.0.2:**
+- HD texture packs and texture dumps (Settings > Picture > Textures).
+- Saves from an Xbox, xemu or an Xbox 360's backward compatibility can be used: with your own
+  console dumps, OGBox re-signs them when their game starts.
+- Game fixes from GitHub: OGBox fetches new and changed mods and patches when it starts, so a fixed
+  game doesn't need a new OGBox.
+- Effects that share memory are drawn right (flashes, a white ground, blurred patches and long
+  shadow spikes in one game), frame pacing is steady on 120 Hz screens, and two games' 60 fps
+  patches move smoothly.
+- The game's own sound mix (Settings > Advanced), and more 60 fps patches.
 
-**Latest release: [v1.0.1](https://github.com/Press5elect/OGBox/releases/tag/v1.0.1).** Download
-`OGBox-v1.0.1.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v1.0.2](https://github.com/Press5elect/OGBox/releases/tag/v1.0.2).** Download
+`OGBox-v1.0.2.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -34,7 +37,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 1.0.1 is the tenth public release, after a long run of
+This is **experimental** software. 1.0.2 is the eleventh public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
@@ -158,7 +161,9 @@ turn downloads off in Settings > Game list.
 Everything is checked against your exact release of the game first. One made for a different
 release is greyed out, so it can't be turned on by mistake. **Game fixes** are mods a game needs
 to run properly: they're always on and shown greyed out, so you can see what's applied.
-`ps5/mods/README.md` explains how to write your own.
+`ps5/mods/README.md` explains how to write your own. When it starts, OGBox fetches the mods and
+patches that are new or changed in this repository (Settings > Interface > Download game fixes at
+start, on by default), checks each against its listed checksum, and says which games got fixes.
 
 **HD texture packs.** OGBox can replace a game's textures with your own. Turn on **Dump textures**
 (Settings > Picture > Textures, for one game) and play: each texture the game uses is saved once
