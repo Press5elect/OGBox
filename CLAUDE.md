@@ -17,6 +17,9 @@ the short form: the constraints that always apply, the everyday commands, and wh
   owner creates the tag and the release.
 - Keep the licence notices and "OGBox by Press5elect" attribution (`NOTICE`, `PROVENANCE.md`).
 - A change that showed no benefit on the console is taken out again.
+- **Main is live for game fixes.** What is on main in `ps5/mods/` and `ps5/gamedata/` reaches every
+  console at its next start (the game-fixes download): merge only fixes a test build confirmed,
+  with `ps5/game-fixes.txt` made again in the same commit.
 
 ## Where things are
 
@@ -38,7 +41,7 @@ export PS5_CLANG=/usr/lib/llvm-20/bin/clang
 bash ps5/tools/build.sh                                      # developer build -> dist/PPSA99251/
 ps5/tools/test-build.sh <TAG> ../hakux-native <branch> <out> # test build with a core branch, zipped
 ps5/tools/hakux-patch.sh ../hakux-native <ref>               # ps5.patch from the core's work tree
-tests/run-pc-tests.sh --fetch                                # every PC test
+CC=gcc CXX=g++ tests/run-pc-tests.sh --fetch                 # every PC test, with CI's compilers
 python3 ps5/tools/game-fixes-index.py                        # after changing ps5/mods or ps5/gamedata
 python3 ps5/tools/stage-notices.py --check dist/PPSA99251    # the release check
 ```

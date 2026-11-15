@@ -18,6 +18,10 @@ Added
   `4541005A` (v1); Nemesis2000's widescreen patch for `45410047`, ported to version 1.
 - A patch can be for several releases of a game, and is then listed once.
 - A game fix for `45410049` (v1): smooth frame pacing.
+- Game fixes from GitHub at start (Settings > Interface, on by default): mods and XBE patches that
+  differ from the title folder's are fetched, so a fixed game needs no new OGBox.
+- The hard disk manager lists the saves on the sync place and deletes a save there too, so the next
+  sync doesn't bring it back.
 - Saves from a console (an Xbox, xemu, an Xbox 360's backward compatibility) re-signed for OGBox
   when their game starts, with the user's own dumps in the data folder's `console` folder
   (`mcpx.bin` and `bios.bin`, and that console's `eeprom.bin` or `hdkey.txt` for saves locked to
