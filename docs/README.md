@@ -25,6 +25,7 @@ Start with [`../CLAUDE.md`](../CLAUDE.md): the rules that always apply, and this
 | [`dev/game-fixes.md`](dev/game-fixes.md) | Writing an XBE patch or a game fix; the checks a patch must pass |
 | [`dev/releasing.md`](dev/releasing.md) | Making a release |
 | [`dev/open-work.md`](dev/open-work.md) | What is known to be unfinished or untested, and ideas not taken up |
+| [`dev/frontend-fix-plan.md`](dev/frontend-fix-plan.md) | The front-end defects found after 1.0.2 and the order they are fixed in |
 | [`xbox-reference-notes.md`](xbox-reference-notes.md) | Facts about the Xbox itself: memory map, SMBus, boot, kernel, XBE, FATX |
 
 ## History
