@@ -515,19 +515,33 @@ bool syncList(const std::string &folder, std::vector<savesync::Entry> *out)
 			return false;
 		}
 		ps5vfs_dirent e;
-		while (ps5vfs_readdir(d, &e) == 1) {
+		int got = 0;
+		while ((got = ps5vfs_readdir(d, &e)) == 1) {
 			if (std::strcmp(e.name, ".") && std::strcmp(e.name, "..")) {
 				out->push_back({ e.name, e.is_directory != 0, e.size > 0 ? static_cast<uint64_t>(e.size) : 0, e.mtime });
 			}
 		}
 		ps5vfs_closedir(d);
+		if (got < 0) {   // (1.0.3: cut short)
+			out->clear();
+			return false;
+		}
 		return true;
 	}
 	DIR *d = opendir(folder.c_str());
 	if (!d) {
 		return false;
 	}
-	while (struct dirent *e = readdir(d)) {
+	/* 1.0.3 (after Crux2's backup listing): a listing cut short by a read error is no listing (the
+	 * sync takes what isn't listed for not there) */
+	int error = 0;
+	for (;;) {
+		errno = 0;
+		struct dirent *e = readdir(d);
+		if (!e) {
+			error = errno;
+			break;
+		}
 		if (!std::strcmp(e->d_name, ".") || !std::strcmp(e->d_name, "..")) {
 			continue;
 		}
@@ -535,9 +549,16 @@ bool syncList(const std::string &folder, std::vector<savesync::Entry> *out)
 		if (stat((folder + "/" + e->d_name).c_str(), &st) == 0) {
 			out->push_back({ e->d_name, S_ISDIR(st.st_mode), S_ISREG(st.st_mode) ? static_cast<uint64_t>(st.st_size) : 0,
 				static_cast<int64_t>(st.st_mtime) });
+		} else if (errno != ENOENT) {   // (one gone meanwhile is no failure)
+			error = errno;
+			break;
 		}
 	}
 	closedir(d);
+	if (error) {
+		out->clear();
+		return false;
+	}
 	return true;
 }
 
@@ -762,7 +783,7 @@ bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::func
 		}
 		const std::string summary = savesync::summary(r, place.name);
 		pshakux_log("save sync: %s (%d unchanged)", summary.c_str(), r.unchanged);
-		const SyncOutcome o{ summary, r.listed, r.sent, r.brought, r.failed };
+		const SyncOutcome o{ summary, r.listed && !r.hereFailed, r.sent, r.brought, r.failed };
 		return std::function<void()>([done, o] {
 			if (done) {
 				done(o);

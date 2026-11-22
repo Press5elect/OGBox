@@ -38,6 +38,7 @@ struct Files {
 	bool stop = false;
 	int writesThereLeft = -1;   // >= 0: that many more writes there succeed, then they fail
 	std::string kept;           // the records as last persisted
+	std::set<std::string> failList;   // folders whose listing fails (a read error: they are there)
 
 	void put(const std::string &path, const std::string &data) { files[path] = { data, ++clock }; }
 	std::string get(const std::string &path) const
@@ -71,6 +72,9 @@ struct Files {
 		Io io;
 		io.list = [this](const std::string &folder, std::vector<Entry> *entries) {
 			if (folder.rfind("there", 0) == 0 && !thereAnswers) {
+				return false;
+			}
+			if (failList.count(folder)) {
 				return false;
 			}
 			if (!isFolder(folder)) {
@@ -302,6 +306,63 @@ void testCutOffCopyMadeAgain()
 	expect(fs.kept.find("\tS\n") == std::string::npos, "the next sync: the mark taken away");
 }
 
+/* 1.0.3: a listing that fails is no "not there": nothing is copied over the save it didn't list */
+void testFailedSaveListingThere()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	run(fs, records);
+	fs.put(T + "/AAAA0001/save.dat", "newer, from another console");
+	fs.failList.insert(T + "/AAAA0001");
+	const Result r = run(fs, records);
+	expect(r.failed == 1 && r.sent == 0 && r.brought == 0, "a save there not listed: left as it is");
+	expect(fs.get(T + "/AAAA0001/save.dat") == "newer, from another console", "a save there not listed: not sent over");
+	fs.failList.clear();
+	expect(run(fs, records).brought == 1 && fs.get(H + "/AAAA0001/save.dat") == "newer, from another console",
+		"a save there listed again: brought here");
+}
+
+void testFailedSubfolderListingHere()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	fs.put(H + "/AAAA0001/sub/part.dat", "part");
+	run(fs, records);
+	fs.put(H + "/AAAA0001/save.dat", "progress 2");
+	fs.failList.insert(H + "/AAAA0001/sub");
+	const Result r = run(fs, records);
+	expect(r.failed == 1 && r.sent == 0, "a save's folder here not listed: not sent");
+	expect(fs.get(T + "/AAAA0001/sub/part.dat") == "part", "a save's folder here not listed: its files there not taken away");
+}
+
+void testFailedTitleListingHere()
+{
+	Files fs;
+	Records records;
+	fs.put(H + "/AAAA0001/save.dat", "progress 1");
+	run(fs, records);
+	fs.put(H + "/AAAA0001/save.dat", "progress 2, here");
+	fs.failList.insert(H);
+	const Result r = run(fs, records);
+	expect(r.failed >= 1 && r.brought == 0, "a game's folder here not listed: nothing brought");
+	expect(fs.get(H + "/AAAA0001/save.dat") == "progress 2, here", "a game's folder here not listed: its save not overwritten");
+}
+
+void testFailedHardDiskListing()
+{
+	Files fs;
+	Records records;
+	fs.put(T + "/AAAA0001/save.dat", "there");
+	fs.put(H + "/AAAA0001/save.dat", "here");
+	fs.failList.insert("here/UDATA");
+	const Result r = run(fs, records);
+	expect(r.hereFailed && r.brought == 0 && r.sent == 0 && fs.get(H + "/AAAA0001/save.dat") == "here",
+		"the hard disk not listed: nothing done");
+	expect(summary(r, "NAS").find("hard disk") != std::string::npos, "the hard disk not listed: said");
+}
+
 /* ---- deleting (remove) and the other side's list (listThere) ---- */
 
 bool hasFolder(const Files &fs, const std::string &f)
@@ -463,6 +524,10 @@ int main()
 	testThereDoesNotAnswer();
 	testStopsWhenAGameStarts();
 	testCutOffCopyMadeAgain();
+	testFailedSaveListingThere();
+	testFailedSubfolderListingHere();
+	testFailedTitleListingHere();
+	testFailedHardDiskListing();
 	testDeletedOnBothStaysDeleted();
 	testDeletedOnOneSideComesBack();
 	testDeletedGameOnBoth();
