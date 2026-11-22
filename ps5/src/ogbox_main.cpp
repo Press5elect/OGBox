@@ -941,6 +941,7 @@ public:
 	int selected{ 0 };
 	std::string startPath;                    // chosen: started on the next frame
 	int startDelay{ 0 };
+	double startSyncWait{ -1.0 };             // since when the start waits for a save sync to end
 	std::string selectName;                   // to select once the listing comes (going up)
 	std::string startState;                   // 0.1.53: the game starts with this save state
 	double shotHeldSince{ -1.0 };             // L3 + R3 held since (a screenshot)
@@ -4805,6 +4806,29 @@ public:
 		}
 		collectListing();
 		coverHousekeeping();
+		/* a save sync under way: asked to stop after the save it is copying, the start waiting for it with
+		 * the list drawing ("Starting..."; it waited inside saveSyncFinish, the screen frozen, as long as a
+		 * share took to answer). Not ended in 30 s: not started (cut off by the relaunch, a save could be
+		 * left half copied), and said. */
+		if (!startPath.empty() && startDelay <= 0 && ogbox::saveSyncRunning()) {
+			const double now = now_seconds();
+			if (startSyncWait < 0.0) {
+				startSyncWait = now;
+				ogbox::saveSyncAskStop();
+				pshakux_log("library: %s waits for the save sync to end", startPath.c_str());
+			}
+			startDelay = 1;
+			if (now - startSyncWait > 30.0) {
+				pshakux_log("library: the save sync didn't end in 30 s: %s not started", startPath.c_str());
+				startPath.clear();
+				startState.clear();
+				startSyncWait = -1.0;
+				openPopup("Not started", "Your saves' sync with its place is still copying a save (the place may not be "
+					"answering). Start the game again in a moment.", { "OK" }, [](int) {});
+			}
+		} else if (!startPath.empty() && startDelay <= 0) {
+			startSyncWait = -1.0;
+		}
 		if (!startPath.empty() && --startDelay < 0) {
 			const std::string path = startPath;
 			startPath.clear();
