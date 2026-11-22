@@ -608,15 +608,30 @@ bool syncRead(const std::string &path, std::string *data)
 }
 
 /* whole: a share's beside its place first (ps5vfs_store); the console's in a hidden file beside it,
- * then moved there (a save is never half written on the hard disk) */
+ * then moved there (a save is never half written on the hard disk). 1.0.3 (after Crux2's WriteFile):
+ * never renamed onto the old file (on an exFAT drive, a USB drive's, a rename onto a file can report
+ * success and keep the old one): the old one is put aside, the new one in its place and checked
+ * there, and only then the old one deleted; one a stop left aside is put back by the next write. */
 bool syncWrite(const std::string &path, const std::string &data)
 {
 	if (remotePath(path)) {
 		return ps5vfs_store(path.c_str(), data.data(), data.size()) == 0;
 	}
 	const size_t slash = path.find_last_of('/');
-	const std::string tmp = slash == std::string::npos ? "." + path + ".part"
-		: path.substr(0, slash + 1) + "." + path.substr(slash + 1) + ".part";
+	const std::string base = slash == std::string::npos ? "." + path : path.substr(0, slash + 1) + "." + path.substr(slash + 1);
+	const std::string tmp = base + ".part", old = base + ".old";
+	const auto sizeOf = [](const std::string &file, off_t *size) {
+		struct stat st;
+		if (stat(file.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+			return false;
+		}
+		*size = st.st_size;
+		return true;
+	};
+	off_t size = 0;
+	if (!sizeOf(path, &size) && sizeOf(old, &size)) {
+		rename(old.c_str(), path.c_str());   // what a write stopped between its renames left
+	}
 	FILE *f = std::fopen(tmp.c_str(), "wb");
 	if (!f) {
 		return false;
@@ -625,9 +640,35 @@ bool syncWrite(const std::string &path, const std::string &data)
 	ok = std::fflush(f) == 0 && ok;
 	ok = fsync(fileno(f)) == 0 && ok;
 	ok = std::fclose(f) == 0 && ok;
-	if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+	ok = ok && sizeOf(tmp, &size) && static_cast<uint64_t>(size) == data.size();
+	if (!ok) {
 		unlink(tmp.c_str());
 		return false;
+	}
+	off_t was = 0, moved = 0;
+	const bool had = sizeOf(path, &was);
+	if (had && ((unlink(old.c_str()) != 0 && errno != ENOENT) || rename(path.c_str(), old.c_str()) != 0 || sizeOf(path, &moved) ||
+				   !sizeOf(old, &moved) || moved != was)) {
+		if (!sizeOf(path, &moved)) {
+			rename(old.c_str(), path.c_str());
+		}
+		unlink(tmp.c_str());
+		return false;
+	}
+	off_t placed = 0;
+	const bool renamed = std::rename(tmp.c_str(), path.c_str()) == 0;
+	if (!renamed || sizeOf(tmp, &placed) || !sizeOf(path, &placed) || static_cast<uint64_t>(placed) != data.size()) {
+		if (had) {
+			if (renamed) {
+				unlink(path.c_str());
+			}
+			rename(old.c_str(), path.c_str());
+		}
+		unlink(tmp.c_str());
+		return false;
+	}
+	if (had) {
+		unlink(old.c_str());
 	}
 	return true;
 }
