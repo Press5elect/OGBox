@@ -718,6 +718,10 @@ savesync::Io syncIo(const std::string &list)
  * it returns is called once the next one can start (its done: the menu may start another then). */
 bool startSyncJob(std::function<std::function<void()>()> job)
 {
+	if (StorageMove::get().progress().running) {   // 1.0.3: the hard disk and the sync's list are being moved
+		pshakux_log("save sync: not started: the data folder is being moved");
+		return false;
+	}
 	{
 		std::lock_guard<std::mutex> lock(g_syncMutex);
 		if (g_syncRunning) {
