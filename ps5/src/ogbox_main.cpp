@@ -2489,6 +2489,9 @@ public:
 		picture.memory = VK_NULL_HANDLE;
 		picture.width = picture.height = 0;
 		picture.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		/* the sets written for it are written again: a new view can come back with the old handle */
+		postPictureView = VK_NULL_HANDLE;
+		smaaPictureView = VK_NULL_HANDLE;
 	}
 
 	void ensureStaging(Staging &s, VkDeviceSize size)
@@ -3220,6 +3223,7 @@ public:
 			smaaW = srcW;
 			smaaH = srcH;
 			smaaPictureView = VK_NULL_HANDLE;
+			postSmaaView = VK_NULL_HANDLE;   // (Debanding's set for smaaOut: written again)
 			smaaValid = false;
 			VkDescriptorImageInfo edges{ sampler, smaaEdges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 			VkDescriptorImageInfo area{ sampler, smaaArea.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -3312,6 +3316,7 @@ public:
 			downW = vw;
 			downH = vh;
 			downValid = false;
+			smaaPictureView = VK_NULL_HANDLE;   // (SMAA's sets for ssaaDown: written again)
 			pshakux_log("presenter: SSAA + SMAA's image %ux%u", vw, vh);
 		}
 		ensureSmaa(ssaaDown.view, vw, vh);
