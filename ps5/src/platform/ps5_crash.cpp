@@ -246,6 +246,19 @@ bool SafeRead(uintptr_t address, void* out, size_t size)
   return read(s_pipe[0], out, size) == static_cast<ssize_t>(size);
 }
 
+// OGBox: SafeRead for more than its 256 bytes (a ucontext_t), a piece at a time.
+bool SafeReadAll(uintptr_t address, void* out, size_t size)
+{
+  for (size_t done = 0; done < size;)
+  {
+    const size_t piece = size - done < 256 ? size - done : 256;
+    if (!SafeRead(address + done, static_cast<char*>(out) + done, piece))
+      return false;
+    done += piece;
+  }
+  return size != 0;
+}
+
 // OGBox 0.1.31: the system's modules (libkernel, libSceLibcInternal, ...) and some of their
 // functions, so an address in them is said by name: "libkernel.sprx+0x138c (after
 // pthread_cond_wait+0x2c)". The process's module list shows a title only its own modules, but
@@ -610,13 +623,13 @@ void Report(int signal, siginfo_t* info, void* ctx)
 void CrashSignalHandler(int signal, siginfo_t* info, void* ctx)
 {
   // A second fault (in another thread, or while this report walks a broken stack): the console
-  // takes it from here.
-  if (s_in_crash)
+  // takes it from here. (OGBox: taken in one step: two threads faulting at once both passed a
+  // test and a set, and wrote their reports into each other.)
+  if (__atomic_exchange_n(&s_in_crash, 1, __ATOMIC_ACQ_REL))
   {
     RestoreDefault(signal);
     return;
   }
-  s_in_crash = 1;
 
   Report(signal, info, ctx);
   Out o;
@@ -925,8 +938,8 @@ void StallHandler(int, siginfo_t*, void* context)
       ucontext_t uc;
       siginfo_t si;
       uintptr_t handler = 0;
-      if (SafeRead(sigframe, &handler, sizeof(handler)) && SafeRead(sigframe + 16, &uc, sizeof(uc)) &&
-          SafeRead(sigframe + 16 + sizeof(ucontext_t), &si, sizeof(si)))
+      if (SafeRead(sigframe, &handler, sizeof(handler)) && SafeReadAll(sigframe + 16, &uc, sizeof(uc)) &&
+          SafeReadAll(sigframe + 16 + sizeof(ucontext_t), &si, sizeof(si)))
       {
         s_stall.signo = si.si_signo ? si.si_signo : -1;
         s_stall.sig_handler = handler;

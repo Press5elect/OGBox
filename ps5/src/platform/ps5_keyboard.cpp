@@ -131,21 +131,11 @@ namespace PS5Keyboard
 			}
 		}
 
+		// OGBox: in the order typed (Typed::sequence): the counts put Backspace and the arrows
+		// before the letters of the same poll.
 		std::string Text(const PS5KeyboardLogic::Typed& t)
 		{
-			std::string out;
-			for (int i = 0; i < t.backspace; i++)
-				out += '\b';
-			for (int i = 0; i < t.left; i++)
-				out += '\x02';
-			for (int i = 0; i < t.right; i++)
-				out += '\x03';
-			out += t.text;
-			if (t.escape)
-				out += '\x1b';
-			else if (t.enter)
-				out += '\n';
-			return out;
+			return t.sequence;
 		}
 	} // namespace
 
