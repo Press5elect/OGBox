@@ -9236,7 +9236,16 @@ public:
 	void formInput(uint32_t p)
 	{
 		if (form.test) {
-			return;   // connecting: wait
+			/* connecting: CIRCLE stops waiting for the answer (a server that is down takes the SMB
+			 * timeout, twice for a guest); the share is let go and the form stays, as after no answer */
+			if (p & PAD_CIRCLE) {
+				form.test.reset();
+				ogbox::unmountShare(form.s);
+				form.status = "Stopped before " + form.s.host + " answered: not saved. Try again, or save it as it is.";
+				form.bad = true;
+				pshakux_log("settings: the share test was stopped (CIRCLE)");
+			}
+			return;
 		}
 		const std::vector<int> rows = formRows();
 		const int n = static_cast<int>(rows.size());
