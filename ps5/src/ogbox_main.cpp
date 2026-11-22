@@ -7174,20 +7174,28 @@ public:
 					total += c.onDisk ? 0 : 1;
 				}
 				hddRun("Bringing the saves in from " + hdd.importName, total, [copies, root, from](HddJob &job) {
-					size_t n = 0, kept = 0;
+					size_t n = 0, kept = 0, failed = 0;
+					std::string why;
 					for (const ogbox::SaveCopy &c : copies) {
 						if (c.onDisk) {
 							kept++;
 							continue;
 						}
-						if (ogbox::hddImportSave(c, root, false, job.why)) {
+						if (ogbox::hddImportSave(c, root, false, why)) {
 							n++;
+						} else {
+							failed++;
+							pshakux_log("hard disk: %s not brought in: %s", c.path.c_str(), why.c_str());
 						}
 						job.done++;
 					}
 					job.copies = ogbox::saveCopiesIn(from, root);
 					job.newCopies = true;
-					job.yes = std::to_string(n) + " saves brought in" + (kept ? ", " + std::to_string(kept) + " the hard disk had already" : std::string());
+					const std::string had = kept ? ", " + std::to_string(kept) + " the hard disk had already" : std::string();
+					job.ok = failed == 0;
+					job.yes = std::to_string(n) + " saves brought in" + had;
+					job.why = std::to_string(failed) + (failed == 1 ? " save" : " saves") + " could not be brought in (" + why + "); " +
+						std::to_string(n) + " were" + had;
 				});
 				return;
 			}
