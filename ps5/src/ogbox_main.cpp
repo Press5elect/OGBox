@@ -604,19 +604,24 @@ bool writeBmp(const std::string &path, const uint8_t *rgba, uint32_t w, uint32_t
 	header[26] = 1;
 	header[28] = 24;
 	put32(34, row * h);
-	std::fwrite(header, 1, sizeof(header), f);
+	bool ok = std::fwrite(header, 1, sizeof(header), f) == sizeof(header);
 	std::vector<uint8_t> line(row, 0);
-	for (uint32_t y = 0; y < h; y++) {
+	for (uint32_t y = 0; ok && y < h; y++) {
 		const uint8_t *src = rgba + size_t(h - 1 - y) * stride;
 		for (uint32_t x = 0; x < w; x++) {
 			line[x * 3 + 0] = src[x * 4 + 2];
 			line[x * 3 + 1] = src[x * 4 + 1];
 			line[x * 3 + 2] = src[x * 4 + 0];
 		}
-		std::fwrite(line.data(), 1, row, f);
+		ok = std::fwrite(line.data(), 1, row, f) == row;
 	}
-	std::fclose(f);
-	return true;
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok) {
+		const int error = errno;   // (the caller logs the write's reason)
+		std::remove(path.c_str());   // (a full drive: no truncated picture left, and the caller says it failed)
+		errno = error;
+	}
+	return ok;
 }
 
 /* 0.1.17: the share layer's last failure ("connecting to smb://... failed: <the server's reason>"),
