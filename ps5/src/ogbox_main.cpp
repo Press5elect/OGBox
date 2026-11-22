@@ -9671,6 +9671,9 @@ public:
 						if (i != 0) {
 							return;
 						}
+						/* the button chosen stays chosen ("From the start" goes with "Where I left off") */
+						const std::vector<int> before = gameActs();
+						const int was = gp.pill >= 0 && gp.pill < static_cast<int>(before.size()) ? before[static_cast<size_t>(gp.pill)] : GA_PLAY;
 						const bool ok = std::remove(st.path.c_str()) == 0;
 						std::remove(st.thumb.c_str());
 						pshakux_log("library: the state %s %s", st.path.c_str(), ok ? "deleted" : "could not be deleted");
@@ -9679,6 +9682,11 @@ public:
 						gp.stateSel = std::max(0, std::min(gp.stateSel, left - 1));
 						if (!left) {
 							gp.states = false;
+						}
+						const std::vector<int> after = gameActs();
+						const auto at = std::find(after.begin(), after.end(), was);
+						if (at != after.end()) {
+							gp.pill = static_cast<int>(at - after.begin());
 						}
 					});
 			} else if ((p & PAD_CROSS) && n && startPath.empty()) {
