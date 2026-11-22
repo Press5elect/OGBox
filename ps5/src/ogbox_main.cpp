@@ -8488,8 +8488,8 @@ public:
 			if (line.rfind("## ", 0) == 0) {
 				break;
 			}
-			if (!inVersion || line.empty()) {
-				continue;
+			if (!inVersion || line.find_first_not_of(" \t\r") == std::string::npos) {
+				continue;   // (a line of only spaces is an empty one: its "next line" had nothing to take)
 			}
 			std::string t = line;
 			for (const char *mark : { "**", "`" }) {
