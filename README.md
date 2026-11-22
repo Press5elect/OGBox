@@ -145,7 +145,7 @@ network addresses are typed there by hand (`lan_peers=`, `kai_engine=`, `insigni
 ## More to explore
 
 **Covers and descriptions.** OGBox finds each game's cover on libretro's thumbnails first (by the
-disc's Redump name, or its title ID), then MobCat's box scans, and finally the picture inside the
+disc's Redump name, or its title ID), then MobCat's box art, and finally the picture inside the
 disc itself. A whole folder's covers download in one go, with a progress bar, and are kept in the
 data folder's `covers`, named after the game's file (`Halo 2 (USA).iso` gets `Halo 2 (USA).png` or
 `.jpg`). Want a different cover? Put your own picture there under the game's file name: it wins

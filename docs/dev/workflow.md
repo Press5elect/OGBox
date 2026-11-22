@@ -115,6 +115,7 @@ OGBox when the patch is regenerated.
 | `tests/run-pc-tests.sh [--fetch]` | Every PC test; CI runs it on each push. It builds with warnings as errors, stricter than the console build: run it before a release. The `update` test links clang's address sanitizer; on a machine without that runtime it fails at link (compare with `main` before blaming a change) |
 | `ps5/tools/stage-notices.py --check dist/PPSA99251` | The release check (licences, notices, nothing forbidden) |
 | `ps5/tools/import-gamedata.py` | The patch database (`ps5/gamedata/patches.db`) from its sources and `gamedata-own-patches.txt` |
+| `ps5/tools/import-mobcat-covers.py [titleIDs.db] [clone]` | The covers' index of MobCat's box pictures (`ps5/gamedata/covers-mobcat.txt`) from MobCat's database and its repository's file list (identifiers only) |
 | `ps5/tools/make-release-zip.py` | The release ZIP |
 
 The build needs LLVM 20's clang and the PS5 stack checked out beside this repository

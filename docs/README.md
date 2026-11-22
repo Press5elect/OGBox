@@ -40,6 +40,8 @@ Start with [`../CLAUDE.md`](../CLAUDE.md): the rules that always apply, and this
 - `ps5/patches/mesa-27/README.md`: the patches to Mesa's RADV.
 - `ps5/third_party/*/README.md`: the frame generation's sources (FidelityFX, MihawkGen, NIS).
 - `ps5/art/intro/README.md`, `ps5/ASSETS.md`: the startup video and the generated art.
+- `ps5/gamedata/covers-mobcat.txt`: MobCat's box pictures by title ID and version, the covers' third
+  source (made by `ps5/tools/import-mobcat-covers.py`; its header gives the format).
 - `ps5/notices/components.json`: every third-party part, its licence and revision (the build
   stages it into the title folder's `licenses/`).
 - Code comments carry the version a behaviour dates from ("0.1.52: ...", "OGBox 1.0.2: ..."):
