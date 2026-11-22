@@ -266,6 +266,11 @@ std::vector<Option> makeOptions()
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"Normal: the Xbox's own 8-point interpolation. Sinc: cleaner highs than the Xbox. Linear: a little dull.",
 		{ { "mcpx", "Normal" }, { "sinc", "Sinc" }, { "linear", "Linear" } }, "mcpx", true });
+	/* the 3D voices' HRTF filters (NC_APU_HRTF; the core's default is on) */
+	o.push_back({ "audio_hrtf", Section::Audio, "HRTF",
+		"Positional sound: the filters the Xbox puts on 3D voices so their direction can be heard on headphones. "
+		"Turn off for a plain pan.",
+		kOnOff, "1", true });
 	// ---- Console: the Xbox itself
 	o.push_back({ "language", Section::Console, "Language",
 		"Affects the in-game language.",
@@ -902,6 +907,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("audio_resampler") == "linear" || value("audio_resampler") == "sinc") {
 		a.push_back("NC_APU_RESAMPLER=" + value("audio_resampler"));   // (the core's own default: mcpx)
+	}
+	if (value("audio_hrtf") == "0" && !std::getenv("NC_APU_HRTF")) {
+		a.push_back("NC_APU_HRTF=0");   // (the core's own default: on)
 	}
 	if (value("exact_depth") == "0") {   // 0.0.1
 		a.push_back("NC_HLE_EXACT_DEPTH=0");

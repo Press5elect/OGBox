@@ -1,5 +1,7 @@
 # OGBox game fixes 1
 # <sha256> <bytes> <path in the title folder>: ps5/tools/game-fixes-index.py writes this
+7e9ef97083ee8e279ca9c02dd07b914dfb57645b5b498a3cd079cdac07e9bbe9 2086 mods/4156002A.1/matfx-uvanim/mod.txt
+a9d69db03b5097cda6eec7bb3665681696395af18fc28be8cf382545cb5edb38 2084 mods/4156002A.3/matfx-uvanim/mod.txt
 6deb235a3f0bb7573c346badb77a2f92ad4ed09d2e9a366dd6670814be109a06 3347 mods/45410049.1/smooth-frame-pacing/mod.txt
 3b40e41d8cd8a172e7a50ee5e3be892e226df9dba64271326ee90c46578c9a71 16467 mods/45410083.2/120fps/mod.txt
 b320622b67f8a18a444bcdd049a158baad7eb9b6210276bfbe5772e012e9411a 14568 mods/45410083.2/60fps/mod.txt
