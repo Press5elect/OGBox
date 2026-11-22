@@ -178,6 +178,7 @@ bool ReadModules()
 	g_nmodsegs = g_libc_nsegs = 0;
 	g_libc_at = 0;
 	g_foreign = false;
+	int segs_lost = 0;
 	for (size_t i = 0; i < count && i < 256; i++)
 	{
 		alignas(8) uint8_t info[0x160];
@@ -222,8 +223,14 @@ bool ReadModules()
 				m.prot = prot;
 				std::snprintf(m.name, sizeof(m.name), "%s", name);
 			}
+			else
+			{
+				segs_lost++;
+			}
 		}
 	}
+	if (segs_lost)
+		pshakux_log("takeover: %d module segments past the table's 256 not kept (said as \"anonymous\")", segs_lost);
 	return true;
 }
 
@@ -263,6 +270,9 @@ int ReadRegions()
 		std::snprintf(g.name, sizeof(g.name), "%s", info.name);
 		q = info.end;
 	}
+	if (n == static_cast<int>(sizeof(g_regions) / sizeof(g_regions[0])))
+		pshakux_log("takeover: %d mappings, the table's most: those past 0x%llx not scanned", n,
+			static_cast<unsigned long long>(q));
 	return n;
 }
 
@@ -350,6 +360,7 @@ struct Hit
 };
 Hit g_hits[1024];
 int g_nhits;
+int g_hits_lost; // values past the table's 1024 (not listed, not rewritten)
 uint64_t g_my_stack;
 
 sigjmp_buf g_escape;
@@ -441,6 +452,10 @@ void ScanRegion(int index)
 			h.cls = Classify(v, &to, &what);
 			h.rewritable = MayRewrite(where, g);
 		}
+		else
+		{
+			g_hits_lost++;
+		}
 	}
 	g_scan_done = words * 8;
 }
@@ -451,6 +466,7 @@ void Scan(const char* when)
 	uint64_t scanned = 0, skipped = 0;
 	int regions = 0, skipped_regions = 0, faulted = 0;
 	g_nhits = 0;
+	g_hits_lost = 0;
 	GuardOn();
 	for (int i = 0; i < n; i++)
 	{
@@ -488,6 +504,9 @@ void Scan(const char* when)
 				"over 512 MiB); %d values in 0x80000000-0x80200000",
 		when, regions, static_cast<unsigned long long>(scanned >> 10), faulted, skipped_regions,
 		static_cast<unsigned long long>(skipped >> 10), g_nhits);
+	if (g_hits_lost)
+		pshakux_log("takeover: scan %s: %d more values past the table's 1024: not listed, not rewritten, not counted "
+					"below", when, g_hits_lost);
 }
 
 void ListHits(int* counts)
@@ -673,9 +692,20 @@ int Prepare()
 		return 0;
 	}
 	ReadImports();
-	int into = 0;
+	int into = 0, outside = 0;
 	for (int i = 0; i < g_nimports; i++)
 	{
+		// read only inside the eboot's own segments (outside the scan's guard: a list from
+		// another build would point anywhere)
+		bool in_eboot = false;
+		for (int k = 0; k < g_nmodsegs && !in_eboot; k++)
+			in_eboot = std::strstr(g_modsegs[k].name, "eboot") && g_imports[i].slot >= g_modsegs[k].address &&
+					   g_imports[i].slot + 8 <= g_modsegs[k].address + g_modsegs[k].size;
+		if (!in_eboot)
+		{
+			outside++;
+			continue;
+		}
 		const uint64_t v = *reinterpret_cast<volatile uint64_t*>(g_imports[i].slot);
 		if (v >= kHoleLo && v < kTakeHi)
 		{
@@ -690,6 +720,9 @@ int Prepare()
 		}
 	}
 	pshakux_log("takeover: %d of the eboot's %d import slots are bound into libc.prx", into, g_nimports);
+	if (outside)
+		pshakux_log("takeover: %d import slots not in the eboot's segments as the module list gives them: not read "
+					"(only this count; ogbox-imports.txt from another build?)", outside);
 
 	pshakux_log("takeover: scan 1: every readable, non-executable mapping outside 0x80000000-0x80200000");
 	const double t0 = pshakux_uptime();
