@@ -205,3 +205,25 @@ No test build of its own: goes with another batch.
   the code.
 - 2.1 matches the owner's description of the move, but the screen wasn't observed: if the move
   still stops at its last file after batch 2, the cause is elsewhere and a log is needed.
+
+## Outcome of the fix round (not yet run on a console)
+
+Fixed on the working branch, each with what it was checked by on the PC; the rest dropped with the
+reason, after the code was read again. Crux2 (`08c3507..8c656b1`) was checked for the same files:
+ported are SIGPIPE ignored (474dbc6), and for the save sync the put-aside write and a failed listing
+as a failure (37502c4). Its other changes there were features or have no counterpart in OGBox.
+
+| Batch | Fixed | Dropped or not a defect, and why |
+| --- | --- | --- |
+| 1 | 1.1-1.12, 1.14, 1.15 | 1.13: no caller closes a handle another thread reads |
+| 2 | 2.1-2.7 | |
+| 3 | 3.1-3.3, 3.5-3.15 (3.12 SMB) | 3.4: saves are small, and the store takes a whole buffer; 3.12 FTP: never mounted |
+| 4 | 4.1, 4.2, 4.3 (not the rescan, not a place's listing), 4.4, 4.5 (OGBox's start), 4.6 (not started after 30 s: a cut-off sync could leave a save half copied), 4.7-4.11 (4.11 without reopening) | 4.5 at a game's start: needs a new pending-start state; 4.12: the slots can't fill under the caps |
+| 5 | 5.1-5.4, 5.6-5.15 (5.15 without replug), 5.16 (UTF-8), 5.17, 5.18, 5.19 (the redirect) | 5.5: every failure path unmounts; 5.16 second open and number prompts: no caller; 5.19 prefetch, shared covers, offline count: low or unproven |
+| 6 | 6.1, 6.3-6.6, 6.10, 6.13, 6.14, 6.15 | 6.2, 6.12: FTP, never mounted; 6.7: UI thread only; 6.8: `.`/`..` already filtered; 6.9: stores are single save files; 6.11: only blocks a share that is down anyway |
+| 7 | 7.1-7.8 | |
+| 8 | 8.1, 8.2 (atomic entry), 8.3, 8.5 (log lines), 8.6, 8.7 (buffer), 8.8 (NULL check) | 8.4: may be meant; 8.7 poll, 8.2 locks: not defects; 8.8 slots: one eventfd per process; 8.9: negligible |
+
+Found during the round and fixed: quick load's busy state after a refused relaunch; the in-game
+picture upload count never reset (pictures stopped after four); the NAS wake-up's second read
+never ran (`ps5vfs_fstat` answers 1).

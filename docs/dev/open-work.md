@@ -56,3 +56,12 @@ done or something new is learned; delete what no longer applies.
 - The game's own sound mix (its DSP program's output) is the default; Fast is the fallback the
   core switches to by itself when that program stays silent.
 - Release assets are the ZIP and its checksum; no source archive.
+- The FTP share backend (`ps5/src/platform/vfs/ps5_vfs_ftp.cpp`) is never mounted: shares are
+  mounted through `ogbox::mountShare` (SMB, NFS). Its defects found after 1.0.2 (rows 6.2, 6.12 and
+  3.12's FTP half of `docs/dev/frontend-fix-plan.md`) were left; fix them before it is mounted.
+- Crux2's share stall work (non-blocking sockets with time limits, the SMB port check, the share lock
+  released per block during a store) was not ported: nothing on OGBox's console showed a stall
+  there, and Crux2 hadn't run it on a console either. The first thing to try if a switched-off
+  share ever stalls OGBox.
+- A data-folder move now has its own "deleting the old copy" phase, with progress; before, the
+  screen stood at the last file while the old copy was deleted.
