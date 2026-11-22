@@ -358,13 +358,23 @@ public:
         const int closed = smb2_close(m_context, handle);
         if (closed == 0)
         {
-          /* A rename does not take the place of a file that is there: that one goes first. */
-          (void)smb2_unlink(m_context, full.c_str());
+          /* A rename does not take the place of a file that is there: that one is moved aside
+           * first, and put back when the new one cannot take its name (before, it was removed, and
+           * a refused rename then lost both). */
+          const std::string aside = full + ".old.part";
+          (void)smb2_unlink(m_context, aside.c_str());
+          const bool moved_aside = smb2_rename(m_context, full.c_str(), aside.c_str()) == 0;
           const int renamed = smb2_rename(m_context, part.c_str(), full.c_str());
           m_cache.Clear();
           if (renamed == 0)
+          {
+            if (moved_aside)
+              (void)smb2_unlink(m_context, aside.c_str());
             return true;
+          }
           Log("vfs: %s: cannot name \"%s\": %s", m_url.server.c_str(), full.c_str(), ErrorText().c_str());
+          if (moved_aside && smb2_rename(m_context, aside.c_str(), full.c_str()) != 0)
+            Log("vfs: %s: the old \"%s\" is left as \"%s\"", m_url.server.c_str(), full.c_str(), aside.c_str());
           (void)smb2_unlink(m_context, part.c_str());
           errno = ConnectionBroken(renamed) ? EIO : -renamed;
           return false;
@@ -504,6 +514,13 @@ private:
       case EEXIST:
       case EINVAL:
       case ENAMETOOLONG:
+      /* A full disk, a quota, a file too large or a read-only share is the server's answer too
+       * (libsmb2: STATUS_DISK_FULL is ENOSPC, STATUS_MEDIA_WRITE_PROTECTED EROFS). Taken for a
+       * lost connection, a save to a full share was written twice and its ".part" left behind. */
+      case ENOSPC:
+      case EDQUOT:
+      case EFBIG:
+      case EROFS:
         return false;
       default:
         return true;

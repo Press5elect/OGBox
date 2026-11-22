@@ -107,8 +107,21 @@ bool readShares(const std::string &file, ShareFile &out, std::string *error)
 		return false;
 	}
 	std::string pendingName;
-	char line[2048];
-	while (std::fgets(line, sizeof(line), f)) {
+	char chunk[2048];
+	std::string line;
+	for (;;) {
+		/* a whole line, however long (a longer one was read as several, its end taken for lines of
+		 * their own) */
+		line.clear();
+		while (std::fgets(chunk, sizeof(chunk), f)) {
+			line += chunk;
+			if (!line.empty() && line.back() == '\n') {
+				break;
+			}
+		}
+		if (line.empty()) {
+			break;
+		}
 		std::string text = trimmed(line);
 		if (text.compare(0, 3, "\xef\xbb\xbf") == 0) {
 			text = trimmed(text.substr(3));
@@ -195,6 +208,21 @@ bool writeShares(const std::string &file, const ShareFile &in, std::string *erro
 	if (!in.gid.empty()) {
 		text += "gid = " + in.gid + "\n";
 	}
+	/* a line break (or another control character) in a value would end its line early and start
+	 * another: refused, the file left as it was */
+	const auto plain = [](const std::string &v) {
+		return std::none_of(v.begin(), v.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; });
+	};
+	bool ok = plain(in.user) && plain(in.password) && plain(in.uid) && plain(in.gid);
+	for (const Share &s : in.shares) {
+		ok = ok && plain(s.name) && plain(s.host) && plain(s.path);
+	}
+	if (!ok) {
+		if (error) {
+			*error = "a name, address or account holds a line break or another control character";
+		}
+		return false;
+	}
 	for (const Share &s : in.shares) {
 		text += "\n#@ name = " + s.name + "\n";
 		if (s.nfs) {
@@ -219,7 +247,10 @@ bool writeShares(const std::string &file, const ShareFile &in, std::string *erro
 		}
 		return false;
 	}
-	const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+	ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+	/* on the disk before it takes the old one's place (a power cut must not leave it empty) */
+	ok = std::fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
 	const bool closed = std::fclose(f) == 0;
 	if (!ok || !closed || std::rename(tmp.c_str(), file.c_str()) != 0) {
 		if (error) {
@@ -288,7 +319,13 @@ bool mountShare(Share &s, const ShareFile &file, const std::vector<std::string> 
 	} else {
 		const std::string user = s.user.empty() ? file.user : s.user;
 		const std::string password = s.user.empty() ? file.password : s.password;
-		url = "smb://" + percentEncode(user.empty() ? std::string("guest") : user) +
+		/* "domain;user": the ';' stays as written (ps5vfs splits the domain off at it before it
+		 * decodes the address), each side encoded */
+		const std::string account = user.empty() ? std::string("guest") : user;
+		const size_t semi = account.find(';');
+		const std::string encoded = semi == std::string::npos ? percentEncode(account)
+			: percentEncode(account.substr(0, semi)) + ";" + percentEncode(account.substr(semi + 1));
+		url = "smb://" + encoded +
 			(password.empty() ? std::string() : ":" + percentEncode(password)) + "@" + s.host + "/" + s.path;
 	}
 #ifndef OGBOX_SHARES_HOST_TEST
@@ -358,6 +395,12 @@ std::string nbstatName(const uint8_t *b, size_t n)
 		}
 		if (group || name.empty()) {
 			continue;
+		}
+		/* what the server says, shown and perhaps a share's name: no control characters, and a
+		 * byte past ASCII (its OEM code page, not UTF-8) as '?' */
+		for (char &c : name) {
+			const unsigned char u = static_cast<unsigned char>(c);
+			c = u < 0x20 || u >= 0x7f ? '?' : c;
 		}
 		if (e[15] == 0x20) {
 			return name;

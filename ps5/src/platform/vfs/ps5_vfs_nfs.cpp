@@ -492,6 +492,20 @@ public:
         entry.is_directory = (item->type == NF3DIR) || S_ISDIR(item->mode);
         entry.size = entry.is_directory ? 0 : static_cast<int64_t>(item->size);
         entry.mtime = static_cast<int64_t>(item->mtime.tv_sec);
+        /* A listing gives a symbolic link's own attributes (libnfs: S_IFLNK, the link's size), so
+         * a linked folder showed as a small file: the link is followed, as a look at it is
+         * (nfs_stat64). One that leads nowhere stays as it is. */
+        if (S_ISLNK(item->mode))
+        {
+          struct nfs_stat_64 st;
+          const std::string target = FullPath(path.empty() ? entry.name : path + "/" + entry.name);
+          if (nfs_stat64(m_context, target.c_str(), &st) == 0)
+          {
+            entry.is_directory = S_ISDIR(st.nfs_mode);
+            entry.size = entry.is_directory ? 0 : static_cast<int64_t>(st.nfs_size);
+            entry.mtime = static_cast<int64_t>(st.nfs_mtime);
+          }
+        }
         entries->push_back(std::move(entry));
       }
       nfs_closedir(m_context, dir);

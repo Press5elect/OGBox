@@ -115,7 +115,7 @@ public:
     size_t sent = 0;
     while (sent < static_cast<size_t>(length) + 2)
     {
-      const ssize_t result = send(m_control, command + sent, static_cast<size_t>(length) + 2 - sent, 0);
+      const ssize_t result = send(m_control, command + sent, static_cast<size_t>(length) + 2 - sent, MSG_NOSIGNAL);
       if (result < 0 && errno == EINTR)
         continue;
       if (result <= 0)
@@ -596,7 +596,7 @@ public:
         uint32_t done = 0;
         while (done < chunk)
         {
-          const ssize_t result = send(stream, buffer.data() + done, chunk - done, 0);
+          const ssize_t result = send(stream, buffer.data() + done, chunk - done, MSG_NOSIGNAL);
           if (result < 0 && errno == EINTR)
             continue;
           if (result <= 0)
