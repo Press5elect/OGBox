@@ -170,6 +170,7 @@ struct BootConfig {
 	bool autoboot{ false };
 	std::string gameKey;        // 0.1.26: --game <title ID>.<version> (the game list read it)
 	bool back{ false };         // 0.1.43: --back, from a game to the game list (no boot screen)
+	size_t bootTxtOptions{ 0 }; // the first options, boot.txt's (each run reads them again)
 };
 
 std::string trim(const std::string &s)
@@ -271,6 +272,7 @@ bool readBootConfig(BootConfig &config)
 			}
 		}
 		std::fclose(file);
+		config.bootTxtOptions = config.options.size();
 		return true;
 	}
 	return false;
@@ -604,19 +606,24 @@ bool writeBmp(const std::string &path, const uint8_t *rgba, uint32_t w, uint32_t
 	header[26] = 1;
 	header[28] = 24;
 	put32(34, row * h);
-	std::fwrite(header, 1, sizeof(header), f);
+	bool ok = std::fwrite(header, 1, sizeof(header), f) == sizeof(header);
 	std::vector<uint8_t> line(row, 0);
-	for (uint32_t y = 0; y < h; y++) {
+	for (uint32_t y = 0; ok && y < h; y++) {
 		const uint8_t *src = rgba + size_t(h - 1 - y) * stride;
 		for (uint32_t x = 0; x < w; x++) {
 			line[x * 3 + 0] = src[x * 4 + 2];
 			line[x * 3 + 1] = src[x * 4 + 1];
 			line[x * 3 + 2] = src[x * 4 + 0];
 		}
-		std::fwrite(line.data(), 1, row, f);
+		ok = std::fwrite(line.data(), 1, row, f) == row;
 	}
-	std::fclose(f);
-	return true;
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok) {
+		const int error = errno;   // (the caller logs the write's reason)
+		std::remove(path.c_str());   // (a full drive: no truncated picture left, and the caller says it failed)
+		errno = error;
+	}
+	return ok;
 }
 
 /* 0.1.17: the share layer's last failure ("connecting to smb://... failed: <the server's reason>"),
@@ -923,6 +930,7 @@ public:
 	double quitHeldSince{ -1.0 };
 	int lastState{ -1 };
 	bool relaunchAsked{ false };
+	bool guestRelaunchRefused{ false };   // the console refused the game's next XBE: not asked again
 
 	// The game list (0.1.14): shown when no game was named
 	bool library{ false };
@@ -933,6 +941,7 @@ public:
 	int selected{ 0 };
 	std::string startPath;                    // chosen: started on the next frame
 	int startDelay{ 0 };
+	double startSyncWait{ -1.0 };             // since when the start waits for a save sync to end
 	std::string selectName;                   // to select once the listing comes (going up)
 	std::string startState;                   // 0.1.53: the game starts with this save state
 	double shotHeldSince{ -1.0 };             // L3 + R3 held since (a screenshot)
@@ -987,6 +996,7 @@ public:
 		stbi_uc *px{ nullptr };
 		int w{ 0 }, h{ 0 };
 		bool failed{ false };
+		uint64_t seq{ 0 };                    // the order it was decoded in
 	};
 	struct Decoder {
 		std::mutex mutex;
@@ -994,6 +1004,7 @@ public:
 		std::deque<std::string> queue;          // paths
 		std::set<std::string> pending;
 		std::map<std::string, Decoded> done;    // by path
+		uint64_t decoded{ 0 };
 		bool started{ false };
 
 		void request(const std::string &path)
@@ -1043,9 +1054,17 @@ public:
 				}
 				std::lock_guard<std::mutex> lock(mutex);
 				pending.erase(path);
+				d.seq = ++decoded;
 				done[path] = d;
-				while (done.size() > 96) {        // decoded but never drawn (scrolled past)
+				while (done.size() > 96) {        // decoded but never drawn (scrolled past): the oldest goes
+					/* (not the first by name: that could be the one just decoded, asked for again and
+					 * decoded again each frame) */
 					auto old = done.begin();
+					for (auto c = done.begin(); c != done.end(); ++c) {
+						if (c->second.seq < old->second.seq) {
+							old = c;
+						}
+					}
 					if (old->second.px) {
 						stbi_image_free(old->second.px);
 					}
@@ -1633,7 +1652,9 @@ public:
 		if (!listing) {
 			return;
 		}
-		std::lock_guard<std::mutex> lock(listing->mutex);
+		/* (a copy kept to the end: listing.reset() below would otherwise free the mutex still held) */
+		const std::shared_ptr<Listing> job = listing;
+		std::lock_guard<std::mutex> lock(job->mutex);
 		if (!listing->done) {
 			return;
 		}
@@ -2018,6 +2039,9 @@ public:
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--relaunch" };
 		for (const std::string &option : boot.options) {
+			if (static_cast<size_t>(&option - boot.options.data()) < boot.bootTxtOptions) {
+				continue;   // boot.txt's: the next run reads them itself (passed too, they doubled at each switch)
+			}
 			if (option != "relaunch" && option.rfind("loadstate=", 0) != 0) {
 				words.push_back("--option");
 				words.push_back(option);
@@ -2030,7 +2054,14 @@ public:
 		args.push_back(nullptr);
 		saveFrozenFrame();
 		quiesceForExit();
-		pshakux_relaunch(args.data());
+		const int r = pshakux_relaunch(args.data());
+		/* the title goes on: the quick menu (its way back to the list) open to the player again, the
+		 * guest's reboot not asked for again each frame */
+		pshakux_log("ogbox: the relaunch for the game's next XBE was refused (%#x)", static_cast<unsigned>(r));
+		std::remove(frozenPath().c_str());
+		guestRelaunchRefused = true;
+		relaunchAsked = false;
+		showToast("The console refused to start the game's next part (" + std::to_string(r) + ").");
 	}
 
 	/* 0.0.2: a game starting another XBE keeps its picture: the last frame, kept for the title as it
@@ -2170,7 +2201,10 @@ public:
 			/* 0.0.8: an extracted game is its folder's default.xbe: the list opens the folder it is in */
 			const bool folderGame = strcasecmp(baseName(lastGame).c_str(), "default.xbe") == 0;
 			const std::string lastPlace = folderGame ? parentOf(parentOf(lastGame)) : parentOf(lastGame);
-			if (!lastGame.empty() && lastGame != "none" && isFolder(lastPlace)) {
+			/* a folder on a share isn't looked at here (its server may take seconds to answer, the
+			 * start waiting on it): the listing's job finds out, and says it, with the list drawing */
+			const auto there = [](const std::string &p) { return ps5vfs_is_virtual(p.c_str()) != 0 || isFolder(p); };
+			if (!lastGame.empty() && lastGame != "none" && there(lastPlace)) {
 				last = lastPlace;
 			}
 			const std::string select = !lastGame.empty() && lastPlace == last ? (folderGame ? lastGame : baseName(lastGame))
@@ -2179,7 +2213,7 @@ public:
 				screen = Screen::Library;
 				fadeSince = -2.0;   // from the list's first frame
 			}
-			if (!last.empty() && isFolder(last)) {
+			if (!last.empty() && there(last)) {
 				openFolder(last, select);
 			} else {
 				openFolder(std::string());
@@ -2487,6 +2521,9 @@ public:
 		picture.memory = VK_NULL_HANDLE;
 		picture.width = picture.height = 0;
 		picture.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		/* the sets written for it are written again: a new view can come back with the old handle */
+		postPictureView = VK_NULL_HANDLE;
+		smaaPictureView = VK_NULL_HANDLE;
 	}
 
 	void ensureStaging(Staging &s, VkDeviceSize size)
@@ -3218,6 +3255,7 @@ public:
 			smaaW = srcW;
 			smaaH = srcH;
 			smaaPictureView = VK_NULL_HANDLE;
+			postSmaaView = VK_NULL_HANDLE;   // (Debanding's set for smaaOut: written again)
 			smaaValid = false;
 			VkDescriptorImageInfo edges{ sampler, smaaEdges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 			VkDescriptorImageInfo area{ sampler, smaaArea.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -3310,6 +3348,7 @@ public:
 			downW = vw;
 			downH = vh;
 			downValid = false;
+			smaaPictureView = VK_NULL_HANDLE;   // (SMAA's sets for ssaaDown: written again)
 			pshakux_log("presenter: SSAA + SMAA's image %ux%u", vw, vh);
 		}
 		ensureSmaa(ssaaDown.view, vw, vh);
@@ -3689,6 +3728,14 @@ public:
 			passTimes.takeWorst = std::max(passTimes.takeWorst, ms);
 			passTimes.takes++;
 			passTimes.takesLong += ms > 2.0 ? 1 : 0;
+		}
+		if (fw < w) {
+			/* the frame shrank after its size was read: its rows came w * 4 bytes apart; packed now, as
+			 * the upload, frame generation and a screenshot read them (it was one sheared frame) */
+			uint8_t *px = static_cast<uint8_t *>(s.mapped);
+			for (uint32_t y = 1; y < fh; y++) {
+				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * w * 4, size_t(fw) * 4);
+			}
 		}
 		ensurePicture(fw, fh);
 		fgFresh = true;
@@ -4759,6 +4806,29 @@ public:
 		}
 		collectListing();
 		coverHousekeeping();
+		/* a save sync under way: asked to stop after the save it is copying, the start waiting for it with
+		 * the list drawing ("Starting..."; it waited inside saveSyncFinish, the screen frozen, as long as a
+		 * share took to answer). Not ended in 30 s: not started (cut off by the relaunch, a save could be
+		 * left half copied), and said. */
+		if (!startPath.empty() && startDelay <= 0 && ogbox::saveSyncRunning()) {
+			const double now = now_seconds();
+			if (startSyncWait < 0.0) {
+				startSyncWait = now;
+				ogbox::saveSyncAskStop();
+				pshakux_log("library: %s waits for the save sync to end", startPath.c_str());
+			}
+			startDelay = 1;
+			if (now - startSyncWait > 30.0) {
+				pshakux_log("library: the save sync didn't end in 30 s: %s not started", startPath.c_str());
+				startPath.clear();
+				startState.clear();
+				startSyncWait = -1.0;
+				openPopup("Not started", "Your saves' sync with its place is still copying a save (the place may not be "
+					"answering). Start the game again in a moment.", { "OK" }, [](int) {});
+			}
+		} else if (!startPath.empty() && startDelay <= 0) {
+			startSyncWait = -1.0;
+		}
 		if (!startPath.empty() && --startDelay < 0) {
 			const std::string path = startPath;
 			startPath.clear();
@@ -4828,7 +4898,7 @@ public:
 				pshakux_log_keep("the game failed");   // 0.0.7: a log kept in memory goes to the file
 			}
 		}
-		if (!relaunchAsked && pshx_core_relaunch_wanted()) {
+		if (!relaunchAsked && !guestRelaunchRefused && pshx_core_relaunch_wanted()) {
 			relaunchForGuest();
 		}
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
@@ -4840,7 +4910,8 @@ public:
 		fetchPicture();
 		frameGenPlan();
 		probeStall(state);
-		if (shotWanted && upload && havePicture) {
+		/* (fgPush: frame generation takes the new frame instead of the upload; it is in this staging buffer all the same) */
+		if (shotWanted && (upload || fgPush) && havePicture) {
 			shotWanted = false;
 			takeShot();
 		}
@@ -5971,8 +6042,14 @@ public:
 		args.push_back(nullptr);
 		pshakux_log("quick menu: restarting the game");
 		quiesceForExit();
-		pshakux_relaunch(args.data());
+		const int r = pshakux_relaunch(args.data());
+		pshakux_log("quick menu: the relaunch was refused (%#x)", static_cast<unsigned>(r));
 		relaunchAsked = false;
+		qm.busy.clear();   // (the menu answers again)
+		if (!qm.open && pshx_core_state() != PSHX_CORE_IDLE) {
+			pshx_core_pause(false);   // (the exit's pause: the game goes on)
+		}
+		showToast("The console refused to start the game again.");
 	}
 
 	/* ---- 0.0.1: the updater (Crux2's, ps5_update.h) --------------------------------------------
