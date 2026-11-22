@@ -5065,6 +5065,19 @@ public:
 			std::lock_guard<std::mutex> disc(g_discInfoMutex);
 			OgboxGameInfo info{};
 			ogbox_game_info(path.c_str(), &info);
+			countDetails(info, *job);
+			std::lock_guard<std::mutex> lock(job->mutex);
+			job->info = info;
+			job->done = true;
+		}).detach();
+	}
+
+	/* The game's mods, patches, cheats, trainers and own settings counted into its details (on the
+	 * details' thread; again after a screen the game page opened closes: refreshDetailCounts). */
+	static void countDetails(const OgboxGameInfo &info, Details &out)
+	{
+		{
+			Details *job = &out;
 			int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0, patches = 0, patchesOn = 0;
 			if (info.ok) {
 				std::vector<OgboxModEntry> list(480);
@@ -5090,7 +5103,6 @@ public:
 			std::lock_guard<std::mutex> lock(job->mutex);
 			job->trainers = trainers;
 			job->trainerOn = trainerOn;
-			job->info = info;
 			job->mods = mods;
 			job->modsOn = modsOn;
 			job->cheats = cheats;
@@ -5098,7 +5110,28 @@ public:
 			job->overrides = overrides;
 			job->patches = patches;
 			job->patchesOn = patchesOn;
-			job->done = true;
+		}
+	}
+
+	/* The game page's counts looked at again (its own settings, the patches on), without reading the
+	 * disc again: what its Settings or Game Patches changed shows when the page comes back. */
+	void refreshDetailCounts()
+	{
+		if (!details || detailsPath != gp.path) {
+			return;
+		}
+		OgboxGameInfo info{};
+		{
+			std::lock_guard<std::mutex> lock(details->mutex);
+			if (!details->done || !details->info.ok) {
+				return;   // (being read: the reading counts them)
+			}
+			info = details->info;
+		}
+		auto job = details;
+		std::thread([job, info]() {
+			std::lock_guard<std::mutex> disc(g_discInfoMutex);
+			countDetails(info, *job);
 		}).detach();
 	}
 
@@ -6600,6 +6633,7 @@ public:
 			gp.open = true;
 			gp.since = now_seconds();
 			gp.savesKnown.clear();   // (saves brought in or deleted there: "Saves" or "Import Saves" looked at again)
+			refreshDetailCounts();   // (and its own settings and patches on: Crux2 37502c4's "looks up again")
 		}
 	}
 
