@@ -7825,8 +7825,19 @@ public:
 	{
 		const std::string first = entries.empty() ? std::string() : entries.front().path;
 		const std::string last = entries.empty() ? std::string() : entries.back().path;
+		/* (and each game where it was: a listing sorted again, by last played, can keep the size, the
+		 * buffer and both ends, with its games in another order between them) */
+		const auto sameOrder = [this]() {
+			for (size_t g = 0; g < hc.games.size(); g++) {
+				const size_t at = static_cast<size_t>(hc.games[g]);
+				if (at >= entries.size() || entries[at].kind != LibraryEntry::Image || entries[at].path != hc.list[g].id) {
+					return false;
+				}
+			}
+			return true;
+		};
 		if (hc.n == entries.size() && hc.data == entries.data() && hc.tab == tab && hc.folder == folder && hc.first == first &&
-			hc.last == last) {
+			hc.last == last && sameOrder()) {
 			return;
 		}
 		hc.n = entries.size();
