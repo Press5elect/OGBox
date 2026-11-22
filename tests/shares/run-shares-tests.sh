@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # OGBox by Press5elect, GPL-3.0-or-later. The PC test of network.cfg (tests/shares/shares_test.cpp,
 # ps5/src/ogbox_shares.cpp), with the address and undefined-behaviour sanitizers. The mounts are
-# the title's VFS (ps5/src/platform/vfs); here they are stand-ins that succeed.
+# the title's VFS (ps5/src/platform/vfs); here they are stand-ins that succeed. Then the VFS itself
+# above its backends (tests/shares/vfs_test.cpp: a backend in memory, no network).
 #   tests/shares/run-shares-tests.sh [work folder]
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -18,3 +19,6 @@ san=(-g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-om
 "${CXX:-c++}" -std=c++20 "${san[@]}" -I "$root/ps5/src" "$here/shares_test.cpp" "$root/ps5/src/ogbox_shares.cpp" \
 	"$work/vfs_stub.o" -o "$work/shares_test"
 "$work/shares_test"
+"${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror "${san[@]}" -I "$root/ps5/src" "$here/vfs_test.cpp" \
+	"$root/ps5/src/platform/vfs/ps5_vfs.cpp" -lpthread -o "$work/vfs_test"
+"$work/vfs_test"

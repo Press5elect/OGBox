@@ -74,15 +74,15 @@ struct ReadUnderWay
 struct MountPoint
 {
   std::string point; /* "/smb/nas": absolute, normalised, no trailing slash */
-  std::unique_ptr<Backend> backend;
+  std::shared_ptr<Backend> backend;
 };
 
-/* Mounts are added at start-up (and, OGBox 0.0.3, from the settings), and a removed one's backend is
- * kept (s_retired, never freed), so a Backend pointer taken under the lock stays valid for the
- * process's lifetime. */
+/* Mounts are added at start-up (and, OGBox 0.0.3, from the settings). A backend is held by its
+ * mount, by each call into it (Resolve's answer) and by each stream open on it (VFile), so a
+ * removed one lives until the last of those ends, and is let go then (before, it was kept for the
+ * process's lifetime with its connection). */
 std::mutex s_mounts_mutex;
 std::vector<MountPoint> s_mounts;
-std::vector<std::unique_ptr<Backend>> s_retired;
 std::atomic<unsigned> s_mount_count{0};
 std::atomic<const char*> s_shadow_path{PS5VFS_SHADOW_PATH};
 
@@ -131,7 +131,7 @@ bool IsUnder(const std::string& path, const std::string& parent)
 }
 
 /* The backend serving a normalised path and the path inside it, or nullptr. */
-Backend* Resolve(const std::string& path, std::string* relative)
+std::shared_ptr<Backend> Resolve(const std::string& path, std::string* relative)
 {
   if (s_mount_count.load(std::memory_order_acquire) == 0 || path.empty())
     return nullptr;
@@ -142,12 +142,12 @@ Backend* Resolve(const std::string& path, std::string* relative)
     if (path == mount.point)
     {
       relative->clear();
-      return mount.backend.get();
+      return mount.backend;
     }
     if (IsUnder(path, mount.point))
     {
       relative->assign(path, mount.point.size() + 1, std::string::npos);
-      return mount.backend.get();
+      return mount.backend;
     }
   }
   return nullptr;
@@ -204,6 +204,8 @@ struct Block
 struct VFile
 {
   FILE* shadow = nullptr;
+  /* (Before file: a backend's file refers to its backend, so it goes first.) */
+  std::shared_ptr<Backend> backend;
   std::unique_ptr<RemoteFile> file;
   std::mutex mutex;
   Entry info;
@@ -346,22 +348,24 @@ size_t ReadLocked(VFile* file, void* buffer, size_t length)
 int SeekLocked(VFile* file, int64_t offset, int whence)
 {
   int64_t target;
+  bool overflow = false;
   switch (whence)
   {
     case SEEK_SET:
       target = offset;
       break;
     case SEEK_CUR:
-      target = file->position + offset;
+      overflow = __builtin_add_overflow(file->position, offset, &target);
       break;
     case SEEK_END:
-      target = file->info.size + offset;
+      overflow = __builtin_add_overflow(file->info.size, offset, &target);
       break;
     default:
       errno = EINVAL;
       return -1;
   }
-  if (target < 0)
+  /* (A position that 64 bits cannot hold is refused as a negative one is.) */
+  if (overflow || target < 0)
   {
     errno = EINVAL;
     return -1;
@@ -452,7 +456,7 @@ void Mount(const std::string& mount_point, std::unique_ptr<Backend> backend)
 {
   std::lock_guard lock(s_mounts_mutex);
   /* Longest mount points first, so a mount inside another is found before its parent. */
-  MountPoint mount{mount_point, std::move(backend)};
+  MountPoint mount{mount_point, std::shared_ptr<Backend>(std::move(backend))};
   const auto at = std::find_if(s_mounts.begin(), s_mounts.end(),
                                [&](const MountPoint& other) { return other.point.size() < mount.point.size(); });
   s_mounts.insert(at, std::move(mount));
@@ -932,15 +936,20 @@ extern "C" int ps5vfs_unmount(const char* mount_point)
 {
   if (!mount_point)
     return -1;
-  std::lock_guard lock(s_mounts_mutex);
-  const auto at = std::find_if(s_mounts.begin(), s_mounts.end(),
-                               [&](const MountPoint& m) { return m.point == mount_point; });
-  if (at == s_mounts.end())
-    return -1;
-  Log("vfs: %s removed", mount_point);
-  s_retired.push_back(std::move(at->backend));
-  s_mounts.erase(at);
-  s_mount_count.store(static_cast<unsigned>(s_mounts.size()), std::memory_order_release);
+  /* Let go of outside the lock: when nothing else holds it, its connection closes here. */
+  std::shared_ptr<Backend> removed;
+  {
+    std::lock_guard lock(s_mounts_mutex);
+    const auto at = std::find_if(s_mounts.begin(), s_mounts.end(),
+                                 [&](const MountPoint& m) { return m.point == mount_point; });
+    if (at == s_mounts.end())
+      return -1;
+    Log("vfs: %s removed", mount_point);
+    removed = std::move(at->backend);
+    s_mounts.erase(at);
+    s_mount_count.store(static_cast<unsigned>(s_mounts.size()), std::memory_order_release);
+  }
+  removed.reset();
   return 0;
 }
 
@@ -977,7 +986,7 @@ extern "C" int ps5vfs_make_folders(const char* path)
 {
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = Resolve(normal, &relative);
   if (!backend)
   {
     errno = ENOENT;
@@ -1004,7 +1013,7 @@ extern "C" int ps5vfs_store(const char* path, const void* data, size_t size)
 {
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = Resolve(normal, &relative);
   if (!backend || relative.empty())
   {
     errno = backend ? EISDIR : ENOENT;
@@ -1023,7 +1032,7 @@ int ps5vfs_store_from(const char* path, uint64_t size, const std::function<int64
 {
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = Resolve(normal, &relative);
   if (!backend || relative.empty())
   {
     errno = backend ? EISDIR : ENOENT;
@@ -1042,7 +1051,7 @@ extern "C" int ps5vfs_remove(const char* path, int folder)
 {
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = Resolve(normal, &relative);
   if (!backend || relative.empty())
   {
     errno = backend ? EBUSY : ENOENT;
@@ -1077,7 +1086,7 @@ extern "C" int ps5vfs_stat(const char* path, struct stat* st)
 {
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = Resolve(normal, &relative);
   if (!backend)
   {
     if (!normal.empty() && !SyntheticChildren(normal).empty())
@@ -1117,7 +1126,7 @@ extern "C" ps5vfs_dir* ps5vfs_opendir(const char* path)
 {
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = Resolve(normal, &relative);
 
   auto dir = std::make_unique<ps5vfs_dir>();
   if (backend)
@@ -1170,7 +1179,7 @@ extern "C" FILE* ps5vfs_fopen(const char* path, const char* mode)
 
   const std::string normal = Normalise(path);
   std::string relative;
-  Backend* const backend = normal.empty() ? nullptr : Resolve(normal, &relative);
+  const std::shared_ptr<Backend> backend = normal.empty() ? nullptr : Resolve(normal, &relative);
   if (!backend)
   {
     if (!normal.empty() && !SyntheticChildren(normal).empty())
@@ -1214,6 +1223,7 @@ extern "C" FILE* ps5vfs_fopen(const char* path, const char* mode)
   }
 
   auto file = std::make_unique<VFile>();
+  file->backend = backend;
   file->file = std::move(remote);
   file->info = std::move(info);
   file->info.size = file->file->Size();
@@ -1276,9 +1286,16 @@ extern "C" size_t ps5vfs_fread(void* buffer, size_t size, size_t count, FILE* fp
     return fread(buffer, size, count, fp);
   if (size == 0 || count == 0)
     return 0;
+  /* size times count that size_t cannot hold would wrap to a length the buffer may not have. */
+  size_t length;
+  if (__builtin_mul_overflow(size, count, &length))
+  {
+    errno = EINVAL;
+    return 0;
+  }
 
   std::lock_guard lock(file->mutex);
-  const size_t done = ReadLocked(file, buffer, size * count);
+  const size_t done = ReadLocked(file, buffer, length);
   return done / size;
 }
 
@@ -1540,6 +1557,11 @@ extern "C" void ps5vfs_disc_close(int fd)
 {
   if (fd < 0)
     return;
+  /* The stream is closed after the slot is let go: its close can wait for its share (a read under
+   * way on it, a server that does not answer), and another disc image's opening must not wait
+   * for that. */
+  FILE* fp = nullptr;
+  bool virtual_disc = false;
   {
     std::lock_guard lock(s_disc_mutex);
     for (int i = 0; i < kDiscSlots; i++)
@@ -1547,13 +1569,18 @@ extern "C" void ps5vfs_disc_close(int fd)
       if (s_disc_fd[i].load(std::memory_order_acquire) == fd)
       {
         s_disc_fd[i].store(-1, std::memory_order_release);
-        FILE* const fp = s_disc_fp[i];
+        fp = s_disc_fp[i];
         s_disc_fp[i] = nullptr;
-        if (fp)
-          ps5vfs_fclose(fp);
-        return;
+        virtual_disc = true;
+        break;
       }
     }
+  }
+  if (virtual_disc)
+  {
+    if (fp)
+      ps5vfs_fclose(fp);
+    return;
   }
   close(fd);
 }
@@ -1575,10 +1602,15 @@ extern "C" ssize_t __wrap_pread(int fd, void* buffer, size_t length, off_t offse
   std::lock_guard lock(file->mutex);
   file->ungot = -1;
   file->position = offset;
+  /* A failure is this read's own: one that failed partway gave what it read (the caller asks
+   * again for the rest, and that read reports it), and is not kept for a later read, which took
+   * a read at the end (0) for a failure. */
+  file->error = false;
   const size_t done = ReadLocked(file, buffer, length);
-  if (done == 0 && length > 0 && file->error)
+  const bool failed = file->error;
+  file->error = false;
+  if (done == 0 && length > 0 && failed)
   {
-    file->error = false;
     errno = EIO;
     return -1;
   }
