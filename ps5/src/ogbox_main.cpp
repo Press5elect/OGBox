@@ -694,7 +694,7 @@ void wakeShares(const std::vector<std::string> &mounts)
 				std::vector<char> buf(64 * 1024);
 				got = ps5vfs_fread(buf.data(), 1, buf.size(), f);
 				struct stat st;
-				if (ps5vfs_fstat(f, &st) == 0 && st.st_size > static_cast<off_t>(4 * buf.size())) {
+				if (ps5vfs_fstat(f, &st) == 1 && st.st_size > static_cast<off_t>(4 * buf.size())) {
 					std::mt19937_64 rng(static_cast<uint64_t>(t0 * 1e6));
 					const off_t at = static_cast<off_t>(rng() % static_cast<uint64_t>(st.st_size - static_cast<off_t>(buf.size())));
 					if (ps5vfs_fseeko(f, at & ~static_cast<off_t>(4095), SEEK_SET) == 0) {
