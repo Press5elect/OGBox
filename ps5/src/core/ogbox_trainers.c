@@ -168,7 +168,7 @@ static Old *read_index(const char *path, size_t *count)
     return old;
 }
 
-static bool write_index(const char *path, const Entry *list, size_t n)
+static bool write_index(const char *path, const Entry *list, size_t n, const char (*roots)[512])
 {
     char tmp[1100];
     snprintf(tmp, sizeof(tmp), "%s.new", path);
@@ -181,7 +181,7 @@ static bool write_index(const char *path, const Entry *list, size_t n)
         const Entry *e = &list[i];
         fprintf(f, "%llu\t%lld\t%08x\t%08x\t%08x\t%08x\t%u\t%u\t%08x\t%s\t%s\t%s/%s\n", (unsigned long long)e->size,
                 (long long)e->mtime, e->ids[0], e->ids[1], e->ids[2], e->xbe_time, e->noptions, e->flags, e->hash,
-                e->name, e->author, g_roots[e->root], e->rel);
+                e->name, e->author, roots[e->root], e->rel);
     }
     const bool ok = fclose(f) == 0 && rename(tmp, path) == 0;
     return ok;
@@ -354,12 +354,10 @@ int ogbox_trainers_scan(const char *index_path)
     }
     free(old);
     qsort(s.list, s.n, sizeof(Entry), by_name);
-    if (index_path && (s.parsed || s.n != nold)) {
-        pthread_mutex_lock(&g_lock);   /* (write_index reads the roots) */
-        if (!write_index(index_path, s.list, s.n)) {
-            pshakux_log("trainers: the index %s can't be written (%s)", index_path, strerror(errno));
-        }
-        pthread_mutex_unlock(&g_lock);
+    /* 1.0.3: written outside the lock (the Mods screen's questions waited for the whole write),
+     * with the roots the scan's entries are numbered by */
+    if (index_path && (s.parsed || s.n != nold) && !write_index(index_path, s.list, s.n, roots)) {
+        pshakux_log("trainers: the index %s can't be written (%s)", index_path, strerror(errno));
     }
     pshakux_log("trainers: %zu in %d folders (%u read, %u from the index, %u not trainers)", s.n, nroots, s.parsed,
                 s.reused, s.broken);
