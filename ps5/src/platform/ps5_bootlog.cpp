@@ -815,6 +815,32 @@ extern "C" void pshakux_thread_named(const char* name)
   pshakux_thread_named_for(pthread_self(), name);
 }
 
+// A thread that names itself lets its name go as it ends, whether it says so (pshakux_thread_gone)
+// or not: the front end's short-lived threads didn't, and after 64 of them the table was full and
+// every new thread went unnamed in the crash report.
+static pthread_key_t s_thread_key;
+static pthread_once_t s_thread_key_once = PTHREAD_ONCE_INIT;
+static bool s_thread_key_made = false;
+
+static void ThreadNameEnds(void*)
+{
+  pshakux_thread_gone();
+}
+
+static void ThreadKeyMake()
+{
+  s_thread_key_made = pthread_key_create(&s_thread_key, &ThreadNameEnds) == 0;
+}
+
+static void ThreadNameEndsWithIt(pthread_t self)
+{
+  if (!pthread_equal(self, pthread_self()))
+    return;   // (another thread's: its helper says when it ends)
+  pthread_once(&s_thread_key_once, &ThreadKeyMake);
+  if (s_thread_key_made)
+    (void)pthread_setspecific(s_thread_key, reinterpret_cast<void*>(1));
+}
+
 extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
 {
   for (int i = 0; i < MAX_THREADS; i++)
@@ -822,6 +848,7 @@ extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
     if (s_thread_used[i].load(std::memory_order_acquire) == 2 && pthread_equal(s_thread_ids[i], self))
     {
       s_thread_names[i] = name;
+      ThreadNameEndsWithIt(self);   // (a slot left by an ended thread with the same pthread_t)
       return;
     }
   }
@@ -833,6 +860,7 @@ extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
       s_thread_ids[i] = self;
       s_thread_names[i] = name;
       s_thread_used[i].store(2, std::memory_order_release);
+      ThreadNameEndsWithIt(self);
       return;
     }
   }
