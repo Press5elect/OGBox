@@ -6075,7 +6075,12 @@ public:
 				if (PS5Update::Install()) {
 					pshakux_log("update: installed; OGBox closes");
 					openPopup("OGBox was updated", "The update is installed. OGBox will now close: start it again "
-						"from the home screen.", { "Close OGBox" }, [this](int) { quit = true; });
+						"from the home screen.", { "Close OGBox" }, [this](int) {
+							leaveAfterWrites("OGBox closes", [this]() {
+								prefs.flush();   // settings not yet written (as every other way out)
+								quit = true;
+							});
+						});
 				} else {
 					openPopup("The update was not installed", PS5Update::GetStatus().error + "\nOGBox is as it was.",
 						{ "OK" }, nullptr);
