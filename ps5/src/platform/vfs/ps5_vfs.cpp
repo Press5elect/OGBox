@@ -932,7 +932,11 @@ extern "C" int ps5vfs_load_network_config(const char* config_path)
     std::string url = "smb://";
     if (!own_account)
     {
-      url += PercentEncode(user);
+      /* "domain;user": the ';' stays as written (the SMB address splits the domain off at it before
+       * it decodes), each side encoded. */
+      const size_t semicolon = user.find(';');
+      url += semicolon == std::string::npos ? PercentEncode(user)
+                                            : PercentEncode(user.substr(0, semicolon)) + ";" + PercentEncode(user.substr(semicolon + 1));
       if (!password.empty())
         url += ":" + PercentEncode(password);
       url += "@";

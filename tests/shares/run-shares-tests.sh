@@ -10,7 +10,9 @@ root=$(cd "$here/../.." && pwd)
 work=${1:-$root/build/shares-tests}
 mkdir -p "$work"
 cat > "$work/vfs_stub.c" <<'C'
-int ps5vfs_mount_smb(const char *name, const char *url) { (void)name; (void)url; return 0; }
+#include <stdio.h>
+char shares_test_last_url[4096];
+int ps5vfs_mount_smb(const char *name, const char *url) { (void)name; snprintf(shares_test_last_url, sizeof(shares_test_last_url), "%s", url); return 0; }
 int ps5vfs_mount_nfs(const char *name, const char *url) { (void)name; (void)url; return 0; }
 int ps5vfs_unmount(const char *mount_point) { (void)mount_point; return 0; }
 C
