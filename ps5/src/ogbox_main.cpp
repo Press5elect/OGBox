@@ -6879,11 +6879,40 @@ public:
 
 	void hddRescan()
 	{
+		/* the game chosen stays chosen by its title ID (the list's order is the newest save first, and a
+		 * game goes with its last save): gone, the games' pane is chosen again, not the next game's saves */
+		const ogbox::HddTitle *was = hddTitle();
+		const bool hadTitle = was != nullptr;
+		const uint32_t wasId = was ? was->titleId : 0;
 		hdd.titles = ogbox::hddScan(boot.hdd);
 		hdd.cacheBytes = ogbox::hddCacheBytes(boot.hdd);
 		hdd.usedBytes = ogbox::hddUsedBytes(boot.hdd);
 		const int rows = HA_COUNT + static_cast<int>(hdd.titles.size());
+		if (hadTitle) {
+			bool found = false;
+			for (size_t i = 0; i < hdd.titles.size() && !found; i++) {
+				if (hdd.titles[i].titleId == wasId) {
+					hdd.selT = HA_COUNT + static_cast<int>(i);
+					found = true;
+				}
+			}
+			if (!found && !hdd.importing && !hdd.place) {
+				hdd.pane = 0;
+				hdd.selS = 0;
+			}
+		}
 		hdd.selT = std::min(hdd.selT, rows - 1);
+		/* the right pane's choice within its list as it is now */
+		int right = -1;
+		if (hdd.importing) {
+			right = 1 + static_cast<int>(hdd.copies.size());
+		} else if (!hdd.place) {
+			const ogbox::HddTitle *t = hddTitle();
+			right = t ? static_cast<int>(t->saves.size()) : 0;
+		}
+		if (right >= 0) {
+			hdd.selS = std::max(0, std::min(hdd.selS, right - 1));
+		}
 	}
 
 	const ogbox::HddTitle *hddTitle() const
