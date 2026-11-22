@@ -1222,6 +1222,27 @@ static void TestInterrupted(const std::string& work, const std::string& app)
 	}
 	std::fprintf(stderr, "  %d power cuts and %d interrupted undos, each put back exactly\n", cuts, undos);
 
+	// An interrupted install not undone yet (an undo that could not finish): a new download must
+	// not take its backups away. It is refused, nothing moves, and the next start undoes it.
+	for (const int k : {1, renames / 2, renames - 1})
+	{
+		CHECK(ToReady(work, app, zip).state == State::Ready);
+		Test::stop_after = k;
+		CHECK(!Install());
+		Test::stop_after = -1;
+		CHECK(Exists(app + "/.update/journal"));
+		const auto pending = Snapshot(app);
+		Init(MakeSetup(app, "1.0.0"));
+		Check();
+		CHECK(Wait().state == State::Available);
+		Download();
+		const Status refused = Wait();
+		CHECK(refused.state == State::Failed && Contains(refused.error, "not undone"));
+		CHECK(Unchanged(app, pending));
+		CHECK(Recover(app));
+		CHECK(Unchanged(app, original));
+	}
+
 	for (int k = 0; k < renames; k++)
 	{
 		CHECK(ToReady(work, app, zip).state == State::Ready);

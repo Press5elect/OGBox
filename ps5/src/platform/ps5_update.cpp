@@ -1345,6 +1345,14 @@ void RunDownload(const Setup& use, const Release& release)
 	const Log& log = use.log;
 	const std::string dir = use.app_dir + ".update/";
 	const std::string zip_path = dir + "release.zip";
+	// An install that was stopped and not yet undone (its journal is there): its backups are the
+	// only copy of the old files, and stay until Recover() has put them back.
+	if (PathExists(dir + "journal"))
+	{
+		Say(log, "an interrupted install is not undone yet; .update is kept");
+		Finish(log, State::Failed, "An earlier install was stopped and is not undone yet: start the title again.");
+		return;
+	}
 	RemoveTree(dir);
 	MakeDirs(use.app_dir + ".update");
 	Outcome outcome = Outcome::Failed;
