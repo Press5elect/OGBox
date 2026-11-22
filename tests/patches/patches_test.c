@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct {
     uint8_t d[4096];
@@ -258,6 +259,43 @@ static void test_records(void)
     assert(!apply_records(&b, "O\tFFFFFFFFFFFFFFFF\t41", NULL));
     assert(!apply_records(&b, "I\tno-such-file.ips", NULL));
     assert(b.size == 8 && !memcmp(b.data, "AbXYef!?", 8));
+
+    /* 1.0.3: a record too long for the reader is refused, not cut and applied in part */
+    static char longrec[12000];
+    snprintf(longrec, sizeof(longrec), "O\t00\t");     /* (cut at 8191: an even number of digits) */
+    for (size_t i = strlen(longrec); i < sizeof(longrec) - 1; i++) {
+        longrec[i] = '4';
+    }
+    OgboxBuf big = {0};
+    big.size = big.cap = 8192;
+    big.data = calloc(1, big.size);
+    assert(!apply_records(&big, longrec, NULL));
+    assert(big.data[0] == 0);
+    free(big.data);
+    /* a record it can't read fails the patch: an unknown kind, one short of its fields, a number
+     * that isn't one */
+    assert(!apply_records(&b, "O\t0\t41", "X\t00"));
+    assert(!apply_records(&b, "O\t0\t41", "F\t6162"));
+    assert(!apply_records(&b, "O\tzz\t41", NULL));
+    assert(!apply_records(&b, "O\t0\t41", "C\t1a2b3c4dxyz"));
+    assert(!memcmp(b.data, "AbXYef!?", 8));
+    /* an IPS or BPS file outside the patches' folder: one that would apply, named through ".." */
+    char back[1024], tmpdir[] = "/tmp/ogbox-patches-XXXXXX";
+    assert(getcwd(back, sizeof(back)) && mkdtemp(tmpdir) && chdir(tmpdir) == 0);
+    FILE *ips = fopen("ogbox-records-test.ips", "wb");
+    assert(ips);
+    fwrite("PATCH\x00\x00\x00\x00\x01ZEOF", 1, 14, ips);
+    fclose(ips);
+    char here[1024], *slash, outside[1200];
+    assert(getcwd(here, sizeof(here)) && (slash = strrchr(here, '/')));
+    snprintf(outside, sizeof(outside), "I\t../%s/ogbox-records-test.ips", slash[1] ? slash + 1 : ".");
+    assert(!apply_records(&b, outside, NULL));
+    assert(!apply_records(&b, "B\t/etc/hostname", NULL));
+    assert(!memcmp(b.data, "AbXYef!?", 8));
+    assert(apply_records(&b, "I\togbox-records-test.ips", NULL));
+    assert(!memcmp(b.data, "ZbXYef!?", 8));
+    remove("ogbox-records-test.ips");
+    assert(chdir(back) == 0 && rmdir(tmpdir) == 0);
     free(b.data);
 }
 

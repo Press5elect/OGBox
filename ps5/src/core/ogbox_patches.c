@@ -348,6 +348,39 @@ bool ogbox_apply_bps(OgboxBuf *buf, const uint8_t *p, size_t n, char *why, size_
 
 /* ---- the records ---- */
 
+/* A record's hex number, the whole field (strtoull alone took "zz" for 0) */
+static bool hexnum(const char *s, unsigned long long *v)
+{
+    char *end;
+    errno = 0;
+    *v = strtoull(s, &end, 16);
+    return isxdigit((unsigned char)s[0]) && end != s && !*end && errno == 0;
+}
+
+static void malformed(char *why, size_t why_len, const char *record)
+{
+    if (why && why_len) {
+        snprintf(why, why_len, "a record it cannot read (%.32s%s)", record, strlen(record) > 32 ? "..." : "");
+    }
+}
+
+/* An IPS or BPS file's name in the database: relative, without a ".." part */
+static bool inside_name(const char *name)
+{
+    if (!name[0] || name[0] == '/') {
+        return false;
+    }
+    for (const char *p = name; *p;) {
+        const size_t n = strcspn(p, "/");
+        if (n == 2 && p[0] == '.' && p[1] == '.') {
+            return false;
+        }
+        p += n;
+        p += *p == '/';
+    }
+    return true;
+}
+
 /* 0.1.47: the CRC-32 of the target as the disc has it, while the patches for a game are applied in
  * turn: a patch's CRC check is of the release it was made for, not of the file another patch already
  * changed (Manhunt's widescreen patch after its 720p one). 0: the buffer's own (the tests). */
@@ -363,7 +396,15 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
     bool ok = true;
     for (size_t r = 0; r < n && ok; r++) {
         char line[8192];
-        snprintf(line, sizeof(line), "%s", records[r]);
+        /* 1.0.3: a record that doesn't fit is refused (cut, an offset's or an append's bytes were
+         * applied in part) */
+        if ((size_t)snprintf(line, sizeof(line), "%s", records[r]) >= sizeof(line)) {
+            if (why && why_len) {
+                snprintf(why, why_len, "a record longer than %zu characters (%.24s...)", sizeof(line) - 1, records[r]);
+            }
+            ok = false;
+            break;
+        }
         char *f[4] = {0};
         unsigned nf = 0;
         for (char *save, *t = strtok_r(line, "\t", &save); t && nf < 4; t = strtok_r(NULL, "\t", &save)) {
@@ -375,13 +416,18 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
         const char kind = f[0][0];
         if (kind == 'C' && nf >= 2) {
             /* 1.0.2: a C line may name several releases (up to three CRC-32s): any of them */
-            const uint32_t want = (uint32_t)strtoul(f[1], NULL, 16),
-                           have = g_original_crc ? g_original_crc : ogbox_crc32(work.data, work.size);
+            const uint32_t have = g_original_crc ? g_original_crc : ogbox_crc32(work.data, work.size);
+            uint32_t want = 0;
             bool any = false;
-            for (unsigned c = 1; c < nf; c++) {
-                any = any || (uint32_t)strtoul(f[c], NULL, 16) == have;
+            for (unsigned c = 1; c < nf && ok; c++) {
+                unsigned long long v;
+                ok = hexnum(f[c], &v) && v <= 0xFFFFFFFFu;
+                want = c == 1 ? (uint32_t)v : want;
+                any = any || (uint32_t)v == have;
             }
-            if (!any) {
+            if (!ok) {
+                malformed(why, why_len, records[r]);
+            } else if (!any) {
                 if (why && why_len) {
                     snprintf(why, why_len, "it was made for the file of CRC-32 %08x, this disc's is %08x", want, have);
                 }
@@ -409,7 +455,12 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
             free(repl);
         } else if (kind == 'O' && nf >= 3) {
             size_t dn = 0;
-            const unsigned long long off = strtoull(f[1], NULL, 16);
+            unsigned long long off = 0;
+            if (!hexnum(f[1], &off)) {
+                malformed(why, why_len, records[r]);
+                ok = false;
+                continue;
+            }
             uint8_t *data = unhex(f[2], &dn);
             ok = data && off <= work.size && dn <= work.size - off;
             if (ok) {
@@ -428,6 +479,14 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
             }
             free(data);
         } else if ((kind == 'I' || kind == 'B') && nf >= 2) {
+            /* 1.0.3: a file of files_dir only (not "/..." or "../...") */
+            if (!inside_name(f[1])) {
+                if (why && why_len) {
+                    snprintf(why, why_len, "%.64s is not a file of the patches' folder", f[1]);
+                }
+                ok = false;
+                continue;
+            }
             char path[1024];
             snprintf(path, sizeof(path), "%s/%s", files_dir, f[1]);
             size_t pn = 0;
@@ -442,6 +501,11 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
                                  : ogbox_apply_bps(&work, p, pn, why, why_len);
                 free(p);
             }
+        } else {
+            /* 1.0.3: a record of a kind it doesn't know, or short of its fields: the patch is not
+             * applied (it was skipped, and the patch counted as applied without it) */
+            malformed(why, why_len, records[r]);
+            ok = false;
         }
     }
     if (ok) {
@@ -565,7 +629,10 @@ static void read_on(const char *key)
     for (int p = 0; p < 2; p++) {
         FILE *f = fopen(paths[p], "r");
         if (!f) {
-            continue;
+            if (errno == ENOENT) {
+                continue;
+            }
+            return;     /* (1.0.3: there and unreadable: not the other's, as ogbox_mods.c reads it) */
         }
         char line[1024];
         while (fgets(line, sizeof(line), f)) {
@@ -824,7 +891,8 @@ static uint32_t xbe_regions(const OgboxBuf *x)
                           (uint32_t)h[0x107] << 24;
     const uint32_t cert = ((uint32_t)h[0x118] | (uint32_t)h[0x119] << 8 | (uint32_t)h[0x11A] << 16 |
                            (uint32_t)h[0x11B] << 24) - base;
-    return cert + 0xA4 <= x->size ? ((uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8) : 0;
+    /* (in 64 bits: a certificate address below the base wrapped the sum) */
+    return (uint64_t)cert + 0xA4 <= x->size ? ((uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8) : 0;
 }
 
 static bool is_default_xbe(const char *name)
@@ -982,7 +1050,7 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                                   (uint32_t)h[0x107] << 24;
             const uint32_t cert = ((uint32_t)h[0x118] | (uint32_t)h[0x119] << 8 | (uint32_t)h[0x11A] << 16 |
                                    (uint32_t)h[0x11B] << 24) - base;
-            if (cert + 0xA4 <= x.buf.size) {
+            if ((uint64_t)cert + 0xA4 <= x.buf.size) {
                 regions = (uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8;
             }
         }
@@ -1046,8 +1114,18 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                 const bool done = ogbox_apply_records(&t->buf, e->lines + start, k - start, files_dir, why, sizeof(why));
                 g_original_crc = 0;
                 if (done) {
-                    undo[nundo] = t;
-                    saved[nundo++] = before;
+                    /* 1.0.3: a target once, as it was before this patch (a ninth part ran past
+                     * undo[8]; there are at most 8 targets) */
+                    unsigned u = 0;
+                    while (u < nundo && undo[u] != t) {
+                        u++;
+                    }
+                    if (u < nundo) {
+                        free(before.data);
+                    } else {
+                        undo[nundo] = t;
+                        saved[nundo++] = before;
+                    }
                 } else {
                     free(before.data);
                     ok = false;
