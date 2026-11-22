@@ -20,6 +20,8 @@
 //                   the folders made for them (those end in '/')
 //     journal       the plan again: present from the first rename to the last
 //     backup/       the old files while the journal is there
+//     linked        (on a drive with links) written before the journal: backup/ has the old
+//                   files as second names, and the new ones were renamed onto them
 //     displaced/    (only after a rare undo) a file that stood where an old one had to return
 //
 // Only the program's own files are ever unpacked or replaced (IsManaged). The ZIP's other entries
@@ -31,6 +33,13 @@
 // anything: the old file is renamed away first, then the new one in, and afterwards the drive is
 // asked whether the source is gone and the destination has the size the source had. fchmod() may
 // be refused there too; that is not an error.
+//
+// Between those two renames the old file is gone and the new one not yet there: a power cut at
+// that moment on eboot.bin would leave a title that cannot start, and so cannot undo the install.
+// A drive that keeps two names for one file (link(): the console's own, not exFAT) is taken to
+// rename onto a file as POSIX says, in one step. There the old file keeps its place: it is given
+// a second name in backup/, and the new one is renamed onto it (and an undo renames the backup
+// back onto the new one), so each place always has the old file or the new one.
 //
 // Everything here is written without exceptions and without std::filesystem (the console's libc++
 // has none): POSIX calls only.
@@ -71,6 +80,7 @@ int stop_after = -1;
 int undo_stop_after = -1;
 int fail_at = -1;
 int lie_at = -1;
+int no_links = 0;
 uint64_t max_unpacked = 0;
 size_t max_entries = 0;
 } // namespace Test
@@ -1460,6 +1470,67 @@ bool MoveVerified(const std::string& from, const std::string& to, bool lie = fal
 	return true;
 }
 
+// The same file under a second name, `to` (where nothing is), with link(). Afterwards `to` must be a
+// file of the size `from` has. False with errno otherwise.
+bool LinkVerified(const std::string& from, const std::string& to, bool lie = false)
+{
+	struct stat before;
+	if (!LookAt(from, before) || !S_ISREG(before.st_mode))
+	{
+		errno = ENOENT;
+		return false;
+	}
+	if (PathExists(to))
+	{
+		errno = EEXIST;
+		return false;
+	}
+	if (!lie && link(from.c_str(), to.c_str()) != 0)
+		return false;
+	struct stat after;
+	if (!LookAt(from, before) || !LookAt(to, after) || !S_ISREG(after.st_mode) || after.st_size != before.st_size)
+	{
+		errno = EIO;
+		return false;
+	}
+	return true;
+}
+
+// Renames `from` onto the file `to`, only on a drive with links (see exFAT above). Afterwards
+// `from` must be gone and `to` a file of the size `from` had. False with errno otherwise.
+bool OverVerified(const std::string& from, const std::string& to, bool lie = false)
+{
+	struct stat before, there;
+	if (!LookAt(from, before) || !S_ISREG(before.st_mode) || !LookAt(to, there) || !S_ISREG(there.st_mode))
+	{
+		errno = ENOENT;
+		return false;
+	}
+	if (!lie && rename(from.c_str(), to.c_str()) != 0)
+		return false;
+	struct stat after;
+	if (PathExists(from) || !LookAt(to, after) || !S_ISREG(after.st_mode) || after.st_size != before.st_size)
+	{
+		errno = EIO;
+		return false;
+	}
+	return true;
+}
+
+// Whether the drive of `file` keeps a second name for a file (link()). exFAT does not.
+bool LinksWork(const std::string& file)
+{
+#if defined(OGBOX_UPDATE_TEST)
+	if (Test::no_links)
+		return false;
+#endif
+	const std::string other = file + ".link";
+	unlink(other.c_str());
+	const bool works = link(file.c_str(), other.c_str()) == 0 && IsRegularFile(other);
+	unlink(other.c_str());
+	return works && !PathExists(other);
+}
+
 // Undoes what an install did, from the journal: the old files return from .update/backup/, the
 // new ones go back to .update/stage/, the folders made for them are removed, and then .update/
 // itself. Without a journal nothing was begun, and only .update/ is removed. `restored` counts
@@ -1492,6 +1563,9 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 #endif
 	int renames = 0;
 	const auto cut = [&] { return stop_after >= 0 && renames++ >= stop_after; };
+	// Linked: the old files were given second names in backup/ and the new ones renamed onto
+	// them (Install()); a rename onto a file is then trusted on this drive.
+	const bool linked = PathExists(dir + "linked");
 	std::vector<std::string> added;
 	ReadLines(dir + "new", added);
 	const std::set<std::string> fresh(added.begin(), added.end());
@@ -1507,7 +1581,30 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 		const std::string staged = dir + "stage/" + path;
 		const std::string backup = dir + "backup/" + path;
 		const bool installed = !PathExists(staged) && PathExists(place);
-		if (PathExists(backup))
+		bool back = false; // the old file is in its place again
+		struct stat old_one, here;
+		if (linked && !installed && LookAt(backup, old_one) && S_ISREG(old_one.st_mode) && LookAt(place, here) &&
+			S_ISREG(here.st_mode) && here.st_size == old_one.st_size)
+		{
+			// The new file is still staged: the old one is in its place, and backup/ has only
+			// its second name.
+			if (cut())
+				return false;
+			back = unlink(backup.c_str()) == 0 || !PathExists(backup);
+			if (back)
+				restored++;
+		}
+		else if (linked && installed && PathExists(backup))
+		{
+			// The old file back onto the new one, in one step: the place is never empty. Where
+			// the drive refuses, as below.
+			if (cut())
+				return false;
+			back = OverVerified(backup, place);
+			if (back)
+				restored++;
+		}
+		if (!back && PathExists(backup))
 		{
 			// The new file goes back to the stage first: were this interrupted between the two
 			// renames, the next start would find the backup and a staged file, and finish it.
@@ -1538,7 +1635,7 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 				complete = false;
 			}
 		}
-		else if (installed && fresh.count(path) != 0)
+		else if (!back && installed && fresh.count(path) != 0)
 		{
 			// A file the old version did not have, put in place. One that is still staged was not
 			// reached, and is left.
@@ -2002,14 +2099,15 @@ bool Install()
 	const int stop_after = -1, fail_at = -1, lie_at = -1;
 #endif
 	int renames = 0, attempts = 0;
-	const auto step = [&](const std::string& from, const std::string& to) -> bool {
+	using Move = bool (*)(const std::string&, const std::string&, bool);
+	const auto step = [&](const std::string& from, const std::string& to, Move move) -> bool {
 		const int attempt = attempts++;
 		if (attempt == fail_at)
 		{
 			errno = EIO;
 			return false;
 		}
-		if (!MoveVerified(from, to, attempt == lie_at))
+		if (!move(from, to, attempt == lie_at))
 			return false;
 		renames++;
 		return true;
@@ -2022,8 +2120,20 @@ bool Install()
 		return true;
 	};
 	std::set<std::string> folders;
+	// On a drive with links the old files keep their places (see exFAT above); the undo learns
+	// it from .update/linked, written before the journal.
+	bool linked = LinksWork(dir + "plan");
+	if (linked && !WriteDurable(dir + "linked", "linked\n"))
+	{
+		unlink((dir + "linked").c_str());
+		linked = false;
+	}
+	if (linked)
+		Say(log, "the drive keeps links: each old file stays in its place until the new one is renamed onto it");
+	if (!linked && PathExists(dir + "linked"))
+		error = "The update's journal could not be written.";
 	// The list of what is new before the journal, the journal before the first rename.
-	if (!WriteDurable(dir + "new", added_text) || !WriteDurable(dir + "journal", plan_text))
+	else if (!WriteDurable(dir + "new", added_text) || !WriteDurable(dir + "journal", plan_text))
 		error = "The update's journal could not be written.";
 	else
 	{
@@ -2037,15 +2147,17 @@ bool Install()
 			MakeDirs(ParentOf(backup));
 			MakeDirs(ParentOf(place));
 			folders.insert(ParentOf(place));
-			// The old file away first, then the new one into the empty place.
-			if (PathExists(place) && !step(place, backup))
+			// The old file away first, then the new one into the empty place; on a drive with
+			// links, the old file given a second name, then the new one renamed onto it.
+			const bool old_one = PathExists(place);
+			if (old_one && !step(place, backup, linked ? LinkVerified : MoveVerified))
 			{
 				error = Format("%s could not be moved aside (errno %d).", path.c_str(), errno);
 				break;
 			}
 			if (cut())
 				return false;
-			if (!step(dir + "stage/" + path, place))
+			if (!step(dir + "stage/" + path, place, linked && old_one ? OverVerified : MoveVerified))
 			{
 				error = Format("%s could not be put in place (errno %d).", path.c_str(), errno);
 				break;
