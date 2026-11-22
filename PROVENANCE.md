@@ -163,6 +163,11 @@ Among it:
   the `45410083` mods' timing follows; none of its code is carried;
 - the game data: the patches from Jay's PatchHub and Xbox Magic Patches (jayxbox.com) and the other
   authors `patches.db` names, and the disc database from libretro-database (Redump's data);
+- MobCat's original Xbox game list (https://github.com/MobCat/MobCats-original-xbox-game-list and
+  its database, mobcat.zip/XboxIDs): the index `ps5/gamedata/covers-mobcat.txt` holds only
+  identifiers from it (title IDs, versions, XMIDs and the labels of its pictures, with which of them
+  the repository has); its box scans and thumbnails are downloaded by the console when a game needs
+  one, and none is carried;
 - XBMC4Xbox's trainer loading (Team XBMC and team xored);
 - Crux2's platform code and frame generation (Press5elect, under Crux2's own attribution term);
 - MihawkGen (Mihawk, GPL-3.0-or-later);
