@@ -551,6 +551,20 @@ int main(int argc, char **argv)
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
 			ui::drawHome(dl, S, v);
 		} },
+		{ "home-shorter", [&](ImDrawList *dl, ImVec2 S) {
+			// a late game of a long list, then a shorter folder: the shelf's scroll must come back to the list
+			static int calls = 0;
+			ui::HomeView v = home;
+			if (calls++ < 60) {
+				v.gameSel = 9;
+			} else {
+				v.games.resize(4);
+				v.gameSel = 1;
+			}
+			v.title = names[static_cast<size_t>(v.gameSel)];
+			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
+			ui::drawHome(dl, S, v);
+		} },
 		{ "game", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
 			ui::drawGamePage(dl, S, gp, 1.0f);

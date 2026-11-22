@@ -185,9 +185,11 @@ int httpGet(const std::string &host, const std::string &path, std::string &body,
 		location = data.substr(a, data.find("\r\n", a) - a);
 	}
 	body = data.substr(end + 4);
+	bool whole = true;   // (the body came to its end: a cover cut off midway is not a cover)
 	if (head.find("transfer-encoding: chunked") != std::string::npos) {
 		std::string plain;
 		size_t at = 0;
+		whole = false;
 		while (at < body.size()) {
 			const size_t le = body.find("\r\n", at);
 			if (le == std::string::npos) {
@@ -195,12 +197,29 @@ int httpGet(const std::string &host, const std::string &path, std::string &body,
 			}
 			const size_t len = std::strtoul(body.c_str() + at, nullptr, 16);
 			if (!len) {
+				whole = true;
 				break;
+			}
+			if (len > body.size() - (le + 2)) {
+				break;   // (a length past the bytes there are: cut short, or it would wrap)
 			}
 			plain.append(body, le + 2, len);
 			at = le + 2 + len + 2;
 		}
 		body.swap(plain);
+	} else {
+		const size_t cl = head.find("\r\ncontent-length:");
+		if (cl != std::string::npos) {
+			const unsigned long long want = std::strtoull(head.c_str() + cl + 17, nullptr, 10);
+			whole = body.size() >= want;
+			if (body.size() > want) {
+				body.resize(static_cast<size_t>(want));
+			}
+		}
+	}
+	if (!whole || data.size() > (16u << 20)) {
+		body.clear();
+		return 0;
 	}
 	return status;
 }
@@ -785,6 +804,8 @@ struct Covers::Impl {
 				}
 				if (status == 200 && !(body.size() > 8 && !body.compare(0, 8, "\x89PNG\r\n\x1a\n", 8))) {
 					status = 415;
+				} else if (status == 200 && body.compare(body.size() - 8, 8, "IEND\xAE\x42\x60\x82", 8) != 0) {
+					status = 0;   // (a PNG cut off before its end chunk: asked again, not kept)
 				}
 				if (status == 200 && writeFile(pathOf(name, ".png"), body)) {
 					bytes = body.size();
@@ -806,6 +827,12 @@ struct Covers::Impl {
 				writeFile(pathOf(name, ".none"), std::string());
 				missing++;
 				pshakux_log("covers: %s: %s has none", name.c_str(), from);
+			} else if (status >= 300 && status < 400) {
+				/* a redirect not followed (to https, or too many hops) is this cover's: it is passed over, the
+				 * network's rest is not for it (every cover would wait a minute for one) */
+				writeFile(pathOf(name, ".none"), std::string());
+				missing++;
+				pshakux_log("covers: %s: %s: HTTP %d, a redirect not followed: passed over", name.c_str(), from, status);
 			} else {
 				failed++;
 				asked.erase(name);
