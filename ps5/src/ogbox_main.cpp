@@ -8739,7 +8739,11 @@ public:
 			actionRow("hddpath", "Where it is", hdd, "", nullptr, rows, acts);
 			break;
 		case SP_XBOX:
-			/* 0.0.6: the Xbox hard disk's saves here (its place: About) */
+			/* 0.0.6: the Xbox hard disk's saves here (its place: About); not in a running game's settings,
+			 * where the manager can't be shown (the game has the hard disk; the game list's page has it) */
+			if (!library) {
+				break;
+			}
 			groupRow("Xbox hard disk", rows, acts);
 			actionRow("hdd", "Saves and caches", "open", "The games' saves on the Xbox hard disk: copy them to a USB drive or the "
 				"console's backups, bring saves in, delete them; empty the cache drives.", [this]() { openHdd(0); }, rows, acts,
