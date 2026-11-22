@@ -53,7 +53,9 @@ bool hidden(const std::string &name)
 	return name.empty() || name[0] == '.';
 }
 
-/* A folder's files (their paths below it) and what they add up to; false when it isn't there. */
+/* A folder's files (their paths below it) and what they add up to; false when it isn't there, or
+ * (1.0.3) a folder in it couldn't be listed: its files were left out, and a copy with them missing
+ * took them away on the other side. */
 bool collect(const Io &io, const std::string &folder, const std::string &rel, std::vector<std::string> *files, Sig *sig,
 	int depth)
 {
@@ -67,8 +69,8 @@ bool collect(const Io &io, const std::string &folder, const std::string &rel, st
 		}
 		const std::string r = rel.empty() ? e.name : rel + "/" + e.name;
 		if (e.dir) {
-			if (depth < 8) {
-				collect(io, join(folder, e.name), r, files, sig, depth + 1);
+			if (depth < 8 && !collect(io, join(folder, e.name), r, files, sig, depth + 1)) {
+				return false;
 			}
 			continue;
 		}
@@ -80,17 +82,21 @@ bool collect(const Io &io, const std::string &folder, const std::string &rel, st
 	return true;
 }
 
-/* What a save (a folder) or a game's file is now. */
-Sig sigAt(const Io &io, const std::string &path, bool dir)
+/* What a save (a folder) or a game's file is now. 1.0.3: *listed false when its listing failed (it
+ * isn't "not there": what is copied over it then was lost). */
+Sig sigAt(const Io &io, const std::string &path, bool dir, bool *listed)
 {
 	Sig g;
+	*listed = true;
 	if (dir) {
 		std::vector<std::string> files;
 		g.exists = collect(io, path, std::string(), &files, &g, 0);
+		*listed = g.exists;
 		return g;
 	}
 	std::vector<Entry> entries;
 	if (!io.list(parentOf(path), &entries)) {
+		*listed = false;
 		return g;
 	}
 	const std::string want = lower(nameOf(path));
@@ -273,7 +279,16 @@ Result sync(const Io &io, const Folders &folders, Records *records, time_t now)
 		return result;
 	}
 	result.listed = true;
-	io.list(folders.here, &hereTitles);   // (none: a hard disk no game has saved on yet)
+	/* (none: a hard disk no game has saved on yet; 1.0.3: one that can't be listed once made is no
+	 * empty one: every save there was brought over the console's) */
+	if (!io.list(folders.here, &hereTitles)) {
+		hereTitles.clear();
+		if (!io.makeFolder(folders.here) || !io.list(folders.here, &hereTitles)) {
+			result.hereFailed = true;
+			result.lines.push_back("the console's " + folders.here + " could not be listed: nothing was synced");
+			return result;
+		}
+	}
 
 	/* the games on either side, by their title ID (either case), then their saves and files */
 	std::map<std::string, std::pair<std::string, std::string>> titles;
@@ -288,6 +303,7 @@ Result sync(const Io &io, const Folders &folders, Records *records, time_t now)
 		}
 	}
 	std::vector<Item> items;
+	std::set<std::string> unlisted;   // 1.0.3: a game's folder that couldn't be listed: its saves left as they are
 	for (const auto &[id, names] : titles) {
 		const std::string &any = names.first.empty() ? names.second : names.first;
 		const std::string hereTitle = join(folders.here, names.first.empty() ? any : names.first);
@@ -296,6 +312,7 @@ Result sync(const Io &io, const Folders &folders, Records *records, time_t now)
 		const auto add = [&](const std::string &folder, bool here) {
 			std::vector<Entry> entries;
 			if (!io.list(folder, &entries)) {
+				unlisted.insert(id);
 				return;
 			}
 			for (const Entry &e : entries) {
@@ -315,6 +332,11 @@ Result sync(const Io &io, const Folders &folders, Records *records, time_t now)
 		}
 		if (!names.second.empty()) {
 			add(thereTitle, false);
+		}
+		if (unlisted.count(id)) {
+			result.failed++;
+			result.lines.push_back(any + ": its folder could not be listed on one side: left as it is");
+			continue;
 		}
 		for (auto &[key, it] : byKey) {
 			items.push_back(std::move(it));
@@ -341,15 +363,25 @@ Result sync(const Io &io, const Folders &folders, Records *records, time_t now)
 		const bool dir = it.here.exists ? it.here.dir : it.there.dir;
 		const std::string hereP = join(it.hereTitle, it.here.exists ? it.here.name : name);
 		const std::string thereP = join(it.thereTitle, it.there.exists ? it.there.name : name);
-		const Sig h = it.here.exists ? sigAt(io, hereP, dir) : Sig{}, t = it.there.exists ? sigAt(io, thereP, dir) : Sig{};
+		bool hereListed = true, thereListed = true;
+		const Sig h = it.here.exists ? sigAt(io, hereP, dir, &hereListed) : Sig{},
+				  t = it.there.exists ? sigAt(io, thereP, dir, &thereListed) : Sig{};
+		if (!hereListed || !thereListed) {
+			result.failed++;
+			result.lines.push_back(label + ": could not be listed " + (hereListed ? "there" : "here") + ": left as it is");
+			continue;
+		}
 		const auto found = records->find(it.key);
 		const Record *rec = found == records->end() ? nullptr : &found->second;
 
 		const auto remember = [&] {
 			Record r;
-			r.here = sigAt(io, hereP, dir);
-			r.there = sigAt(io, thereP, dir);
-			(*records)[it.key] = r;
+			bool a = true, b = true;
+			r.here = sigAt(io, hereP, dir, &a);
+			r.there = sigAt(io, thereP, dir, &b);
+			if (a && b) {   // (else what it was stays, with a copy's mark: made again at the next sync)
+				(*records)[it.key] = r;
+			}
 		};
 		/* a copy, marked in the list while it is under way */
 		const auto copy = [&](bool toThere, bool mirror) {
@@ -644,6 +676,9 @@ bool listThere(const Io &io, const Folders &folders, std::vector<ThereTitle> *ti
 
 std::string summary(const Result &result, const std::string &placeName)
 {
+	if (result.hereFailed) {
+		return "The saves were not synced: the console's Xbox hard disk could not be read.";
+	}
 	if (!result.listed) {
 		return "The saves were not synced: " + placeName + " did not answer.";
 	}

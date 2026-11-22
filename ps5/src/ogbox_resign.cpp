@@ -667,6 +667,7 @@ Report resignTitles(const std::string &hddRoot, const std::vector<TitleKey> &key
 	const std::string e = childAnyCase(hddRoot, "Partition1", true);
 	std::vector<std::pair<std::string, Hit>> found;
 	std::set<std::string> visited;
+	std::set<std::string> failed;   // 1.0.3: not read to the end, or its signature not written: not kept as done
 	for (const TitleKey &tk : keys) {
 		char id[9];
 		std::snprintf(id, sizeof(id), "%08x", tk.titleId);
@@ -698,6 +699,7 @@ Report resignTitles(const std::string &hddRoot, const std::vector<TitleKey> &key
 				}
 				std::vector<uint8_t> d;
 				if (!readFile(path, d, kMaxFile)) {
+					failed.insert(path);
 					continue;
 				}
 				r.checked++;
@@ -764,6 +766,7 @@ Report resignTitles(const std::string &hddRoot, const std::vector<TitleKey> &key
 	for (const auto &f : found) {
 		std::vector<uint8_t> d;
 		if (!readFile(f.first, d, kMaxFile) || f.second.b > d.size()) {
+			failed.insert(f.first);
 			continue;
 		}
 		uint8_t sig[20];
@@ -775,6 +778,11 @@ Report resignTitles(const std::string &hddRoot, const std::vector<TitleKey> &key
 		}
 		if (writeSig(f.second.file.empty() ? f.first : f.second.file, f.second.off, sig)) {
 			r.resigned++;
+		} else {
+			failed.insert(f.first);
+			if (!f.second.file.empty()) {
+				failed.insert(f.second.file);
+			}
 		}
 	}
 	/* the files read, as they are now */
@@ -785,7 +793,7 @@ Report resignTitles(const std::string &hddRoot, const std::vector<TitleKey> &key
 			std::fprintf(f, "keys %s\n", print.c_str());
 			for (const std::string &path : visited) {
 				struct stat st;
-				if (stat(path.c_str(), &st) == 0) {
+				if (!failed.count(path) && stat(path.c_str(), &st) == 0) {
 					std::fprintf(f, "%llu %lld %s\n", (unsigned long long)st.st_size, (long long)st.st_mtime, path.c_str());
 				}
 			}

@@ -5380,6 +5380,7 @@ public:
 			storageMessage = why;
 			return;
 		}
+		storageFollow(now);
 		storageDone("OGBox keeps its data in " + target + ".");
 	}
 
@@ -5429,6 +5430,16 @@ public:
 		}
 	}
 
+	/* 1.0.3: the Xbox hard disk follows a new data folder at once (boot.hdd was set at the start only:
+	 * the hard disk manager, the sync and the games used the old one), unless boot.txt's hdd= or --hdd
+	 * named another */
+	void storageFollow(const std::string &was)
+	{
+		if (boot.hdd == was + "/hdd") {
+			boot.hdd = ogbox::storagePath("hdd");
+		}
+	}
+
 	/* A move under way: its end. */
 	void storageTick()
 	{
@@ -5440,7 +5451,8 @@ public:
 			return;
 		}
 		if (pr.ok) {
-			storageDone("Done: OGBox keeps its data in " + storageTarget + " now.");
+			storageFollow(pr.from);
+			storageDone("Done: OGBox keeps its data in " + storageTarget + " now." + (pr.note.empty() ? "" : " " + pr.note));
 		} else {
 			storageMessage = "The move stopped: " + pr.error + ". Your data is still in " + ogbox::storageRoot() + ".";
 			storageStep = StorageStep::Places;
@@ -5571,8 +5583,14 @@ public:
 			r.icon = ui::Icon::Check;
 			r.accent = true;
 			add(r, [this, now]() {
-				ogbox::StorageMove::get().start(now, storageTarget);
-				storageStep = StorageStep::Moving;
+				if (ogbox::saveSyncRunning()) {   // 1.0.3: the sync writes to the hard disk and its list in the cache
+					storageMessage = "The saves are being synced: move the data when that is done.";
+					return;
+				}
+				if (ogbox::StorageMove::get().start(now, storageTarget)) {
+					storageMessage.clear();
+					storageStep = StorageStep::Moving;
+				}
 			});
 			r = {};
 			r.key = "empty";
@@ -5582,6 +5600,7 @@ public:
 			add(r, [this, now]() {
 				std::string why;
 				if (ogbox::setStorageRoot(storageTarget, why)) {
+					storageFollow(now);
 					storageDone("OGBox keeps its data in " + storageTarget + " from now on. What was in " + now + " is still there.");
 				} else {
 					storageMessage = why;
@@ -5599,7 +5618,9 @@ public:
 		}
 		case StorageStep::Moving: {
 			const ogbox::StorageMove::Progress pr = ogbox::StorageMove::get().progress();
-			v.intro = "Moving your data to " + storageTarget + ". Leave OGBox open until it's done.";
+			v.intro = pr.removing ? "Your data is in " + storageTarget + " now; deleting the old copy in " + pr.from +
+					". Leave OGBox open until it's done."
+								  : "Moving your data to " + storageTarget + ". Leave OGBox open until it's done.";
 			v.progress = pr.total ? std::min(1.0f, static_cast<float>(static_cast<double>(pr.bytes) / static_cast<double>(pr.total))) : 0.0f;
 			v.progressText = sizeText(static_cast<int64_t>(pr.bytes)) + " of " + sizeText(static_cast<int64_t>(pr.total)) + " \xC2\xB7 " +
 				pr.current;
