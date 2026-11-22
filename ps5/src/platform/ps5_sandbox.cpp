@@ -62,6 +62,33 @@ bool Exists(const char* path)
   return stat(path, &st) == 0;
 }
 
+// OGBox: the running title's eboot.bin as /app0 shows it before leaving the sandbox, to tell its
+// folder from another copy afterwards (a copy in /data/homebrew left from before, the title run
+// from a USB drive). The file system's number for it is not compared: /app0 is a mount of its own.
+struct Eboot
+{
+  bool known = false;
+  ino_t ino = 0;
+  off_t bytes = 0;
+  time_t mtime = 0;
+};
+
+Eboot EbootOf(const char* directory)
+{
+  char probe[224];
+  std::snprintf(probe, sizeof(probe), "%s/eboot.bin", directory);
+  struct stat st;
+  Eboot e;
+  if (stat(probe, &st) == 0)
+  {
+    e.known = true;
+    e.ino = st.st_ino;
+    e.bytes = st.st_size;
+    e.mtime = st.st_mtime;
+  }
+  return e;
+}
+
 bool IsTitleFolder(const char* directory)
 {
   char probe[224];
@@ -105,6 +132,7 @@ extern "C" int pshakux_sandbox_leave(char* title_dir, unsigned size)
     return 0;
   }
   s_tried = 1;
+  const Eboot running = EbootOf("/app0");
   Keep("sandbox: asking /app0/sandbox-elevator.elf (the payload loader, port 9021) for the console's file system");
   const elevation::Status status =
     elevation::request(elevation::Capability::filesystem, "/app0/sandbox-elevator.elf", &KeepStep, nullptr);
@@ -126,15 +154,31 @@ extern "C" int pshakux_sandbox_leave(char* title_dir, unsigned size)
     "/mnt/usb0/homebrew/PPSA99251",
     "/mnt/usb1/homebrew/PPSA99251",
   };
+  // The first that holds the running eboot.bin (the same file), else, as before, the first title
+  // folder in this order.
+  const char* found = nullptr;
+  bool same = false;
   for (const char* const candidate : candidates)
   {
-    if (IsTitleFolder(candidate))
+    if (!IsTitleFolder(candidate))
+      continue;
+    const Eboot e = EbootOf(candidate);
+    if (running.known && e.known && e.ino == running.ino && e.bytes == running.bytes && e.mtime == running.mtime)
     {
-      std::snprintf(title_dir, size, "%s", candidate);
-      std::snprintf(line, sizeof(line), "sandbox: the title folder is %s", candidate);
-      Keep(line);
-      return 1;
+      found = candidate;
+      same = true;
+      break;
     }
+    if (!found)
+      found = candidate;
+  }
+  if (found)
+  {
+    std::snprintf(title_dir, size, "%s", found);
+    std::snprintf(line, sizeof(line), "sandbox: the title folder is %s%s", found,
+                  same ? "" : " (the first found: none holds the eboot.bin that runs)");
+    Keep(line);
+    return 1;
   }
   Keep("sandbox: the title folder was not found after leaving the sandbox (install it in /data/homebrew/PPSA99251, "
        "or put elevation-off.txt next to eboot.bin)");
