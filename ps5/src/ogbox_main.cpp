@@ -170,6 +170,7 @@ struct BootConfig {
 	bool autoboot{ false };
 	std::string gameKey;        // 0.1.26: --game <title ID>.<version> (the game list read it)
 	bool back{ false };         // 0.1.43: --back, from a game to the game list (no boot screen)
+	size_t bootTxtOptions{ 0 }; // the first options, boot.txt's (each run reads them again)
 };
 
 std::string trim(const std::string &s)
@@ -271,6 +272,7 @@ bool readBootConfig(BootConfig &config)
 			}
 		}
 		std::fclose(file);
+		config.bootTxtOptions = config.options.size();
 		return true;
 	}
 	return false;
@@ -2026,6 +2028,9 @@ public:
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--relaunch" };
 		for (const std::string &option : boot.options) {
+			if (static_cast<size_t>(&option - boot.options.data()) < boot.bootTxtOptions) {
+				continue;   // boot.txt's: the next run reads them itself (passed too, they doubled at each switch)
+			}
 			if (option != "relaunch" && option.rfind("loadstate=", 0) != 0) {
 				words.push_back("--option");
 				words.push_back(option);
