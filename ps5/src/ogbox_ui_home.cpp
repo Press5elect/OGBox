@@ -330,6 +330,7 @@ void drawHome(ImDrawList *dl, ImVec2 S, const HomeView &v)
 		if (std::fabs(scroll - target) > 30.0f) {
 			scroll = target + (scroll < target ? -3.0f : 3.0f);   // (a long jump: the last stretch moves)
 		}
+		scroll = std::max(0.0f, std::min(scroll, static_cast<float>(n - 1)));   // (a shorter list: the scroll comes back into it)
 		scroll = approach(scroll, target, 13.0f);
 		const int first = std::max(0, static_cast<int>(std::floor(scroll)) - 2);
 		const int last = std::min(n - 1, static_cast<int>(std::ceil(scroll)) + 12);
