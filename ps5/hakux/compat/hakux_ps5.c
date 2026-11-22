@@ -428,7 +428,7 @@ static int walk(char *path, size_t len, size_t cap, int level,
     }
     closedir(d);
     for (size_t i = 0; i < n; i++) {
-        const size_t add = strlen(names[i]);
+        const size_t add = names[i] ? strlen(names[i]) : 0;    /* (a failed strdup: skipped) */
         if (!r && names[i] && len + 1 + add < cap) {
             path[len] = '/';
             memcpy(path + len + 1, names[i], add + 1);
