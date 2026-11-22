@@ -80,7 +80,8 @@ int ogbox_patches_check(const struct NcDisc *disc, const char *key, const OgboxB
 
 /* The database's patch records of one patch for one target, applied in order ("F find repl",
  * "O offset hex", "A hex", "C crc", "I file", "B file": files_dir holds the IPS and BPS files);
- * false (buf unchanged) with the reason. */
+ * false (buf unchanged) with the reason. 1.0.3: also for a record it cannot read (of another kind,
+ * short of its fields, over 8191 characters, a number that isn't one, a file outside files_dir). */
 bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const char *files_dir, char *why,
                          size_t why_len);
 
