@@ -824,7 +824,8 @@ static uint32_t xbe_regions(const OgboxBuf *x)
                           (uint32_t)h[0x107] << 24;
     const uint32_t cert = ((uint32_t)h[0x118] | (uint32_t)h[0x119] << 8 | (uint32_t)h[0x11A] << 16 |
                            (uint32_t)h[0x11B] << 24) - base;
-    return cert + 0xA4 <= x->size ? ((uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8) : 0;
+    /* (in 64 bits: a certificate address below the base wrapped the sum) */
+    return (uint64_t)cert + 0xA4 <= x->size ? ((uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8) : 0;
 }
 
 static bool is_default_xbe(const char *name)
@@ -982,7 +983,7 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                                   (uint32_t)h[0x107] << 24;
             const uint32_t cert = ((uint32_t)h[0x118] | (uint32_t)h[0x119] << 8 | (uint32_t)h[0x11A] << 16 |
                                    (uint32_t)h[0x11B] << 24) - base;
-            if (cert + 0xA4 <= x.buf.size) {
+            if ((uint64_t)cert + 0xA4 <= x.buf.size) {
                 regions = (uint32_t)h[cert + 0xA0] | (uint32_t)h[cert + 0xA1] << 8;
             }
         }
@@ -1046,8 +1047,18 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                 const bool done = ogbox_apply_records(&t->buf, e->lines + start, k - start, files_dir, why, sizeof(why));
                 g_original_crc = 0;
                 if (done) {
-                    undo[nundo] = t;
-                    saved[nundo++] = before;
+                    /* 1.0.3: a target once, as it was before this patch (a ninth part ran past
+                     * undo[8]; there are at most 8 targets) */
+                    unsigned u = 0;
+                    while (u < nundo && undo[u] != t) {
+                        u++;
+                    }
+                    if (u < nundo) {
+                        free(before.data);
+                    } else {
+                        undo[nundo] = t;
+                        saved[nundo++] = before;
+                    }
                 } else {
                     free(before.data);
                     ok = false;

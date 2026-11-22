@@ -1547,11 +1547,12 @@ bool ogbox_game_title_image(const char *image, uint8_t **rgba, int *w, int *h)
             const uint32_t nsec = le32(h0 + 0x11C), sva = le32(h0 + 0x120);
             if (hsize >= 0x180 && hsize <= (1u << 20) && hsize <= f.size && nsec && nsec < 1024 && (hdr = malloc(hsize)) &&
                 nc_disc_read(&disc, &f, 0, hdr, hsize)) {
+                /* (the sums in 64 bits: an address below the base wrapped them past the check) */
                 const uint32_t so = sva - base;
-                for (uint32_t i = 0; i < nsec && so + (i + 1) * 56 <= hsize; i++) {
+                for (uint32_t i = 0; i < nsec && (uint64_t)so + (uint64_t)(i + 1) * 56 <= hsize; i++) {
                     const uint8_t *s = hdr + so + i * 56;
                     const uint32_t raw = le32(s + 12), rsize = le32(s + 16), name = le32(s + 20) - base;
-                    if (name + 10 > hsize || memcmp(hdr + name, "$$XTIMAGE", 10) != 0) {
+                    if ((uint64_t)name + 10 > hsize || memcmp(hdr + name, "$$XTIMAGE", 10) != 0) {
                         continue;
                     }
                     if (rsize >= 32 && rsize <= (4u << 20) && (uint64_t)raw + rsize <= f.size && (sec = malloc(rsize)) &&
