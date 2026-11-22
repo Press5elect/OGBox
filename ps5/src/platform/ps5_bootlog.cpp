@@ -788,6 +788,13 @@ extern "C" void pshakux_log_drain_crash(void)
     HistWriteOut(s_log_fd, "OGBox stopped (the crash report follows)");
     if (!locked)
       return;
+    if (s_keeping)
+    {
+      // (pshakux_log_keep is writing the memory log out, as it did holding the lock: the ring's
+      // lines stay rather than go in among it)
+      pthread_mutex_unlock(&s_ring_lock);
+      return;
+    }
     while (s_ring_len)
     {
       const size_t n = std::min(s_ring_len, LOG_RING - s_ring_head);
