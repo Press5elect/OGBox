@@ -7,7 +7,8 @@
  * OGBox 1.0.3: the data folder's move (ogbox_storage.h) on the PC: a move copied to another file
  * system to its last file and the old copy's deletion, a target inside the data folder refused, a
  * note that can't be written deleting nothing, a link left where it was, a move begun again going
- * on with what it copied, and a rename on one file system.
+ * on with what it copied (and deleting what the data folder no longer has), a rename on one file
+ * system, and a note that doesn't read back put back as it was.
  *   storage_test <work folder> <a folder on another file system>
  */
 #include "ogbox_storage.h"
@@ -220,6 +221,8 @@ int main(int argc, char **argv)
 	if (crossDevice) {
 		put(e + "/hdd/p.dat", std::string(5000, 'P'), mtimeOf(d + "/hdd/p.dat"));   // (whole: its bytes marked)
 		put(e + "/cache/q.dat", std::string(10, 'q'));                                // (cut short)
+		put(e + "/hdd/gone.dat", "deleted here since");                               // (deleted from the data folder since)
+		put(e + "/hdd/gone/save.dat", "deleted here since");
 	}
 	p = move(d, e);
 	expect(p.done && p.ok, "begun again: the move ends well");
@@ -229,6 +232,7 @@ int main(int argc, char **argv)
 		expect(get(e + "/cache/q.dat") == std::string(7000, 'q'), "begun again: the file cut short copied again");
 		expect(!anyNamed(e, "hdd.old-") && !anyNamed(e, "cache.old-"), "begun again: its copy not set aside");
 		expect(!there(e + "/hdd.copying") && !there(e + "/cache.copying"), "begun again: the marks taken away");
+		expect(!there(e + "/hdd/gone.dat") && !there(e + "/hdd/gone"), "begun again: what the data folder no longer has deleted");
 	}
 
 	/* on one file system: renamed */
@@ -236,6 +240,20 @@ int main(int argc, char **argv)
 	put(f + "/states/4D530039/slot1.state", "state");
 	p = move(f, g);
 	expect(p.done && p.ok && get(g + "/states/4D530039/slot1.state") == "state" && !there(f + "/states"), "renamed: moved");
+
+	/* a note that doesn't read back (a path longer than its line): the note as it was put back; a path
+	 * with a space around it refused before anything is written */
+	const std::string noteBefore = get(note);
+	std::string why, longPath = w + "/long";
+	for (int i = 0; i < 6; i++) {
+		longPath += "/" + std::string(200, 'l');
+	}
+	expect(!ogbox::setStorageRoot(longPath, why) && why.find("read back") != std::string::npos, "not read back: refused");
+	expect(get(note) == noteBefore && ogbox::storageRoot() == g, "not read back: the note as it was");
+	why.clear();
+	expect(!ogbox::setStorageRoot(w + "/spaced ", why) && !why.empty() && !there(w + "/spaced "), "a space around it: refused");
+	expect(get(note) == noteBefore && ogbox::storageRoot() == g, "a space around it: the note as it was");
+	removeAll(w + "/long");
 
 	removeAll(other);
 	std::printf("storage: %d checks, %d failed\n", g_checks, g_failed);

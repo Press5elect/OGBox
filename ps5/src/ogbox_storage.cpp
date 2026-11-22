@@ -119,6 +119,17 @@ std::string noteRoot(FILE *f)
 	return root;
 }
 
+/* 1.0.3: a path the note can't give back as it is (spaces around it, a line break in it): refused
+ * before anything is written or moved */
+bool notedBadly(const std::string &path, std::string &why)
+{
+	if (trim(path) != path || path.find_first_of("\r\n") != std::string::npos) {
+		why = "its name begins or ends with a space or holds a line break";
+		return true;
+	}
+	return false;
+}
+
 } // namespace
 
 std::string storageRoot()
@@ -146,36 +157,63 @@ bool storageChosen()
 
 bool setStorageRoot(const std::string &path, std::string &why)
 {
-	if (!writableFolder(path, why)) {
+	if (notedBadly(path, why) || !writableFolder(path, why)) {
 		return false;
 	}
 	const std::string note = kStorageFile;
 	mkdir(note.substr(0, note.find_last_of('/')).c_str(), 0777);   // (kConfigRoot)
+	/* the note as it was, put back if the new one doesn't read back */
+	std::string before;
+	bool hadNote = false;
+	if (FILE *f = std::fopen(note.c_str(), "rb")) {
+		char buf[4096];
+		size_t n;
+		while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+			before.append(buf, n);
+		}
+		hadNote = !std::ferror(f);
+		std::fclose(f);
+		if (!hadNote) {
+			why = std::string("its note can't be read: ") + std::strerror(errno ? errno : EIO);
+			return false;
+		}
+	} else if (errno != ENOENT) {
+		why = std::string("its note can't be read: ") + std::strerror(errno);
+		return false;
+	}
 	/* 1.0.3: written beside it, flushed, put in its place and read back: a move deletes the old copy
 	 * only once the note names the new folder (a note left half written named no folder, and the
 	 * next start used /data/ogbox with the data deleted from where it was) */
 	const std::string text = "# OGBox's data folder: the Xbox hard disk, the caches, the covers, the screenshots.\n"
 		"# Chosen at OGBox's first start; change it in Settings > Storage, which moves the data too.\n" + path + "\n";
 	const std::string tmp = note + ".new";
-	const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-	if (fd < 0) {
-		why = std::string("its note can't be written: ") + std::strerror(errno);
-		return false;
-	}
-	size_t at = 0;
-	while (at < text.size()) {
-		const ssize_t w = write(fd, text.data() + at, text.size() - at);
-		if (w <= 0) {
-			break;
+	const auto place = [&](const std::string &body) {
+		const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		if (fd < 0) {
+			return false;
 		}
-		at += static_cast<size_t>(w);
-	}
-	bool ok = at == text.size();
-	ok = fsync(fd) == 0 && ok;
-	ok = close(fd) == 0 && ok;
-	if (!ok || std::rename(tmp.c_str(), note.c_str()) != 0) {
+		size_t at = 0;
+		while (at < body.size()) {
+			const ssize_t w = write(fd, body.data() + at, body.size() - at);
+			if (w <= 0) {
+				break;
+			}
+			at += static_cast<size_t>(w);
+		}
+		bool ok = at == body.size();
+		ok = fsync(fd) == 0 && ok;
+		ok = close(fd) == 0 && ok;
+		if (!ok || std::rename(tmp.c_str(), note.c_str()) != 0) {
+			const int e = errno;
+			unlink(tmp.c_str());
+			errno = e;
+			return false;
+		}
+		return true;
+	};
+	errno = 0;
+	if (!place(text)) {
 		why = std::string("its note can't be written: ") + std::strerror(errno ? errno : EIO);
-		unlink(tmp.c_str());
 		return false;
 	}
 	std::string noted;
@@ -188,7 +226,11 @@ bool setStorageRoot(const std::string &path, std::string &why)
 		want.pop_back();
 	}
 	if (noted != want) {
+		/* the note as it was put back (the move puts the data back: the next start uses it where it was) */
 		why = "its note can't be written: it doesn't read back";
+		if (hadNote ? !place(before) : unlink(note.c_str()) != 0) {
+			pshakux_log("storage: the note as it was can't be put back: %s", std::strerror(errno));
+		}
 		return false;
 	}
 	chmod(kStorageFile, 0666);
@@ -473,6 +515,63 @@ struct Copier {
 			leftFirst = path + " (" + std::strerror(errno) + ")";
 		}
 	}
+
+	/* 1.0.3: a copy gone on with (begun again) made like the data folder's: what it holds that the data
+	 * folder no longer has (a save deleted since the earlier move) is deleted from it (it came back) */
+	bool prune(const std::string &from, const std::string &to)
+	{
+		struct stat st;
+		if (lstat(to.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+			return true;
+		}
+		DIR *dir = opendir(to.c_str());
+		if (!dir) {
+			error = to + ": " + std::strerror(errno);
+			return false;
+		}
+		std::vector<std::string> names;
+		while (struct dirent *e = readdir(dir)) {
+			if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) {
+				names.push_back(e->d_name);
+			}
+		}
+		closedir(dir);
+		bool ok = true;
+		for (const std::string &name : names) {
+			struct stat src;
+			const std::string f = from + "/" + name, t = to + "/" + name;
+			if (lstat(f.c_str(), &src) == 0) {
+				ok = (!S_ISDIR(src.st_mode) || prune(f, t)) && ok;
+			} else if (errno != ENOENT) {
+				error = f + ": " + std::strerror(errno);
+				ok = false;
+			} else if (!removeAll(t)) {
+				error = t + ": " + std::strerror(errno);
+				ok = false;
+			}
+		}
+		return ok;
+	}
+
+	static bool removeAll(const std::string &path)
+	{
+		struct stat st;
+		if (lstat(path.c_str(), &st) != 0) {
+			return errno == ENOENT;
+		}
+		if (S_ISDIR(st.st_mode)) {
+			if (DIR *dir = opendir(path.c_str())) {
+				while (struct dirent *e = readdir(dir)) {
+					if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) {
+						removeAll(path + "/" + e->d_name);
+					}
+				}
+				closedir(dir);
+			}
+			return rmdir(path.c_str()) == 0;
+		}
+		return unlink(path.c_str()) == 0;
+	}
 };
 
 /* 1.0.3: a folder inside another (or the same), by their resolved paths */
@@ -571,7 +670,7 @@ bool StorageMove::start(const std::string &from, const std::string &to)
 
 bool StorageMove::run(const std::string &from, const std::string &to, std::string &why, std::string &note)
 {
-	bool ok = writableFolder(to, why);
+	bool ok = !notedBadly(to, why) && writableFolder(to, why);
 	if (ok && refusedMove(from, to, why)) {
 		ok = false;
 	}
@@ -623,7 +722,7 @@ bool StorageMove::run(const std::string &from, const std::string &to, std::strin
 			break;
 		}
 		close(fd);
-		ok = c.copyTree(src, dst, part);
+		ok = c.copyTree(src, dst, part) && (!resuming || c.prune(src, dst));
 		if (ok) {
 			copied.emplace_back(src, part);
 		} else {
