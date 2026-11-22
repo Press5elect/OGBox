@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <csignal>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
@@ -390,6 +391,16 @@ bool ValidMountName(const char* name)
   return std::strcmp(name, ".") != 0 && std::strcmp(name, "..") != 0;
 }
 
+/* SIGPIPE ignored from the first mount on: libsmb2 and libnfs write with writev, which raises it on
+ * a connection the server reset (a NAS restarted in the middle of a save's writing), and its
+ * default ends the title. The write then fails with EPIPE, a lost connection to the backend.
+ * (Crux2 474dbc6 does the same; nothing in the title wants SIGPIPE's default.) */
+void IgnoreSigPipe()
+{
+  static std::once_flag once;
+  std::call_once(once, [] { (void)std::signal(SIGPIPE, SIG_IGN); });
+}
+
 std::string Trim(const std::string& text)
 {
   const char* const space = " \t\r\n";
@@ -670,6 +681,7 @@ extern "C" int ps5vfs_mount_smb(const char* name, const char* url)
     return -1;
   }
 
+  IgnoreSigPipe();
   std::string error;
   std::unique_ptr<Backend> backend = CreateSMBBackend(url, &error);
   if (!backend)
@@ -692,6 +704,7 @@ extern "C" int ps5vfs_mount_nfs(const char* name, const char* url)
     return -1;
   }
 
+  IgnoreSigPipe();
   std::string error;
   std::unique_ptr<Backend> backend = CreateNFSBackend(url, &error);
   if (!backend)
@@ -713,6 +726,7 @@ extern "C" int ps5vfs_mount_ftp(const char* mount_point, unsigned port, const ch
   if (point.empty() || point == "/" || !remote_root)
     return -1;
 
+  IgnoreSigPipe();
   std::string error;
   std::unique_ptr<Backend> backend = CreateFTPBackend(port, remote_root, &error);
   if (!backend)
