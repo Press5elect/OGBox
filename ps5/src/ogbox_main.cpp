@@ -6407,7 +6407,10 @@ public:
 		case QR_QUIT:
 			openPopup("Quit the game", "Save where you are, to go on from there next time?",
 				{ "Quit, and save where I am", "Quit without saving", "Go back" }, [this](int i) {
-					if (i == 0) {
+					if (i == 0 && runKey.empty()) {
+						/* no title ID to keep a state under (Save State is greyed out for it too) */
+						showToast("Not saved: this game has no title ID to keep a state under. Quit without saving, or go back.");
+					} else if (i == 0) {
 						quickSave(ogbox::kQuitSlot, Quick::After::Library);
 					} else if (i == 1) {
 						qm.busy = "Back to the game list";
