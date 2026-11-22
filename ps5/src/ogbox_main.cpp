@@ -2200,7 +2200,10 @@ public:
 			/* 0.0.8: an extracted game is its folder's default.xbe: the list opens the folder it is in */
 			const bool folderGame = strcasecmp(baseName(lastGame).c_str(), "default.xbe") == 0;
 			const std::string lastPlace = folderGame ? parentOf(parentOf(lastGame)) : parentOf(lastGame);
-			if (!lastGame.empty() && lastGame != "none" && isFolder(lastPlace)) {
+			/* a folder on a share isn't looked at here (its server may take seconds to answer, the
+			 * start waiting on it): the listing's job finds out, and says it, with the list drawing */
+			const auto there = [](const std::string &p) { return ps5vfs_is_virtual(p.c_str()) != 0 || isFolder(p); };
+			if (!lastGame.empty() && lastGame != "none" && there(lastPlace)) {
 				last = lastPlace;
 			}
 			const std::string select = !lastGame.empty() && lastPlace == last ? (folderGame ? lastGame : baseName(lastGame))
@@ -2209,7 +2212,7 @@ public:
 				screen = Screen::Library;
 				fadeSince = -2.0;   // from the list's first frame
 			}
-			if (!last.empty() && isFolder(last)) {
+			if (!last.empty() && there(last)) {
 				openFolder(last, select);
 			} else {
 				openFolder(std::string());
