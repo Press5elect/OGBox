@@ -361,6 +361,19 @@ int main()
 	r = resignTitles(hdd, { tk }, none, native, cache);
 	CHECK(r.checked == 0 && r.resigned == 0);
 
+	/* 1.0.3: a file that could not be read is not kept as checked (it was, and was never read again) */
+	if (geteuid() != 0) {
+		const std::string unread = save + "/u.dat";
+		put(unread, bytes(400, 91));
+		chmod(unread.c_str(), 0);
+		resignTitles(hdd, { tk }, src, native, cache);
+		const std::vector<uint8_t> list = get(cache);
+		CHECK(!list.empty() && std::string(list.begin(), list.end()).find("/u.dat") == std::string::npos);
+		chmod(unread.c_str(), 0644);
+	} else {
+		std::printf("resign: (as root every file reads: the unreadable file's check is left out)\n");
+	}
+
 	std::string rm = "rm -rf '" + root + "'";
 	if (std::system(rm.c_str()) != 0) {
 		std::printf("(the test's folder %s stays)\n", root.c_str());
