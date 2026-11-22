@@ -7566,6 +7566,7 @@ public:
 		std::string status;
 		bool bad{ false };
 		std::shared_ptr<ShareTest> test;
+		bool letGo{ false };                   // the edited share's mount let go by a save (formRemount)
 		double since{ 0.0 };
 		/* 0.0.3: the SMB servers on the network, looked for as the form opens (ogbox::findServers) */
 		struct Found {
@@ -9264,6 +9265,7 @@ public:
 		}
 		if (p & PAD_CIRCLE) {
 			form.open = false;
+			formRemount();
 			return;
 		}
 		const int row = rows[static_cast<size_t>(form.sel)];
@@ -9384,7 +9386,9 @@ public:
 			s.name = ogbox::shareDefaultName(s);
 		}
 		if (form.index >= 0 && form.index < static_cast<int>(shares.shares.size())) {
-			ogbox::unmountShare(shares.shares[static_cast<size_t>(form.index)]);
+			ogbox::Share &old = shares.shares[static_cast<size_t>(form.index)];
+			form.letGo = form.letGo || !old.mount.empty();
+			ogbox::unmountShare(old);
 		}
 		s.mount.clear();
 		std::string why;
@@ -9400,6 +9404,28 @@ public:
 		form.status = "Connecting to " + s.host + "\xE2\x80\xA6";
 		form.bad = false;
 		form.test = testShare(s.mount);
+	}
+
+	/* The form cancelled: the share edited, when a save that didn't finish let its mount go, mounted
+	 * again as it was (its games were gone from the Network tab until OGBox started again). */
+	void formRemount()
+	{
+		if (!form.letGo || form.index < 0 || form.index >= static_cast<int>(shares.shares.size())) {
+			return;
+		}
+		form.letGo = false;
+		ogbox::Share &sh = shares.shares[static_cast<size_t>(form.index)];
+		if (!sh.mount.empty()) {
+			return;
+		}
+		std::string why;
+		if (ogbox::mountShare(sh, shares, mountsTaken(), &why)) {
+			testShare(sh.mount);
+			pshakux_log("settings: %s mounted again as it was (the edit cancelled)", sh.mount.c_str());
+		} else {
+			pshakux_log("settings: %s can't be mounted again: %s", sh.name.c_str(), why.c_str());
+		}
+		placesRead = -100.0;
 	}
 
 	void formCommit()
