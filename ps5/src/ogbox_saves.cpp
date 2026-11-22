@@ -480,12 +480,10 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 		return false;
 	}
 	const std::string to = child(dir, copy.folder.c_str());
-	if (isDir(to)) {
-		if (!overwrite) {
-			why = "the hard disk has that save already";
-			return false;
-		}
-		removeTree(to);
+	const bool had = isDir(to);
+	if (had && !overwrite) {
+		why = "the hard disk has that save already";
+		return false;
 	}
 	/* the game's name file, when the hard disk has none for the game yet */
 	const std::string meta = child(dir, "TitleMeta.xbx");
@@ -495,7 +493,33 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 		std::string ignored;
 		copyFile(from + "/TitleMeta.xbx", meta, ignored);
 	}
-	return copyTree(copy.path, to, why);
+	/* 1.0.3: copied beside the hard disk's drives first (no Xbox drive: no game sees it half made),
+	 * then put in the save's place; the save that was there is deleted only once the copy is in it
+	 * (it was deleted first, and a copy that failed lost it) */
+	const std::string fresh = hddRoot + "/.ogbox-import", old = hddRoot + "/.ogbox-import-old";
+	removeTree(fresh);
+	removeTree(old);
+	if (!copyTree(copy.path, fresh, why)) {
+		removeTree(fresh);
+		return false;
+	}
+	if (had && rename(to.c_str(), old.c_str()) != 0) {
+		why = to + ": " + std::strerror(errno);
+		removeTree(fresh);
+		return false;
+	}
+	if (rename(fresh.c_str(), to.c_str()) != 0) {
+		why = to + ": " + std::strerror(errno);
+		if (had) {
+			rename(old.c_str(), to.c_str());
+		}
+		removeTree(fresh);
+		return false;
+	}
+	if (had) {
+		removeTree(old);
+	}
+	return true;
 }
 
 /* ---- 0.0.8: the save sync's file access and its job ---- */
