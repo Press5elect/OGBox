@@ -8574,7 +8574,12 @@ public:
 		}
 		a.reset = [this, op]() {
 			if (forGame) {
+				/* as a changed row: in a running game what follows from it now (afterGameChange) */
 				prefs.setOverride(op->key, std::string());
+				if (op->section == ogbox::Section::Controller) {
+					loadPadMap();
+				}
+				afterGameChange(*op);
 			} else {
 				setValue(*op, op->def);
 			}
@@ -8769,7 +8774,22 @@ public:
 		case SP_GAME_RESET:
 			actionRow("reset", "Set everything to Default", std::to_string(prefs.overrides()) + " of its own",
 				"Every setting of this game back to Default.", [this]() {
+					/* the settings it had, then what follows from each in a running game (afterGameChange) */
+					std::vector<const ogbox::Option *> had;
+					for (const ogbox::Option &o : ogbox::options()) {
+						if (!prefs.override_(o.key).empty()) {
+							had.push_back(&o);
+						}
+					}
 					prefs.clearOverrides();
+					bool pad = false;
+					for (const ogbox::Option *o : had) {
+						pad = pad || o->section == ogbox::Section::Controller;
+						afterGameChange(*o);
+					}
+					if (pad) {
+						loadPadMap();
+					}
 					pshakux_log("settings: %s: every setting back to the app's", forGameKey.c_str());
 					showToast("This game uses the Default settings again");
 				}, rows, acts);
