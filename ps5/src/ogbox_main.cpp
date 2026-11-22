@@ -5610,6 +5610,7 @@ public:
 			updateTick();
 			saveSyncTick();   // 0.0.8
 			placeTick();      // 1.0.3
+			hddJobTick();     // 1.0.3
 			fixesTick();      // 1.0.2
 		}
 		drawOverlays();
@@ -6853,6 +6854,52 @@ public:
 
 	enum HddAction { HA_SYNC, HA_PLACE, HA_IMPORT, HA_EXPORT_ALL, HA_CACHES, HA_COUNT };   // 0.0.8: HA_SYNC; 1.0.3: HA_PLACE
 
+	/* 1.0.3: the manager's copies, moves and deletions on a thread of their own (a USB drive's or a
+	 * share's copy of every save, the cache drives emptied, took the screen for their whole length):
+	 * the screen says how far the job is and takes no button until it is done (as the data folder's
+	 * move), then the result as before (hddDone). The job's thread touches nothing of the screen's. */
+	struct HddJob {
+		std::atomic<int> done{ 0 }, total{ 0 };
+		std::atomic<bool> finished{ false };
+		bool ok{ true };                      // (these three written by the job before finished)
+		std::string yes, why;
+		bool newCopies{ false };              // the copies to bring in, listed again after it
+		std::vector<ogbox::SaveCopy> copies;
+	};
+	std::shared_ptr<HddJob> hddJob;
+	std::string hddJobWhat;
+
+	void hddRun(const std::string &what, int total, std::function<void(HddJob &)> work)
+	{
+		if (hddJob) {
+			return;
+		}
+		auto job = std::make_shared<HddJob>();
+		job->total = total;
+		hddJob = job;
+		hddJobWhat = what;
+		pshakux_log("hard disk: %s", what.c_str());
+		std::thread([job, work]() {
+			pshakux_thread_named("ogbox-hdd");
+			work(*job);
+			job->finished.store(true);
+		}).detach();
+	}
+
+	/* Each frame: a job's end (its result shown, the hard disk looked at again). */
+	void hddJobTick()
+	{
+		if (!hddJob || !hddJob->finished.load()) {
+			return;
+		}
+		const std::shared_ptr<HddJob> job = std::move(hddJob);
+		hddJob.reset();
+		if (job->newCopies) {
+			hdd.copies = job->copies;
+		}
+		hddDone(job->ok, job->yes, job->why);
+	}
+
 	void openHdd(uint32_t onlyTitle)
 	{
 		hdd.back = screen == Screen::Hdd ? hdd.back : screen;
@@ -6945,6 +6992,10 @@ public:
 
 	void hddInput(uint32_t pressed)
 	{
+		hddJobTick();
+		if (hddJob) {
+			return;   // a copy or a deletion under way: the screen waits for it (its line at the foot)
+		}
 		if (pressed & PAD_CIRCLE) {
 			if (hdd.importing || hdd.place) {
 				hdd.importing = false;
@@ -6988,12 +7039,14 @@ public:
 					[this, title](int i) {
 						if (i == 0) {
 							hddPickPlace("Copy to", [this, title](const ogbox::SavePlace &p) {
-								std::string why;
-								bool ok = true;
-								for (const ogbox::HddSave &s : title.saves) {
-									ok = ogbox::hddExportSave(title, s, p.path, why) && ok;
-								}
-								hddDone(ok, std::to_string(title.saves.size()) + " saves copied to " + p.name, why);
+								hddRun("Copying " + title.name + "'s saves to " + p.name, static_cast<int>(title.saves.size()),
+									[title, p](HddJob &job) {
+										for (const ogbox::HddSave &s : title.saves) {
+											job.ok = ogbox::hddExportSave(title, s, p.path, job.why) && job.ok;
+											job.done++;
+										}
+										job.yes = std::to_string(title.saves.size()) + " saves copied to " + p.name;
+									});
 							});
 						} else if (i == 1 && syncOn()) {
 							/* 1.0.3: kept in sync: deleted only here, the place's copies come back at the next sync */
@@ -7007,8 +7060,11 @@ public:
 										d.label = "all the saves of " + title.name;
 										placeDelete(d);
 									} else if (j == 1) {
-										std::string why;
-										hddDone(ogbox::hddDeleteTitle(title, true, false, boot.hdd, why), "Its saves are deleted here", why);
+										const std::string root = boot.hdd;
+										hddRun("Deleting " + title.name + "'s saves", 0, [title, root](HddJob &job) {
+											job.ok = ogbox::hddDeleteTitle(title, true, false, root, job.why);
+											job.yes = "Its saves are deleted here";
+										});
 									}
 								});
 						} else if (i == 1 || i == 2) {
@@ -7016,9 +7072,12 @@ public:
 								title.name + (i == 1 ? ": every save on the hard disk goes." : ": its settings and caches go; the game makes them again."),
 								{ "Delete", "Go back" }, [this, title, i](int j) {
 									if (j == 0) {
-										std::string why;
-										const bool ok = ogbox::hddDeleteTitle(title, i == 1, i == 2, boot.hdd, why);
-										hddDone(ok, i == 1 ? "Its saves are deleted" : "Its own data is deleted", why);
+										const std::string root = boot.hdd;
+										hddRun(i == 1 ? "Deleting " + title.name + "'s saves" : "Deleting " + title.name + "'s own data", 0,
+											[title, i, root](HddJob &job) {
+												job.ok = ogbox::hddDeleteTitle(title, i == 1, i == 2, root, job.why);
+												job.yes = i == 1 ? "Its saves are deleted" : "Its own data is deleted";
+											});
 									}
 								});
 						}
@@ -7054,23 +7113,32 @@ public:
 				});
 			} else if (hdd.selT == HA_EXPORT_ALL) {
 				hddPickPlace("Copy every save to", [this](const ogbox::SavePlace &p) {
-					std::string why;
-					bool ok = true;
-					size_t n = 0;
-					for (const ogbox::HddTitle &title : hdd.titles) {
-						for (const ogbox::HddSave &s : title.saves) {
-							ok = ogbox::hddExportSave(title, s, p.path, why) && ok;
-							n++;
-						}
+					const std::vector<ogbox::HddTitle> titles = hdd.titles;
+					int total = 0;
+					for (const ogbox::HddTitle &title : titles) {
+						total += static_cast<int>(title.saves.size());
 					}
-					hddDone(ok, std::to_string(n) + " saves copied to " + p.name, why);
+					hddRun("Copying every save to " + p.name, total, [titles, p](HddJob &job) {
+						size_t n = 0;
+						for (const ogbox::HddTitle &title : titles) {
+							for (const ogbox::HddSave &s : title.saves) {
+								job.ok = ogbox::hddExportSave(title, s, p.path, job.why) && job.ok;
+								n++;
+								job.done++;
+							}
+						}
+						job.yes = std::to_string(n) + " saves copied to " + p.name;
+					});
 				});
 			} else if (hdd.selT == HA_CACHES) {
 				openPopup("Empty the cache drives?", "X:, Y: and Z: hold what games keep for later (" + ogbox::bytesText(hdd.cacheBytes) +
 					"); they fill them again as they need.", { "Empty them", "Go back" }, [this](int i) {
 						if (i == 0) {
-							std::string why;
-							hddDone(ogbox::hddClearCaches(boot.hdd, why), "The cache drives are empty", why);
+							const std::string root = boot.hdd;
+							hddRun("Emptying the cache drives", 0, [root](HddJob &job) {
+								job.ok = ogbox::hddClearCaches(root, job.why);
+								job.yes = "The cache drives are empty";
+							});
 						}
 					});
 			} else if (t && !t->saves.empty()) {
@@ -7099,27 +7167,40 @@ public:
 				return;
 			}
 			if (hdd.selS == 0) {
-				std::string why;
-				size_t n = 0, kept = 0;
-				for (const ogbox::SaveCopy &c : hdd.copies) {
-					if (c.onDisk) {
-						kept++;
-						continue;
-					}
-					if (ogbox::hddImportSave(c, boot.hdd, false, why)) {
-						n++;
-					}
+				const std::vector<ogbox::SaveCopy> copies = hdd.copies;
+				const std::string root = boot.hdd, from = hdd.importPlace;
+				int total = 0;
+				for (const ogbox::SaveCopy &c : copies) {
+					total += c.onDisk ? 0 : 1;
 				}
-				hdd.copies = ogbox::saveCopiesIn(hdd.importPlace, boot.hdd);
-				hddDone(true, std::to_string(n) + " saves brought in" + (kept ? ", " + std::to_string(kept) + " the hard disk had already" : std::string()), why);
+				hddRun("Bringing the saves in from " + hdd.importName, total, [copies, root, from](HddJob &job) {
+					size_t n = 0, kept = 0;
+					for (const ogbox::SaveCopy &c : copies) {
+						if (c.onDisk) {
+							kept++;
+							continue;
+						}
+						if (ogbox::hddImportSave(c, root, false, job.why)) {
+							n++;
+						}
+						job.done++;
+					}
+					job.copies = ogbox::saveCopiesIn(from, root);
+					job.newCopies = true;
+					job.yes = std::to_string(n) + " saves brought in" + (kept ? ", " + std::to_string(kept) + " the hard disk had already" : std::string());
+				});
 				return;
 			}
 			const ogbox::SaveCopy c = hdd.copies[static_cast<size_t>(hdd.selS - 1)];
 			const auto bring = [this, c](bool overwrite) {
-				std::string why;
-				const bool ok = ogbox::hddImportSave(c, boot.hdd, overwrite, why);
-				hdd.copies = ogbox::saveCopiesIn(hdd.importPlace, boot.hdd);
-				hddDone(ok, "Brought in: " + c.name, why);
+				const std::string root = boot.hdd, from = hdd.importPlace;
+				hddRun("Bringing in " + c.name, 1, [c, overwrite, root, from](HddJob &job) {
+					job.ok = ogbox::hddImportSave(c, root, overwrite, job.why);
+					job.done++;
+					job.copies = ogbox::saveCopiesIn(from, root);
+					job.newCopies = true;
+					job.yes = "Brought in: " + c.name;
+				});
 			};
 			if (c.onDisk) {
 				openPopup("Replace the save?", "The hard disk has \"" + c.folder + "\" of this game already.", { "Replace it", "Go back" },
@@ -7156,12 +7237,14 @@ public:
 			{ "Copy to...", "Move to...", "Delete", "Go back" }, [this, title, save](int i) {
 				if (i == 0 || i == 1) {
 					hddPickPlace(i == 0 ? "Copy to" : "Move to", [this, title, save, i](const ogbox::SavePlace &p) {
-						std::string why;
-						bool ok = ogbox::hddExportSave(title, save, p.path, why);
-						if (ok && i == 1) {
-							ok = ogbox::hddDeleteSave(save, why);
-						}
-						hddDone(ok, (i == 0 ? "Copied to " : "Moved to ") + p.name, why);
+						hddRun((i == 0 ? "Copying " : "Moving ") + save.name + " to " + p.name, 1, [title, save, i, p](HddJob &job) {
+							job.ok = ogbox::hddExportSave(title, save, p.path, job.why);
+							if (job.ok && i == 1) {
+								job.ok = ogbox::hddDeleteSave(save, job.why);
+							}
+							job.done++;
+							job.yes = (i == 0 ? "Copied to " : "Moved to ") + p.name;
+						});
 					});
 				} else if (i == 2 && syncOn()) {
 					/* 1.0.3: kept in sync: deleted only here, the place's copy comes back at the next sync */
@@ -7176,15 +7259,19 @@ public:
 								d.label = save.name + " (" + title.name + ")";
 								placeDelete(d);
 							} else if (j == 1) {
-								std::string why;
-								hddDone(ogbox::hddDeleteSave(save, why), "The save is deleted here", why);
+								hddRun("Deleting " + save.name, 0, [save](HddJob &job) {
+									job.ok = ogbox::hddDeleteSave(save, job.why);
+									job.yes = "The save is deleted here";
+								});
 							}
 						});
 				} else if (i == 2) {
 					openPopup("Delete the save?", save.name + " (" + title.name + ")", { "Delete", "Go back" }, [this, save](int j) {
 						if (j == 0) {
-							std::string why;
-							hddDone(ogbox::hddDeleteSave(save, why), "The save is deleted", why);
+							hddRun("Deleting " + save.name, 0, [save](HddJob &job) {
+								job.ok = ogbox::hddDeleteSave(save, job.why);
+								job.yes = "The save is deleted";
+							});
 						}
 					});
 				}
@@ -7399,6 +7486,13 @@ public:
 		v.footer = hdd.pane == 0 ? std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Open" }, { "T", "Copy, delete" }, { "O", "Back" } }
 			: hdd.place ? std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Delete" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Choose this" }, { "O", "Back" } };
+		if (hddJob) {
+			/* a job under way: what it does and how far, and no buttons (as the data folder's Moving) */
+			const int done = hddJob->done.load(), total = hddJob->total.load();
+			v.footer.clear();
+			v.footerRight = hddJobWhat + "\xE2\x80\xA6" + (total > 1 ? " " + std::to_string(std::min(done, total)) + " of " +
+				std::to_string(total) : std::string());
+		}
 		bd.key = "hdd";
 		bd.blur = ui::Tex{};
 		bd.tint = 0;
