@@ -24,7 +24,9 @@
 //               at every entry before anything is unpacked, and unpacks the program's own files
 //               (IsManaged) into .update/stage/.
 //   Install()   renames each old file into .update/backup/ and the new one into its place, with a
-//               journal, then the title must close.
+//               journal, then the title must close. On a drive with links (not exFAT) the old
+//               file stays in its place under a second name in backup/ and the new one is
+//               renamed onto it, so no place is ever without a file.
 //
 // Recover() at the next start puts the old files back after an install that a power cut stopped.
 // The user's files (settings, the Xbox hard disk, states, games, covers, boot.txt...) are never
@@ -165,6 +167,7 @@ extern int stop_after;      // Install(): stop as a power cut would, after this 
 extern int undo_stop_after; // the undo: the same
 extern int fail_at;         // Install(): this rename fails
 extern int lie_at;          // Install(): this rename reports success and does nothing (exFAT's way)
+extern int no_links;        // 1: the drive is taken to have no links (exFAT's way): files are moved aside
 extern uint64_t max_unpacked; // 0: the real limit
 extern size_t max_entries;    // 0: the real limit
 } // namespace Test
