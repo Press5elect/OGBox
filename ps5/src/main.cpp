@@ -121,9 +121,9 @@ bool readTestRun(TestRun &run)
 			std::string first, second;
 			words >> first;
 			if (words >> second) {
-				orbits[first] = std::stof(second);
+				orbits[first] = std::strtof(second.c_str(), nullptr);   // (a garbled number is 0, not an exception at every start)
 			} else {
-				ps5Orbit = std::stof(first);
+				ps5Orbit = std::strtof(first.c_str(), nullptr);
 			}
 		} else if (key == "overlay") {
 			std::string value;

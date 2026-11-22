@@ -393,7 +393,9 @@ float paragraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std:
 		}
 		if (dl) {
 			if (last && rest < e) {
-				textFit(dl, f, size, ImVec2(p.x, y), col, std::string(b, e), w);
+				std::string tail(b, e);   // (one line: a line break in it would draw the rest below the last line)
+				std::replace(tail.begin(), tail.end(), '\n', ' ');
+				textFit(dl, f, size, ImVec2(p.x, y), col, tail, w);
 			} else {
 				text(dl, f, size, ImVec2(p.x, y), col, b, stop);
 			}

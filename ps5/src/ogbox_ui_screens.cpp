@@ -205,7 +205,7 @@ void drawHud(ImDrawList *dl, ImVec2 S, const HudView &v)
 	float ry = m;
 	if (v.showFps) {
 		const std::string n = std::to_string(static_cast<int>(std::lround(v.fps)));
-		char ms[32];
+		char ms[64];
 		if (v.shownFps > 0.5f) {
 			std::snprintf(ms, sizeof(ms), "FPS  >  %d with frame generation", static_cast<int>(std::lround(v.shownFps)));
 		} else {
