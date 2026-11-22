@@ -6827,10 +6827,13 @@ public:
 			news->quiet = quiet;
 			news->outcome = o;
 		});
-		pshakux_log("save sync: %s with %s (%s)", started ? "started" : "not started (one is under way)",
-			place.name.c_str(), place.path.c_str());
+		/* 1.0.3: refused while the data folder is moved: said so (it said a sync was under way) */
+		const bool moving = !started && ogbox::StorageMove::get().progress().running;
+		pshakux_log("save sync: %s with %s (%s)", started ? "started" : moving ? "not started (the data folder is being moved)" :
+			"not started (one is under way)", place.name.c_str(), place.path.c_str());
 		if (!quiet) {
-			showToast(started ? "Syncing the saves with " + place.name + "..." : "The saves are being synced already.");
+			showToast(started ? "Syncing the saves with " + place.name + "..." :
+				moving ? "The data folder is being moved: sync the saves once it is done." : "The saves are being synced already.");
 		}
 	}
 
@@ -7017,11 +7020,16 @@ public:
 		hddJob = job;
 		hddJobWhat = what;
 		pshakux_log("hard disk: %s", what.c_str());
-		std::thread([job, work]() {
-			pshakux_thread_named("ogbox-hdd");
-			work(*job);
-			job->finished.store(true);
-		}).detach();
+		try {
+			std::thread([job, work]() {
+				pshakux_thread_named("ogbox-hdd");
+				work(*job);
+				job->finished.store(true);
+			}).detach();
+		} catch (...) {   // (no thread: the job ends with a reason, the screen not left waiting, the title not ended)
+			hddJob.reset();
+			hddDone(false, "", "it could not be started");
+		}
 	}
 
 	/* Each frame: a job's end (its result shown, the hard disk looked at again). */
