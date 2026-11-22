@@ -36,6 +36,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <chrono>
 #include <cstring>
 #include <cstdarg>

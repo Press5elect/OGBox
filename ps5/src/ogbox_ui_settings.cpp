@@ -626,6 +626,7 @@ std::vector<float> keyCentres(const std::vector<std::string> &r)
 
 void Keyboard::press(const std::string &k)
 {
+	cursor = std::max(0, std::min(cursor, static_cast<int>(text.size())));   // (never past the text's end)
 	if (k == "BK") {
 		if (cursor > 0) {
 			// a whole UTF-8 character
@@ -705,6 +706,14 @@ void Keyboard::input(const Pad &pad, const std::string &typed)
 			size_t n = 1;
 			const unsigned char u = static_cast<unsigned char>(c);
 			n = u < 0x80 ? 1 : u < 0xE0 ? 2 : u < 0xF0 ? 3 : 4;
+			// whole and valid: a lead byte and its continuation bytes, all there (else the byte is dropped)
+			bool ok = u < 0x80 || (u >= 0xC2 && u < 0xF5 && i + n <= typed.size());
+			for (size_t k = 1; ok && k < n; k++) {
+				ok = (static_cast<unsigned char>(typed[i + k]) & 0xC0) == 0x80;
+			}
+			if (!ok) {
+				continue;
+			}
 			text.insert(static_cast<size_t>(cursor), typed.substr(i, n));
 			cursor += static_cast<int>(n);
 			i += n - 1;
