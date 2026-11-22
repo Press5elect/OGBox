@@ -995,6 +995,7 @@ public:
 		stbi_uc *px{ nullptr };
 		int w{ 0 }, h{ 0 };
 		bool failed{ false };
+		uint64_t seq{ 0 };                    // the order it was decoded in
 	};
 	struct Decoder {
 		std::mutex mutex;
@@ -1002,6 +1003,7 @@ public:
 		std::deque<std::string> queue;          // paths
 		std::set<std::string> pending;
 		std::map<std::string, Decoded> done;    // by path
+		uint64_t decoded{ 0 };
 		bool started{ false };
 
 		void request(const std::string &path)
@@ -1051,9 +1053,17 @@ public:
 				}
 				std::lock_guard<std::mutex> lock(mutex);
 				pending.erase(path);
+				d.seq = ++decoded;
 				done[path] = d;
-				while (done.size() > 96) {        // decoded but never drawn (scrolled past)
+				while (done.size() > 96) {        // decoded but never drawn (scrolled past): the oldest goes
+					/* (not the first by name: that could be the one just decoded, asked for again and
+					 * decoded again each frame) */
 					auto old = done.begin();
+					for (auto c = done.begin(); c != done.end(); ++c) {
+						if (c->second.seq < old->second.seq) {
+							old = c;
+						}
+					}
 					if (old->second.px) {
 						stbi_image_free(old->second.px);
 					}
