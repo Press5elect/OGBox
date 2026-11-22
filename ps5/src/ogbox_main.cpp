@@ -5824,10 +5824,12 @@ public:
 		const std::string path = qm.applyPath, tmp = path + ".part";
 		std::thread([result, why, tmp, path]() {
 			char err[256] = "";
-			const bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
-			if (ok) {
-				std::rename(tmp.c_str(), path.c_str());
-			} else {
+			bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			if (ok && std::rename(tmp.c_str(), path.c_str()) != 0) {
+				std::snprintf(err, sizeof(err), "the state could not be put in place (%s)", std::strerror(errno));
+				ok = false;
+			}
+			if (!ok) {
 				std::remove(tmp.c_str());
 				*why = err;
 			}
@@ -5909,11 +5911,15 @@ public:
 		const uint32_t tw = qm.thumbW, th = qm.thumbH;
 		std::thread([result, why, tmp, path, thumbPath, thumb, tw, th]() {
 			char err[256] = "";
-			const bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			if (ok && std::rename(tmp.c_str(), path.c_str()) != 0) {
+				std::snprintf(err, sizeof(err), "the state could not be put in place (%s)", std::strerror(errno));
+				ok = false;
+			}
 			if (ok) {
-				std::rename(tmp.c_str(), path.c_str());
-				if (!thumb.empty()) {
-					writeBmp(thumbPath, thumb.data(), tw, th, tw * 4);
+				/* the picture of this state, or none (a state before's picture must not stay beside it) */
+				if (thumb.empty() || !writeBmp(thumbPath, thumb.data(), tw, th, tw * 4)) {
+					std::remove(thumbPath.c_str());
 				}
 			} else {
 				std::remove(tmp.c_str());
