@@ -629,7 +629,10 @@ static void read_on(const char *key)
     for (int p = 0; p < 2; p++) {
         FILE *f = fopen(paths[p], "r");
         if (!f) {
-            continue;
+            if (errno == ENOENT) {
+                continue;
+            }
+            return;     /* (1.0.3: there and unreadable: not the other's, as ogbox_mods.c reads it) */
         }
         char line[1024];
         while (fgets(line, sizeof(line), f)) {

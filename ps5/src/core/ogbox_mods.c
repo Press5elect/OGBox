@@ -122,6 +122,10 @@ static char *read_all(const char *path)
     }
     const size_t got = fread(buf, 1, (size_t)n, fp);
     fclose(fp);
+    if (got != (size_t)n) {
+        free(buf);      /* (1.0.3: not part of it, taken for the whole) */
+        return NULL;
+    }
     buf[got] = 0;
     return buf;
 }
@@ -394,21 +398,36 @@ static void load_cheats(const char *path)
 
 /* ---- the choices ---- */
 
-static void read_choices(const char *key, const char *title_dir)
+/* 1.0.3: mods.txt, as everything here reads it: /data/ogbox/mods.txt, else the title folder's when
+ * only it is there (ogbox_patches.c's read_on: the same). Its text in *text (NULL: neither is there),
+ * the file in where. False when the one there cannot be read: it is not written over (a file that
+ * failed to open, or to read whole, was taken for a missing one and replaced by one line). */
+static bool choices_read(const char *title_dir, char **text, char *where, size_t n)
 {
-    char path[1024];
-    char *text = NULL;
-    const char *where = NULL;
-    snprintf(path, sizeof(path), "/data/ogbox/mods.txt");
-    if ((text = read_all(path)) != NULL) {
-        where = path;
-    } else {
-        snprintf(path, sizeof(path), "%s/mods.txt", title_dir);
-        if ((text = read_all(path)) != NULL) {
-            where = path;
+    *text = NULL;
+    for (int p = 0; p < 2; p++) {
+        if (p) {
+            snprintf(where, n, "%s/mods.txt", title_dir);
+        } else {
+            snprintf(where, n, "/data/ogbox/mods.txt");
+        }
+        if ((*text = read_all(where)) != NULL) {
+            return true;
+        }
+        struct stat st;
+        if (stat(where, &st) == 0 || errno != ENOENT) {
+            pshakux_log("mods: %s cannot be read (%s): left as it is", where, strerror(errno));
+            return false;
         }
     }
-    if (!text) {
+    return true;
+}
+
+static void read_choices(const char *key, const char *title_dir)
+{
+    char where[1024];
+    char *text = NULL;
+    if (!choices_read(title_dir, &text, where, sizeof(where)) || !text) {
         return;
     }
     unsigned on = 0;
@@ -467,8 +486,6 @@ static void read_choices(const char *key, const char *title_dir)
  * crc: line against default.xbe's CRC-32, the patches by trying each (ogbox_patches_check). One that
  * doesn't fit can't be turned on (the Mods screen) and is left out at the start, whole. */
 
-#define FIT_FILES 4
-
 typedef struct XbeFile {
     char path[256];         /* as the mod's section names it */
     OgboxBuf buf;           /* the disc's file, as on the disc */
@@ -515,14 +532,14 @@ static bool disc_file(const NcDisc *disc, const char *path, OgboxBuf *b)
 }
 
 /* The XBE a mod's section names ("default.xbe", "bin\game.xbe"), read once a check */
-static XbeFile *xbe_file(const NcDisc *disc, const char *path, XbeFile *files, unsigned *n)
+static XbeFile *xbe_file(const NcDisc *disc, const char *path, XbeFile *files, unsigned *n, unsigned cap)
 {
     for (unsigned i = 0; i < *n; i++) {
         if (!strcasecmp(files[i].path, path)) {
             return &files[i];
         }
     }
-    if (*n >= FIT_FILES) {
+    if (*n >= cap) {
         return NULL;
     }
     XbeFile *f = &files[(*n)++];
@@ -644,7 +661,8 @@ static void hex_text(char *out, size_t n, const uint8_t *b, unsigned len)
  * had them), _NO (one didn't, or its XBE or address isn't the disc's: why says the first), or
  * _UNCHECKED (no line to check: no "old" bytes, only the title update's, or files only). Each
  * line's bytes go into the buffer for the next (as the core's overlay), and back out after. */
-static int mod_fit(const Mod *m, const NcDisc *disc, XbeFile *files, unsigned *nfiles, char *why, size_t why_n)
+static int mod_fit(const Mod *m, const NcDisc *disc, XbeFile *files, unsigned *nfiles, unsigned cap, char *why,
+                   size_t why_n)
 {
     typedef struct Undo {
         XbeFile *f;
@@ -664,7 +682,7 @@ static int mod_fit(const Mod *m, const NcDisc *disc, XbeFile *files, unsigned *n
             continue;       /* the title update's (not on the disc), or no patch (the core skips it) */
         }
         lines++;
-        XbeFile *f = xbe_file(disc, l->xbe, files, nfiles);
+        XbeFile *f = xbe_file(disc, l->xbe, files, nfiles, cap);
         if (!f || !f->there || !f->x) {
             if (!bad++) {
                 snprintf(why, why_n, "[%s] is not an XBE on this disc", l->xbe);
@@ -720,14 +738,31 @@ static void fit_check(const NcDisc *disc, const char *key)
 {
     memset(&g_fit, 0, sizeof(g_fit));
     copy(g_fit.key, sizeof(g_fit.key), key);
-    XbeFile files[FIT_FILES];
+    /* 1.0.3: room for every XBE the mods name, and default.xbe (there was room for four: the fifth
+     * was taken for one not on the disc, and its mod for another release's) */
+    unsigned cap = 1;
+    for (unsigned i = 0; i < g_nmods; i++) {
+        for (size_t k = 0; k < g_mods[i].npatches; k++) {
+            bool seen = !strcasecmp(g_mods[i].patches[k].xbe, "default.xbe");
+            for (unsigned j = 0; j <= i && !seen; j++) {
+                for (size_t q = 0; q < (j < i ? g_mods[j].npatches : k) && !seen; q++) {
+                    seen = !strcasecmp(g_mods[j].patches[q].xbe, g_mods[i].patches[k].xbe);
+                }
+            }
+            cap += !seen;
+        }
+    }
+    XbeFile *files = calloc(cap, sizeof(*files));
     unsigned nfiles = 0;
-    const XbeFile *def = xbe_file(disc, "default.xbe", files, &nfiles);
+    if (!files) {
+        cap = 0;
+    }
+    const XbeFile *def = files ? xbe_file(disc, "default.xbe", files, &nfiles, cap) : NULL;
     g_fit.crc = def && def->there ? ogbox_crc32(def->buf.data, def->buf.size) : 0;
     unsigned bad = 0;
     for (unsigned i = 0; i < g_nmods; i++) {
         copy(g_fit.mods[i].id, sizeof(g_fit.mods[i].id), g_mods[i].id);
-        g_fit.mods[i].fit = mod_fit(&g_mods[i], disc, files, &nfiles, g_fit.mods[i].why, sizeof(g_fit.mods[i].why));
+        g_fit.mods[i].fit = mod_fit(&g_mods[i], disc, files, &nfiles, cap, g_fit.mods[i].why, sizeof(g_fit.mods[i].why));
         bad += g_fit.mods[i].fit == OGBOX_FIT_NO;
     }
     g_fit.nmods = g_nmods;
@@ -747,6 +782,7 @@ static void fit_check(const NcDisc *disc, const char *key)
     ogbox_patches_set_disc_crc(key, g_fit.crc);
     ogbox_patches_check(disc, key, def && def->there ? &def->buf : NULL);
     xbe_files_free(files, nfiles);
+    free(files);
     g_fit.valid = true;
     pshakux_log("mods: %s: default.xbe's CRC-32 %08X; %u of %u mods for another release%s", key, g_fit.crc, bad,
                 g_nmods, g_fit.cheats == OGBOX_FIT_NO ? ", and the cheats" : "");
@@ -793,6 +829,11 @@ static void write_files(FILE *out, const char *dir, const char *rel)
     size_t n = 0;
     char **names = list_dir(path, &n, false);
     for (size_t i = 0; i < n; i++) {
+        /* 1.0.3: the manifest's fields are split by tabs, its lines by line ends */
+        if (strpbrk(names[i], "\t\r\n")) {
+            pshakux_log("mods:   %s/%s: a name with a tab or a line end in it: left out", path, names[i]);
+            continue;
+        }
         char sub[1024], host[1024];
         snprintf(sub, sizeof(sub), "%s%s%s", rel, rel[0] ? "/" : "", names[i]);
         snprintf(host, sizeof(host), "%s/%s", dir, sub);
@@ -832,6 +873,10 @@ static void write_edit(FILE *out, const NcDisc *disc, const char *work_dir, cons
     const size_t nold = strlen(old), nneu = strlen(neu);
     OgboxBuf b;
     memset(&b, 0, sizeof(b));
+    if (strpbrk(file, "\t\r\n")) {
+        pshakux_log("mods:   mod %s: an edit's file name has a tab in it: its edit left out", mod);
+        return;
+    }
     if (!disc || !nold || !disc_file(disc, file, &b)) {
         pshakux_log("mods:   mod %s: %s isn't on the disc: its edit left out", mod, file);
         return;
@@ -1387,7 +1432,13 @@ bool ogbox_mods_choose(const char *key, bool cheat, const char *name, bool on)
 bool ogbox_mods_choose_kind(const char *key, const char *kind, const char *name, bool on)
 {
     const char *path = "/data/ogbox/mods.txt";
-    char *text = read_all(path);
+    /* 1.0.3: from the file the choices are read from (the title folder's carried over the first
+     * time: it was shadowed, its choices lost), and not over one that can't be read */
+    char from[1024];
+    char *text = NULL;
+    if (!choices_read(pshakux_title_dir(), &text, from, sizeof(from))) {
+        return false;
+    }
     char tmp[1100];
     snprintf(tmp, sizeof(tmp), "%s.new", path);
     FILE *out = fopen(tmp, "w");
@@ -1472,7 +1523,9 @@ static char *line_value(char *line, const char *key, const char *kind)
 
 bool ogbox_mods_get(const char *key, const char *kind, char *value, size_t n)
 {
-    char *text = read_all("/data/ogbox/mods.txt");
+    char from[1024];
+    char *text = NULL;
+    choices_read(pshakux_title_dir(), &text, from, sizeof(from));   /* (1.0.3: where the others read) */
     bool found = false;
     if (text) {
         for (char *save, *line = strtok_r(text, "\n", &save); line && !found; line = strtok_r(NULL, "\n", &save)) {
@@ -1493,7 +1546,11 @@ bool ogbox_mods_get(const char *key, const char *kind, char *value, size_t n)
 bool ogbox_mods_set(const char *key, const char *kind, const char *value)
 {
     const char *path = "/data/ogbox/mods.txt";
-    char *text = read_all(path);
+    char from[1024];
+    char *text = NULL;
+    if (!choices_read(pshakux_title_dir(), &text, from, sizeof(from))) {
+        return false;   /* (1.0.3: as ogbox_mods_choose_kind) */
+    }
     char tmp[1100];
     snprintf(tmp, sizeof(tmp), "%s.new", path);
     FILE *out = fopen(tmp, "w");
