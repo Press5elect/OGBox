@@ -11,6 +11,7 @@
 #include "ogbox_settings.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <string>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "platform/ps5_bootlog.h"
 #include "core/ogbox_patches.h"
@@ -581,15 +583,22 @@ void writeFile(const std::string &path, const std::map<std::string, std::string>
 		pshakux_log("settings: %s cannot be written", tmp.c_str());
 		return;
 	}
-	std::fprintf(f, "# %s\n", head);
+	/* 1.0.3: put in place only when it was written whole (a full drive left a cut-off file there, and
+	 * the settings after its last line were lost) */
+	bool ok = std::fprintf(f, "# %s\n", head) >= 0;
 	for (const Option &o : options()) {
 		const auto it = values.find(o.key);
 		if (it != values.end()) {
-			std::fprintf(f, "%s=%s\n", o.key, it->second.c_str());
+			ok = std::fprintf(f, "%s=%s\n", o.key, it->second.c_str()) >= 0 && ok;
 		}
 	}
-	std::fclose(f);
-	std::rename(tmp.c_str(), path.c_str());
+	ok = std::fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+		pshakux_log("settings: %s cannot be written: %s", path.c_str(), std::strerror(errno));
+		std::remove(tmp.c_str());
+	}
 }
 
 } // namespace
