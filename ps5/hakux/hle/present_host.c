@@ -252,9 +252,18 @@ static VkBuffer imp_buffer(void *dst, size_t bytes)
 void pshx_present_forget(void *dst)
 {
     pthread_mutex_lock(&g_ph.lock);
+    /* a copy whose wait failed (pending) may still write into the buffers: then they are only
+     * forgotten (never matched again; dropped as the oldest by imp_buffer, which take calls once
+     * the fence is seen signalled, or at shutdown after the device is idle) */
+    const bool busy = g_ph.pending && g_hvk.dev && T.vkGetFenceStatus(g_hvk.dev, g_ph.fence) != VK_SUCCESS;
     for (int i = 0; i < IMPORTS; i++) {
         if (g_imp[i].ptr == dst && g_hvk.dev) {
-            imp_drop(i);    /* (no copy is in flight: take waits for its own) */
+            if (busy) {
+                g_imp[i].ptr = NULL;
+                g_imp[i].used = 0;
+            } else {
+                imp_drop(i);    /* (no copy is in flight: take waits for its own) */
+            }
         }
     }
     pthread_mutex_unlock(&g_ph.lock);
