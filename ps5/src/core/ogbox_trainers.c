@@ -29,6 +29,7 @@
 #define MAX_DEPTH   6
 #define FLAG_XBTF   1u
 #define FLAG_BROKEN 2u
+#define FLAG_UNREAD 4u                  /* 1.0.3: the file could not be read: not kept in the index */
 
 typedef struct Entry {
     int root;
@@ -54,11 +55,14 @@ void ogbox_trainers_set_roots(const char *const *roots, int n)
     pthread_mutex_lock(&g_lock);
     g_nroots = 0;
     for (int i = 0; i < n && g_nroots < MAX_ROOTS; i++) {
+        if (!roots[i] || !roots[i][0]) {
+            continue;   /* (1.0.3: before the comparison, which read it) */
+        }
         bool same = false;
         for (int k = 0; k < g_nroots; k++) {
             same |= !strcmp(g_roots[k], roots[i]);
         }
-        if (roots[i] && roots[i][0] && !same) {
+        if (!same) {
             snprintf(g_roots[g_nroots++], sizeof(g_roots[0]), "%s", roots[i]);
         }
     }
@@ -179,6 +183,9 @@ static bool write_index(const char *path, const Entry *list, size_t n, const cha
     fprintf(f, "# OGBox's trainers index: size, date, title IDs, XBE date, options, flags, hash, name, author, file\n");
     for (size_t i = 0; i < n; i++) {
         const Entry *e = &list[i];
+        if (e->flags & FLAG_UNREAD) {
+            continue;   /* (read again by the next scan) */
+        }
         fprintf(f, "%llu\t%lld\t%08x\t%08x\t%08x\t%08x\t%u\t%u\t%08x\t%s\t%s\t%s/%s\n", (unsigned long long)e->size,
                 (long long)e->mtime, e->ids[0], e->ids[1], e->ids[2], e->xbe_time, e->noptions, e->flags, e->hash,
                 e->name, e->author, roots[e->root], e->rel);
@@ -220,8 +227,10 @@ static void parse_file(const char *path, Entry *e)
     FILE *f = fopen(path, "rb");
     uint8_t *buf = malloc(NC_TRAINER_MAX_FILE + 1);
     size_t n = 0;
-    if (f && buf) {
+    bool read = f && buf;
+    if (read) {
         n = fread(buf, 1, NC_TRAINER_MAX_FILE + 1, f);
+        read = !ferror(f);
     }
     if (f) {
         fclose(f);
@@ -246,7 +255,9 @@ static void parse_file(const char *path, Entry *e)
         clean(e->name);
         clean(e->author);
     } else {
-        e->flags = FLAG_BROKEN | (xbtf ? FLAG_XBTF : 0);
+        /* 1.0.3: a file that could not be read is broken for now, not in the index: it was
+         * taken for one that isn't a trainer until its size or date changed */
+        e->flags = FLAG_BROKEN | (xbtf ? FLAG_XBTF : 0) | (read ? 0 : FLAG_UNREAD);
     }
     free(buf);
 }
