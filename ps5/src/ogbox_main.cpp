@@ -3725,6 +3725,14 @@ public:
 			passTimes.takes++;
 			passTimes.takesLong += ms > 2.0 ? 1 : 0;
 		}
+		if (fw < w) {
+			/* the frame shrank after its size was read: its rows came w * 4 bytes apart; packed now, as
+			 * the upload, frame generation and a screenshot read them (it was one sheared frame) */
+			uint8_t *px = static_cast<uint8_t *>(s.mapped);
+			for (uint32_t y = 1; y < fh; y++) {
+				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * w * 4, size_t(fw) * 4);
+			}
+		}
 		ensurePicture(fw, fh);
 		fgFresh = true;
 		fgPush = frameGenFor(fw, fh);
