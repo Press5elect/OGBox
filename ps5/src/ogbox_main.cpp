@@ -6168,6 +6168,7 @@ public:
 			const bool ok = qm.result->load() == 1;
 			const int slot = qm.busySlot;
 			qm.busy.clear();
+			qm.result.reset();   // (taken: a later "Loading" or "Restarting" is not this save's end again)
 			if (qm.after == Quick::After::Apply) {
 				if (ok) {
 					quickLoad(qm.applyPath, true);
