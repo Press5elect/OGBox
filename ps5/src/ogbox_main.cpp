@@ -6599,6 +6599,7 @@ public:
 			gp.returnTo = false;
 			gp.open = true;
 			gp.since = now_seconds();
+			gp.savesKnown.clear();   // (saves brought in or deleted there: "Saves" or "Import Saves" looked at again)
 		}
 	}
 
@@ -9603,7 +9604,22 @@ public:
 			std::snprintf(id, sizeof(id), "%08x", static_cast<unsigned>(gp.info.title_id));
 			const std::string hddRoot = boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd;
 			gp.hasSaves = false;
-			if (DIR *d = opendir((hddRoot + "/Partition1/UDATA/" + id).c_str())) {
+			/* each name by its letters, case aside, as the hard disk manager finds them: a save brought
+			 * in keeps its folder's spelling ("4D530039"), and the console's own storage tells cases apart */
+			const auto child = [](const std::string &dir, const char *name) {
+				if (DIR *d = opendir(dir.c_str())) {
+					while (struct dirent *e = readdir(d)) {
+						if (!strcasecmp(e->d_name, name)) {
+							const std::string found = dir + "/" + e->d_name;
+							closedir(d);
+							return found;
+						}
+					}
+					closedir(d);
+				}
+				return dir + "/" + name;
+			};
+			if (DIR *d = opendir(child(child(child(hddRoot, "Partition1"), "UDATA"), id).c_str())) {
 				while (struct dirent *e = readdir(d)) {
 					if (e->d_name[0] != '.' && std::strcmp(e->d_name, "TitleMeta.xbx") != 0 && std::strcmp(e->d_name, "TitleImage.xbx") != 0) {
 						gp.hasSaves = true;
