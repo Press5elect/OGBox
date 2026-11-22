@@ -19,6 +19,7 @@
 #include <cctype>
 #include <condition_variable>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <cerrno>
 #include <cstdio>
@@ -739,7 +740,7 @@ void saveSyncAskStop()
 	std::lock_guard<std::mutex> lock(g_syncMutex);
 	if (g_syncRunning && !g_syncStop) {
 		g_syncStop = true;
-		pshakux_log("save sync: OGBox closes: the sync stops after the save it is copying");
+		pshakux_log("save sync: asked to stop (OGBox closes or starts again): it stops after the save it is copying");
 	}
 }
 
@@ -816,17 +817,27 @@ bool startSyncJob(std::function<std::function<void()>()> job)
 		g_syncRunning = true;
 		g_syncStop = false;
 	}
-	std::thread([job] {
-		const std::function<void()> then = job();
+	try {
+		std::thread([job] {
+			const std::function<void()> then = job();
+			{
+				std::lock_guard<std::mutex> lock(g_syncMutex);
+				g_syncRunning = false;
+			}
+			g_syncEnded.notify_all();
+			if (then) {
+				then();
+			}
+		}).detach();
+	} catch (const std::system_error &) {   // 1.0.3: no thread: not running (it showed running for good)
 		{
 			std::lock_guard<std::mutex> lock(g_syncMutex);
 			g_syncRunning = false;
 		}
 		g_syncEnded.notify_all();
-		if (then) {
-			then();
-		}
-	}).detach();
+		pshakux_log("save sync: not started: no thread for it");
+		return false;
+	}
 	return true;
 }
 

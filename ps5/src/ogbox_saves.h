@@ -100,7 +100,8 @@ bool saveSyncRunning();
 /* A game is about to start (the hard disk becomes its): a sync under way stops before its next save,
  * and this waits for it (the save it was copying is whole). */
 void saveSyncFinish();
-/* OGBox 0.0.9: OGBox is closing: the same stop, without the wait (saveSyncRunning says when it ended). */
+/* OGBox 0.0.9: OGBox is leaving (closing, or starting again for a game): the same stop, without the
+ * wait (saveSyncRunning says when it ended). */
 void saveSyncAskStop();
 
 /* The saves on the sync place, deleted there too (savesync::remove, listThere). Each is a job on a
