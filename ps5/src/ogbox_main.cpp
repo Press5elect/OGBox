@@ -928,6 +928,7 @@ public:
 	double quitHeldSince{ -1.0 };
 	int lastState{ -1 };
 	bool relaunchAsked{ false };
+	bool guestRelaunchRefused{ false };   // the console refused the game's next XBE: not asked again
 
 	// The game list (0.1.14): shown when no game was named
 	bool library{ false };
@@ -2037,7 +2038,14 @@ public:
 		args.push_back(nullptr);
 		saveFrozenFrame();
 		quiesceForExit();
-		pshakux_relaunch(args.data());
+		const int r = pshakux_relaunch(args.data());
+		/* the title goes on: the quick menu (its way back to the list) open to the player again, the
+		 * guest's reboot not asked for again each frame */
+		pshakux_log("ogbox: the relaunch for the game's next XBE was refused (%#x)", static_cast<unsigned>(r));
+		std::remove(frozenPath().c_str());
+		guestRelaunchRefused = true;
+		relaunchAsked = false;
+		showToast("The console refused to start the game's next part (" + std::to_string(r) + ").");
 	}
 
 	/* 0.0.2: a game starting another XBE keeps its picture: the last frame, kept for the title as it
@@ -4840,7 +4848,7 @@ public:
 				pshakux_log_keep("the game failed");   // 0.0.7: a log kept in memory goes to the file
 			}
 		}
-		if (!relaunchAsked && pshx_core_relaunch_wanted()) {
+		if (!relaunchAsked && !guestRelaunchRefused && pshx_core_relaunch_wanted()) {
 			relaunchForGuest();
 		}
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
@@ -5983,8 +5991,14 @@ public:
 		args.push_back(nullptr);
 		pshakux_log("quick menu: restarting the game");
 		quiesceForExit();
-		pshakux_relaunch(args.data());
+		const int r = pshakux_relaunch(args.data());
+		pshakux_log("quick menu: the relaunch was refused (%#x)", static_cast<unsigned>(r));
 		relaunchAsked = false;
+		qm.busy.clear();   // (the menu answers again)
+		if (!qm.open && pshx_core_state() != PSHX_CORE_IDLE) {
+			pshx_core_pause(false);   // (the exit's pause: the game goes on)
+		}
+		showToast("The console refused to start the game again.");
 	}
 
 	/* ---- 0.0.1: the updater (Crux2's, ps5_update.h) --------------------------------------------
