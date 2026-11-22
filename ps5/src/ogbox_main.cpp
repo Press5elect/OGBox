@@ -4886,6 +4886,7 @@ public:
 			renderLibrary();
 			return;
 		}
+		coverHousekeeping();   // in a game too: the frame's upload count, and retired pictures freed
 		if (shareWait.active) {
 			pollShareWait();
 		}
