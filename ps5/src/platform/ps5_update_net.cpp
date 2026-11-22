@@ -8,7 +8,7 @@
 // and its texture packs curl directly (ps5_texture_packs.cpp); OGBox has neither PCSX2 nor its
 // downloader, so both requests are curl's here, set up as Crux2's texture packs set it up: the
 // certificates of cacert.pem in the title folder (certifi's copy of Mozilla's list, put there by
-// ps5/tools/link-title.sh), redirects followed (a release's file is served from another host), a
+// ps5/tools/link-title.sh), redirects followed to HTTPS only (a release's file is served from another host), a
 // transfer that brings less than 1 KiB a second for a minute stopped. A download goes to its file
 // as it comes, not through memory.
 
@@ -49,6 +49,8 @@ void Prepare(CURL* curl, const std::string& url, const std::string& agent, const
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, agent.c_str());
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 8L);
+	// A redirect is followed to HTTPS only (curl's default lets one go to plain HTTP as well).
+	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_CAINFO, ca.c_str());
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
