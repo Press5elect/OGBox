@@ -623,13 +623,13 @@ void Report(int signal, siginfo_t* info, void* ctx)
 void CrashSignalHandler(int signal, siginfo_t* info, void* ctx)
 {
   // A second fault (in another thread, or while this report walks a broken stack): the console
-  // takes it from here.
-  if (s_in_crash)
+  // takes it from here. (OGBox: taken in one step: two threads faulting at once both passed a
+  // test and a set, and wrote their reports into each other.)
+  if (__atomic_exchange_n(&s_in_crash, 1, __ATOMIC_ACQ_REL))
   {
     RestoreDefault(signal);
     return;
   }
-  s_in_crash = 1;
 
   Report(signal, info, ctx);
   Out o;
