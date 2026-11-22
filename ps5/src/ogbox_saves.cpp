@@ -481,6 +481,35 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 		return false;
 	}
 	const std::string to = child(dir, copy.folder.c_str());
+	/* 1.0.3: the save that was there is put aside beside the hard disk's drives under its own names (a
+	 * fixed name for every save was deleted by the next import of any save, with the only copy in it
+	 * when an import was cut between its renames): one an import left there is put back when the save
+	 * isn't in its place, deleted only when that import put its copy in place (<save>.placed), and
+	 * otherwise kept (a game may have made the save again meanwhile) */
+	const std::string asideDir = hddRoot + "/.ogbox-import-aside/" + dir.substr(dir.find_last_of('/') + 1);
+	const std::string old = asideDir + "/" + to.substr(to.find_last_of('/') + 1), placed = old + ".placed";
+	struct stat st;
+	if (isDir(old)) {
+		if (!isDir(to)) {
+			if (rename(old.c_str(), to.c_str()) != 0) {
+				why = to + ": what an earlier import put aside can't be put back: " + std::strerror(errno);
+				return false;
+			}
+			pshakux_log("saves: %s put back from where an import that stopped put it aside", to.c_str());
+		} else if (stat(placed.c_str(), &st) == 0) {
+			removeTree(old);   // (what replaced it is there whole; the mark stays till it is gone)
+		} else {
+			const std::string kept = old + ".kept-" + std::to_string(static_cast<long long>(time(nullptr)));
+			if (rename(old.c_str(), kept.c_str()) != 0) {
+				why = old + ": " + std::strerror(errno);
+				return false;
+			}
+			pshakux_log("saves: what an import that stopped put aside is kept in %s", kept.c_str());
+		}
+	}
+	if (!isDir(old)) {
+		unlink(placed.c_str());
+	}
 	const bool had = isDir(to);
 	if (had && !overwrite) {
 		why = "the hard disk has that save already";
@@ -488,7 +517,6 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 	}
 	/* the game's name file, when the hard disk has none for the game yet */
 	const std::string meta = child(dir, "TitleMeta.xbx");
-	struct stat st;
 	const std::string from = copy.path.substr(0, copy.path.find_last_of('/'));
 	if (stat(meta.c_str(), &st) != 0 && stat((from + "/TitleMeta.xbx").c_str(), &st) == 0) {
 		std::string ignored;
@@ -497,10 +525,14 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 	/* 1.0.3: copied beside the hard disk's drives first (no Xbox drive: no game sees it half made),
 	 * then put in the save's place; the save that was there is deleted only once the copy is in it
 	 * (it was deleted first, and a copy that failed lost it) */
-	const std::string fresh = hddRoot + "/.ogbox-import", old = hddRoot + "/.ogbox-import-old";
+	const std::string fresh = hddRoot + "/.ogbox-import";
 	removeTree(fresh);
-	removeTree(old);
 	if (!copyTree(copy.path, fresh, why)) {
+		removeTree(fresh);
+		return false;
+	}
+	if (had && !makeFolders(asideDir)) {
+		why = asideDir + ": " + std::strerror(errno);
 		removeTree(fresh);
 		return false;
 	}
@@ -518,7 +550,13 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 		return false;
 	}
 	if (had) {
-		removeTree(old);
+		const int fd = open(placed.c_str(), O_WRONLY | O_CREAT, 0666);   // (what is aside: safe to delete)
+		if (fd >= 0) {
+			close(fd);
+			if (removeTree(old)) {
+				unlink(placed.c_str());
+			}
+		}
 	}
 	return true;
 }
@@ -557,6 +595,24 @@ bool syncList(const std::string &folder, std::vector<savesync::Entry> *out)
 	if (!d) {
 		return false;
 	}
+	/* 1.0.3: a file a write stopped between its renames left aside (.<name>.old, with no <name>) is put
+	 * back before it is listed (the sync skips hidden names: it took the save for deleted here, and
+	 * deleted it on the other side) */
+	std::vector<std::string> aside;
+	while (struct dirent *e = readdir(d)) {
+		const size_t n = std::strlen(e->d_name);
+		if (n > 5 && e->d_name[0] == '.' && !std::strcmp(e->d_name + n - 4, ".old")) {
+			aside.emplace_back(e->d_name);
+		}
+	}
+	for (const std::string &name : aside) {
+		const std::string was = folder + "/" + name.substr(1, name.size() - 5);
+		struct stat st;
+		if (lstat(was.c_str(), &st) != 0 && errno == ENOENT && stat((folder + "/" + name).c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+			rename((folder + "/" + name).c_str(), was.c_str());
+		}
+	}
+	rewinddir(d);
 	/* 1.0.3 (after Crux2's backup listing): a listing cut short by a read error is no listing (the
 	 * sync takes what isn't listed for not there) */
 	int error = 0;
