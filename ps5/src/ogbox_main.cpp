@@ -5955,6 +5955,10 @@ public:
 		const int r = pshakux_relaunch(args.data());
 		pshakux_log("quick menu: the relaunch was refused (%#x)", static_cast<unsigned>(r));
 		relaunchAsked = false;
+		qm.busy.clear();   // ("Loading slot N" kept every button of the menu away)
+		if (!qm.open) {
+			pshx_core_pause(false);
+		}
 		showToast("The console refused to start the game again.");
 	}
 
