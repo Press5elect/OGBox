@@ -8831,7 +8831,7 @@ public:
 			{ "Dear ImGui", "Omar Cornut and contributors (MIT): the menus' drawing." },
 			{ "Network shares", "libsmb2 and libnfs by Ronnie Sahlberg (LGPL-2.1-or-later)." },
 			{ "Disc images", "libchdr (BSD-3-Clause), with the LZMA SDK, zstd and dr_flac." },
-			{ "Covers and descriptions", "libretro's thumbnails, MobCat's scans of the boxes, and Wikipedia's articles (CC BY-SA 4.0)." },
+			{ "Covers and descriptions", "libretro's thumbnails, MobCat's box art (its scans and thumbnails) and database, and Wikipedia's articles (CC BY-SA 4.0)." },
 			{ "Game data", "Redump's disc database (CC BY-SA 4.0); the patches' and trainers' authors are named beside each one." },
 			{ "Everything else", "LEGAL.txt, NOTICE.txt and licenses/ in OGBox's folder name every part, its authors and its licence." },
 		};
