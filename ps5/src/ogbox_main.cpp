@@ -1633,7 +1633,9 @@ public:
 		if (!listing) {
 			return;
 		}
-		std::lock_guard<std::mutex> lock(listing->mutex);
+		/* (a copy kept to the end: listing.reset() below would otherwise free the mutex still held) */
+		const std::shared_ptr<Listing> job = listing;
+		std::lock_guard<std::mutex> lock(job->mutex);
 		if (!listing->done) {
 			return;
 		}
