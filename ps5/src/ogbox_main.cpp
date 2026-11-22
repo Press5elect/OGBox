@@ -8922,13 +8922,18 @@ public:
 				acts[static_cast<size_t>(setRowSel)].square();
 			} else if (page == SP_PICTURE || page == SP_XBOX || page == SP_ADVANCED || page == SP_LIST || page == SP_INTERFACE ||
 				page == SP_NETWORK) {
+				/* the settings' rows only: a share's TRIANGLE removes the share, not a setting */
+				std::vector<std::function<void()>> resets;
+				for (size_t k = 0; k < acts.size() && k < rows.size(); k++) {
+					if (acts[k].reset && rows[k].kind != ui::SetRow::Kind::Share) {
+						resets.push_back(acts[k].reset);
+					}
+				}
 				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here are removed, and it uses "
-					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, acts](int i) {
+					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, resets](int i) {
 						if (i == 1) {
-							for (const RowAct &a : acts) {
-								if (a.reset) {
-									a.reset();
-								}
+							for (const std::function<void()> &reset : resets) {
+								reset();
 							}
 							showToast("Reset");
 						}
