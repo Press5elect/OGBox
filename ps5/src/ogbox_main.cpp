@@ -4883,7 +4883,8 @@ public:
 		fetchPicture();
 		frameGenPlan();
 		probeStall(state);
-		if (shotWanted && upload && havePicture) {
+		/* (fgPush: frame generation takes the new frame instead of the upload; it is in this staging buffer all the same) */
+		if (shotWanted && (upload || fgPush) && havePicture) {
 			shotWanted = false;
 			takeShot();
 		}
