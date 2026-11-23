@@ -8836,7 +8836,7 @@ public:
 				{ "Clock", { "clock_days", "clock_hours" } } };
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
-				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
+				{ "", { "frame_pacing", "speed_limit", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
 					"audio_mixing", "audio_resampler", "audio_hrtf", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
@@ -8945,6 +8945,10 @@ public:
 			return;
 		}
 		const std::string k = o.key;
+		if (k == "speed_limit" && pshx_core_set_speed(prefs.speedLimit())) {   // 1.0.4: the core takes it at once
+			pshakux_log("settings: speed limit %u%% (0: unlimited), at once", prefs.speedLimit());
+			return;
+		}
 		if (liveKey(k)) {
 			const bool ssaaWas = ssaaOn, quincunxWas = quincunxOn;
 			readPictureSettings();

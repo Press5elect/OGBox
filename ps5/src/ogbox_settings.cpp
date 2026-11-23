@@ -243,6 +243,16 @@ std::vector<Option> makeOptions()
 	o.push_back({ "frame_pacing", Section::Performance, "Frame pacing",
 		"Helps the input lag of a game whose drawing can't keep up.", kOnOff, "0", true });
 	o.push_back({ "uncapped", Section::Performance, "Uncapped frame rate", "For debugging only.", kOnOff, "0", true });
+	/* OGBox 1.0.4: the speed limit (after ProsperoEden's): the Xbox's whole clock at a percentage (hakuX-native's
+	 * NC_SPEED: its timers, RDTSC, vblank and sound); changed in a running game it applies at once
+	 * (pshx_core_set_speed) */
+	o.push_back({ "speed_limit", Section::Performance, "Speed limit",
+		"How fast the game runs, as a percentage of the Xbox: above 100% the whole game runs faster (intros, menus, "
+		"grinding), its timers, animations and music too, and the sound plays faster and higher. Where the PS5 "
+		"can't keep up, the game runs as fast as it can. Unlimited: as fast as the PS5 allows (the speed follows "
+		"the game). Not a frame-rate unlock. Changing it in a running game applies at once.",
+		{ { "100", "100% (Xbox speed)" }, { "150", "150%" }, { "200", "200%" }, { "300", "300%" }, { "0", "Unlimited" } },
+		"100", true });
 	// 0.0.2: off by default (the console draws everything); on, a draw whose shader isn't built yet is skipped
 	o.push_back({ "async_shaders", Section::Performance, "Compile shaders in the background",
 		"The first time a game runs, expect hitches while this is off. On, the hitches are gone, but some textures or "
@@ -833,6 +843,13 @@ std::string Settings::step(const Option &o, const std::string &v, int by)
 	return o.choices[static_cast<size_t>(at)].value;
 }
 
+/* 1.0.4: the speed limit: a percentage, 0 Unlimited; a value not among the choices: 100% */
+unsigned Settings::speedLimit() const
+{
+	const std::string v = value("speed_limit");
+	return v == "150" ? 150u : v == "200" ? 200u : v == "300" ? 300u : v == "0" ? 0u : 100u;
+}
+
 std::vector<std::string> Settings::coreArgs() const
 {
 	std::vector<std::string> a;
@@ -892,6 +909,9 @@ std::vector<std::string> Settings::coreArgs() const
 		a.push_back("tz=" + std::to_string(local.tm_gmtoff / 60));
 	}
 	a.push_back(std::string("pace=") + (on("frame_pacing") ? "1" : "0"));
+	if (speedLimit() != 100) {   // 1.0.4: the speed limit (hakuX-native's native/kernel/speed.h)
+		a.push_back("NC_SPEED=" + std::to_string(speedLimit()));
+	}
 	a.push_back(std::string("asyncpipe=") + (on("async_shaders") ? "1" : "0"));
 	a.push_back(std::string("prebuild=") + (on("prebuild_shaders") ? "1" : "0"));
 	a.push_back(std::string("devtime=") + (on("fast_drive") ? "0" : "1"));

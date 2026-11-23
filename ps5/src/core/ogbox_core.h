@@ -109,6 +109,10 @@ bool pshx_core_widescreen(void);
 
 /* Paused: the guest's clock and sound stop, the frame stays (the quick menu, the home screen). */
 void pshx_core_pause(bool on);
+/* OGBox 1.0.4: the speed limit while the game runs (pct: a percentage of the Xbox's, 0 Unlimited;
+ * at the start it is NC_SPEED): the core's clock, vblank and sound go on at it from the guest's
+ * next kernel entry. False when the core has none (a core older than its speed limit). */
+bool pshx_core_set_speed(unsigned pct);
 /* OGBox 0.0.2: n of the GPU's draws into the boot log (hakuX's draw log: each draw's target and
  * textures, the targets' events among them), from delay_ms from now on, for a problem report: the
  * quick menu's (the delay: time to bring the problem on screen after it closes). */
