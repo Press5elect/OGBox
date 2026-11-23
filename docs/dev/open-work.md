@@ -18,6 +18,12 @@ done or something new is learned; delete what no longer applies.
 | `41560020` / `4156004E` pacing (the step rounded to the 120 Hz pickups) | Each release's rewritten bytes run on the PC at their own addresses against a model (21000 frames): steps off by more than 1 ms at 60 from 19-41 % to 0.6-1.8 %. The owner reported the test builds with it (EF, EG) working as intended; no log of it measured |
 | Texture packs with palette (P8) textures whose palette animates | Each palette is a different code: a pack needs one file per palette state |
 
+## Held back from a release
+
+| Item | State |
+| --- | --- |
+| The `4156002A` mod "Animated water and lights" (v1, v3; after xbased) | Ported (commit `c123faa`) but not run on a console; taken out of 1.0.3 because main is live for game fixes. Bring it back (`git show c123faa -- ps5/mods`) with a test build that confirms it |
+
 ## Known problems, cause not found
 
 | Problem | What is known |

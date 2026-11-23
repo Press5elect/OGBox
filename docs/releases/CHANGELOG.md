@@ -14,7 +14,6 @@ Added
 - HRTF on or off (Settings > Advanced, per game).
 - Covers from MobCat's database by the disc's title ID and version: the release's own box, its
   region's, and thumbnails where there is no scan.
-- A mod for `4156002A` (v1 and v3), after xbased: animated water and lights.
 - The hard disk manager's copies, moves and deletions run in the background with their progress; a
   data folder move shows its "deleting the old copy" phase.
 
