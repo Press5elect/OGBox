@@ -1106,6 +1106,16 @@ public:
 	} tv;
 	bool trainerScanStarted{ false };
 	uint32_t runXbeTime{ 0 };                 // the running game's default.xbe date
+	OgboxGameInfo runInfo{};                  // 1.0.4: its certificate (the loading screen's name and cover)
+	/* 1.0.4: the loading screen (drawLoading): the step of the start under way and since when, the
+	 * cached shaders' count as last seen, the cover's names (read once) */
+	struct StartView {
+		int step{ -1 };
+		double since{ 0.0 };
+		unsigned shadersDone{ 0 }, shadersTotal{ 0 };
+		bool namesRead{ false };
+		std::vector<std::string> names;
+	} sv;
 	unsigned ledSeq{ 0x0F };                  // the console's LED as the trainer last set it
 	double ledUntil{ 0.0 };
 	std::string ledText;
@@ -2178,6 +2188,7 @@ public:
 			}
 			rainOn = prefs.on("rain");
 			themeCode = prefs.global("theme") == "code";   // 0.1.52
+			applyAccess();
 			/* 0.0.8: the saves in sync with their place, at each start into the game list: when OGBox
 			 * starts, and back from a game (a game's start and end start the title again) */
 			startSync(true);
@@ -2311,6 +2322,7 @@ public:
 					key = info.key;
 				}
 				runXbeTime = info.xbe_time;
+				runInfo = info;
 			}
 		}
 		if (boot.image != "none") {
@@ -2321,6 +2333,7 @@ public:
 		/* 0.0.1: the GPU's threads on cores of their own (on by default), before the core starts them */
 		pshakux_priority_gpu_pin(prefs.on("gpu_cores") ? 1 : 0);
 		themeCode = prefs.global("theme") == "code";   // 0.1.52: the in-game panels too
+		applyAccess();
 		readPictureSettings();
 		fgWanted = ogbox::fgMethodFromSetting(prefs.value("framegen"));
 		fgQuality = static_cast<uint32_t>(std::max(0, std::min(2, prefs.number("framegen_quality"))));
@@ -5010,7 +5023,9 @@ public:
 			rainLast = now_seconds();
 		}
 		const double now = now_seconds();
-		const float dt = static_cast<float>(std::min(0.1, std::max(0.0, now - rainLast)));
+		/* 1.0.4: Reduce motion: the code stays where it is */
+		const bool still = ui::access().still;
+		const float dt = still ? 0.0f : static_cast<float>(std::min(0.1, std::max(0.0, now - rainLast)));
 		rainLast = now;
 		ImFont *font = ImGui::GetFont();
 		const ImU32 body = ui::P().accent, head = ui::mix(ui::P().accent, IM_COL32(255, 255, 255, 255), 0.65f);
@@ -5019,7 +5034,7 @@ public:
 			if (d.y - static_cast<float>(d.length) * glyph > H) {
 				reset(d, false);
 			}
-			if (rng() % 24 == 0) {
+			if (!still && rng() % 24 == 0) {
 				d.glyphs[rng() % d.glyphs.size()] = pick();
 			}
 			for (int k = 0; k < d.length; k++) {
@@ -5263,6 +5278,12 @@ public:
 			v.ledColour = r && g ? IM_COL32(255, 158, 26, 255) : r ? IM_COL32(255, 46, 31, 255) : g ? IM_COL32(77, 255, 64, 255) : 0;
 			v.ledText = ledText;
 		}
+		/* 1.0.4: until the game's first picture, the loading screen (not over a game's frozen last
+		 * frame: its next XBE is starting) */
+		if (!havePicture && !showingFrozen) {
+			drawLoadingScreen(state);
+			return;
+		}
 		if (shareWait.active) {
 			/* 0.0.6: waiting for the share, the seconds counted */
 			v.showStatus = true;
@@ -5317,6 +5338,148 @@ public:
 		}
 		ImDrawList *dl = beginUiScreen("##hud", Ground::None);
 		ui::drawHud(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
+		endUiScreen();
+	}
+
+	/* 1.0.4: the loading screen (idea after ProsperoEden's): the game's cover and name, and the steps of
+	 * its start as the core reports them (pshx_core_state, pshx_core_start_progress): the disc (and a
+	 * share waited for), the Xbox booting (memory, kernel, the game's XBE), the HLE GPU's Vulkan back
+	 * end, the cached shaders it builds first (counted), a save state loaded, then the game running
+	 * until its first picture. A step only goes forward; one under way for long says so. */
+	enum { ST_DISC, ST_XBOX, ST_GRAPHICS, ST_SHADERS, ST_STATE, ST_GAME, ST_COUNT };
+	void drawLoadingScreen(int state)
+	{
+		const double now = now_seconds();
+		PshxCoreStart cs{};
+		pshx_core_start_progress(&cs);
+		if (cs.shaders_total) {
+			sv.shadersDone = cs.shaders_done;
+			sv.shadersTotal = cs.shaders_total;
+		}
+		const bool loadState = std::any_of(boot.options.begin(), boot.options.end(),
+			[](const std::string &o) { return o.rfind("loadstate=", 0) == 0; });
+		int step = ST_DISC;
+		if (shareWait.active || state == PSHX_CORE_IDLE) {
+			step = ST_DISC;
+		} else if (state == PSHX_CORE_BOOTING) {
+			step = !cs.gpu ? ST_XBOX : cs.shaders_total ? ST_SHADERS : !cs.graphics ? ST_GRAPHICS : loadState ? ST_STATE : ST_GAME;
+		} else if (state == PSHX_CORE_RUNNING) {
+			step = ST_GAME;
+		} else {
+			step = std::max(sv.step, 0);   // (failed or stopped: where it was)
+		}
+		if (step > sv.step) {
+			if (sv.step >= 0) {
+				pshakux_log("ogbox: loading screen: step %d after %.1f s", step, now - sv.since);
+			}
+			sv.step = step;
+			sv.since = now;
+		}
+		step = sv.step;
+		const bool failed = state == PSHX_CORE_FAILED || !problem.empty();
+		const bool stopped = state == PSHX_CORE_STOPPED;
+		const float secs = static_cast<float>(now - sv.since);
+
+		ui::LoadingView v;
+		const bool dash = boot.image == "none";
+		const std::string file = baseName(boot.image);
+		if (dash) {
+			v.title = "Xbox dashboard";
+		} else if (strcasecmp(file.c_str(), "default.xbe") == 0) {
+			v.title = baseName(parentOf(boot.image));   // (an extracted game: its folder's name)
+		} else {
+			v.title = ogbox::shortName(file);
+		}
+		v.sub = dash ? std::string("from the Xbox hard disk") : (runKey.empty() ? file : runKey + "  Â·  " + file);
+		if (!sv.namesRead) {
+			sv.namesRead = true;
+			if (!dash) {
+				sv.names = coverNames(file, runInfo.ok ? &runInfo : nullptr, boot.image);
+			}
+		}
+		ImU32 tint = 0;
+		v.cover = uiCover(sv.names);
+		bd.blur = uiBlur(sv.names, &tint);
+		v.tint = tint ? tint : ui::tintFor(v.title);
+		bd.key = "loading";
+		bd.tint = tint;
+		bd.focus = ImVec2(0.5f, 0.32f);
+		bd.strength = 0.8f;
+
+		const bool prebuild = prefs.on("prebuild_shaders");
+		struct Row {
+			int id;
+			const char *name;
+		};
+		std::vector<Row> rows = { { ST_DISC, "Reading the disc" }, { ST_XBOX, "Starting the Xbox" }, { ST_GRAPHICS, "Starting graphics" } };
+		if (prebuild) {
+			rows.push_back({ ST_SHADERS, "Building cached shaders" });
+		}
+		if (loadState) {
+			rows.push_back({ ST_STATE, "Loading the save state" });
+		}
+		rows.push_back({ ST_GAME, "Starting the game" });
+		if (dash) {
+			rows[0].name = "Reading the Xbox hard disk";
+		}
+		int shown = 0;
+		float part = 0.0f;
+		for (const Row &r : rows) {
+			ui::LoadStep st;
+			st.name = r.name;
+			using S = ui::LoadStep::State;
+			st.state = r.id < step ? S::Done : r.id == step ? (failed ? S::Failed : stopped ? S::Done : S::Active) : S::Waiting;
+			if (r.id == step) {
+				st.seconds = secs;
+			}
+			if (r.id == ST_DISC && st.state == S::Active && shareWait.active) {
+				st.detail = "waiting for the network share";
+			}
+			if (r.id == ST_SHADERS && sv.shadersTotal) {
+				if (st.state == S::Active) {
+					st.detail = std::to_string(sv.shadersDone) + " of " + std::to_string(sv.shadersTotal);
+					st.progress = static_cast<float>(sv.shadersDone) / static_cast<float>(sv.shadersTotal);
+					part = st.progress;
+				} else if (st.state == S::Done) {
+					st.detail = std::to_string(sv.shadersTotal) + " built";
+				}
+			}
+			if (r.id < step) {
+				shown++;
+			}
+			v.steps.push_back(st);
+		}
+		v.progress = (static_cast<float>(shown) + part) / static_cast<float>(rows.size());
+		if (failed) {
+			v.note = !problem.empty() ? problem : pshx_core_message();
+			if (v.note.empty()) {
+				v.note = "The game stopped while starting. ogbox-boot.log in OGBox's folder says why.";
+			}
+			v.noteBad = true;
+		} else if (stopped) {
+			v.note = pshx_core_message();
+		} else if (step == ST_DISC && shareWait.active) {
+			v.note = "Waiting for the network share (" + parentOf(boot.image) + ") for " + std::to_string(static_cast<int>(now - shareWait.since)) +
+				" s. The game starts as soon as the share answers.";
+		} else if (step == ST_SHADERS && secs >= ui::kLoadLong) {
+			v.note = "Building the shaders this game used before, so it doesn't stutter on them later. Settings > Advanced > "
+				"Build cached shaders at start turns this off.";
+		} else if (step == ST_GAME && secs >= 20.0f) {
+			v.note = "The game is running but hasn't shown a picture yet. Some games take a while; if it stays like this, "
+				"ogbox-boot.log in OGBox's folder says what it is doing.";
+		} else if (secs >= 20.0f) {
+			v.note = "This is taking longer than usual. If it stays here, the game may not run in OGBox yet: ogbox-boot.log in "
+				"OGBox's folder says where it stopped.";
+		}
+		if (shareWait.active) {
+			v.footer = { { "O", "Back to the game list" } };
+		} else {
+			const std::string m = prefs.global("quick_menu");
+			v.footer = { { m == "combo" ? "L1+L2+R1+R2+OPTIONS" : m == "touch_hold" ? "TP" : m == "l3r3" ? "L3+R3" : "OPT",
+				"Quick menu: save, load, quit" } };
+		}
+		ImDrawList *dl = beginUiScreen("##loading");
+		ui::drawLoading(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
 		endUiScreen();
 	}
 
@@ -6739,7 +6902,7 @@ public:
 			v.footer.push_back({ "T", "Edit menu" });
 			v.footer.push_back({ "O", "Resume" });
 		}
-		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - qm.openedAt) / 0.18));
+		const float appear = ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - qm.openedAt) / 0.18)));
 		ImDrawList *dl = beginUiScreen("##quick", Ground::None);
 		ui::drawQuickMenu(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v, appear);
 		endUiScreen();
@@ -8012,6 +8175,7 @@ public:
 				fadeSince = -1.0;
 			}
 		}
+		fade = ui::appearing(fade);   // 1.0.4: Reduce motion: no fade from black
 		if (fade < 1.0f) {
 			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(static_cast<float>(width), static_cast<float>(height)),
 				IM_COL32(0, 0, 0, static_cast<int>(255 * (1.0f - fade))));
@@ -8567,7 +8731,8 @@ public:
 				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
 			/* 0.0.9: the DualSense in the menus (PSWin's) */
-			return { { "", { "theme", "rain", "quick_menu", "startup_video" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } } };
+			return { { "", { "theme", "rain", "quick_menu", "startup_video" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } },
+				{ "Accessibility", { "text_size", "high_contrast", "reduce_motion" } } };   // 1.0.4
 		case SP_CONTROLLER:
 			/* 0.0.6: the buttons on the controller's picture, in its order (left column, then right) */
 			return { { "", { "pad_lt", "pad_lthumb", "pad_up", "pad_down", "pad_left", "pad_right", "pad_back", "pad_rt", "pad_y",
@@ -8699,6 +8864,8 @@ public:
 		}
 		if (key == "rain") {
 			rainOn = next == "1";
+		} else if (key == "text_size" || key == "high_contrast" || key == "reduce_motion") {
+			applyAccess();
 		} else if (key == "theme") {
 			themeCode = next == "code";
 		} else if (key == "show_fps") {
@@ -9806,7 +9973,7 @@ public:
 		f.statusBad = form.bad;
 		f.busy = form.test != nullptr;
 		f.note = "Saved to " + std::string(kNetworkFile) + "; the password stays on the console. X types, TRIANGLE clears, CIRCLE cancels.";
-		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - form.since) / 0.25));
+		const float appear = ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - form.since) / 0.25)));
 		ui::drawForm(dl, S, f, appear);
 	}
 
@@ -10063,7 +10230,7 @@ public:
 		if (!gp.states && !slots.empty()) {
 			v.footer.insert(v.footer.begin() + 2, { "D", "Load State" });
 		}
-		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - gp.since) / 0.25));
+		const float appear = ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - gp.since) / 0.25)));
 		ImDrawList *dl = beginUiScreen("##gamepage");
 		ui::drawGamePage(dl, S, v, appear);
 		endUiScreen();
@@ -10090,7 +10257,7 @@ public:
 			v.text = pop.text;
 			v.items = pop.items;
 			v.sel = pop.sel;
-			ui::drawPopup(dl, S, v, static_cast<float>(std::min(1.0, (now_seconds() - popSince) / 0.2)));
+			ui::drawPopup(dl, S, v, ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - popSince) / 0.2))));
 		}
 		if (kb.isOpen()) {
 			kb.draw(dl, S, PS5Keyboard::IsConnected());
@@ -10114,6 +10281,19 @@ public:
 		themeApplied = code ? 1 : 0;
 		ui::setTheme(code ? ui::Theme::Code : ui::Theme::Dark);
 		pshakux_log("ogbox: theme %s", code ? "Code" : "Dark");
+	}
+
+	/* 1.0.4: Settings > Interface > Accessibility (idea after ProsperoEden): Larger text, High contrast,
+	 * Reduce motion, for every screen (ogbox_ui.h's Access); before the menus' fonts are baked, so they
+	 * are baked at the text's size */
+	void applyAccess()
+	{
+		ui::Access a;
+		const std::string t = prefs.global("text_size");
+		a.text = t == "larger" ? 1.3f : t == "large" ? 1.15f : 1.0f;
+		a.contrast = prefs.global("high_contrast") == "1";
+		a.still = prefs.global("reduce_motion") == "1";
+		ui::setAccess(a);
 	}
 
 	/* OGBox's logo (Press5elect's, assets/ogbox-logo.png) as an image ImGui draws, once. */

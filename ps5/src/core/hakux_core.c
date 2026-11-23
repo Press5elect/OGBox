@@ -87,6 +87,22 @@ const char *pshx_core_message(void)
     return g_message;
 }
 
+/* OGBox 1.0.4: the start's progress (ogbox_core.h): the core's flags as they are now (plain reads of
+ * flags another thread sets once; for the screen only) and the prebuild's count
+ * (native/hle/glue.c: hw/xbox/hle/vk/pipeasync.c's, kept atomically while it runs) */
+bool hle_back_running(void);   /* hw/xbox/hle/vk/back.c */
+
+void pshx_core_start_progress(PshxCoreStart *p)
+{
+    memset(p, 0, sizeof(*p));
+    p->gpu = nc_hle_pb_active();
+    p->graphics = p->gpu && hle_back_running();
+    uint32_t done = 0, total = 0;
+    nc_hle_pipeline_progress(&done, &total);
+    p->shaders_done = done;
+    p->shaders_total = total;
+}
+
 const char *pshx_core_name(void)
 {
     return "hakuX (native core, HLE GPU)";

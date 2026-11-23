@@ -196,6 +196,124 @@ void drawBoot(ImDrawList *dl, ImVec2 S, const BootView &v)
 	}
 }
 
+// ---- a game's start: the loading screen (1.0.4) ------------------------------------------------------
+
+void drawLoading(ImDrawList *dl, ImVec2 S, const LoadingView &v)
+{
+	const Palette &p = P();
+	float &appear = value("load.appear", 0.0f);
+	appear = approach(appear, 1.0f, 6.0f);
+	const float a = smooth(appear), rise = (1.0f - a) * px(14.0f);
+	const float W = std::min(px(760.0f), S.x - px(grid::margin) * 2.0f), x0 = (S.x - W) * 0.5f, x1 = x0 + W;
+	// from the foot up: the room for the words (kept, so nothing moves when they come), the bar, the steps
+	const float rowH = std::max(px(46.0f), textSize(px(20.0f)) * 1.9f);
+	const float noteFs = px(18.0f), noteH = textSize(noteFs) * 1.4f * 3.0f;
+	const float stepsH = rowH * static_cast<float>(v.steps.size());
+	const float stepsTop = px(grid::bottom) - noteH - px(20.0f) - px(8.0f) - px(26.0f) - stepsH + rise;
+	// the name and the line under it
+	const float tfs = detail::fitSize(F::Display, v.title, W, px(48.0f), px(32.0f), 2);
+	const float titleH = paragraph(nullptr, F::Display, tfs, ImVec2(0, 0), 0, v.title, W, 2, 1.05f);
+	const float subFs = px(16.0f), subH = v.sub.empty() ? 0.0f : textSize(subFs) * 1.2f + px(10.0f);
+	const float titleTop = stepsTop - px(40.0f) - subH - titleH;
+	// the cover in the room above, at its shape
+	const float coverBottom = titleTop - px(30.0f);
+	const float coverH = std::max(px(120.0f), std::min(px(400.0f), coverBottom - px(90.0f)));
+	const float coverW = v.cover ? coverH * std::max(0.55f, std::min(1.2f, v.cover.w / v.cover.h)) : coverH / 1.4f;
+	const ImVec2 c0((S.x - coverW) * 0.5f, coverBottom - coverH), c1(c0.x + coverW, coverBottom);
+	HomeGame g;
+	g.title = v.title;
+	g.tint = v.tint;
+	detail::drawCover(dl, g, v.cover, c0, c1, 0.6f, a, true);
+	// the name, each line in the middle
+	{
+		float y = titleTop;
+		const std::string &s = v.title;
+		const float tw = measure(F::Display, tfs, s.c_str()).x;
+		if (tw <= W) {
+			text(dl, F::Display, tfs, ImVec2((S.x - tw) * 0.5f, y), alpha(p.text, a), s.c_str());
+		} else {
+			// two lines: split at the space nearest the middle that fits both
+			size_t best = std::string::npos;
+			float bestD = 1e9f;
+			for (size_t i = s.find(' '); i != std::string::npos; i = s.find(' ', i + 1)) {
+				const float l = measure(F::Display, tfs, s.c_str(), s.c_str() + i).x;
+				const float r = measure(F::Display, tfs, s.c_str() + i + 1).x;
+				const float d = std::fabs(l - r);
+				if (l <= W && r <= W && d < bestD) {
+					best = i;
+					bestD = d;
+				}
+			}
+			if (best == std::string::npos) {
+				paragraph(dl, F::Display, tfs, ImVec2(x0, y), alpha(p.text, a), s, W, 2, 1.05f);
+			} else {
+				const std::string l1 = s.substr(0, best), l2 = s.substr(best + 1);
+				text(dl, F::Display, tfs, ImVec2((S.x - measure(F::Display, tfs, l1.c_str()).x) * 0.5f, y), alpha(p.text, a), l1.c_str());
+				const float y2 = y + textSize(tfs) * 1.05f;
+				textFit(dl, F::Display, tfs, ImVec2((S.x - std::min(W, measure(F::Display, tfs, l2.c_str()).x)) * 0.5f, y2), alpha(p.text, a), l2, W);
+			}
+		}
+		if (!v.sub.empty()) {
+			const float sw = std::min(W, measure(F::Small, subFs, v.sub.c_str()).x);
+			textFit(dl, F::Small, subFs, ImVec2((S.x - sw) * 0.5f, titleTop + titleH + px(10.0f)), alpha(p.textFaint, a), v.sub, W);
+		}
+	}
+	// the steps
+	float y = stepsTop;
+	const float nfs = px(20.0f), dfs = px(16.0f);
+	for (const LoadStep &st : v.steps) {
+		const bool active = st.state == LoadStep::State::Active, done = st.state == LoadStep::State::Done;
+		const bool failed = st.state == LoadStep::State::Failed;
+		const ImVec2 r0(x0 - px(16.0f), y + px(3.0f)), r1(x1 + px(16.0f), y + rowH - px(3.0f));
+		if (active || failed) {
+			dl->AddRectFilled(r0, r1, alpha(failed ? p.warnSoft : p.surfaceHi, a), px(grid::rMid));
+		}
+		const float cy = y + rowH * 0.5f;
+		const ImVec2 ic(x0 + px(12.0f), cy);
+		if (done) {
+			icon(dl, Icon::Check, ic, px(22.0f), alpha(p.accent, a));
+		} else if (active) {
+			spinner(dl, ic, px(9.0f), alpha(p.accent, a));
+		} else if (failed) {
+			icon(dl, Icon::Warn, ic, px(24.0f), alpha(p.fail, a));
+		} else {
+			dl->AddCircle(ic, px(5.0f), alpha(p.textFaint, a), 16, std::max(1.0f, px(1.5f)));
+		}
+		const ImU32 nameCol = failed ? p.fail : active ? p.text : done ? p.textDim : p.textFaint;
+		const float nx = x0 + px(44.0f);
+		const float nh = measure(F::Body, nfs, "Ag").y;
+		std::string right = st.detail;
+		if (active && st.seconds >= kLoadLong) {
+			right += (right.empty() ? "" : "  \xC2\xB7  ") + std::to_string(static_cast<int>(st.seconds)) + " s";
+		}
+		float rw = 0.0f;
+		if (!right.empty()) {
+			rw = std::min(W * 0.5f, measure(F::Small, dfs, right.c_str()).x);
+			const float dh = measure(F::Small, dfs, "Ag").y;
+			textFit(dl, F::Small, dfs, ImVec2(x1 - rw, cy - dh * 0.5f), alpha(active ? p.textDim : p.textFaint, a), right, rw + px(1.0f));
+		}
+		const bool bar = active && st.progress >= 0.0f;   // (the name a little higher over its bar)
+		textFit(dl, F::Body, nfs, ImVec2(nx, cy - nh * 0.5f - (bar ? px(4.0f) : 0.0f)), alpha(nameCol, a), st.name, x1 - nx - rw - px(20.0f));
+		if (bar) {
+			progress(dl, ImVec2(nx, r1.y - px(7.0f)), ImVec2(x1, r1.y - px(3.5f)), st.progress);
+		}
+		y += rowH;
+	}
+	// all of them
+	y += px(26.0f);
+	progress(dl, ImVec2(x0, y), ImVec2(x1, y + px(8.0f)), v.progress, alpha(p.accent, a));
+	y += px(8.0f) + px(20.0f);
+	if (!v.note.empty()) {
+		float nx = x0;
+		if (v.noteBad) {
+			icon(dl, Icon::Warn, ImVec2(x0 + px(12.0f), y + textSize(noteFs) * 0.6f), px(22.0f), alpha(p.fail, a));
+			nx += px(36.0f);
+		}
+		paragraph(dl, F::Body, noteFs, ImVec2(nx, y), alpha(v.noteBad ? p.fail : p.textDim, a), v.note, x1 - nx, 3, 1.4f);
+	}
+	footer(dl, S, v.footer);
+}
+
 // ---- over a running game -----------------------------------------------------------------------------
 
 void drawHud(ImDrawList *dl, ImVec2 S, const HudView &v)

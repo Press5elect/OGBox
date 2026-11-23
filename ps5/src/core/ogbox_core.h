@@ -141,6 +141,17 @@ typedef struct PshxWrites {
 } PshxWrites;
 bool pshx_core_writes(PshxWrites *w);
 
+/* OGBox 1.0.4: how far the start has come, for the loading screen (from the core's own state, as
+ * read by its other threads): the HLE GPU taken up by the game (gpu: its push-buffer mode started,
+ * the Xbox booted that far), its Vulkan back end up (graphics), and the cached shaders being built
+ * before the game's first draw (shaders_done of shaders_total; total 0 when none are being built:
+ * before, after, or none recorded or the setting off). */
+typedef struct PshxCoreStart {
+    bool gpu, graphics;
+    unsigned shaders_done, shaders_total;
+} PshxCoreStart;
+void pshx_core_start_progress(PshxCoreStart *p);
+
 /* One line about the run, for the boot log's heartbeat and an overlay: the state, frames
  * presented and taken, the guest's position when the CPU backend knows it. */
 void pshx_core_status(char *line, unsigned size);

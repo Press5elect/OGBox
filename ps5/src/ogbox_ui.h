@@ -62,6 +62,23 @@ const Palette &P();
 ImU32 alpha(ImU32 c, float a);          // c with its alpha times a
 ImU32 mix(ImU32 a, ImU32 b, float t);
 
+/* OGBox 1.0.4: Settings > Interface > Accessibility (idea after ProsperoEden). text: the small and
+ * the body text drawn larger (1, 1.15 or 1.3; the titles nearly as they are, so the screens keep
+ * their shape). contrast: brighter secondary text, solid panels, a stronger border and an outlined
+ * focus, the backdrop's cover fainter. still: no motion that isn't needed: slides, fades, the
+ * shelf's glide and the cover's growth are at their end at once, the backdrop doesn't drift. */
+struct Access {
+	float text{ 1.0f };
+	bool contrast{ false };
+	bool still{ false };
+};
+void setAccess(const Access &a);
+const Access &access();
+/* A text size as it is drawn: the larger text's on top (measure, text and the rest take it). */
+float textSize(float size);
+/* An opening screen's 0..1 (its slide and fade) as it is shown: 1 at once when still. */
+float appearing(float a);
+
 enum class F { Display, Title, Heading, Body, Small, Label, Count };
 /* The typefaces, baked at their sizes into the atlas (before it is built). dir: the folder with
  * Manrope-ExtraBold.ttf, Manrope-Bold.ttf, Inter-Medium.ttf, Inter-SemiBold.ttf. */
@@ -482,6 +499,34 @@ struct BootView {
 	float elapsed{ 0.0f };
 };
 void drawBoot(ImDrawList *dl, ImVec2 screen, const BootView &v);
+
+// ---- a game's start: the loading screen ----------------------------------------------------------
+
+/* OGBox 1.0.4 (idea after ProsperoEden): the game's cover in the middle, its name, and the steps
+ * of its start under it, each to come, under way (a spinner, its own count or bar, its seconds
+ * once it lasts), done (a check) or failed; a bar for all of them, and words for a step that
+ * takes long. */
+struct LoadStep {
+	enum class State { Waiting, Active, Done, Failed };
+	std::string name;             // "Building cached shaders"
+	std::string detail;           // at its right ("412 of 1,024", "from the cache")
+	State state{ State::Waiting };
+	float progress{ -1.0f };      // its own part done (0..1; < 0 none known)
+	float seconds{ 0.0f };        // under way this long
+};
+struct LoadingView {
+	Tex cover;
+	ImU32 tint{ 0 };              // the placeholder's colour (no cover)
+	std::string title, sub;       // the game's name; its title ID and file
+	std::vector<LoadStep> steps;
+	float progress{ 0.0f };       // all of them (0..1)
+	std::string note;             // under the steps: a step that takes long, or why it failed
+	bool noteBad{ false };
+	std::vector<Hint> footer;
+};
+/* The seconds after which a step under way shows them. */
+constexpr float kLoadLong = 8.0f;
+void drawLoading(ImDrawList *dl, ImVec2 screen, const LoadingView &v);
 
 // ---- over a running game: the frame rate, the trainer's LED, what is happening ------------------------
 

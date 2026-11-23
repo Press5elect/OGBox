@@ -197,6 +197,10 @@ ui::Tex fakeCover(uint32_t seed, int w = 240, int h = 336)
 struct Frame {
 	std::string name;
 	std::function<void(ImDrawList *, ImVec2)> draw;
+	/* 1.0.4: drawn with Settings > Interface's accessibility, the theme, at 1080 lines instead of 2160 */
+	ui::Access access{};
+	ui::Theme theme{ ui::Theme::Dark };
+	bool hd{ false };
 };
 
 } // namespace
@@ -517,7 +521,67 @@ int main(int argc, char **argv)
 	hud.waiting = true;
 	hud.statusHints = { { "OPT", "Quick menu: save, load, quit" } };
 
-	const std::vector<Frame> frames = {
+	// 1.0.4: the loading screen, a game's start
+	ui::LoadingView load;
+	load.cover = covers[2];
+	load.tint = games[2].tint;
+	load.title = names[2];
+	load.sub = "4D530064.1  \xC2\xB7  Starfall Tactics (USA).iso";
+	{
+		using S = ui::LoadStep::State;
+		const char *steps[] = { "Reading the disc", "Starting the Xbox", "Starting graphics", "Building cached shaders", "Starting the game" };
+		for (int i = 0; i < 5; i++) {
+			ui::LoadStep st;
+			st.name = steps[i];
+			st.state = i < 3 ? S::Done : i == 3 ? S::Active : S::Waiting;
+			load.steps.push_back(st);
+		}
+		load.steps[3].detail = "412 of 1024";
+		load.steps[3].progress = 412.0f / 1024.0f;
+		load.steps[3].seconds = 3.0f;
+		load.progress = (3.0f + 412.0f / 1024.0f) / 5.0f;
+	}
+	load.footer = { { "OPT", "Quick menu: save, load, quit" } };
+	ui::LoadingView loadLong = load;
+	loadLong.title = "The Lantern Keeper: Chronicles of the Drowned Harbour Collector's Edition";
+	loadLong.cover = {};
+	loadLong.tint = ui::tintFor(loadLong.title);
+	loadLong.steps[3].seconds = 14.0f;
+	loadLong.steps[3].detail = "980 of 1024";
+	loadLong.steps[3].progress = 980.0f / 1024.0f;
+	loadLong.note = "Building the shaders this game used before, so it doesn't stutter on them later. Settings > Advanced > "
+		"Build cached shaders at start turns this off.";
+	ui::LoadingView loadFail = load;
+	loadFail.steps[3].state = ui::LoadStep::State::Done;
+	loadFail.steps[3].detail = "1024 built";
+	loadFail.steps[3].progress = -1.0f;
+	loadFail.steps[4].state = ui::LoadStep::State::Failed;
+	loadFail.progress = 0.8f;
+	loadFail.note = "The game stopped while starting: the XBE's kernel import 327 isn't there (see ogbox-boot.log).";
+	loadFail.noteBad = true;
+
+	// 1.0.4: Settings > Interface with its accessibility rows (the words as ogbox_settings.cpp has them)
+	ui::SettingsView inter = set;
+	inter.navSel = 5;
+	inter.pageTitle = "Interface";
+	inter.rows.clear();
+	{
+		ui::SetRow r;
+		r.key = "theme"; r.name = "Theme"; r.choices = { "Dark", "Code" }; inter.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "startup_video"; r.name = "Startup video"; r.on = true; inter.rows.push_back(r);
+		r = {}; r.key = "quick_menu"; r.name = "Quick menu button"; r.choices = { "OPTIONS" }; inter.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "ga"; r.name = "Accessibility"; inter.rows.push_back(r);
+		r = {}; r.key = "text_size"; r.name = "Larger text"; r.choices = { "Normal", "Large", "Larger" }; r.choice = 2; r.changed = true;
+		r.desc = "The menus' smaller words drawn larger: Large about a sixth, Larger nearly a third. The titles stay as they are. "
+			"Sharpest from OGBox's next start.";
+		inter.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "high_contrast"; r.name = "High contrast"; r.on = true; r.changed = true;
+		inter.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "reduce_motion"; r.name = "Reduce motion"; inter.rows.push_back(r);
+	}
+	inter.rowSel = 4;
+
+	std::vector<Frame> frames = {
 		{ "home", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
 			ui::drawHome(dl, S, home);
@@ -686,8 +750,56 @@ int main(int argc, char **argv)
 			ui::drawToast(dl, S, "Share Synology added: 212 games", 1.0f);
 		} },
 	};
+	{
+		/* 1.0.4: the loading screen in both themes; then the screens again at Larger text with High
+		 * contrast (and Reduce motion: their motion at its end), at 2160 lines and at 1080 */
+		const auto loadFrame = [&](const ui::LoadingView &lv) {
+			return [&, lv](ImDrawList *dl, ImVec2 S) {
+				ui::backdrop(dl, S, { lv.tint, lv.cover ? blurs[2] : ui::Tex{}, "loading", { 0.5f, 0.32f }, 0.8f });
+				ui::drawLoading(dl, S, lv);
+			};
+		};
+		frames.push_back({ "loading", loadFrame(load) });
+		frames.push_back({ "loading-long", loadFrame(loadLong) });
+		frames.push_back({ "loading-failed", loadFrame(loadFail) });
+		Frame code{ "loading-code", [&](ImDrawList *dl, ImVec2 S) {
+			dl->AddRectFilled(ImVec2(0, 0), S, IM_COL32(0, 0, 0, 255));
+			ui::drawLoading(dl, S, load);
+		} };
+		code.theme = ui::Theme::Code;
+		frames.push_back(code);
+		frames.push_back({ "interface", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
+			ui::drawSettings(dl, S, inter);
+		} });
+		ui::Access big;
+		big.text = 1.3f;
+		big.contrast = true;
+		big.still = true;
+		const std::vector<std::string> again = { "home", "home-list", "game", "game-states", "settings", "network", "controller",
+			"keyboard", "mods", "storage", "storage-moving", "hdd", "quick", "quick-edit", "notice", "hud", "popup", "loading",
+			"loading-long", "loading-failed", "loading-code", "interface" };
+		const size_t n = frames.size();
+		for (int hd = 0; hd < 2; hd++) {
+			for (size_t i = 0; i < n; i++) {
+				if (std::find(again.begin(), again.end(), frames[i].name) == again.end()) {
+					continue;
+				}
+				Frame f = frames[i];
+				f.name = "a11y-" + std::string(hd ? "1080-" : "") + f.name;
+				f.access = big;
+				f.hd = hd != 0;
+				frames.push_back(f);
+			}
+		}
+	}
 
 	for (const Frame &f : frames) {
+		ui::setAccess(f.access);
+		ui::setTheme(f.theme);
+		const int fw = f.hd ? 1920 : W, fh = f.hd ? 1080 : H;
+		io.DisplaySize = ImVec2(static_cast<float>(fw), static_cast<float>(fh));
+		ui::setScale(static_cast<float>(fh) / 1080.0f);
 		// a second of frames, so the motion settles
 		for (int i = 0; i < 90; i++) {
 			io.DeltaTime = 1.0f / 60.0f;
@@ -702,7 +814,7 @@ int main(int argc, char **argv)
 			ImGui::PopStyleVar();
 			ImGui::Render();
 			if (i == 89) {
-				Canvas cv(W, H);
+				Canvas cv(fw, fh);
 				render(cv, ImGui::GetDrawData());
 				save(cv, out + "/" + f.name + ".ppm");
 				std::printf("%s\n", f.name.c_str());

@@ -489,6 +489,27 @@ std::vector<Option> makeOptions()
 		bar.now = true;
 		o.push_back(bar);
 	}
+	{
+		/* 1.0.4: accessibility (idea after ProsperoEden): for the menus only, every game alike */
+		Option text{ "text_size", Section::Interface, "Larger text",
+			"The menus' smaller words drawn larger: Large about a sixth, Larger nearly a third. The titles stay as they are. "
+			"Sharpest from OGBox's next start.",
+			{ { "normal", "Normal" }, { "large", "Large" }, { "larger", "Larger" } }, "normal", false };
+		text.now = true;
+		o.push_back(text);
+		Option contrast{ "high_contrast", Section::Interface, "High contrast",
+			"Brighter secondary words, solid panels with a clearer edge, and a white outline around what the controller is on. "
+			"The chosen game's cover shows fainter behind the menus.",
+			kOnOff, "0", false };
+		contrast.now = true;
+		o.push_back(contrast);
+		Option still{ "reduce_motion", Section::Interface, "Reduce motion",
+			"No sliding, fading or drifting in the menus: screens and choices change at once, the covers don't glide or grow, "
+			"the background stays still and the Code theme's falling code stops. The spinners still turn.",
+			kOnOff, "0", false };
+		still.now = true;
+		o.push_back(still);
+	}
 	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
 	{
 		for (int i = 0; i < static_cast<int>(XboxControl::Count); i++) {
@@ -634,7 +655,7 @@ const char *sectionHelp(Section s)
 	case Section::Video: return "The Xbox's own video settings, as its dashboard sets them. Games that support a mode use it.";
 	case Section::Network: return "Xbox Live through Insignia, or system link with consoles on your network or over XLink Kai.";
 	case Section::Library: return "Which places the game list shows, and how it looks. Changes apply at once.";
-	case Section::Interface: return "OGBox's menus: the theme, updates, the FPS counter and the quick menu button.";
+	case Section::Interface: return "OGBox's menus: the theme, updates, the FPS counter, the quick menu button and accessibility.";
 	case Section::Controller: return "Which DualSense button is each of the Xbox's, the sticks and their deadzones. A game can have its own.";
 	default: return "";
 	}
