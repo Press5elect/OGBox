@@ -83,6 +83,7 @@ int lie_at = -1;
 int no_links = 0;
 uint64_t max_unpacked = 0;
 size_t max_entries = 0;
+int rollback_stop = -1;
 } // namespace Test
 #endif
 
@@ -100,6 +101,7 @@ constexpr size_t MAX_PARAM_JSON = 1u << 20;
 constexpr size_t MAX_COMPONENT = 255;
 constexpr int MAX_TREE_DEPTH = 32;
 constexpr uint64_t FREE_MARGIN = 32ull << 20;   // room left over on the drive after each step
+constexpr uint64_t KEEP_MARGIN = 256ull << 20;  // 1.0.4: room the drive must still have with the version before kept
 // The console writes large blocks many times faster than small ones.
 constexpr size_t WRITE_BLOCK = 1u << 20;
 constexpr unsigned ANSWER_SECONDS = 20;
@@ -757,6 +759,9 @@ Status g_current;
 Setup g_setup;
 Release g_found;
 bool g_initialised = false;
+// 1.0.4: the version kept from before the last update (SetKept), copied into GetStatus()'s answer.
+std::string g_previous, g_previous_label;
+uint64_t g_previous_bytes = 0;
 
 // g_call_mutex: one of Init(), Check(), Download(), Install() and Recover() at a time. A state in
 // which the worker runs (Checking, Downloading, Verifying) is entered only with it held, and left
@@ -959,6 +964,15 @@ void RunCheck(const Setup& use)
 	else
 	{
 		status.state = State::Available;
+		// 1.0.4: skipped (Skip()): this version only; a newer one is offered again.
+		std::string skipped;
+		if (!use.skip_file.empty() && ReadFile(use.skip_file, skipped, 256))
+		{
+			const Version version = ParseVersion(Trim(skipped));
+			status.skipped = version.valid && CompareVersions(version, newest.version) == 0;
+			if (status.skipped)
+				Say(log, "v%s was skipped by the user", status.version.c_str());
+		}
 		Say(log, "v%s is available (%s, %llu bytes%s; %zu releases newer than v%s)", status.version.c_str(),
 			newest.zip_name.c_str(), static_cast<unsigned long long>(newest.zip_size),
 			newest.checksum_url.empty() && newest.sums_url.empty() && newest.digest.empty() ? "" : ", with a checksum",
@@ -1186,6 +1200,28 @@ Outcome Unpack(zip_t* zip, const Entry& entry, const std::string& path, std::vec
 	return outcome;
 }
 
+void SetKept(const std::string& app_dir);
+
+// 1.0.4: the bytes free for a step that needs `needed`; when they are too few and a version is
+// kept from before (.previous), it is removed first to make room: the next install would replace
+// it anyway.
+int64_t FreeFor(const Setup& use, uint64_t needed)
+{
+	int64_t free = FreeBytes(use.free_space, use.app_dir);
+	if (free >= 0 && static_cast<uint64_t>(free) < needed && DirExists(use.app_dir + ".previous"))
+	{
+		Say(use.log, "the version kept from before is removed to make room (%s free, %s needed)",
+			MiB(static_cast<uint64_t>(free)).c_str(), MiB(needed).c_str());
+		RemoveTree(use.app_dir + ".previous");
+		{
+			std::lock_guard<std::mutex> lock(g_state_mutex);
+			SetKept(use.app_dir);
+		}
+		free = FreeBytes(use.free_space, use.app_dir);
+	}
+	return free;
+}
+
 // The SHA-256 of a file, read in blocks. False when it cannot be read, or the worker was told to
 // stop.
 bool HashFile(const std::string& path, std::string& hex)
@@ -1318,7 +1354,7 @@ Outcome VerifyAndUnpack(const Setup& use, const Release& release, const std::str
 	}
 	if (error.empty())
 	{
-		const int64_t free = FreeBytes(use.free_space, use.app_dir);
+		const int64_t free = FreeFor(use, managed_bytes + FREE_MARGIN);
 		if (free >= 0 && static_cast<uint64_t>(free) < managed_bytes + FREE_MARGIN)
 			error = "There is not enough free space to unpack the update: " + MiB(managed_bytes + FREE_MARGIN) +
 			        " are needed, " + MiB(static_cast<uint64_t>(free)) + " are free.";
@@ -1367,7 +1403,7 @@ void RunDownload(const Setup& use, const Release& release)
 	MakeDirs(use.app_dir + ".update");
 	Outcome outcome = Outcome::Failed;
 	std::string error;
-	const int64_t free = FreeBytes(use.free_space, use.app_dir);
+	const int64_t free = FreeFor(use, release.zip_size + FREE_MARGIN);
 	if (!DirExists(dir))
 		error = "The title's folder cannot be written.";
 	else if (!IsHttps(release.zip_url))
@@ -1531,6 +1567,196 @@ bool LinksWork(const std::string& file)
 	return works && !PathExists(other);
 }
 
+// ------------------------------------------------------------------- the version kept (1.0.4)
+//
+// The idea after ProsperoEden (it keeps the version an update replaced). <title folder>/.previous/
+// holds, while it exists:
+//
+//     files/     the old files an install replaced, at their paths (they were .update/backup/)
+//     manifest   written last, once files/ is whole: "OGBox previous version 1", then
+//                "version 1.0.2", "label v1.0.2", a "file <SHA-256> <bytes> <path>" line for
+//                each of files/ and an "added <path>" line for each file and folder (ending in
+//                '/') the install added, which a going back takes away
+//
+// Without its manifest, or with a file that is missing or not of its size, it is not offered; one
+// whose digests do not match is refused when it is to be put back, and removed. A going back moves
+// files/ to .update/stage/ (with .update/rollback, written first, saying so) and installs it as
+// an update is installed; when that is undone (a failure, a power cut and Recover()) the stage
+// goes back to files/, so the kept copy is not lost by a going back that did not happen.
+
+struct KeptFile
+{
+	std::string path, hash;
+	uint64_t size = 0;
+};
+
+struct Kept
+{
+	std::string version, label;
+	std::vector<KeptFile> files;
+	std::vector<std::string> added;
+	uint64_t bytes = 0;
+};
+
+constexpr const char* KEPT_HEADER = "OGBox previous version 1";
+
+// The manifest, and each file at its size (and, asked, with its digest). An empty string when it
+// can be put back, else why not.
+std::string ReadKept(const std::string& app_dir, Kept& kept, bool digests)
+{
+	kept = Kept();
+	const std::string dir = app_dir + ".previous/";
+	std::vector<std::string> lines;
+	if (!ReadLines(dir + "manifest", lines))
+		return "No earlier version is kept.";
+	if (lines.empty() || lines[0] != KEPT_HEADER)
+		return "The kept version's list of files cannot be read.";
+	for (size_t i = 1; i < lines.size(); i++)
+	{
+		const std::string& line = lines[i];
+		if (StartsWith(line, "version "))
+			kept.version = line.substr(8);
+		else if (StartsWith(line, "label "))
+			kept.label = OneLine(line.substr(6));
+		else if (StartsWith(line, "added "))
+		{
+			const std::string path = line.substr(6);
+			if (PathFault(path, true) == nullptr && IsManaged(path.back() == '/' ? path + "x" : path))
+				kept.added.push_back(path);
+		}
+		else if (StartsWith(line, "file ") && line.size() > 5 + 64 + 3 && IsHex64(line, 5) && line[69] == ' ')
+		{
+			KeptFile file;
+			file.hash = line.substr(5, 64);
+			const size_t space = line.find(' ', 70);
+			if (space == std::string::npos || space == 70)
+				return "The kept version's list of files is damaged.";
+			char* end = nullptr;
+			file.size = std::strtoull(line.c_str() + 70, &end, 10);
+			if (end != line.c_str() + space)
+				return "The kept version's list of files is damaged.";
+			file.path = line.substr(space + 1);
+			if (!IsManaged(file.path))
+				return "The kept version's list of files is damaged.";
+			kept.bytes += file.size;
+			kept.files.push_back(std::move(file));
+		}
+		else
+			return "The kept version's list of files is damaged.";
+	}
+	if (!ParseVersion(kept.version).valid || kept.files.empty())
+		return "The kept version's list of files is damaged.";
+	kept.version = ToString(ParseVersion(kept.version));
+	if (kept.label.empty())
+		kept.label = "v" + kept.version;
+	for (const KeptFile& file : kept.files)
+	{
+		struct stat st;
+		const std::string path = dir + "files/" + file.path;
+		if (!LookAt(path, st) || !S_ISREG(st.st_mode) || static_cast<uint64_t>(st.st_size) != file.size)
+			return "The kept copy of " + kept.label + " is incomplete (" + file.path + ").";
+		std::string hash;
+		if (digests && (!HashFile(path, hash) || hash != file.hash))
+			return "The kept copy of " + kept.label + " is damaged (" + file.path + ").";
+	}
+	return "";
+}
+
+// What GetStatus() says of the kept version (g_state_mutex held by the caller, or nobody else).
+void SetKept(const std::string& app_dir)
+{
+	Kept kept;
+	const bool usable = ReadKept(app_dir, kept, false).empty();
+	g_previous.clear();
+	g_previous_label.clear();
+	g_previous_bytes = 0;
+	if (usable)
+	{
+		g_previous = kept.version;
+		g_previous_label = kept.label;
+		g_previous_bytes = kept.bytes;
+	}
+}
+
+// After an install, once its journal is gone: the old files of .update/backup/ kept as the
+// previous version, in place of the one kept before. Not for an install of the version that runs
+// (Install again: the one kept before stays), nor when the drive would be left with less than
+// KEEP_MARGIN free; then backup/ goes with the rest of .update/.
+void KeepPrevious(const Setup& use, const std::string& version, const std::vector<std::string>& plan,
+	const std::vector<std::string>& added)
+{
+	const Log& log = use.log;
+	const std::string dir = use.app_dir + ".update/";
+	const std::string kept_dir = use.app_dir + ".previous/";
+	const Version running = ParseVersion(use.version);
+	if (running.valid && CompareVersions(running, ParseVersion(version)) == 0)
+	{
+		Say(log, "v%s was put in place again: the version kept before stays", version.c_str());
+		return;
+	}
+	std::string manifest = std::string(KEPT_HEADER) + "\nversion " + ToString(running) + "\nlabel " +
+	                       OneLine(use.running_label.empty() ? "v" + ToString(running) : use.running_label) + "\n";
+	uint64_t bytes = 0;
+	size_t files = 0;
+	for (const std::string& path : plan)
+	{
+		struct stat st;
+		const std::string old_one = dir + "backup/" + path;
+		if (!LookAt(old_one, st) || !S_ISREG(st.st_mode))
+			continue;
+		std::string hash;
+		if (!HashFile(old_one, hash))
+		{
+			Say(log, "the version before is not kept: %s cannot be read", path.c_str());
+			return;
+		}
+		manifest += "file " + hash + " " + std::to_string(static_cast<unsigned long long>(st.st_size)) + " " + path + "\n";
+		bytes += static_cast<uint64_t>(st.st_size);
+		files++;
+	}
+	for (const std::string& path : added)
+		manifest += "added " + path + "\n";
+	if (!running.valid || files == 0)
+	{
+		Say(log, "the version before is not kept (%s)", running.valid ? "no file was replaced" : "its version is not known");
+		return;
+	}
+	const int64_t free = FreeBytes(use.free_space, use.app_dir);
+	if (free >= 0 && static_cast<uint64_t>(free) < KEEP_MARGIN)
+	{
+		Say(log, "the version before is not kept: %s free, %s wanted beside it", MiB(static_cast<uint64_t>(free)).c_str(),
+			MiB(KEEP_MARGIN).c_str());
+		RemoveTree(kept_dir);
+		return;
+	}
+	// The one kept before goes first; the manifest is written only once files/ is whole.
+	RemoveTree(kept_dir);
+	MakeDirs(use.app_dir + ".previous");
+	if (rename((dir + "backup").c_str(), (kept_dir + "files").c_str()) != 0 || PathExists(dir + "backup") ||
+		!DirExists(kept_dir + "files") || !WriteDurable(kept_dir + "manifest", manifest))
+	{
+		Say(log, "the version before could not be kept (errno %d)", errno);
+		RemoveTree(kept_dir);
+		return;
+	}
+	SyncDir(kept_dir);
+	Say(log, "v%s is kept in .previous (%zu files, %s): Settings > Updates can go back to it", ToString(running).c_str(),
+		files, MiB(bytes).c_str());
+}
+
+// An undone going back: its stage (the kept files, those it put in place returned to it) goes back
+// to .previous/files/.
+void ReturnKept(const std::string& app_dir)
+{
+	const std::string dir = app_dir + ".update/";
+	const std::string files = app_dir + ".previous/files";
+	if (!PathExists(dir + "rollback") || !DirExists(dir + "stage") || PathExists(files) ||
+		!IsRegularFile(app_dir + ".previous/manifest"))
+		return;
+	if (rename((dir + "stage").c_str(), files.c_str()) == 0)
+		SyncDir(app_dir + ".previous");
+}
+
 // Undoes what an install did, from the journal: the old files return from .update/backup/, the
 // new ones go back to .update/stage/, the folders made for them are removed, and then .update/
 // itself. Without a journal nothing was begun, and only .update/ is removed. `restored` counts
@@ -1539,6 +1765,11 @@ bool LinksWork(const std::string& file)
 //
 // A file is taken out of the title folder only when .update/new says the install added it. One
 // with no backup that is not in that list is left where it is, whatever else is missing.
+//
+// 1.0.4: a going back (.update/rollback) also takes files away (.update/remove: those the update
+// it undoes had added); they come back from backup/. Its stage is the kept version's, and goes
+// back to .previous/files/ (ReturnKept), so it keeps every file: on a drive with links the kept
+// file is given a second name in the stage before the old one is renamed onto it.
 bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& restored)
 {
 	const std::string dir = app_dir + ".update/";
@@ -1547,6 +1778,7 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 	restored = 0;
 	if (!had_journal)
 	{
+		ReturnKept(app_dir);
 		RemoveTree(dir);
 		return true;
 	}
@@ -1569,6 +1801,14 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 	std::vector<std::string> added;
 	ReadLines(dir + "new", added);
 	const std::set<std::string> fresh(added.begin(), added.end());
+	std::vector<std::string> taken;
+	ReadLines(dir + "remove", taken);
+	const std::set<std::string> gone(taken.begin(), taken.end());
+	const bool rollback = PathExists(dir + "rollback");
+	// The same file under two names (link()): what a drive with links gives the old file in backup/.
+	const auto same = [](const struct stat& a, const struct stat& b) {
+		return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size;
+	};
 	bool complete = true;
 	std::set<std::string> folders;
 	int displaced = 0;
@@ -1580,11 +1820,47 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 		const std::string place = app_dir + path;
 		const std::string staged = dir + "stage/" + path;
 		const std::string backup = dir + "backup/" + path;
+		struct stat old_one, here;
+		if (gone.count(path) != 0)
+		{
+			// 1.0.4: a file the going back takes away: back from backup/ when it went there. On a
+			// drive with links, while it is in its place too (only its second name made), that
+			// second name goes.
+			if (LookAt(backup, old_one) && S_ISREG(old_one.st_mode))
+			{
+				if (cut())
+					return false;
+				if (linked && LookAt(place, here) && same(here, old_one))
+				{
+					if (unlink(backup.c_str()) == 0 || !PathExists(backup))
+						restored++;
+				}
+				else
+				{
+					if (PathExists(place))
+					{
+						const std::string aside = dir + "displaced/" + std::to_string(displaced++) + "/" + path;
+						MakeDirs(ParentOf(aside));
+						if (rename(place.c_str(), aside.c_str()) != 0 || PathExists(place))
+							unlink(place.c_str());
+					}
+					MakeDirs(ParentOf(place));
+					if (MoveVerified(backup, place))
+						restored++;
+					else
+					{
+						Say(log, "%s could not be put back (errno %d)", path.c_str(), errno);
+						complete = false;
+					}
+				}
+			}
+			folders.insert(ParentOf(place));
+			continue;
+		}
 		const bool installed = !PathExists(staged) && PathExists(place);
 		bool back = false; // the old file is in its place again
-		struct stat old_one, here;
 		if (linked && !installed && LookAt(backup, old_one) && S_ISREG(old_one.st_mode) && LookAt(place, here) &&
-			S_ISREG(here.st_mode) && here.st_size == old_one.st_size)
+			S_ISREG(here.st_mode) && same(here, old_one))
 		{
 			// The new file is still staged: the old one is in its place, and backup/ has only
 			// its second name.
@@ -1597,10 +1873,17 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 		else if (linked && installed && PathExists(backup))
 		{
 			// The old file back onto the new one, in one step: the place is never empty. Where
-			// the drive refuses, as below.
+			// the drive refuses, as below. (A going back's new file is the kept one: it keeps a
+			// name in the stage.)
 			if (cut())
 				return false;
-			back = OverVerified(backup, place);
+			bool kept = true;
+			if (rollback)
+			{
+				MakeDirs(ParentOf(staged));
+				kept = LinkVerified(place, staged);
+			}
+			back = kept && OverVerified(backup, place);
 			if (back)
 				restored++;
 		}
@@ -1660,6 +1943,7 @@ bool Undo(const std::string& app_dir, const Log& log, bool& had_journal, int& re
 		SyncDir(folder);
 	unlink(journal.c_str());
 	SyncDir(dir);
+	ReturnKept(app_dir);
 	RemoveTree(dir);
 	return true;
 }
@@ -1963,6 +2247,7 @@ void Init(const Setup& given)
 	g_found = Release();
 	g_current = Status();
 	g_initialised = true;
+	SetKept(g_setup.app_dir);
 }
 
 void Check()
@@ -2034,34 +2319,45 @@ void Reinstall()
 void Cancel()
 {
 	std::lock_guard<std::mutex> lock(g_state_mutex);
-	if (g_current.state == State::Downloading || g_current.state == State::Verifying)
+	if ((g_current.state == State::Downloading || g_current.state == State::Verifying) && !g_current.rollback)
 		g_stop = true;
 }
 
-bool Install()
+namespace
 {
-	std::lock_guard<std::mutex> call(g_call_mutex);
-	Setup use;
-	std::string version;
-	{
-		std::lock_guard<std::mutex> lock(g_state_mutex);
-		if (!g_initialised || g_current.state != State::Ready)
-			return false;
-		use = g_setup;
-		version = g_current.version;
-	}
-	g_worker.Join();
+// What Install() does, and RollBack() (`rollback`): .update/stage/ put in place by .update/plan,
+// and (a going back) the files of .update/remove taken away, with the journal.
+bool Apply(const Setup& use, const std::string& version, bool rollback)
+{
 	const Log& log = use.log;
 	const std::string dir = use.app_dir + ".update/";
 
 	// Everything that can be known beforehand is looked at before the first change: the plan,
 	// each staged file, what is at each place now.
 	std::string error;
-	std::vector<std::string> plan;
+	std::vector<std::string> plan, listed, removals;
 	std::string plan_text, added_text;
 	std::set<std::string> made;
 	if (!ReadLines(dir + "plan", plan) || plan.empty())
-		error = "The unpacked update is no longer there.";
+		error = rollback ? "The kept version is no longer there." : "The unpacked update is no longer there.";
+	// 1.0.4: what a going back takes away: those of them that are there, and not also put in place.
+	ReadLines(dir + "remove", listed);
+	const std::set<std::string> planned(plan.begin(), plan.end());
+	for (const std::string& path : listed)
+	{
+		struct stat st;
+		if (!IsManaged(path))
+			error = "The list of files to take away is damaged.";
+		else if (planned.count(path) != 0 || !LookAt(use.app_dir + path, st))
+			continue;
+		else if (!S_ISREG(st.st_mode))
+			error = path + " in the title's folder is not a file; it was left alone.";
+		else
+		{
+			removals.push_back(path);
+			plan_text += path + "\n";
+		}
+	}
 	for (const std::string& path : plan)
 	{
 		if (!error.empty())
@@ -2070,7 +2366,7 @@ bool Install()
 		if (!IsManaged(path))
 			error = "The update's list of files is damaged.";
 		else if (!IsRegularFile(dir + "stage/" + path))
-			error = "The unpacked update is incomplete (" + path + ").";
+			error = (rollback ? "The kept version is incomplete (" : "The unpacked update is incomplete (") + path + ").";
 		else if (LookAt(use.app_dir + path, st) && !S_ISREG(st.st_mode))
 			error = path + " in the title's folder is not a file; it was left alone.";
 		plan_text += path + "\n";
@@ -2087,12 +2383,17 @@ bool Install()
 	}
 	if (!error.empty())
 	{
+		// (nothing begun: a going back's stage returns to .previous/files/)
+		ReturnKept(use.app_dir);
 		RemoveTree(dir);
 		Finish(log, State::Failed, error);
 		return false;
 	}
 
-	Say(log, "installing v%s (%zu files)", version.c_str(), plan.size());
+	if (rollback)
+		Say(log, "going back to v%s (%zu files, %zu to take away)", version.c_str(), plan.size(), removals.size());
+	else
+		Say(log, "installing v%s (%zu files)", version.c_str(), plan.size());
 #if defined(OGBOX_UPDATE_TEST)
 	const int stop_after = Test::stop_after, fail_at = Test::fail_at, lie_at = Test::lie_at;
 #else
@@ -2138,8 +2439,35 @@ bool Install()
 	else
 	{
 		SyncDir(dir);
+		// 1.0.4: a going back first takes away what the update it undoes added: into backup/ (on a
+		// drive with links a second name there, then the name in the title folder removed).
+		for (const std::string& path : removals)
+		{
+			if (cut())
+				return false;
+			const std::string place = use.app_dir + path;
+			MakeDirs(ParentOf(dir + "backup/" + path));
+			folders.insert(ParentOf(place));
+			if (!step(place, dir + "backup/" + path, linked ? LinkVerified : MoveVerified))
+			{
+				error = Format("%s could not be moved aside (errno %d).", path.c_str(), errno);
+				break;
+			}
+			if (!linked)
+				continue;
+			if (cut())
+				return false;
+			if (unlink(place.c_str()) != 0 && PathExists(place))
+			{
+				error = Format("%s could not be taken away (errno %d).", path.c_str(), errno);
+				break;
+			}
+			renames++;
+		}
 		for (const std::string& path : plan)
 		{
+			if (!error.empty())
+				break;
 			if (cut())
 				return false;
 			const std::string place = use.app_dir + path;
@@ -2183,16 +2511,200 @@ bool Install()
 		SyncDir(folder);
 	unlink((dir + "journal").c_str());
 	SyncDir(dir);
+	std::vector<std::string> added;
+	ReadLines(dir + "new", added);
+	if (rollback)
+	{
+		// 1.0.4: the kept copy is used up (the newer version is offered again by a check), and
+		// the folders the update had added go when they are empty, the deepest first.
+		RemoveTree(use.app_dir + ".previous");
+		std::vector<std::string> folders_added;
+		ReadLines(dir + "folders", folders_added);
+		for (size_t i = folders_added.size(); i-- > 0;)
+			if (folders_added[i].back() == '/' && IsManaged(folders_added[i] + "x"))
+				rmdir((use.app_dir + folders_added[i].substr(0, folders_added[i].size() - 1)).c_str());
+	}
+	else
+		KeepPrevious(use, version, plan, added);
 	RemoveTree(dir);
-	Say(log, "v%s is installed (%zu files); the title closes", version.c_str(), plan.size());
+	{
+		std::lock_guard<std::mutex> lock(g_state_mutex);
+		SetKept(use.app_dir);
+	}
+	if (rollback)
+		Say(log, "v%s is back (%zu files); the title closes", version.c_str(), plan.size());
+	else
+		Say(log, "v%s is installed (%zu files); the title closes", version.c_str(), plan.size());
 	Finish(log, State::Installed);
 	return true;
+}
+} // namespace
+
+bool Install()
+{
+	std::lock_guard<std::mutex> call(g_call_mutex);
+	Setup use;
+	std::string version;
+	{
+		std::lock_guard<std::mutex> lock(g_state_mutex);
+		if (!g_initialised || g_current.state != State::Ready)
+			return false;
+		use = g_setup;
+		version = g_current.version;
+	}
+	g_worker.Join();
+	return Apply(use, version, false);
 }
 
 Status GetStatus()
 {
 	std::lock_guard<std::mutex> lock(g_state_mutex);
-	return g_current;
+	Status status = g_current;
+	status.previous = g_previous;
+	status.previous_label = g_previous_label;
+	status.previous_bytes = g_previous_bytes;
+	return status;
+}
+
+void Skip()
+{
+	std::lock_guard<std::mutex> call(g_call_mutex);
+	Setup use;
+	std::string version;
+	{
+		std::lock_guard<std::mutex> lock(g_state_mutex);
+		if (!g_initialised || g_current.state != State::Available)
+			return;
+		g_current.skipped = true;
+		use = g_setup;
+		version = g_current.version;
+	}
+	if (!use.skip_file.empty() && !WriteDurable(use.skip_file, version + "\n"))
+		Say(use.log, "v%s is skipped, but that could not be written down", version.c_str());
+	else
+		Say(use.log, "v%s is skipped: not offered at a start again; a newer release is", version.c_str());
+}
+
+namespace
+{
+// RollBack()'s worker: the kept copy checked, moved to .update/stage/ with the lists an install
+// reads, then installed (Apply).
+void RunRollBack(const Setup& use)
+{
+	const Log& log = use.log;
+	const std::string dir = use.app_dir + ".update/";
+	const std::string kept_dir = use.app_dir + ".previous/";
+	Kept kept;
+	std::string error = ReadKept(use.app_dir, kept, true);
+	if (!error.empty())
+	{
+		// A kept copy that cannot be put back is not offered again.
+		if (PathExists(kept_dir + "manifest"))
+		{
+			Say(log, "the kept version is refused, and removed: %s", error.c_str());
+			RemoveTree(kept_dir);
+		}
+		{
+			std::lock_guard<std::mutex> lock(g_state_mutex);
+			SetKept(use.app_dir);
+		}
+		Finish(log, State::Failed, error + " Nothing was changed.");
+		return;
+	}
+	if (PathExists(dir + "journal"))
+	{
+		Say(log, "an interrupted install is not undone yet; .update is kept");
+		Finish(log, State::Failed, "An earlier install was stopped and is not undone yet: start the title again.");
+		return;
+	}
+	Say(log, "the kept copy of v%s is sound (%zu files, %s)", kept.version.c_str(), kept.files.size(),
+		MiB(kept.bytes).c_str());
+	// eboot.bin last, as an update's plan has it.
+	std::string plan, remove, folders, eboot;
+	for (const KeptFile& file : kept.files)
+		(file.path == "eboot.bin" ? eboot : plan) += file.path + "\n";
+	plan += eboot;
+	for (const std::string& path : kept.added)
+		(path.back() == '/' ? folders : remove) += path + "\n";
+#if defined(OGBOX_UPDATE_TEST)
+	const int stop = Test::rollback_stop;
+#else
+	const int stop = -1;
+#endif
+	RemoveTree(dir);
+	MakeDirs(use.app_dir + ".update");
+	// The marker before the move: an undo returns the stage to .previous/files/ only with it.
+	if (!WriteDurable(dir + "rollback", kept.version + "\n"))
+		error = "The title's folder cannot be written.";
+	else if (stop == 1)
+	{
+		Finish(log, State::Failed, "test: stopped as by a power cut");
+		return;
+	}
+	else if (rename((kept_dir + "files").c_str(), (dir + "stage").c_str()) != 0 || PathExists(kept_dir + "files") ||
+		!DirExists(dir + "stage"))
+		error = Format("The kept version could not be made ready (errno %d).", errno);
+	else if (stop == 2)
+	{
+		Finish(log, State::Failed, "test: stopped as by a power cut");
+		return;
+	}
+	else if (!WriteDurable(dir + "plan", plan) || !WriteDurable(dir + "remove", remove) ||
+		!WriteDurable(dir + "folders", folders))
+		error = "The list of files to put back could not be written.";
+	if (!error.empty())
+	{
+		bool had_journal = false;
+		int restored = 0;
+		Undo(use.app_dir, log, had_journal, restored);
+		Finish(log, State::Failed, error + " Nothing was changed.");
+		return;
+	}
+	Apply(use, kept.version, true);
+}
+} // namespace
+
+void RollBack()
+{
+	std::lock_guard<std::mutex> call(g_call_mutex);
+	{
+		std::lock_guard<std::mutex> lock(g_state_mutex);
+		if (!g_initialised)
+			return;
+		switch (g_current.state)
+		{
+			case State::Checking:
+			case State::Downloading:
+			case State::Verifying:
+			case State::Ready:
+			case State::Installed:
+				return;
+			default:
+				break;
+		}
+	}
+	// A worker that ended (a check) has set its last state; only then is the stop flag this one's.
+	g_worker.Join();
+	Setup use;
+	std::string label;
+	{
+		std::lock_guard<std::mutex> lock(g_state_mutex);
+		g_stop = false;
+		g_current = Status();
+		g_current.rollback = true;
+		if (g_previous.empty())
+		{
+			g_current.state = State::Failed;
+			g_current.error = "No earlier version is kept.";
+			return;
+		}
+		g_current.state = State::Verifying;
+		g_current.version = g_previous;
+		g_current.name = label = g_previous_label;
+		use = g_setup;
+	}
+	Say(use.log, "going back to %s was asked for", label.c_str());
+	StartWorker([use] { RunRollBack(use); });
 }
 
 } // namespace PS5Update

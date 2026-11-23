@@ -956,6 +956,7 @@ public:
 	 * hand says "the newest" too) and whether an install was chosen */
 	PS5Update::State updateSeen{ PS5Update::State::Idle };
 	bool updateByHand{ false }, updateWanted{ false };
+	bool rollbackWanted{ false };             // 1.0.4: Settings > Updates > Go back was chosen
 	double screenSince{ 0.0 };
 	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
@@ -6145,9 +6146,9 @@ public:
 		case PS5Update::State::Downloading:
 			return st.total ? "downloading " + std::to_string(static_cast<int>(100.0 * static_cast<double>(st.done) /
 				static_cast<double>(st.total))) + "%" : std::string("downloading");
-		case PS5Update::State::Verifying: return "checking the download";
+		case PS5Update::State::Verifying: return st.rollback ? "checking the kept version" : "checking the download";
 		case PS5Update::State::Ready: return "ready to install";
-		case PS5Update::State::Installed: return "installed";
+		case PS5Update::State::Installed: return st.rollback ? "gone back" : "installed";
 		case PS5Update::State::Failed: return "did not work";
 		default: return std::string("OGBox ") + pshakux_build_label();
 		}
@@ -6169,12 +6170,106 @@ public:
 		return text;
 	}
 
+	/* 1.0.4: the offer: Install, What's new (every newer release's notes, whole, scrolling), Skip this
+	 * version (remembered: not offered at a start again, a newer one is), Not now. What's new comes back
+	 * to it. */
+	void offerUpdate()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		if (st.state != PS5Update::State::Available) {
+			return;
+		}
+		std::vector<std::string> items{ "Install" };
+		if (!st.notes.empty()) {
+			items.push_back("What's new");
+		}
+		items.push_back("Skip this version");
+		items.push_back("Not now");
+		std::string text = updateNotes(st.notes);
+		if (text.size() < st.notes.size()) {
+			text += "\n(What's new shows all of it.)";
+		}
+		openPopup("OGBox " + st.tag + " is out", text +
+			"\n\nDownload and install it? Your settings, the Xbox hard disk, states and games stay.",
+			items, [this, items](int choice) {
+				const std::string what = choice >= 0 && choice < static_cast<int>(items.size()) ? items[choice] : "Not now";
+				if (what == "Install") {
+					startUpdate();
+				} else if (what == "What's new") {
+					showUpdateNotes();
+				} else if (what == "Skip this version") {
+					const PS5Update::Status now = PS5Update::GetStatus();
+					PS5Update::Skip();
+					showToast("OGBox " + now.tag + " is skipped: a newer version will be offered. Settings > Updates "
+						"can still install it.");
+				}
+			});
+	}
+
+	void startUpdate()
+	{
+		updateWanted = true;
+		pshakux_log("update: the install was chosen");
+		PS5Update::Download();
+	}
+
+	/* 1.0.4: What's new: the notes of every release newer than this one, newest first (ps5_update.h's
+	 * notes), scrolled with the right stick; Install from here, or back to the offer */
+	void showUpdateNotes()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		const std::string title = st.newer.size() > 1 ? "What's new in the " + std::to_string(st.newer.size()) +
+			" newer releases" : "What's new in OGBox " + st.tag;
+		pshakux_log("update: the notes of %zu newer releases are shown", st.newer.size());
+		openPopup(title, "The right stick scrolls.\n\n" + st.notes, { "Install", "Back" }, [this](int choice) {
+			if (choice == 0) {
+				startUpdate();
+			} else {
+				offerUpdate();
+			}
+		});
+	}
+
+	/* 1.0.4: Settings > Updates > Go back to <version>: the version kept from before the last update
+	 * (ps5_update.h, the idea after ProsperoEden), asked first; it is checked, put back, and OGBox closes */
+	void askRollBack()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		if (st.previous.empty()) {
+			showToast("No earlier version of OGBox is kept.");
+			return;
+		}
+		char size[32];
+		std::snprintf(size, sizeof(size), "%.0f MB", static_cast<double>(st.previous_bytes) / 1e6);
+		openPopup("Go back to OGBox " + st.previous_label + "?", "OGBox puts back the version it was before the last "
+			"update, " + st.previous_label + " (kept in its folder, " + size + "), and then closes: start it again from the "
+			"home screen. Your settings, the Xbox hard disk, states and games stay. The newer version is offered again; "
+			"choose Skip this version to stay on this one.", { "Go back", "Cancel" }, [this](int choice) {
+				if (choice == 0) {
+					rollbackWanted = true;
+					updateSeen = PS5Update::State::Idle;   // (its answer is answered, whatever came before)
+					pshakux_log("update: going back was chosen");
+					PS5Update::RollBack();
+				}
+			});
+	}
+
+	static std::string previousSize(uint64_t bytes)
+	{
+		char size[32];
+		std::snprintf(size, sizeof(size), "%.0f MB kept", static_cast<double>(bytes) / 1e6);
+		return size;
+	}
+
 	void updateTick()
 	{
 		const PS5Update::Status st = PS5Update::GetStatus();
 		if (st.state == PS5Update::State::Downloading || st.state == PS5Update::State::Verifying) {
 			if (updateWanted) {
 				toast = "Updating to OGBox " + st.tag + ": " + updateLine();   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			} else if (rollbackWanted) {
+				toast = "Going back to OGBox " + st.name + ": " + updateLine();
 				toastUntil = now_seconds() + 1.0;
 			}
 		}
@@ -6188,16 +6283,14 @@ public:
 		updateSeen = st.state;
 		switch (st.state) {
 		case PS5Update::State::Available:
+			/* 1.0.4: a version skipped is offered only when asked for by hand */
+			if (st.skipped && !updateByHand) {
+				pshakux_log("update: %s is out, skipped (not offered)", st.tag.c_str());
+				break;
+			}
 			pshakux_log("update: %s is offered", st.tag.c_str());
-			openPopup("OGBox " + st.tag + " is out", updateNotes(st.notes) +
-				"\n\nDownload and install it? Your settings, the Xbox hard disk, states and games stay.",
-				{ "Install", "Not now" }, [this](int choice) {
-					if (choice == 0) {
-						updateWanted = true;
-						pshakux_log("update: the install was chosen");
-						PS5Update::Download();
-					}
-				});
+			updateByHand = false;
+			offerUpdate();
 			break;
 		case PS5Update::State::UpToDate:
 			if (updateByHand) {
@@ -6207,12 +6300,28 @@ public:
 			break;
 		case PS5Update::State::NoRelease:
 		case PS5Update::State::Failed:
-			if (updateWanted) {
+			if (rollbackWanted) {
+				openPopup("Going back did not work", st.error + "\nOGBox is as it was.", { "OK" }, nullptr);
+			} else if (updateWanted) {
 				openPopup("The update did not work", st.error + "\nOGBox is as it was.", { "OK" }, nullptr);
 			} else if (updateByHand) {
 				showToast(st.error.empty() ? std::string("No release of OGBox was found.") : st.error);
 			}
-			updateWanted = updateByHand = false;
+			updateWanted = updateByHand = rollbackWanted = false;
+			break;
+		case PS5Update::State::Installed:
+			/* 1.0.4: gone back (RollBack, on its thread): OGBox closes as after an update */
+			if (rollbackWanted) {
+				pshakux_log("update: gone back to %s; OGBox closes", st.name.c_str());
+				openPopup("OGBox went back to " + st.name, "The version before the last update is in place. OGBox will now "
+					"close: start it again from the home screen.", { "Close OGBox" }, [this](int) {
+						leaveAfterWrites("OGBox closes", [this]() {
+							prefs.flush();
+							quit = true;
+						});
+					});
+				rollbackWanted = false;
+			}
 			break;
 		case PS5Update::State::Ready:
 			if (updateWanted) {
@@ -8978,6 +9087,17 @@ public:
 			actionRow("check", "Look for an update now", updateLine(), "Asks GitHub whether a newer OGBox is out and offers it with "
 				"what is new. Nothing is downloaded without asking; your settings, the hard disk, states and games stay.",
 				[this]() { checkForUpdate(); }, rows, acts, ui::Icon::Check);
+			/* 1.0.4: the version before the last update, kept: put back (on the game list's settings only, as
+			 * an update's install is answered there) */
+			if (library) {
+				const PS5Update::Status ps = PS5Update::GetStatus();
+				if (!ps.previous.empty()) {
+					actionRow("back", "Go back to " + ps.previous_label, previousSize(ps.previous_bytes), "Puts back the "
+						"version OGBox was before the last update, kept in its folder (.previous) until the next update, and "
+						"closes OGBox. Your settings, the Xbox hard disk, states and games stay.", [this]() { askRollBack(); },
+						rows, acts, ui::Icon::Back);
+				}
+			}
 			/* 1.0.3: the Xbox scene's trainers xbased keeps, downloaded only from here (ogbox_fixes_fetch.h); in
 			 * the game list's settings (its ticks show how far it is) */
 			if (library) {

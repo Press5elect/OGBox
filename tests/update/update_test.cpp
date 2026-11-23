@@ -1377,6 +1377,301 @@ static void TestFreeSpace(const std::string& work, const std::string& app)
 	CHECK(ToReady(work, app, zip).state == State::Ready);
 }
 
+// 1.0.4: the title folder without the kept version (.previous/).
+static std::map<std::string, std::string> WithoutKept(std::map<std::string, std::string> files)
+{
+	for (auto it = files.begin(); it != files.end();)
+		it = it->first.compare(0, 10, ".previous/") == 0 ? files.erase(it) : std::next(it);
+	return files;
+}
+
+// 1.0.4: from the old folder, v1.2.0 installed with v1.0.0 kept (the idea after ProsperoEden).
+static Status Installed120(const std::string& work, const std::string& app, const std::string& zip)
+{
+	if (ToReady(work, app, zip).state != State::Ready || !Install())
+		return GetStatus();
+	// The new version starting: it reads what is kept.
+	Init(MakeSetup(app, "1.2.0"));
+	return GetStatus();
+}
+
+// 1.0.4: the version before an update kept, and put back (Settings > Updates > Go back).
+static void TestKeepAndRollBack(const std::string& work, const std::string& app, bool links)
+{
+	std::fprintf(stderr, "the version before kept, and gone back to (%s)\n", links ? "a drive with links" : "a drive without links");
+	Test::no_links = links ? 0 : 1;
+	const std::string zip = MakeZip(work, Package("1.2.0"));
+	OldFolder(work + "/reference");
+	const auto original = Snapshot(work + "/reference");
+
+	// Kept: the old files the install replaced, with their sizes and digests; the folder's own
+	// files are the new ones.
+	CHECK(!Recover(app));
+	{
+		const Status status = Installed120(work, app, zip);
+		CHECK(status.previous == "1.0.0" && status.previous_label == "v1.0.0");
+		CHECK(status.previous_bytes == std::string("EBOOT old").size() + std::string("legal old").size() +
+			std::string("readme old").size() + std::string("symbols old").size() + std::string("elevator old").size() +
+			Get(app + "/.previous/files/sce_sys/param.json").size() + std::string("icon old").size() +
+			std::string("libc old").size() + std::string("games old").size() + std::string("font old").size() +
+			std::string("GPL old").size());
+	}
+	CHECK(Get(app + "/.previous/files/eboot.bin") == "EBOOT old");
+	CHECK(Get(app + "/.previous/files/licenses/GPL-3.0.txt") == "GPL old");
+	CHECK(!Exists(app + "/.previous/files/sce_module/extra.prx")); // not replaced: not kept
+	CHECK(!Exists(app + "/.previous/files/boot.txt"));
+	{
+		const std::string manifest = Get(app + "/.previous/manifest");
+		CHECK(manifest.compare(0, 25, "OGBox previous version 1\n") == 0);
+		CHECK(Contains(manifest, "\nversion 1.0.0\n") && Contains(manifest, "\nlabel v1.0.0\n"));
+		CHECK(Contains(manifest, ("file " + Sha256Hex("EBOOT old", 9) + " 9 eboot.bin\n").c_str()));
+		CHECK(Contains(manifest, "\nadded assets/new-in-1.2.0/\n") && Contains(manifest, "\nadded assets/new-in-1.2.0/thing.txt\n"));
+	}
+	CHECK(Get(app + "/eboot.bin").compare(0, 12, "EBOOT 1.2.0\n") == 0);
+	CHECK(!Exists(app + "/.update"));
+	const auto installed = Snapshot(app);
+
+	// Going back: the old version's files exactly as they were, what the update added gone, and
+	// the kept copy used up.
+	RollBack();
+	CHECK(GetStatus().rollback);
+	{
+		const Status status = Wait();
+		CHECK(status.state == State::Installed && status.rollback && status.version == "1.0.0");
+		CHECK(status.previous.empty());
+	}
+	CHECK(Unchanged(app, original));
+	// Once Installed, nothing more is started; and nothing is kept to go back to.
+	RollBack();
+	CHECK(GetStatus().state == State::Installed);
+	Init(MakeSetup(app, "1.0.0"));
+	RollBack();
+	CHECK(GetStatus().state == State::Failed && Contains(GetStatus().error, "No earlier version"));
+	CHECK(Unchanged(app, original));
+
+	// A going back stopped at every step, as by a power cut, and at some of the undo's steps too:
+	// the next start puts the newer version back exactly, the kept copy with it, and it can still
+	// go back afterwards.
+	int cuts = 0;
+	bool whole = false;
+	for (int k = 0; k < 100 && !whole; k++)
+	{
+		CHECK(Installed120(work, app, zip).previous == "1.0.0");
+		CHECK(Snapshot(app) == installed);
+		Test::stop_after = k;
+		RollBack();
+		const Status status = Wait();
+		Test::stop_after = -1;
+		if (status.state == State::Installed)
+		{
+			whole = true;
+			CHECK(Unchanged(app, original));
+			break;
+		}
+		CHECK(status.state == State::Failed);
+		CHECK(Exists(app + "/.update/journal") && Exists(app + "/.update/rollback"));
+		if (links)
+			CHECK(Exists(app + "/eboot.bin"));
+		const bool nested = k == 1 || k == 7 || k == 12;
+		for (int j = 0; nested && j < 6 && Exists(app + "/.update/journal"); j++)
+		{
+			Test::undo_stop_after = j;
+			CHECK(Recover(app));
+			Test::undo_stop_after = -1;
+		}
+		const bool pending = Exists(app + "/.update/journal");
+		CHECK(Recover(app) == pending);
+		CHECK(Unchanged(app, installed));
+		cuts++;
+		// The kept copy is whole again: going back now works.
+		if (k % 3 == 0 || nested)
+		{
+			Init(MakeSetup(app, "1.2.0"));
+			CHECK(GetStatus().previous == "1.0.0");
+			RollBack();
+			CHECK(Wait().state == State::Installed);
+			CHECK(Unchanged(app, original));
+		}
+	}
+	CHECK(whole);
+	CHECK(cuts > 12);
+	std::fprintf(stderr, "  %d going backs stopped, each put back exactly\n", cuts);
+	// Stopped before the journal: once the marker is written, once the kept files are in the stage.
+	for (const int stop : {1, 2})
+	{
+		CHECK(Installed120(work, app, zip).previous == "1.0.0");
+		Test::rollback_stop = stop;
+		RollBack();
+		CHECK(Wait().state == State::Failed);
+		Test::rollback_stop = -1;
+		CHECK(Exists(app + "/.update/rollback"));
+		CHECK(Exists(app + "/.previous/files") == (stop == 1));
+		CHECK(!Recover(app));
+		CHECK(Unchanged(app, installed));
+	}
+	// A rename that fails, or says it worked when it did not: undone at once, the kept copy whole.
+	for (int k = 0; k < 24; k++)
+	{
+		CHECK(Installed120(work, app, zip).previous == "1.0.0");
+		Test::fail_at = k % 2 == 0 ? k : -1;
+		Test::lie_at = k % 2 == 1 ? k : -1;
+		RollBack();
+		const Status status = Wait();
+		Test::fail_at = Test::lie_at = -1;
+		if (status.state == State::Installed)
+			continue; // past the last rename
+		CHECK(status.state == State::Failed);
+		CHECK(Unchanged(app, installed));
+		CHECK(GetStatus().previous == "1.0.0");
+	}
+
+	// A kept copy that is not whole is not offered, and refused.
+	CHECK(Installed120(work, app, zip).previous == "1.0.0");
+	unlink((app + "/.previous/files/licenses/GPL-3.0.txt").c_str());
+	Init(MakeSetup(app, "1.2.0"));
+	CHECK(GetStatus().previous.empty());
+	{
+		const auto before = Snapshot(app);
+		RollBack();
+		CHECK(Wait().state == State::Failed);
+		CHECK(Unchanged(app, before));
+	}
+	// One whose file was changed (the same size): offered, then refused at its digests, and removed;
+	// the title's files are untouched.
+	CHECK(Installed120(work, app, zip).previous == "1.0.0");
+	Put(app + "/.previous/files/eboot.bin", "EBOOT OLD");
+	Init(MakeSetup(app, "1.2.0"));
+	CHECK(GetStatus().previous == "1.0.0");
+	RollBack();
+	{
+		const Status status = Wait();
+		CHECK(status.state == State::Failed && Contains(status.error, "damaged") && Contains(status.error, "eboot.bin"));
+		CHECK(status.previous.empty());
+	}
+	CHECK(!Exists(app + "/.previous") && !Exists(app + "/.update"));
+	CHECK(Snapshot(app) == WithoutKept(installed));
+	// A damaged manifest, or one that names what is not the program's: nothing is offered.
+	for (const char* manifest : {"garbage\n", "OGBox previous version 1\nversion 1.0.0\nfile 00 9 eboot.bin\n",
+			 "OGBox previous version 1\nversion 1.0.0\n",
+			 "OGBox previous version 1\nversion 1.0.0\nfile 0000000000000000000000000000000000000000000000000000000000000000 3 boot.txt\n"})
+	{
+		CHECK(Installed120(work, app, zip).previous == "1.0.0");
+		Put(app + "/.previous/manifest", manifest);
+		Init(MakeSetup(app, "1.2.0"));
+		CHECK(GetStatus().previous.empty());
+		RollBack();
+		CHECK(Wait().state == State::Failed);
+		CHECK(Get(app + "/boot.txt") == "the user's patches");
+		CHECK(WithoutKept(Snapshot(app)) == WithoutKept(installed));
+	}
+
+	// Too little room left beside it: not kept.
+	{
+		s_server.Clear();
+		OldFolder(app);
+		const Rel rel = ServeRelease("1.2.0", zip);
+		s_server.Serve(API, ReleasesJson({rel}));
+		Setup setup = MakeSetup(app, "1.0.0");
+		setup.free_space = [](const std::string&) { return static_cast<int64_t>(100) << 20; };
+		Init(setup);
+		Check();
+		CHECK(Wait().state == State::Available);
+		Download();
+		CHECK(Wait().state == State::Ready);
+		CHECK(Install());
+		CHECK(!Exists(app + "/.previous"));
+		CHECK(GetStatus().previous.empty());
+		CHECK(WithoutKept(installed) == Snapshot(app));
+	}
+	// A download that needs the room the kept version takes: it is removed first.
+	{
+		CHECK(Installed120(work, app, zip).previous == "1.0.0");
+		const std::string zip13 = MakeZip(work, Package("1.3.0"));
+		s_server.Clear();
+		const Rel rel = ServeRelease("1.3.0", zip13);
+		s_server.Serve(API, ReleasesJson({rel}));
+		Setup setup = MakeSetup(app, "1.2.0");
+		setup.free_space = [app](const std::string&) {
+			return Exists(app + "/.previous") ? static_cast<int64_t>(1) << 20 : static_cast<int64_t>(1) << 40;
+		};
+		Init(setup);
+		CHECK(GetStatus().previous == "1.0.0");
+		Check();
+		CHECK(Wait().state == State::Available);
+		Download();
+		CHECK(Wait().state == State::Ready);
+		CHECK(!Exists(app + "/.previous"));
+		CHECK(Install());
+		// v1.2.0 kept now, and going back to it gives v1.2.0's files.
+		Init(MakeSetup(app, "1.3.0"));
+		CHECK(GetStatus().previous == "1.2.0");
+		RollBack();
+		CHECK(Wait().state == State::Installed);
+		CHECK(Get(app + "/eboot.bin").compare(0, 12, "EBOOT 1.2.0\n") == 0);
+		CHECK(!Exists(app + "/assets/new-in-1.3.0"));
+		CHECK(Exists(app + "/assets/new-in-1.2.0/thing.txt"));
+		CHECK(WithoutKept(Snapshot(app)) == WithoutKept(installed));
+	}
+	Test::no_links = 0;
+}
+
+// 1.0.4: "Skip this version": remembered; a newer release is offered again.
+static void TestSkip(const std::string& work, const std::string& app)
+{
+	std::fprintf(stderr, "a version skipped\n");
+	const std::string zip = MakeZip(work, Package("1.2.0"));
+	const std::string skip = work + "/update-skipped.txt";
+	unlink(skip.c_str());
+	s_server.Clear();
+	OldFolder(app);
+	const Rel rel = ServeRelease("1.2.0", zip);
+	s_server.Serve(API, ReleasesJson({rel}));
+	Setup setup = MakeSetup(app, "1.0.0");
+	setup.skip_file = skip;
+	Init(setup);
+	Skip(); // nothing offered yet: nothing skipped
+	CHECK(!Exists(skip));
+	Check();
+	{
+		const Status status = Wait();
+		CHECK(status.state == State::Available && !status.skipped);
+	}
+	Skip();
+	CHECK(GetStatus().skipped && GetStatus().state == State::Available);
+	CHECK(Get(skip) == "1.2.0\n");
+	// The next start: the same version is said to be skipped (still Available: it can be installed
+	// by hand).
+	Init(setup);
+	Check();
+	{
+		const Status status = Wait();
+		CHECK(status.state == State::Available && status.skipped && status.version == "1.2.0");
+	}
+	Download();
+	CHECK(Wait().state == State::Ready);
+	Init(setup);
+	// A newer one: offered again.
+	const std::string zip13 = MakeZip(work, Package("1.3.0"));
+	s_server.Clear();
+	const Rel rel13 = ServeRelease("1.3.0", zip13);
+	const Rel rel12 = ServeRelease("1.2.0", zip);
+	s_server.Serve(API, ReleasesJson({rel13, rel12}));
+	Check();
+	{
+		const Status status = Wait();
+		CHECK(status.state == State::Available && !status.skipped && status.version == "1.3.0");
+		CHECK(status.newer.size() == 2);
+	}
+	// Without a file to remember it in: skipped for this run only.
+	Init(MakeSetup(app, "1.0.0"));
+	Check();
+	CHECK(Wait().state == State::Available);
+	Skip();
+	CHECK(GetStatus().skipped);
+	unlink(skip.c_str());
+	OldFolder(app);
+}
+
 // A real release ZIP of OGBox (made by make-release-zip.py), installed over the older folder.
 static void TestRealZip(const std::string& work, const std::string& app, const std::string& path)
 {
@@ -1442,6 +1737,9 @@ int main(int argc, char** argv)
 	TestInterrupted(work, app, false);
 	TestCancel(work, app);
 	TestFreeSpace(work, app);
+	TestKeepAndRollBack(work, app, true);
+	TestKeepAndRollBack(work, app, false);
+	TestSkip(work, app);
 	if (argc >= 3)
 		TestRealZip(work, app, argv[2]);
 

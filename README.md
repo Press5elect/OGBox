@@ -125,6 +125,13 @@ OGBox's own files are replaced. Your settings, the Xbox hard disk, save states, 
 games are left alone. OGBox then closes, ready to be started again, and if a power cut interrupts
 an update, it's undone at the next start.
 
+The offer's **What's new** shows the notes of every release since yours (the right stick scrolls),
+and **Skip this version** stops that version being offered at each start; a newer one is offered
+again, and **Updates** in Settings still installs it. After an update, the files of the version it
+replaced are kept in the title folder's `.previous` (until the next update; not when the drive has
+less than 256 MB left, and removed first when an update needs their room). **Settings > Updates >
+Go back to <version>** puts that version back the same careful way and closes OGBox.
+
 ## Settings
 
 Everything hakuX can change, and OGBox's own options, sorted into sections. The box under the list

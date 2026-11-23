@@ -198,6 +198,11 @@ void OGBoxUpdate::Start()
 		setup.app_dir = pshakux_title_dir();
 		/* 0.0.4: a developer build of X.Y.Z runs before X.Y.Z's release: the release is offered */
 		setup.version = pshakux_build_version();
+		/* 1.0.4: the running version's name for the copy kept after an update ("v1.0.3", or a
+		 * developer build's), and where "Skip this version" is remembered (the data folder's
+		 * fixed place, beside settings.txt) */
+		setup.running_label = pshakux_build_label();
+		setup.skip_file = "/data/ogbox/update-skipped.txt";
 		if (!pshakux_build_release()) {
 			unsigned a = 0, b = 0, c = 0;
 			if (std::sscanf(setup.version.c_str(), "%u.%u.%u", &a, &b, &c) == 3) {
