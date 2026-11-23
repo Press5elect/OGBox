@@ -382,6 +382,14 @@ std::string baseName(const std::string &path)
 	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+/* OGBox 1.0.4: the player's own patches (core/ogbox_patches.h): the data folder's patches/, where they
+ * are attached by hand, and the game's name as its page shows it (the name rule). Under g_discInfoMutex. */
+void setUserPatches(const std::string &key, const std::string &name)
+{
+	ogbox_patches_set_user_dir(ogbox::storagePath("patches").c_str(), "/data/ogbox/user-patches.txt");
+	ogbox_patches_set_game_name(key.c_str(), name.c_str());
+}
+
 bool isFolder(const std::string &path)
 {
 	struct stat st;
@@ -1096,6 +1104,8 @@ public:
 	std::vector<OgboxModEntry> modList;
 	uint32_t modsCrc{ 0 };                    // 0.0.2: the disc's default.xbe's CRC-32 (0: unread)
 	std::string modsKey, modsTitle;
+	std::vector<OgboxUserPatchFile> userFiles;   // 1.0.4: the player's patches that can be attached by hand
+	bool userPatchesOpen = false;                // their list shown
 	// 0.1.54: the game's trainers on the Mods screen (core/ogbox_trainers.h)
 	struct TrainerView {
 		std::vector<OgboxTrainer> list;
@@ -2312,6 +2322,8 @@ public:
 				}
 				runXbeTime = info.xbe_time;
 			}
+			std::lock_guard<std::mutex> disc(g_discInfoMutex);
+			setUserPatches(key, info.title[0] ? std::string(info.title) : ogbox::shortName(baseName(boot.image)));
 		}
 		if (boot.image != "none") {
 			resignSavesFor(boot.image);
@@ -4494,12 +4506,60 @@ public:
 			add(r, { nullptr, "OGBox has hakuX's mods (the title folder's mods/); a game's are in mods/" + modsKey +
 				"/: a folder a mod, cheats.txt the cheats. Patches come from gamedata/patches.db." });
 		}
-		const auto kindOf = [](const OgboxModEntry &e) { return e.cheat ? 2 : e.patch ? 1 : e.gamefix ? -1 : 0; };
+		/* 1.0.4: the player's own patches (core/ogbox_patches.h: "user:<file>", after the database's) */
+		const auto isUser = [](const OgboxModEntry &e) { return e.patch && !std::strncmp(e.id, "user:", 5); };
+		const auto kindOf = [&](const OgboxModEntry &e) { return e.cheat ? 2 : isUser(e) ? 3 : e.patch ? 1 : e.gamefix ? -1 : 0; };
+		/* their group's foot (its heading too, if none of theirs is listed): the files to attach by hand */
+		bool yoursHead = false, yoursFoot = false;
+		const auto yours = [&]() {
+			yoursFoot = true;
+			if (!yoursHead) {
+				section("Your patches");
+			}
+			const std::string folder = ogbox::storagePath("patches");
+			R r;
+			r.key = "uadd";
+			r.title = "Add a patch from the patches folder";
+			r.icon = ui::Icon::Plus;
+			r.sub = userFiles.empty() ? "None to add \xC2\xB7 " + folder
+				: std::to_string(userFiles.size()) + (userFiles.size() == 1 ? " file" : " files") + " no rule gives a game";
+			r.dim = userFiles.empty();
+			r.right = userFiles.empty() ? std::string() : userPatchesOpen ? std::string("hide") : std::string("show");
+			const std::string help = "Copy .jmp, .ips and .bps patches into " + folder + " (or a folder in it): each game "
+				"lists its own here, off till turned on. A BPS is this game's when it was made from this disc's default.xbe "
+				"(its CRC-32); a JMP when its version= line has this disc's CRC-32 or this title ID; an IPS, or a JMP that says "
+				"neither, when its name has this title ID or the game's name. The others are listed here to attach to the "
+				"game by hand (CROSS), or detach. OGBox's updates and game fixes never change that folder.";
+			add(r, { userFiles.empty() ? std::function<void()>() : [this]() { userPatchesOpen = !userPatchesOpen; }, help });
+			for (size_t k = 0; userPatchesOpen && k < userFiles.size(); k++) {
+				R f;
+				f.key = "uf:" + std::string(userFiles[k].rel);
+				f.title = userFiles[k].rel;
+				f.toggle = userFiles[k].attached ? 1 : 0;
+				f.indent = 1;
+				add(f, { [this, k]() {
+					const OgboxUserPatchFile u = userFiles[k];
+					std::lock_guard<std::mutex> disc(g_discInfoMutex);
+					if (ogbox_patches_attach(modsKey.c_str(), u.rel, !u.attached) && u.attached) {
+						ogbox_mods_choose_kind(modsKey.c_str(), "patch", ("user:" + std::string(u.rel)).c_str(), false);
+					}
+					loadModList();
+					detailsPath.clear();
+				}, std::string(userFiles[k].attached ? "Attached to this game by hand: CROSS detaches it (and turns it off)."
+					: "Not attached to any game: CROSS attaches it to this one, listed above, off till turned on. Its release "
+					"isn't checked: attach it only to the game it was made for.") });
+			}
+		};
 		for (size_t i = 0; i < modList.size(); i++) {
 			OgboxModEntry &m = modList[i];
+			if (!yoursFoot && kindOf(m) == 2) {
+				yours();
+			}
 			/* 0.0.6: the patches in one group, Patches (no headings by kind: "Misc" was most of them) */
 			if (i == 0 || kindOf(modList[i - 1]) != kindOf(m)) {
-				section(m.cheat ? "Cheats" : m.patch ? "Patches" : m.gamefix ? "Game fixes \xC2\xB7 always on" : "Mods");
+				yoursHead |= kindOf(m) == 3;
+				section(m.cheat ? "Cheats" : kindOf(m) == 3 ? "Your patches" : m.patch ? "Patches"
+					: m.gamefix ? "Game fixes \xC2\xB7 always on" : "Mods");
 			}
 			/* 0.0.2: the release check (core/ogbox_mods.h): one made for another release of the game is
 			 * greyed out, without its switch, and can't be turned on (one on from before can be turned
@@ -4508,12 +4568,13 @@ public:
 			R r;
 			r.key = "m" + std::to_string(kindOf(m)) + ":" + m.id;
 			r.title = m.name;
-			r.sub = (m.patch || (!m.cheat && m.author[0])) ? std::string("by ") + m.author : std::string();
+			r.sub = isUser(m) ? "patches/" + std::string(m.id + 5)
+				: (m.patch || (!m.cheat && m.author[0])) ? std::string("by ") + m.author : std::string();
 			r.right = other ? std::string(m.on ? "Incompatible: left out" : "Incompatible")
 				: m.gamefix ? std::string("always on")
 				: m.cheat ? (m.once ? "once" : std::string())
 				: (!m.patch && m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
-			if (unchecked && !m.patch && !m.gamefix) {
+			if (unchecked && (!m.patch || isUser(m)) && !m.gamefix) {
 				r.right = r.right.empty() ? std::string("release not checked") : r.right + " \xC2\xB7 release not checked";
 			}
 			r.toggle = other && !m.on ? -1 : m.on ? 1 : 0;
@@ -4522,7 +4583,10 @@ public:
 				r.dot = ui::P().fail;
 			}
 			std::string help;
-			if (other) {
+			if (other && isUser(m)) {
+				help = std::string("Can't be applied: ") + m.fit_why + ". " + m.description + " " +
+					(m.on ? "It's left out when the game starts. CROSS turns it off." : "It can't be turned on.");
+			} else if (other) {
 				/* 0.0.6: which version of the game it is for */
 				const std::string region = m.region[0] ? std::string(m.region) : std::string();
 				help = (region.empty() ? std::string("Incompatible: made for another version of the game")
@@ -4565,6 +4629,9 @@ public:
 				};
 			}
 			add(r, { press, help });
+		}
+		if (!yoursFoot) {
+			yours();
 		}
 		// ---- 0.1.54: the trainers
 		unsigned gen = 0, found = 0;
@@ -4738,6 +4805,16 @@ public:
 		}
 	}
 
+	/* The game's catalog, and the player's patch files that can be attached to it by hand (1.0.4).
+	 * Under g_discInfoMutex. */
+	void loadModList()
+	{
+		modList.assign(480, OgboxModEntry{});
+		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(modsKey.c_str(), modList.data(), 480))));
+		userFiles.assign(128, OgboxUserPatchFile{});
+		userFiles.resize(static_cast<size_t>(std::max(0, ogbox_patches_user_files(modsKey.c_str(), userFiles.data(), 128))));
+	}
+
 	/* The game's mods, patches, cheats and trainers: CROSS turns one on or off. */
 	void drawMods()
 	{
@@ -4772,6 +4849,8 @@ public:
 		modsKey = key;
 		modsTitle = title;
 		std::lock_guard<std::mutex> disc(g_discInfoMutex);
+		setUserPatches(key, title);
+		userPatchesOpen = false;
 		/* 0.1.52: the disc's default.xbe's CRC-32, for the patches made for another release of the game.
 		 * 0.0.2: the release check of its mods, patches and cheats against the disc (core/ogbox_mods.h:
 		 * one made for another release is greyed out and can't be turned on); in a game, the start's
@@ -4781,8 +4860,7 @@ public:
 			pshakux_log("ogbox: %s: default.xbe's CRC-32 %08X", key.c_str(), static_cast<unsigned>(crc));
 		}
 		modsCrc = ogbox_mods_disc_crc(key.c_str());
-		modList.assign(480, OgboxModEntry{});
-		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 480))));
+		loadModList();
 		/* 0.1.54: the trainers for its title ID, those for this release (its default.xbe's date) first */
 		tv.titleId = static_cast<uint32_t>(std::strtoul(key.substr(0, 8).c_str(), nullptr, 16));
 		tv.xbeTime = runXbeTime;
@@ -5137,6 +5215,9 @@ public:
 			std::lock_guard<std::mutex> disc(g_discInfoMutex);
 			OgboxGameInfo info{};
 			ogbox_game_info(path.c_str(), &info);
+			if (info.ok) {
+				setUserPatches(info.key, info.title[0] ? std::string(info.title) : ogbox::shortName(baseName(path)));
+			}
 			countDetails(info, *job);
 			std::lock_guard<std::mutex> lock(job->mutex);
 			job->info = info;

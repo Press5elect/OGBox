@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <dirent.h>
 #include <sys/stat.h>
 
 #define MAX_PATCHES 256
@@ -545,10 +546,20 @@ typedef struct Entry {
     OgboxPatch p;
     char **lines;   /* its records, T lines among them */
     size_t nlines;
+    /* 1.0.4: one of the player's (ogbox_patches.h): the folder its IPS or BPS file is in (NULL: the
+     * database's files/), how it was joined to the game, its kind ('J', 'I', 'B'), and why it can't
+     * be applied (a .jmp it cannot read: the line at fault) */
+    char *files_dir;
+    const char *how;
+    char kind;
+    char bad[192];
 } Entry;
 
 static Entry g_db[MAX_PATCHES];
 static unsigned g_ndb;
+static unsigned g_nuser;    /* 1.0.4: of them the player's (the last) */
+
+static void user_load(const char *key, const char *tid);
 
 static void db_reset(void)
 {
@@ -557,9 +568,11 @@ static void db_reset(void)
             free(g_db[i].lines[k]);
         }
         free(g_db[i].lines);
+        free(g_db[i].files_dir);
     }
     memset(g_db, 0, sizeof(g_db));
     g_ndb = 0;
+    g_nuser = 0;
 }
 
 static void copyf(char *dst, size_t n, const char *src)
@@ -641,6 +654,16 @@ static void db_load(const char *key)
     fclose(f);
 }
 
+/* db_load and then the player's patches for the title ID (1.0.4) */
+static void db_load_all(const char *key)
+{
+    db_load(key);
+    char tid[9] = "";
+    if (key && sscanf(key, "%8[0-9A-Fa-f]", tid) == 1 && strlen(tid) == 8) {
+        user_load(key, tid);
+    }
+}
+
 /* mods.txt's "<key> patch <id>" lines: the entries on */
 static void read_on(const char *key)
 {
@@ -658,8 +681,19 @@ static void read_on(const char *key)
         }
         char line[1024];
         while (fgets(line, sizeof(line), f)) {
-            char k[64], kind[16], id[64];
-            if (line[0] == '#' || sscanf(line, "%63s %15s %63s", k, kind, id) != 3) {
+            char k[64], kind[16];
+            int at = 0;
+            if (line[0] == '#' || sscanf(line, "%63s %15s %n", k, kind, &at) != 2 || !at) {
+                continue;
+            }
+            /* 1.0.4: the rest of the line (the player's patches' ids may hold spaces), as
+             * ogbox_mods.c reads it */
+            char *id = line + at;
+            size_t il = strlen(id);
+            while (il && isspace((unsigned char)id[il - 1])) {
+                id[--il] = 0;
+            }
+            if (!il) {
                 continue;
             }
             if (strcasecmp(k, key) || strcasecmp(kind, "patch")) {
@@ -717,11 +751,790 @@ bool ogbox_patches_need_128(const char *key)
 
 static char g_crc_key[32];
 static uint32_t g_crc;
+static uint32_t g_size;     /* 1.0.4: default.xbe's size for g_crc_key, 0 unknown (a BPS's source size) */
 
 void ogbox_patches_set_disc_crc(const char *key, uint32_t crc)
 {
+    if (!key || strcasecmp(key, g_crc_key) != 0 || crc != g_crc) {
+        g_size = 0;
+    }
     snprintf(g_crc_key, sizeof(g_crc_key), "%s", key ? key : "");
     g_crc = crc;
+}
+
+/* 1.0.4: the disc's default.xbe as read (ogbox_patches_check, ogbox_patches_prepare): its CRC-32 and size */
+static void set_disc_xbe(const char *key, const OgboxBuf *xbe)
+{
+    if (key && xbe && xbe->data && xbe->size) {
+        ogbox_patches_set_disc_crc(key, ogbox_crc32(xbe->data, xbe->size));
+        g_size = (uint32_t)xbe->size;
+    }
+}
+
+/* ---- 1.0.4: the player's own patches (ogbox_patches.h) ---- */
+
+#define USER_FILE_MAX (4u << 20)    /* a file's size at most */
+#define USER_GAME_MAX 64            /* a game's at most */
+#define USER_SCAN_MAX 512           /* the folder's files read at most */
+
+static char g_user_dir[1024];
+static char g_attach_file[1024];
+static struct {
+    char tid[9];
+    char name[160];
+} g_names[16];
+static unsigned g_names_next;
+static bool g_user_log;     /* at the start (ogbox_patches_prepare): the boot log says what was found */
+static const char k_by_hand[] = "attached by hand";
+
+typedef struct UserFile {
+    char rel[128];      /* in the folder: "name" or "folder/name" */
+    char dir[1024];     /* the folder it is in */
+    char name[128];
+    char kind;          /* 'J', 'I', 'B' */
+} UserFile;
+
+static UserFile g_files[USER_SCAN_MAX];
+static unsigned g_nfiles;
+
+void ogbox_patches_set_user_dir(const char *dir, const char *attach_file)
+{
+    copyf(g_user_dir, sizeof(g_user_dir), dir);
+    copyf(g_attach_file, sizeof(g_attach_file), attach_file);
+}
+
+static bool tid_of(const char *key, char tid[9])
+{
+    tid[0] = 0;
+    return key && sscanf(key, "%8[0-9A-Fa-f]", tid) == 1 && strlen(tid) == 8;
+}
+
+void ogbox_patches_set_game_name(const char *key, const char *name)
+{
+    char tid[9];
+    if (!tid_of(key, tid)) {
+        return;
+    }
+    unsigned i = 0;
+    while (i < 16 && strcasecmp(g_names[i].tid, tid) != 0) {
+        i++;
+    }
+    if (i == 16) {
+        i = g_names_next++ % 16;
+    }
+    copyf(g_names[i].tid, sizeof(g_names[i].tid), tid);
+    copyf(g_names[i].name, sizeof(g_names[i].name), name);
+}
+
+static const char *game_name(const char *tid)
+{
+    for (unsigned i = 0; i < 16; i++) {
+        if (g_names[i].tid[0] && !strcasecmp(g_names[i].tid, tid)) {
+            return g_names[i].name;
+        }
+    }
+    return "";
+}
+
+/* A name OGBox reads in the folder: printable ASCII without / \ : * ? " < > | (and so no tab or line
+ * break), no "..", not beginning with a dot or a space nor ending in a space; 100 characters at most
+ * (its id and mods.txt's line keep it whole) */
+static bool plain_name(const char *s)
+{
+    const size_t n = strlen(s);
+    if (!n || n > 100 || s[0] == '.' || s[0] == ' ' || s[n - 1] == ' ' || strstr(s, "..")) {
+        return false;
+    }
+    for (const char *p = s; *p; p++) {
+        if (*p < 0x20 || *p > 0x7E || strchr("/\\:*?\"<>|", *p)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static char file_kind(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    return !dot ? 0 : !strcasecmp(dot, ".jmp") ? 'J' : !strcasecmp(dot, ".ips") ? 'I' : !strcasecmp(dot, ".bps") ? 'B' : 0;
+}
+
+static int user_file_cmp(const void *a, const void *b)
+{
+    return strcasecmp(((const UserFile *)a)->rel, ((const UserFile *)b)->rel);
+}
+
+/* The folder's .jmp, .ips and .bps files, and those of its folders (one level) */
+static void scan_dir(const char *dir, const char *sub)
+{
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    for (struct dirent *de; (de = readdir(d)) != NULL;) {
+        const char *name = de->d_name;
+        if (name[0] == '.') {
+            continue;   /* ".", "..", and the hidden ("._x.ips", a Mac's) */
+        }
+        char path[1024];
+        if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, name) >= sizeof(path)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (!sub[0] && plain_name(name)) {
+                scan_dir(path, name);
+            } else if (g_user_log) {
+                pshakux_log("patches:   your %s%s%s: not read (%s)", sub, sub[0] ? "/" : "", name,
+                            sub[0] ? "a folder in a folder" : "its name is not of plain characters");
+            }
+            continue;
+        }
+        const char kind = S_ISREG(st.st_mode) ? file_kind(name) : 0;
+        if (!kind) {
+            continue;
+        }
+        if (!plain_name(name)) {
+            if (g_user_log) {
+                pshakux_log("patches:   your %s%s%s: left out: its name is not of plain characters (letters, digits, "
+                            "spaces and punctuation but / \\ : * ? \" < > |, no \"..\", 100 at most)", sub,
+                            sub[0] ? "/" : "", name);
+            }
+            continue;
+        }
+        if (st.st_size > (off_t)USER_FILE_MAX) {
+            if (g_user_log) {
+                pshakux_log("patches:   your %s%s%s: left out: %lld bytes, over 4 MiB", sub, sub[0] ? "/" : "", name,
+                            (long long)st.st_size);
+            }
+            continue;
+        }
+        if (g_nfiles >= USER_SCAN_MAX) {
+            if (g_user_log) {
+                pshakux_log("patches:   your %s%s%s: left out: the folder has over %u patches", sub, sub[0] ? "/" : "",
+                            name, USER_SCAN_MAX);
+            }
+            continue;
+        }
+        UserFile *u = &g_files[g_nfiles];
+        if ((size_t)snprintf(u->rel, sizeof(u->rel), "%s%s%s", sub, sub[0] ? "/" : "", name) > 100) {
+            if (g_user_log) {
+                pshakux_log("patches:   your %s%s%s: left out: its path in the folder is over 100 characters", sub,
+                            sub[0] ? "/" : "", name);
+            }
+            continue;
+        }
+        g_nfiles++;
+        copyf(u->dir, sizeof(u->dir), dir);
+        copyf(u->name, sizeof(u->name), name);
+        u->kind = kind;
+    }
+    closedir(d);
+}
+
+static void user_scan(void)
+{
+    g_nfiles = 0;
+    if (g_user_dir[0]) {
+        scan_dir(g_user_dir, "");
+        qsort(g_files, g_nfiles, sizeof(g_files[0]), user_file_cmp);
+    }
+}
+
+/* -- .jmp (Jay's Magic Patcher), as ps5/tools/import-gamedata.py's parse_jmp reads one: key=value
+ * lines before the first record (name, author, version with the release's {CRC32}, notes), "#"
+ * comments naming the file the records under them are for ("# default.xbe - ...") and, with "[-]",
+ * records off (an alternative: left out), "APPEND: hex", "offset: hex", and a find line with its
+ * replacement under it. Unlike the importer, a line it can't read is not skipped: the patch is
+ * refused, with the line's number. */
+
+typedef struct Jmp {
+    char **lines;       /* the records, as the database's */
+    size_t n;
+    unsigned records;
+    char crc[9], tid[9];
+    char author[64], note[320], category[16], region[16];
+    char bad[192];
+} Jmp;
+
+static void jmp_free(Jmp *j)
+{
+    for (size_t k = 0; k < j->n; k++) {
+        free(j->lines[k]);
+    }
+    free(j->lines);
+    j->lines = NULL;
+    j->n = 0;
+}
+
+static void jmp_add(Jmp *j, const char *a, const char *b, const char *c)
+{
+    const size_t len = strlen(a) + strlen(b) + strlen(c) + 3;
+    char **grown = realloc(j->lines, (j->n + 1) * sizeof(char *));
+    char *line = malloc(len);
+    if (!grown || !line) {
+        free(line);
+        if (grown) {
+            j->lines = grown;
+        }
+        snprintf(j->bad, sizeof(j->bad), "out of memory");
+        return;
+    }
+    j->lines = grown;
+    snprintf(line, len, "%s%s%s%s%s", a, b[0] ? "\t" : "", b, c[0] ? "\t" : "", c);
+    j->lines[j->n++] = line;
+}
+
+static char *strip(char *s)
+{
+    while (isspace((unsigned char)*s)) {
+        s++;
+    }
+    size_t n = strlen(s);
+    while (n && isspace((unsigned char)s[n - 1])) {
+        s[--n] = 0;
+    }
+    return s;
+}
+
+static void squeeze(char *s)
+{
+    char *o = s;
+    for (; *s; s++) {
+        if (!isspace((unsigned char)*s)) {
+            *o++ = *s;
+        }
+    }
+    *o = 0;
+}
+
+static bool all_hex(const char *s)
+{
+    if (!*s) {
+        return false;
+    }
+    for (; *s; s++) {
+        if (!isxdigit((unsigned char)*s)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The importer's ^\[?-?\]?\s*([A-Za-z0-9_ .\\/-]+\.xbe)\s*- on a comment */
+static bool comment_target(const char *c, char *out, size_t n)
+{
+    const char *p = c;
+    p += *p == '[';
+    p += *p == '-';
+    p += *p == ']';
+    while (isspace((unsigned char)*p)) {
+        p++;
+    }
+    const char *q = p;
+    while (*q && (isalnum((unsigned char)*q) || strchr("_ .\\/-", *q))) {
+        q++;
+    }
+    for (const char *x = q; x >= p + 5; x--) {
+        if (strncasecmp(x - 4, ".xbe", 4) != 0) {
+            continue;
+        }
+        const char *after = x;
+        while (isspace((unsigned char)*after)) {
+            after++;
+        }
+        if (*after != '-') {
+            continue;
+        }
+        char name[256];
+        snprintf(name, sizeof(name), "%.*s", (int)(x - p), p);
+        snprintf(out, n, "%s", strip(name));
+        return true;
+    }
+    return false;
+}
+
+/* The records' file: a T line when it changes (the C line first, before any) */
+static void jmp_target(Jmp *j, const char *target, char *emitted, size_t n)
+{
+    if (!j->n && j->crc[0]) {
+        jmp_add(j, "C", j->crc, "");
+    }
+    if (!emitted[0] || strcasecmp(emitted, target) != 0) {
+        jmp_add(j, "T", target, "");
+        snprintf(emitted, n, "%s", target);
+    }
+    j->records++;
+}
+
+static void jmp_parse(char *text, Jmp *j)
+{
+    char target[256] = "default.xbe", emitted[256] = "";
+    bool off = false;
+    char *next = text;
+    unsigned no = 0;
+    while (next && !j->bad[0]) {
+        char *raw = next;
+        next = strchr(raw, '\n');
+        if (next) {
+            *next++ = 0;
+        }
+        no++;
+        char *line = strip(raw);
+        if (!*line) {
+            continue;
+        }
+        if (line[0] == '#') {
+            const char *comment = strip(line + 1);
+            comment_target(comment, target, sizeof(target));
+            off = strstr(comment, "[-]") != NULL;
+            continue;
+        }
+        char *eq = strchr(line, '='), *colon = strchr(line, ':');
+        if (eq && !j->records && !all_hex(line) && !(colon && colon < eq)) {
+            *eq = 0;
+            char *k = strip(line), *v = strip(eq + 1);
+            if (!strcasecmp(k, "author")) {
+                copyf(j->author, sizeof(j->author), v);
+            } else if (!strcasecmp(k, "notes")) {
+                copyf(j->note, sizeof(j->note), v);
+            } else if (!strcasecmp(k, "category")) {
+                copyf(j->category, sizeof(j->category), v);
+            } else if (!strcasecmp(k, "region")) {
+                copyf(j->region, sizeof(j->region), v);
+            } else if (!strcasecmp(k, "version")) {
+                /* the release's {CRC32}; a title ID first (Jay's GitHub files: "4D530039 {...}") */
+                const char *b = strchr(v, '{');
+                if (b && strlen(b) >= 10 && b[9] == '}') {
+                    char c[9];
+                    snprintf(c, sizeof(c), "%.8s", b + 1);
+                    if (all_hex(c)) {
+                        copyf(j->crc, sizeof(j->crc), c);
+                    }
+                }
+                char t[9];
+                snprintf(t, sizeof(t), "%.8s", v);
+                if (strlen(t) == 8 && all_hex(t) && !isalnum((unsigned char)v[8]) && v[8] != '_') {
+                    copyf(j->tid, sizeof(j->tid), t);
+                }
+            }
+            continue;
+        }
+        if (off) {
+            continue;   /* a record off ("[-]"): left out, as the importer does */
+        }
+        if (!strncasecmp(line, "APPEND:", 7)) {
+            char *data = line + 7;
+            squeeze(data);
+            if (!all_hex(data) || strlen(data) % 2) {
+                snprintf(j->bad, sizeof(j->bad), "line %u: APPEND: without whole bytes of hex", no);
+                break;
+            }
+            jmp_target(j, target, emitted, sizeof(emitted));
+            jmp_add(j, "A", data, "");
+            continue;
+        }
+        if (colon) {
+            *colon = 0;
+            char *o = strip(line), *data = colon + 1;
+            squeeze(data);
+            if (!strncasecmp(o, "0x", 2)) {
+                o += 2;
+            }
+            unsigned long long at = 0;
+            if (!hexnum(o, &at) || !all_hex(data) || strlen(data) % 2) {
+                snprintf(j->bad, sizeof(j->bad), "line %u: an offset line that isn't \"offset: hex bytes\"", no);
+                break;
+            }
+            char at_hex[24];
+            snprintf(at_hex, sizeof(at_hex), "%llX", at);
+            jmp_target(j, target, emitted, sizeof(emitted));
+            jmp_add(j, "O", at_hex, data);
+            continue;
+        }
+        if (all_hex(line)) {
+            char *repl = NULL;
+            if (next) {
+                char *r = next;
+                next = strchr(r, '\n');
+                if (next) {
+                    *next++ = 0;
+                }
+                no++;
+                repl = strip(r);
+            }
+            if (!repl || !all_hex(repl) || strlen(repl) != strlen(line) || strlen(line) % 2) {
+                snprintf(j->bad, sizeof(j->bad), "line %u: a find line without its replacement (as many whole bytes "
+                         "of hex) under it", repl ? no - 1 : no);
+                break;
+            }
+            jmp_target(j, target, emitted, sizeof(emitted));
+            jmp_add(j, "F", line, repl);
+            continue;
+        }
+        snprintf(j->bad, sizeof(j->bad), "line %u: not a line of a .jmp patch (%.32s%s)", no, line,
+                 strlen(line) > 32 ? "..." : "");
+    }
+    if (!j->bad[0] && !j->records) {
+        snprintf(j->bad, sizeof(j->bad), "no patch in it: no find, offset or APPEND: line that is on");
+    }
+}
+
+/* A run of exactly 8 hex digits in s that is tid */
+static bool tid_in(const char *s, const char *tid)
+{
+    for (const char *p = s; *p;) {
+        if (!isxdigit((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        const char *q = p;
+        while (isxdigit((unsigned char)*q)) {
+            q++;
+        }
+        if (q - p == 8 && !strncasecmp(p, tid, 8)) {
+            return true;
+        }
+        p = q;
+    }
+    return false;
+}
+
+/* s as lower-case words of letters and digits, one space between */
+static void words_of(const char *s, char *out, size_t n)
+{
+    size_t o = 0;
+    bool gap = false;
+    for (; *s && o + 2 < n; s++) {
+        if (isalnum((unsigned char)*s)) {
+            if (gap && o) {
+                out[o++] = ' ';
+            }
+            out[o++] = (char)tolower((unsigned char)*s);
+            gap = false;
+        } else {
+            gap = true;
+        }
+    }
+    out[o] = 0;
+}
+
+/* A sequel's number after a name ("2", "ii"): not that game's */
+static bool sequel_word(const char *w, size_t n)
+{
+    static const char *const roman[] = {"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"};
+    bool digits = n > 0;
+    for (size_t i = 0; i < n; i++) {
+        digits = digits && isdigit((unsigned char)w[i]);
+    }
+    for (size_t r = 0; !digits && r < sizeof(roman) / sizeof(roman[0]); r++) {
+        digits = strlen(roman[r]) == n && !strncmp(w, roman[r], n);
+    }
+    return digits;
+}
+
+/* The game's whole name in the file's path (case, punctuation aside): its words in a row, not part
+ * of longer words, and not followed by a sequel's number; a name of 4 letters or digits at least */
+static bool name_in(const char *rel, const char *game)
+{
+    char f[256], g[192];
+    words_of(rel, f, sizeof(f));
+    words_of(game, g, sizeof(g));
+    size_t letters = 0;
+    for (const char *p = g; *p; p++) {
+        letters += *p != ' ';
+    }
+    if (letters < 4) {
+        return false;
+    }
+    const size_t gl = strlen(g);
+    for (const char *p = f; (p = strstr(p, g)) != NULL; p++) {
+        const char *after = p + gl;
+        if ((p > f && p[-1] != ' ') || (*after && *after != ' ')) {
+            continue;
+        }
+        if (*after == ' ' && sequel_word(after + 1, strcspn(after + 1, " "))) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* attach_file's "<title ID> <path>" lines: whether rel is attached to tid */
+static bool attach_has(const char *text, const char *tid, const char *rel)
+{
+    for (const char *p = text; p && *p;) {
+        const char *end = strchr(p, '\n');
+        const size_t n = end ? (size_t)(end - p) : strlen(p);
+        char line[256];
+        if (n < sizeof(line)) {
+            memcpy(line, p, n);
+            line[n] = 0;
+            char *s = strip(line);
+            if (s[0] != '#' && strlen(s) > 9 && s[8] == ' ' && !strncasecmp(s, tid, 8) && !strcasecmp(strip(s + 9), rel)) {
+                return true;
+            }
+        }
+        p = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+static char *attach_text(void)
+{
+    size_t n = 0;
+    char *t = g_attach_file[0] ? (char *)read_host(g_attach_file, &n) : NULL;
+    if (t) {
+        t[n] = 0;
+    }
+    return t;
+}
+
+/* What a file is for: how it is joined to the title ID's game (NULL: not), whether it says which game
+ * it is for (ident: a BPS, a JMP with a CRC-32 or a title ID), its JMP read (j, when given) and why it
+ * can't be applied (bad) */
+static const char *user_how(const UserFile *u, const char *key, const char *tid, const char *attached, bool *ident,
+                            Jmp *j, char *bad, size_t bad_len)
+{
+    const uint32_t disc = key && g_crc && !strcasecmp(key, g_crc_key) ? g_crc : 0;
+    const uint32_t size = disc ? g_size : 0;
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/%s", u->dir, u->name);
+    const char *how = NULL;
+    *ident = false;
+    bad[0] = 0;
+    if (u->kind == 'B') {
+        /* its source's size (the header) and CRC-32 (the footer's first) */
+        uint8_t head[32], foot[12];
+        FILE *f = fopen(path, "rb");
+        size_t hn = f ? fread(head, 1, sizeof(head), f) : 0, at = 4;
+        uint64_t src_size = 0;
+        const bool ok = f && hn >= 5 && !memcmp(head, "BPS1", 4) && bps_num(head, hn, &at, &src_size) &&
+                        fseek(f, -12, SEEK_END) == 0 && fread(foot, 1, 12, f) == 12;
+        if (f) {
+            fclose(f);
+        }
+        if (!ok) {
+            snprintf(bad, bad_len, "not a BPS file");
+        } else {
+            *ident = true;
+            const uint32_t src_crc = (uint32_t)foot[0] | (uint32_t)foot[1] << 8 | (uint32_t)foot[2] << 16 |
+                                     (uint32_t)foot[3] << 24;
+            if (disc && src_crc == disc && (!size || src_size == size)) {
+                how = "its source's CRC-32 and size are this disc's default.xbe's";
+            }
+        }
+    } else if (u->kind == 'J') {
+        Jmp mine = {0}, *jj = j ? j : &mine;
+        size_t n = 0;
+        char *text = (char *)read_host(path, &n);
+        if (!text) {
+            snprintf(bad, bad_len, "it cannot be read");
+        } else {
+            text[n] = 0;
+            jmp_parse(text, jj);
+            free(text);
+            copyf(bad, bad_len, jj->bad);
+            *ident = jj->crc[0] || jj->tid[0];
+            if (jj->crc[0] && disc && strtoul(jj->crc, NULL, 16) == disc) {
+                how = "the CRC-32 of its version= line is this disc's default.xbe's";
+            } else if (jj->tid[0] && !strcasecmp(jj->tid, tid)) {
+                how = "the title ID of its version= line";
+            }
+        }
+        if (jj == &mine) {
+            jmp_free(&mine);
+        }
+    } else {
+        uint8_t head[5];
+        FILE *f = fopen(path, "rb");
+        if (!f || fread(head, 1, 5, f) != 5 || memcmp(head, "PATCH", 5) != 0) {
+            snprintf(bad, bad_len, "not an IPS file");
+        }
+        if (f) {
+            fclose(f);
+        }
+    }
+    if (!*ident && !how) {
+        char stem[128];
+        copyf(stem, sizeof(stem), u->rel);
+        char *dot = strrchr(stem, '.');
+        if (dot) {
+            *dot = 0;
+        }
+        how = tid_in(stem, tid) ? "the title ID in its name"
+              : name_in(stem, game_name(tid)) ? "the game's name in its name"
+              : attached && attach_has(attached, tid, u->rel) ? k_by_hand : NULL;
+    }
+    return how;
+}
+
+/* The player's patches joined to the game of key (tid) after the database's, as entries of their own */
+static void user_load(const char *key, const char *tid)
+{
+    if (g_user_log && g_user_dir[0]) {
+        pshakux_log("patches: your patches folder %s:", g_user_dir);
+    }
+    user_scan();
+    if (!g_nfiles) {
+        if (g_user_log && g_user_dir[0]) {
+            pshakux_log("patches:   no .jmp, .ips or .bps files in it");
+        }
+        return;
+    }
+    char *attached = attach_text();
+    unsigned mine = 0;
+    for (unsigned i = 0; i < g_nfiles; i++) {
+        const UserFile *u = &g_files[i];
+        Jmp j = {0};
+        bool ident;
+        char bad[192];
+        const char *how = user_how(u, key, tid, attached, &ident, &j, bad, sizeof(bad));
+        if (!how) {
+            jmp_free(&j);
+            continue;
+        }
+        char id[128];
+        const char *refused = (size_t)snprintf(id, sizeof(id), "user:%s", u->rel) >= sizeof(id) ? "its path is too long" : NULL;
+        for (unsigned k = 0; k < g_ndb && !refused; k++) {
+            if (!strcasecmp(g_db[k].p.id, id)) {
+                refused = "its id is another patch's (one of the database's, or a file of the same name in another case)";
+            }
+        }
+        if (!refused && mine >= USER_GAME_MAX) {
+            refused = "the game has 64 of your patches already";
+        }
+        if (!refused && g_ndb >= MAX_PATCHES) {
+            refused = "the game has too many patches";
+        }
+        if (refused) {
+            if (g_user_log) {
+                pshakux_log("patches:   your %s: for this game (%s), left out: %s", u->rel, how, refused);
+            }
+            jmp_free(&j);
+            continue;
+        }
+        Entry *e = &g_db[g_ndb++];
+        mine++;
+        g_nuser++;
+        copyf(e->p.id, sizeof(e->p.id), id);
+        copyf(e->p.name, sizeof(e->p.name), u->name);
+        char *dot = strrchr(e->p.name, '.');
+        if (dot) {
+            *dot = 0;
+        }
+        copyf(e->p.category, sizeof(e->p.category), j.category[0] ? j.category : "Your patches");
+        copyf(e->p.author, sizeof(e->p.author), j.author[0] ? j.author : "Author unknown");
+        copyf(e->p.source, sizeof(e->p.source), "your patches folder");
+        copyf(e->p.region, sizeof(e->p.region), j.region);
+        snprintf(e->p.note, sizeof(e->p.note), "%.140s%sYour %s patch patches/%s, for this game: %s.%s", j.note,
+                 j.note[0] ? " " : "", u->kind == 'J' ? "JMP" : u->kind == 'I' ? "IPS" : "BPS", u->rel, how,
+                 u->kind == 'I' ? " An IPS file doesn't say which release it is for: release not checked." : "");
+        copyf(e->bad, sizeof(e->bad), bad);
+        e->how = how;
+        e->kind = u->kind;
+        if (u->kind == 'J') {
+            e->lines = j.lines;
+            e->nlines = j.n;
+            j.lines = NULL;
+            j.n = 0;
+        } else if (!bad[0]) {
+            e->files_dir = strdup(u->dir);
+            e->lines = calloc(2, sizeof(char *));
+            if (e->lines && e->files_dir) {
+                e->lines[0] = strdup("T\tdefault.xbe");
+                const size_t len = strlen(u->name) + 3;
+                e->lines[1] = malloc(len);
+                if (e->lines[1]) {
+                    snprintf(e->lines[1], len, "%c\t%s", u->kind, u->name);
+                }
+                e->nlines = e->lines[0] && e->lines[1] ? 2 : 0;
+            }
+            if (!e->nlines) {
+                snprintf(e->bad, sizeof(e->bad), "out of memory");
+            }
+        }
+        jmp_free(&j);
+        if (g_user_log) {
+            pshakux_log("patches:   your %s: for this game: %s%s%s", u->rel, how, e->bad[0] ? "; it can't be applied: " : "",
+                        e->bad);
+        }
+    }
+    free(attached);
+    if (g_user_log) {
+        pshakux_log("patches:   %u of the folder's %u for this game; the others say they are another game's, or no "
+                    "rule joins them to it", mine, g_nfiles);
+    }
+}
+
+int ogbox_patches_user_files(const char *key, OgboxUserPatchFile *out, int max)
+{
+    char tid[9];
+    if (!tid_of(key, tid)) {
+        return 0;
+    }
+    user_scan();
+    char *attached = attach_text();
+    int n = 0;
+    for (unsigned i = 0; i < g_nfiles && n < max; i++) {
+        bool ident;
+        char bad[192];
+        const char *how = user_how(&g_files[i], key, tid, attached, &ident, NULL, bad, sizeof(bad));
+        /* one that says which game it is for, or that a rule joins to this one, isn't offered */
+        if (ident || (how && how != k_by_hand)) {
+            continue;
+        }
+        copyf(out[n].rel, sizeof(out[n].rel), g_files[i].rel);
+        out[n].attached = how == k_by_hand;
+        n++;
+    }
+    free(attached);
+    return n;
+}
+
+bool ogbox_patches_attach(const char *key, const char *rel, bool on)
+{
+    char tid[9];
+    if (!tid_of(key, tid) || !rel || !rel[0] || strlen(rel) > 120 || strpbrk(rel, "\r\n") || !g_attach_file[0]) {
+        return false;
+    }
+    char *text = attach_text();
+    char tmp[1100];
+    snprintf(tmp, sizeof(tmp), "%s.new", g_attach_file);
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        free(text);
+        pshakux_log("patches: %s cannot be written (%s)", tmp, strerror(errno));
+        return false;
+    }
+    if (text && text[0]) {
+        for (char *p = text; p && *p;) {
+            char *end = strchr(p, '\n');
+            if (end) {
+                *end = 0;
+            }
+            if (!attach_has(p, tid, rel)) {
+                fprintf(out, "%s\n", p);
+            }
+            p = end ? end + 1 : NULL;
+        }
+    } else {
+        fprintf(out, "# OGBox: your patches (the data folder's patches/) attached to a game by hand: <title ID> <file>\n");
+    }
+    if (on) {
+        fprintf(out, "%s %s\n", tid, rel);
+    }
+    free(text);
+    if (fclose(out) != 0 || rename(tmp, g_attach_file) != 0) {
+        pshakux_log("patches: %s cannot be written (%s)", g_attach_file, strerror(errno));
+        return false;
+    }
+    pshakux_log("patches: your %s %s %s", rel, on ? "attached to" : "detached from", tid);
+    return true;
 }
 
 /* An entry's release check (its C line, before its first target), 0 when it has none. 1.0.2: a C
@@ -760,7 +1573,7 @@ static struct {
     char key[32];
     unsigned n;
     struct {
-        char id[16];
+        char id[128];
         int fit;
         char why[192];
     } e[MAX_PATCHES];
@@ -783,7 +1596,7 @@ static const char *fit_of(const char *key, const char *id, int *fit)
 
 int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
 {
-    db_load(key);
+    db_load_all(key);
     read_on(key);
     const uint32_t disc = key && g_crc && !strcasecmp(key, g_crc_key) ? g_crc : 0;
     int n = 0;
@@ -799,6 +1612,11 @@ int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
             snprintf(out[n].fit_why, sizeof(out[n].fit_why), "its default.xbe has CRC-32 %08X; this disc's has %08X",
                      crc, disc);
         }
+        /* 1.0.4: one of the player's that can't be read: greyed, with the line at fault */
+        if (g_db[i].bad[0]) {
+            out[n].fit = OGBOX_FIT_NO;
+            copyf(out[n].fit_why, sizeof(out[n].fit_why), g_db[i].bad);
+        }
         n++;
     }
     db_reset();
@@ -807,7 +1625,7 @@ int ogbox_patches_catalog(const char *key, OgboxPatch *out, int max)
 
 int ogbox_patches_count(const char *key)
 {
-    db_load(key);
+    db_load_all(key);
     const int n = (int)g_ndb;
     db_reset();
     return n;
@@ -950,7 +1768,8 @@ static int other_load(const NcDisc *disc, Target *t)
 
 int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe)
 {
-    db_load(key);
+    set_disc_xbe(key, xbe);     /* 1.0.4: the player's BPS and JMP files are joined by it */
+    db_load_all(key);
     memset(&g_fit, 0, sizeof(g_fit));
     copyf(g_fit.key, sizeof(g_fit.key), key);
     char files_dir[1024];
@@ -971,6 +1790,10 @@ int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe
         if (!strcasecmp(e->p.region, "USA") && regions && !(regions & 1)) {
             fit = OGBOX_FIT_NO;
             snprintf(why, sizeof(why), "made for the USA release, and this disc is another (its regions %x)", regions);
+        }
+        if (e->bad[0]) {
+            fit = OGBOX_FIT_NO;
+            copyf(why, sizeof(why), e->bad);
         }
         const char *tname = "default.xbe";
         size_t start = 0;
@@ -1014,7 +1837,8 @@ int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe
                         fit = OGBOX_FIT_UNKNOWN;
                     } else {
                         g_original_crc = crc;
-                        if (!ogbox_apply_records(&work, e->lines + start, k - start, files_dir, why, sizeof(why))) {
+                        if (!ogbox_apply_records(&work, e->lines + start, k - start, e->files_dir ? e->files_dir : files_dir,
+                                                 why, sizeof(why))) {
                             fit = OGBOX_FIT_NO;
                         }
                         g_original_crc = 0;
@@ -1027,6 +1851,10 @@ int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe
                 start = k + 1;
             }
         }
+        /* 1.0.4: an IPS of the player's fits any file: its release isn't checked */
+        if (fit == OGBOX_FIT_YES && e->kind == 'I') {
+            fit = OGBOX_FIT_UNCHECKED;
+        }
         copyf(g_fit.e[g_fit.n].id, sizeof(g_fit.e[g_fit.n].id), e->p.id);
         g_fit.e[g_fit.n].fit = fit;
         copyf(g_fit.e[g_fit.n].why, sizeof(g_fit.e[g_fit.n].why), fit == OGBOX_FIT_NO ? why : "");
@@ -1038,7 +1866,8 @@ int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe
     }
     const int n = (int)g_ndb;
     if (n) {
-        pshakux_log("patches: %s: %d in gamedata/patches.db, %u of them for another release of the game", key, n, bad);
+        pshakux_log("patches: %s: %d in gamedata/patches.db and %u of yours, %u of them for another release of the game "
+                    "or not to be applied", key, n - (int)g_nuser, g_nuser, bad);
     }
     db_reset();
     return n;
@@ -1046,13 +1875,25 @@ int ogbox_patches_check(const NcDisc *disc, const char *key, const OgboxBuf *xbe
 
 int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_dir, FILE *manifest)
 {
-    db_load(key);
+    /* 1.0.4: default.xbe's CRC-32 and size, if the release check didn't read them (the player's BPS
+     * and JMP files are joined to the game by them) */
+    if (disc && g_user_dir[0] && !(key && g_crc && g_size && !strcasecmp(key, g_crc_key))) {
+        Target x = {0};
+        snprintf(x.name, sizeof(x.name), "default.xbe");
+        if (target_load(disc, &x)) {
+            set_disc_xbe(key, &x.buf);
+        }
+        free(x.buf.data);
+    }
+    g_user_log = true;
+    db_load_all(key);
+    g_user_log = false;
     read_on(key);
     unsigned on = 0;
     for (unsigned i = 0; i < g_ndb; i++) {
         on += g_db[i].p.on;
     }
-    pshakux_log("patches: %s: %u in gamedata/patches.db, %u on", key, g_ndb, on);
+    pshakux_log("patches: %s: %u in gamedata/patches.db, %u of yours, %u on", key, g_ndb - g_nuser, g_nuser, on);
     if (!on || !disc) {
         db_reset();
         return 0;
@@ -1091,6 +1932,10 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
         if (!strcasecmp(e->p.region, "USA") && regions && !(regions & 1)) {
             pshakux_log("patches:   %s (%s): left out: made for the USA release, this disc is not one (regions %x)",
                         e->p.name, e->p.id, regions);
+            continue;
+        }
+        if (e->bad[0]) {
+            pshakux_log("patches:   %s (%s): left out: %s", e->p.name, e->p.id, e->bad);
             continue;
         }
         /* its records by target, each applied whole or not at all */
@@ -1133,7 +1978,8 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                 OgboxBuf before = {0};
                 buf_copy(&before, &t->buf);
                 g_original_crc = t->crc;
-                const bool done = ogbox_apply_records(&t->buf, e->lines + start, k - start, files_dir, why, sizeof(why));
+                const bool done = ogbox_apply_records(&t->buf, e->lines + start, k - start,
+                                                      e->files_dir ? e->files_dir : files_dir, why, sizeof(why));
                 g_original_crc = 0;
                 if (done) {
                     /* 1.0.3: a target once, as it was before this patch (a ninth part ran past
@@ -1164,7 +2010,8 @@ int ogbox_patches_prepare(const NcDisc *disc, const char *key, const char *work_
                 free(saved[u].data);
             }
             applied++;
-            pshakux_log("patches:   %s (%s, %s by %s): applied", e->p.name, e->p.id, e->p.category, e->p.author);
+            pshakux_log("patches:   %s (%s, %s by %s): applied%s%s", e->p.name, e->p.id, e->p.category, e->p.author,
+                        e->how ? "; yours, for this game: " : "", e->how ? e->how : "");
         } else {
             /* the targets as they were before this patch */
             for (unsigned u = nundo; u-- > 0;) {
