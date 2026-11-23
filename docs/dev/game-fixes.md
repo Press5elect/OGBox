@@ -39,7 +39,21 @@ removed (a withdrawn fix); files it didn't fetch are never removed.
   non-comment lines to `patches.db` and check its tail equals the own-patches file's records).
 - An imported patch that one of OGBox's replaces is listed in `SUPERSEDED` in
   `import-gamedata.py`, so it doesn't show beside it.
-- Each `F` find must occur exactly once in the original file.
+- Each `F` find must occur exactly once in the original file. The loader doesn't check it for an
+  `F` record (it writes the first place the bytes are); an `N` record (find, count in hex: the
+  bytes are in the file exactly that many times as it is at that record) does, and fails the patch
+  otherwise.
+- OgXHD's widescreen database (`wdb.dat`; xbased's `mods/widescreen.dat` is the same file) is made
+  of patterns for any release. 0.1.52's merge folded most of its entries into a PatchHub patch that
+  writes the same bytes, which for 30 games is made for one release only (offsets, or longer
+  patterns of that build). `import-gamedata.py` (1.0.4, `wdb_any_release`) adds those 30 again as
+  **Widescreen (any release)** by OgXHD: version `*`, no CRC, no region, an `N` record for each
+  find (a find listed k times must be there k times) and its `F` records. A game whose database
+  entry is already in `patches.db` as is for any release gets none. Without the other sources,
+  `import-gamedata.py --out ps5/gamedata --any-release-only --wdb-any <file> [--wdb-via xbased]`
+  makes only these again and keeps the rest of `patches.db` line for line. A console on a build
+  before 1.0.4 doesn't know `N`: it shows these greyed ("a record it cannot read") and never
+  applies them.
 - A record the loader can't read (an unknown kind, a missing field, a number that isn't whole hex,
   a file name with a `..` part or a leading `/`, over 8191 characters) fails its whole patch, which
   shows greyed ("a record it cannot read"). Every shipped record passed this check when it came in.

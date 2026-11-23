@@ -11,6 +11,7 @@
 #include "core/ogbox_patches.h"
 
 #include <assert.h>
+#include <stdbool.h>
 #include <dirent.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -297,6 +298,114 @@ static void test_records(void)
     remove("ogbox-records-test.ips");
     assert(chdir(back) == 0 && rmdir(tmpdir) == 0);
     free(b.data);
+
+    /* 1.0.4: N, the bytes in the file exactly so many times (hex) */
+    OgboxBuf n = buf_of("xyxyxyxyxyxyxyxyxyxyz");
+    assert(apply_records(&n, "N	7879	A", "F	7a	5a"));
+    assert(!memcmp(n.data + 20, "Z", 1));
+    assert(!apply_records(&n, "N	7879	9", "F	5a	7a"));       /* more than it says */
+    assert(!apply_records(&n, "N	7879	B", "F	5a	7a"));       /* fewer */
+    assert(!apply_records(&n, "N	7a	1", NULL));                /* not there */
+    assert(apply_records(&n, "N	7a	0", NULL));
+    assert(!apply_records(&n, "N	7879", NULL));                 /* short of its count */
+    assert(!apply_records(&n, "N	787	1", NULL));               /* odd hex */
+    assert(!apply_records(&n, "N	7879	zz", NULL));
+    assert(!memcmp(n.data, "xyxyxyxyxyxyxyxyxyxyZ", 21));
+    free(n.data);
+}
+
+/* 1.0.4: every "Widescreen (any release)" entry of the shipped patches.db (OgXHD's database for any
+ * release) on a file made of its own patterns, each line's find once in turn: it applies and writes
+ * every line's replacement; with one more copy of any of its patterns it is refused, the file left
+ * as it was */
+static void test_any_release(const char *db)
+{
+    FILE *f = fopen(db, "r");
+    assert(f);
+    static char line[65536];
+    static char *recs[512];
+    unsigned nrec = 0, entries = 0;
+    bool in = false;
+    for (bool more = true; more;) {
+        more = fgets(line, sizeof(line), f) != NULL;
+        line[strcspn(line, "\n")] = 0;
+        const bool next = !more || !strncmp(line, "P\t", 2);
+        if (next && in) {
+            /* the file: each F's find, in order, apart by four bytes of 0xF4 */
+            OgboxBuf b = {0}, want = {0};
+            Bytes sep = {{0xF4, 0xF4, 0xF4, 0xF4}, 4};
+            for (unsigned k = 0; k < nrec; k++) {
+                if (recs[k][0] != 'F') {
+                    continue;
+                }
+                char *tab = strchr(recs[k] + 2, '\t');
+                assert(tab);
+                const size_t len = (size_t)(tab - (recs[k] + 2)) / 2;
+                assert(len && !strcmp(tab + 1 + 2 * len, ""));
+                for (int w = 0; w < 2; w++) {
+                    OgboxBuf *t = w ? &want : &b;
+                    const char *hex = w ? tab + 1 : recs[k] + 2;
+                    t->data = realloc(t->data, t->size + len + sep.n);
+                    assert(t->data);
+                    for (size_t i = 0; i < len; i++) {
+                        unsigned v;
+                        assert(sscanf(hex + 2 * i, "%2x", &v) == 1);
+                        t->data[t->size + i] = (uint8_t)v;
+                    }
+                    memcpy(t->data + t->size + len, sep.d, sep.n);
+                    t->size += len + sep.n;
+                    t->cap = t->size;
+                }
+            }
+            OgboxBuf orig = {0};
+            orig.data = malloc(b.size);
+            assert(orig.data);
+            memcpy(orig.data, b.data, b.size);
+            orig.size = orig.cap = b.size;
+            char why[192] = "";
+            if (!ogbox_apply_records(&b, recs, nrec, ".", why, sizeof(why)) || b.size != want.size ||
+                memcmp(b.data, want.data, b.size)) {
+                fprintf(stderr, "patches: %s: %s\n", recs[0], why);
+                abort();
+            }
+            /* one more copy of the first find (its record's bytes after the file's) */
+            const char *first = strchr(recs[0], '\t') + 1;
+            const size_t flen = (size_t)(strchr(first, '\t') - first) / 2;
+            b.data = realloc(b.data, orig.size + flen);
+            assert(b.data);
+            memcpy(b.data, orig.data, orig.size);
+            b.size = orig.size;
+            for (size_t i = 0; i < flen; i++) {
+                unsigned v;
+                assert(sscanf(first + 2 * i, "%2x", &v) == 1);
+                b.data[b.size + i] = (uint8_t)v;
+            }
+            b.size += flen;
+            b.cap = b.size;
+            assert(!ogbox_apply_records(&b, recs, nrec, ".", why, sizeof(why)));
+            assert(!memcmp(b.data, orig.data, orig.size));
+            free(b.data);
+            free(orig.data);
+            free(want.data);
+            entries++;
+        }
+        if (next) {
+            for (unsigned k = 0; k < nrec; k++) {
+                free(recs[k]);
+            }
+            nrec = 0;
+            in = more && strstr(line, "\tWidescreen (any release)\tOgXHD\t") != NULL;
+            continue;
+        }
+        if (in && line[0] && strncmp(line, "T\t", 2)) {
+            assert(nrec < 512 && (line[0] == 'N' || line[0] == 'F'));
+            assert(nrec || line[0] == 'N');
+            recs[nrec++] = strdup(line);
+        }
+    }
+    fclose(f);
+    printf("patches: %u any-release entries of %s apply on their own patterns and refuse one more\n", entries, db);
+    assert(entries > 0);
 }
 
 /* every .ips that ships (ps5/gamedata/files) reads to its end; without the game's XBE, onto an
@@ -418,6 +527,9 @@ int main(int argc, char **argv)
     test_records();
     if (argc > 1) {
         test_shipped(argv[1]);
+    }
+    if (argc > 2) {
+        test_any_release(argv[2]);
     }
     test_fuzz();
     puts("patches: ok");

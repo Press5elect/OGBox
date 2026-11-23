@@ -453,6 +453,28 @@ bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const ch
             }
             free(find);
             free(repl);
+        } else if (kind == 'N' && nf >= 3) {
+            /* 1.0.4: the bytes are in the file exactly this many times (hex), as it is here: a
+             * pattern patch for any release (OgXHD's database) is refused where its F records would
+             * write somewhere else than the places it was made for */
+            size_t fn = 0;
+            unsigned long long want = 0;
+            uint8_t *find = unhex(f[1], &fn);
+            if (!find || !fn || !hexnum(f[2], &want)) {
+                malformed(why, why_len, records[r]);
+                ok = false;
+            } else {
+                unsigned long long have = 0;
+                for (size_t i = 0; i + fn <= work.size; i++) {
+                    have += work.data[i] == find[0] && !memcmp(work.data + i, find, fn);
+                }
+                ok = have == want;
+                if (!ok && why && why_len) {
+                    snprintf(why, why_len, "bytes it looks for are in the file %llu times, not %llu (%.24s%s)", have,
+                             want, f[1], strlen(f[1]) > 24 ? "..." : "");
+                }
+            }
+            free(find);
         } else if (kind == 'O' && nf >= 3) {
             size_t dn = 0;
             unsigned long long off = 0;

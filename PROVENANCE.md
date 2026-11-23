@@ -222,6 +222,10 @@ Among it:
   `ps5/gamedata/cheats-xbased.txt` (ps5/tools/import-xbased-cheats.py) holds only their paths,
   sizes and SHA-256s at a pinned commit, and the console downloads the files from xbased's
   repository only when the user asks (Settings > Updates > Download cheats);
+- OgXHD's widescreen database (OgXHD, in icup321's XboxGraphicalPatches), as xbased (crazyriddler)
+  carries it in `mods/widescreen.dat` (xbased commit 2031611; the entries `patches.db` kept from `wdb.dat` are the same): the
+  `Widescreen (any release)` entries of `ps5/gamedata/patches.db` (1.0.4), with one title ID the
+  database gives as `4553006` read as `45530006` (ES-006);
 - Crux2's platform code and frame generation (Press5elect, under Crux2's own attribution term);
 - MihawkGen (Mihawk, GPL-3.0-or-later);
 - the AMD FidelityFX SDK and FSR 1 (AMD, MIT), NVIDIA Image Scaling (NVIDIA, MIT), and SMAA (its

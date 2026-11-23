@@ -10,7 +10,8 @@
   patches.db  graphical and other XBE patches, by title ID, from
               - Jay's PatchHub (jayxbox.com, Jay's Magic Patcher .JMP files, authors credited in each),
               - icup321's XboxGraphicalPatches (IPS/BPS files, made for the USA releases),
-              - OgXHD's databases (hdb.dat, wdb.dat, in icup321's repository).
+              - OgXHD's databases (hdb.dat, wdb.dat, in icup321's repository); 1.0.4: wdb.dat again
+                as "Widescreen (any release)" entries (wdb_any_release).
   files/      the IPS and BPS files patches.db names.
 
 0.1.52: no resolution patches (720p, 1080i, "128mb D3D": the emulator's Resolution scale does it
@@ -22,12 +23,15 @@ and the same patch from several places merged into one entry that credits the ot
 Usage: import-gamedata.py --out ps5/gamedata --patchhub <dir with gameData.json and the .jmp files
        fetch-patchhub wrote> --jmp-repo <Xbox-Magic-Patches-by-Jay checkout> --icup <XboxGraphicalPatches
        checkout> --redump <Microsoft - Xbox.dat> [--overrides ps5/tools/gamedata-overrides.txt]
+       import-gamedata.py --out ps5/gamedata --any-release-only --wdb-any <wdb.dat or xbased's
+       mods/widescreen.dat> [--wdb-via xbased]   (only the any-release entries made again)
 
 patches.db, one record a line, fields split by tabs (ps5/src/core/ogbox_patches.c reads it):
   P  titleid  version|*  id  category  name  author  note  source  region
   T  file          the target of the records after it (default.xbe until one)
   C  crc32         the target's CRC-32 before the patch (a release check)
   F  find  repl    the first occurrence of find becomes repl (after the last F's match onward)
+  N  find  count   1.0.4: find is in the target exactly count (hex) times, as it is at this record
   O  offset  hex   the bytes at a file offset
   A  hex           bytes appended to the file
   I  file          an IPS file of files/
@@ -213,6 +217,180 @@ def parse_ogxhd(path):
                 cur['pairs'].append((pending, line.upper()))
             pending = None
     return entries
+
+
+# ---- 1.0.4: OgXHD's widescreen database for any release ------------------------------------------
+# Its patterns are found, not placed: made to be searched for in whatever release the disc is. 0.1.52's
+# merge folded 63 of its 90 entries into a PatchHub patch that writes the same bytes, and kept the
+# PatchHub one: for 31 games one made for a single release (offsets, or longer patterns of that build),
+# so another release (PAL and the others) had no widescreen patch that could fit. Each game gets the
+# database's patterns again as an entry of their own, beside the others, unless an entry already
+# does exactly that for any release. A find the entry lists k times must be in the file exactly as
+# often (N records: the loader refuses the patch otherwise), so a release whose code has the pattern
+# somewhere else as well is refused, not patched at the first place it is found.
+ANY_RELEASE_NAME = 'Widescreen (any release)'
+ANY_RELEASE_NOTE = ("OgXHD's widescreen database: its byte patterns are searched for in this disc's XBE, "
+                    "and the patch is offered on any release that has each of them exactly as often as the "
+                    "database lists it.")
+# a title ID the database gives wrongly (the comment above it names the game; games.db has its serial)
+WDB_ID_FIXES = {'4553006': '45530006'}     # ES-006: seven digits in the database
+
+
+def _hex_at(big, small):
+    """Byte-aligned places of the hex string small in big."""
+    out, at = [], 0
+    while True:
+        k = big.find(small, at)
+        if k < 0:
+            return out
+        if k % 2 == 0:
+            out.append(k)
+        at = k + 1
+
+
+def _plain(recs):
+    return [(x[0], (x[1] or 'default.xbe').lower()) + tuple(x[2:]) for x in recs]
+
+
+def wdb_any_release(path, existing, pid, source):
+    """The database's entries as patches for any release: (records, skipped) where records are
+    records_out's tuples and skipped (title ID, why) the entries left out. existing: the patches
+    already in the database (records_out's tuples)."""
+    have = {}
+    for r in existing:
+        have.setdefault(r[0], []).append(r)
+    out, skipped = [], []
+    for e in parse_ogxhd(path):
+        tid = WDB_ID_FIXES.get(e['id'], e['id'])
+        if not e['pairs']:
+            skipped.append((e['id'], 'no pairs'))
+            continue
+        if not re.match(r'^[0-9A-F]{8}$', tid):
+            skipped.append((e['id'], 'not a title ID'))
+            continue
+        pairs = e['pairs']
+        recs = [('F', None, f, r) for f, r in pairs]
+        same = [r for r in have.get(tid, []) if r[3] == 'Widescreen' and r[1] == '*' and r[9] is None and
+                r[8] != 'USA' and _plain(r[10]) == _plain(recs)]
+        if same:
+            skipped.append((tid, 'already an entry for any release with the same patterns (%s)' % same[0][2]))
+            continue
+        finds = []
+        for f, _ in pairs:
+            if f not in finds:
+                finds.append(f)
+        # applied in turn, each F at the first place its bytes are: a pattern inside another's must
+        # come after every line of the longer one, and nothing written may hold a pattern again
+        bad = None
+        for x in finds:
+            for i, (f, r) in enumerate(pairs):
+                if _hex_at(r, x) and r != f:
+                    bad = 'a replacement still has a pattern (%s)' % x
+                elif f != x and _hex_at(f, x) and any(g == x for g, _ in pairs[:i]):
+                    bad = 'a pattern inside a longer one comes before it (%s)' % x
+        if any(f == r for f, r in pairs):
+            bad = 'a pair changes nothing'
+        if bad:
+            skipped.append((tid, bad))
+            continue
+        count = [('N', None, x, '%X' % sum(len(_hex_at(f, x)) for f, _ in pairs)) for x in finds]
+        note = ANY_RELEASE_NOTE + (' (The database gives it the title ID %s.)' % e['id'] if tid != e['id'] else '')
+        out.append((tid, '*', pid('ogxhd-any', os.path.basename(path), tid), 'Widescreen', ANY_RELEASE_NAME,
+                    'OgXHD', note, source, '', None, count + recs))
+    return out, skipped
+
+
+def read_db(path):
+    """patches.db as its header lines and its patches: (P fields, [record lines]) each."""
+    head, blocks = [], []
+    for line in open(path, encoding='utf-8'):
+        line = line.rstrip('\n')
+        if line.startswith('P\t'):
+            blocks.append((line.split('\t'), []))
+        elif blocks:
+            blocks[-1][1].append(line)
+        else:
+            head.append(line)
+    return head, blocks
+
+
+def block_tuple(fields, lines):
+    """A patches.db patch as records_out's tuple."""
+    crc, recs, target = None, [], None
+    for l in lines:
+        f = l.split('\t')
+        if f[0] == 'C' and not recs:
+            crc = '\t'.join(f[1:])
+        elif f[0] == 'T':
+            target = None if f[1] == 'default.xbe' else f[1]
+        elif f[0]:
+            recs.append(tuple([f[0], target] + f[1:]))
+    return (fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8],
+            fields[9] if len(fields) > 9 else '', crc, recs)
+
+
+def block_lines(r):
+    """records_out's tuple as patches.db's lines."""
+    lines = ['P\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' % r[:9]]
+    if r[9]:
+        lines.append('C\t%s' % r[9])
+    target = None
+    for x in r[10]:
+        t = x[1] or 'default.xbe'
+        if t != target:
+            lines.append('T\t%s' % t)
+            target = t
+        lines.append('\t'.join([x[0]] + list(x[2:])))
+    return lines
+
+
+def any_release_only(a):
+    """1.0.4: the database's any-release widescreen entries made again in an existing patches.db, the
+    rest of it kept line for line (for when the other sources aren't fetched)."""
+    path = os.path.join(a.out, 'patches.db')
+    head, blocks = read_db(path)
+    own = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gamedata-own-patches.txt')
+    own_p = sum(1 for l in open(own, encoding='utf-8') if l.startswith('P\t'))
+    imported, own_blocks = blocks[:len(blocks) - own_p], blocks[len(blocks) - own_p:]
+    own_lines = [l.rstrip('\n') for l in open(own, encoding='utf-8') if l.strip() and not l.startswith('#')]
+    if [x for b in own_blocks for x in ['\t'.join(b[0])] + b[1]] != own_lines:
+        sys.exit('%s: its tail is not gamedata-own-patches.txt: run the whole import' % path)
+    imported = [b for b in imported if not (b[0][5] == ANY_RELEASE_NAME and b[0][6] == 'OgXHD')]
+    seen = {b[0][3] for b in imported + own_blocks}
+
+    def pid(*parts):
+        h = hashlib.sha1('\x1f'.join(parts).encode()).hexdigest()[:8]
+        while 'p' + h in seen:
+            h = hashlib.sha1((h + 'x').encode()).hexdigest()[:8]
+        seen.add('p' + h)
+        return 'p' + h
+    new, skipped = wdb_any_release(a.wdb_any, [block_tuple(*b) for b in imported], pid, wdb_source(a))
+    # each in its place in the sorted list (title ID, category, name), the others' order kept
+    key = lambda f: (f[1], f[4], f[5].lower())
+    for r in sorted(new, key=lambda r: (r[0], r[3], r[4].lower())):
+        k = (r[0], r[3], r[4].lower())
+        at = next((i for i, b in enumerate(imported) if key(b[0]) > k), len(imported))
+        lines = block_lines(r)
+        imported.insert(at, (lines[0].split('\t'), lines[1:]))
+    with open(path, 'w', encoding='utf-8') as f:
+        for l in head:
+            f.write(l + '\n')
+        for b in imported + own_blocks:
+            f.write('\t'.join(b[0]) + '\n')
+            for l in b[1]:
+                f.write(l + '\n')
+    report_any_release(new, skipped)
+
+
+def wdb_source(a):
+    s = "OgXHD (icup321's XboxGraphicalPatches)"
+    return s[:-1] + ', by way of %s)' % a.wdb_via if a.wdb_via else s
+
+
+def report_any_release(new, skipped):
+    print('patches: %d of OgXHD\'s widescreen database for any release (%d records), %d left out%s' % (
+        len(new), sum(len(r[10]) for r in new), len(skipped),
+        ''.join('\n  %s: %s' % s for s in skipped if not s[1].startswith('already'))))
 
 
 # ---- 0.1.52: the same patch from several places, merged ------------------------------------------
@@ -455,14 +633,25 @@ def merge_duplicates(records, files):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True)
-    ap.add_argument('--patchhub', required=True)
-    ap.add_argument('--icup', required=True)
-    ap.add_argument('--redump', required=True)
+    ap.add_argument('--patchhub')
+    ap.add_argument('--icup')
+    ap.add_argument('--redump')
     ap.add_argument('--overrides', default=None, help='name<TAB>titleid lines for IPS names left unmatched')
     ap.add_argument('--merge-log', default=None, help='a file listing each merged patch and its copies')
     ap.add_argument('--jmp-repo', default=None, help="a checkout of JayYardley/Xbox-Magic-Patches-by-Jay: its "
                     "files that PatchHub's site doesn't list are added (title ID and CRC from their version= line)")
+    ap.add_argument('--wdb-any', default=None, help="OgXHD's widescreen database for the any-release entries "
+                    "(default: --icup's !OgXHD/wdb.dat; xbased's mods/widescreen.dat is the same database)")
+    ap.add_argument('--wdb-via', default=None, help='who the --wdb-any copy came from, for the source field (xbased)')
+    ap.add_argument('--any-release-only', action='store_true', help="only make the any-release widescreen entries "
+                    "again in --out's patches.db (needs --wdb-any), the rest kept as it is")
     a = ap.parse_args()
+    if a.any_release_only:
+        if not a.wdb_any:
+            ap.error('--any-release-only needs --wdb-any')
+        return any_release_only(a)
+    if not (a.patchhub and a.icup and a.redump):
+        ap.error('--patchhub, --icup and --redump are needed')
 
     out = a.out
     os.makedirs(os.path.join(out, 'files'), exist_ok=True)
@@ -705,6 +894,10 @@ def main():
             if rec[0] in ('I', 'B') and os.path.exists(os.path.join(out, 'files', rec[2])):
                 os.remove(os.path.join(out, 'files', rec[2]))
     records_out = [r for r in records_out if r[2] not in SUPERSEDED]
+    # 1.0.4: OgXHD's widescreen database again, for any release (after the merge: not folded into another)
+    wdb = a.wdb_any or os.path.join(a.icup, '!OgXHD', 'wdb.dat')
+    any_new, any_skipped = wdb_any_release(wdb, records_out, pid, wdb_source(a))
+    records_out = sorted(records_out + any_new, key=lambda r: (r[0], r[3], r[4].lower()))
     if a.merge_log:
         with open(a.merge_log, 'w', encoding='utf-8') as f:
             for best, rest in MERGE_LOG:
@@ -739,6 +932,7 @@ def main():
     print('patches: %d JMP (%d not fetched), %d more from the JMP repository, %d OgXHD, %d IPS/BPS; %d IPS/BPS without a '
           'game: %s; %d repository files for a game not found' % (n_jmp, n_jmp_missing, n_repo, n_og, n_ips, len(unmatched),
           '; '.join(unmatched), n_unmatched_repo))
+    report_any_release(any_new, any_skipped)
     print('patches: %d resolution patches left out, %d that need a hard disk install or downloads; %d copies merged '
           'into the patch they copy; %d in patches.db' % (n_dropped, n_unfit, merged, len(records_out)))
     cats = {}
