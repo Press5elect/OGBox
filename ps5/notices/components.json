@@ -632,15 +632,17 @@
   },
   {
    "id": "xbased",
-   "name": "xbased (crazyriddler's hakuX fork): its fixes for a never-initialized critical section, MMX instructions with a 0x66 prefix (the native CPU's code sweep), the vertex alignment quirk on AMD GPUs and three-component vertex attributes, taken into hakuX-native",
+   "name": "xbased (crazyriddler's hakuX fork): its fixes for a never-initialized critical section, MMX instructions with a 0x66 prefix (the native CPU's code sweep), the vertex alignment quirk on AMD GPUs and three-component vertex attributes, and since 1.0.3 kernel, I/O, disc, DSP and GPU fixes after its releases 1.0.1 to 1.2.4 (crazyriddler/xbased), taken into hakuX-native; and its mod Animated water and lights for 4156002A (ps5/mods/4156002A.1 and .3, matfx-uvanim)",
    "licence": "GPL-3.0-or-later",
    "copyright": "crazyriddler and the xbased contributors; rfandango and the hakuX contributors",
-   "modifications": "taken commit by commit onto hakuX-native by Press5elect, 2026, the MMX fix as a rewrite in the native CPU's code sweep (native/cpu/codepatch.c)",
+   "modifications": "taken commit by commit onto hakuX-native by Press5elect, 2026, the MMX fix as a rewrite in the native CPU's code sweep (native/cpu/codepatch.c); the 1.0.3 fixes adapted to hakuX-native one commit each, each naming the xbased release it follows; the mod ported to OGBox's mod.txt with its author credit",
    "texts": {
     "hakuX-COPYING.txt": "build/hakux-src/COPYING"
    },
    "artifacts": [
-    "eboot.bin"
+    "eboot.bin",
+    "mods/4156002A.1/matfx-uvanim/mod.txt",
+    "mods/4156002A.3/matfx-uvanim/mod.txt"
    ],
    "source": {
     "url": "https://github.com/Prodigy488/xbased-modern-gui",
