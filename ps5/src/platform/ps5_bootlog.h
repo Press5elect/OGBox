@@ -89,6 +89,11 @@ void pshakux_install_crash_stack(void);
 /// Installs the crash report for the fatal signals and std::terminate (ps5_crash.cpp).
 void pshakux_crash_install(void);
 
+/// 1.0.4: the crash of the last time: 1 when OGBox stopped unexpectedly; what it was, and the file
+/// its report is in (ogbox-crash.log, copied out of the boot log). consume 0: kept to be said on a
+/// later start (a game's start shows no home screen).
+int pshakux_crash_previous(char* what, unsigned whatSize, char* report, unsigned reportSize, int consume);
+
 /// OGBox: the core's lines in a crash report (where the guest was, which device it touched...).
 /// Called in the signal handler: it must be async-signal-safe (no locks, no allocation, no stdio
 /// but snprintf into line).

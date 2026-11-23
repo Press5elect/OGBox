@@ -105,10 +105,6 @@
 #include "platform/ps5_sandbox.h"
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
-/* 1.0.4: the crash of the last time (ps5_crash.cpp): 1 when OGBox stopped unexpectedly; what it was, and
- * the file its report is in (ogbox-crash.log, copied out of the boot log). consume 0: kept to be said
- * on a later start (a game's start shows no home screen). */
-extern "C" int pshakux_crash_previous(char *what, unsigned whatSize, char *report, unsigned reportSize, int consume);
 #include "ogbox_fixes_fetch.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
