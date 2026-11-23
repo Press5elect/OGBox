@@ -1,4 +1,4 @@
-// OGBox - game fixes from GitHub at start (ogbox_fixes_fetch.h).
+// OGBox - game fixes from GitHub at start, and the cheats at the user's asking (ogbox_fixes_fetch.h).
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
@@ -409,6 +409,163 @@ bool Sync(const std::string& base, const std::string& titleDir, const std::strin
 	return report.ok;
 }
 
+/* ---- 1.0.3: the cheats xbased keeps, at the user's asking ---------------------------------------- */
+
+bool SafeCheatPath(const std::string& path)
+{
+	if (path.size() < 18 || path.compare(0, 7, "cheats/") != 0 || path[15] != '/')
+		return false;
+	for (size_t i = 7; i < 15; i++)
+		if (!((path[i] >= '0' && path[i] <= '9') || (path[i] >= 'A' && path[i] <= 'F')))
+			return false;
+	const std::string name = path.substr(16);
+	if (name.empty() || name.size() > 200 || name.find("..") != std::string::npos || name[0] == '.' || name[0] == ' ' ||
+		name.back() == '.' || name.back() == ' ')
+		return false;
+	for (char c : name)
+		if (c < 0x20 || c > 0x7e || std::strchr("/\\\"*:<>?|", c))
+			return false;
+	const size_t dot = name.rfind('.');
+	std::string ext = dot == std::string::npos ? std::string() : name.substr(dot);
+	for (char& c : ext)
+		c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+	return ext == ".etm" || ext == ".xbtf";
+}
+
+namespace
+{
+/// A path in an address: everything but letters, digits, - _ . ~ and / as %XX.
+std::string UrlPath(const std::string& path)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	std::string out;
+	for (unsigned char c : path)
+	{
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+			c == '~' || c == '/')
+			out += static_cast<char>(c);
+		else
+		{
+			out += '%';
+			out += hex[c >> 4];
+			out += hex[c & 15];
+		}
+	}
+	return out;
+}
+} // namespace
+
+bool Cheats(const std::string& index, const std::string& raw, const std::string& trainers, const Getter& get,
+	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress)
+{
+	report = CheatsReport();
+	std::string text;
+	if (!ReadAll(index, text, kMostList))
+	{
+		report.error = "OGBox's list of cheats (gamedata/cheats-xbased.txt) is missing.";
+		fixes_log("cheats: %s cannot be read", index.c_str());
+		return false;
+	}
+	const std::vector<std::string> lines = Lines(text);
+	static const std::string kHead = "# OGBox cheats 1 crazyriddler/xbased ";
+	std::string commit = !lines.empty() && lines[0].compare(0, kHead.size(), kHead) == 0 ? lines[0].substr(kHead.size()) : "";
+	bool hex = commit.size() == 40;
+	for (char c : commit)
+		hex = hex && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+	if (!hex)
+	{
+		report.error = "OGBox's list of cheats is of a kind this OGBox doesn't know.";
+		fixes_log("cheats: the index's first line isn't \"%s<commit>\"", kHead.c_str());
+		return false;
+	}
+	std::vector<Entry> entries;
+	std::set<std::string> listed;
+	for (size_t i = 1; i < lines.size(); i++)
+	{
+		const std::string& line = lines[i];
+		if (line.empty() || line[0] == '#')
+			continue;
+		Entry e;
+		const size_t a = line.find(' '), b = a == std::string::npos ? a : line.find(' ', a + 1);
+		if (b == std::string::npos)
+			continue;
+		e.sha = line.substr(0, a);
+		e.bytes = strtoull(line.substr(a + 1, b - a - 1).c_str(), nullptr, 10);
+		e.path = line.substr(b + 1);
+		if (!IsHex64(e.sha) || e.bytes == 0 || e.bytes > kMostBytes || !SafeCheatPath(e.path) || !listed.insert(e.path).second)
+		{
+			fixes_log("cheats: line %zu of the index refused: %s", i + 1, line.c_str());
+			continue;
+		}
+		entries.push_back(e);
+		if (entries.size() > kMostFiles)
+		{
+			report.error = "OGBox's list of cheats is too long.";
+			return false;
+		}
+	}
+	report.listed = static_cast<unsigned>(entries.size());
+
+	unsigned done = 0, offline = 0;
+	std::vector<uint8_t> body;
+	for (const Entry& e : entries)
+	{
+		if (progress)
+			progress(done, report.listed);
+		done++;
+		const std::string place = trainers + "/" + e.path.substr(7);   // <title ID>/<file>
+		struct stat st;
+		if (stat(place.c_str(), &st) == 0)
+		{
+			/* there already: the same file, or the user's own of the same name (kept as it is) */
+			std::string have;
+			if (S_ISREG(st.st_mode) && ReadAll(place, have, kMostBytes) && have.size() == e.bytes &&
+				PS5Update::Sha256Hex(have.data(), have.size()) == e.sha)
+				report.present++;
+			else
+			{
+				report.kept++;
+				fixes_log("cheats: %s: a different file of that name is there: kept", place.c_str());
+			}
+			continue;
+		}
+		body.clear();
+		const int status = get(raw + commit + "/" + UrlPath(e.path), body);
+		if (status < 0 && ++offline >= 3)   // (three in a row: the rest is not tried)
+		{
+			report.failed += report.listed - done + 1;
+			report.error = report.fetched ? "The network was lost: " + std::to_string(report.fetched) + " files were downloaded."
+										  : std::string("The network could not be reached: nothing was downloaded.");
+			fixes_log("cheats: the network could not be reached; stopped");
+			break;
+		}
+		if (status != 200 || body.size() != e.bytes || PS5Update::Sha256Hex(body.data(), body.size()) != e.sha)
+		{
+			fixes_log("cheats: %s: not fetched (HTTP %d, %zu bytes, the index says %llu)", e.path.c_str(), status, body.size(),
+				static_cast<unsigned long long>(e.bytes));
+			report.failed++;
+			continue;
+		}
+		offline = 0;
+		if (stat(place.c_str(), &st) == 0 || !WriteOver(place, body.data(), body.size()))
+		{
+			fixes_log("cheats: %s: cannot be written (%s)", place.c_str(), strerror(errno));
+			report.failed++;
+			continue;
+		}
+		report.fetched++;
+	}
+	if (progress)
+		progress(report.listed, report.listed);
+	report.ok = report.failed == 0;
+	if (!report.ok && report.error.empty())
+		report.error = std::to_string(report.failed) + (report.failed == 1 ? " file" : " files") +
+			" could not be downloaded (GitHub did not give it, or it was not the one listed).";
+	fixes_log("cheats: %u listed; %u fetched, %u there already, %u kept (another file of the name), %u failed", report.listed,
+		report.fetched, report.present, report.kept, report.failed);
+	return report.ok;
+}
+
 #if !defined(OGBOX_FIXES_TEST)
 namespace
 {
@@ -442,6 +599,59 @@ bool Poll(Report& report)
 		return false;
 	g_taken = true;
 	report = g_report;
+	return true;
+}
+
+namespace
+{
+std::mutex g_cheatsMutex;
+bool g_cheatsRunning = false, g_cheatsDone = false;
+unsigned g_cheatsAt = 0, g_cheatsOf = 0;
+CheatsReport g_cheatsReport;
+} // namespace
+
+bool StartCheats(const std::string& index, const std::string& trainers)
+{
+	{
+		std::lock_guard<std::mutex> lock(g_cheatsMutex);
+		if (g_cheatsRunning)
+			return false;
+		g_cheatsRunning = true;
+		g_cheatsDone = false;
+		g_cheatsAt = g_cheatsOf = 0;
+	}
+	std::thread([index, trainers]() {
+		CheatsReport r;
+		Cheats(index, "https://raw.githubusercontent.com/crazyriddler/xbased/", trainers,
+			[](const std::string& url, std::vector<uint8_t>& out) { return OGBoxNet::Get(url, out, 60); }, r,
+			[](unsigned done, unsigned total) {
+				std::lock_guard<std::mutex> lock(g_cheatsMutex);
+				g_cheatsAt = done;
+				g_cheatsOf = total;
+			});
+		std::lock_guard<std::mutex> lock(g_cheatsMutex);
+		g_cheatsReport = std::move(r);
+		g_cheatsRunning = false;
+		g_cheatsDone = true;
+	}).detach();
+	return true;
+}
+
+bool CheatsRunning(unsigned& done, unsigned& total)
+{
+	std::lock_guard<std::mutex> lock(g_cheatsMutex);
+	done = g_cheatsAt;
+	total = g_cheatsOf;
+	return g_cheatsRunning;
+}
+
+bool PollCheats(CheatsReport& report)
+{
+	std::lock_guard<std::mutex> lock(g_cheatsMutex);
+	if (!g_cheatsDone)
+		return false;
+	g_cheatsDone = false;
+	report = g_cheatsReport;
 	return true;
 }
 #endif

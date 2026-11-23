@@ -42,6 +42,9 @@ Start with [`../CLAUDE.md`](../CLAUDE.md): the rules that always apply, and this
 - `ps5/art/intro/README.md`, `ps5/ASSETS.md`: the startup video and the generated art.
 - `ps5/gamedata/covers-mobcat.txt`: MobCat's box pictures by title ID and version, the covers' third
   source (made by `ps5/tools/import-mobcat-covers.py`; its header gives the format).
+- `ps5/gamedata/cheats-xbased.txt`: the trainers xbased keeps (paths, sizes, SHA-256s only), which
+  Settings > Updates > Download cheats fetches (made by `ps5/tools/import-xbased-cheats.py`; its
+  header gives the format).
 - `ps5/notices/components.json`: every third-party part, its licence and revision (the build
   stages it into the title folder's `licenses/`).
 - Code comments carry the version a behaviour dates from ("0.1.52: ...", "OGBox 1.0.2: ..."):

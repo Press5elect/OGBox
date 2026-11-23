@@ -121,6 +121,7 @@ OGBox when the patch is regenerated.
 | `ps5/tools/stage-notices.py --check dist/PPSA99251` | The release check (licences, notices, nothing forbidden) |
 | `ps5/tools/import-gamedata.py` | The patch database (`ps5/gamedata/patches.db`) from its sources and `gamedata-own-patches.txt` |
 | `ps5/tools/import-mobcat-covers.py [titleIDs.db] [clone]` | The covers' index of MobCat's box pictures (`ps5/gamedata/covers-mobcat.txt`) from MobCat's database and its repository's file list (identifiers only) |
+| `python3 -I ps5/tools/import-xbased-cheats.py [clone]` | The index of xbased's trainers (`ps5/gamedata/cheats-xbased.txt`: paths, sizes, SHA-256s at the commit the tool pins; none of the files) for Settings > Updates > Download cheats. Not in `ps5/game-fixes.txt` (that lists `mods/`, `gamedata/files/` and `patches.db` only): a new index reaches consoles with a build |
 | `ps5/tools/make-release-zip.py` | The release ZIP |
 
 The build needs LLVM 20's clang and the PS5 stack checked out beside this repository

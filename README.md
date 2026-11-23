@@ -177,7 +177,10 @@ has the details.
 
 **Trainers.** OGBox runs the Xbox's `.etm` and `.xbtf` trainers, the way Evolution-X and
 XBMC4Xbox did. It doesn't come with any: copy yours into the data folder's `trainers` folder,
-`/data/ogbox/trainers`, or a USB drive's `OGBox/trainers`. Each game lists the trainers made for
+`/data/ogbox/trainers`, or a USB drive's `OGBox/trainers`, or use **Settings > Updates > Download
+cheats**, which downloads the Xbox scene's trainers that xbased keeps on GitHub into the data
+folder's `trainers` folder (third-party files, not part of OGBox: only for games you own; files
+already there are kept). Each game lists the trainers made for
 it; ones made for another release are greyed out. Pick one, set its options, and they apply as the
 game starts. Options marked IGK can also be switched in the game with the controller, just like on
 the Xbox.
