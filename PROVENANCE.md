@@ -191,6 +191,9 @@ Among it:
 - HakuXP (MobCat): its test records (`docs/testing/` of HakuXP), after which hakuX-native's 1.0.3
   fixes for an unhandled page fault, `NtYieldExecution`, `\??\CdRom0:` paths, a full table of cubes
   and F24 shadow buffers were made;
+- xbased's mod "Animated water and lights" for `4156002A` (versions 1 and 3; crazyriddler,
+  GPL-3.0-or-later), ported in 1.0.3 with its author credit (`ps5/mods/4156002A.1/matfx-uvanim/`,
+  `ps5/mods/4156002A.3/matfx-uvanim/`);
   - open pull requests to hakuX by Jbbrack03, Robby Czesany and Möhle Jonas;
 - hakuX's Android app's save re-signer (`SaveResigner.kt`, `ConsoleKeys.kt`, `XCrypto.kt`, rfandango
   and its contributors, GPL-3.0-or-later), ported to C++ in 1.0.2 (`ps5/src/ogbox_resign.cpp`), with
