@@ -1574,7 +1574,8 @@ bool LinksWork(const std::string& file)
 //
 //     files/     the old files an install replaced, at their paths (they were .update/backup/)
 //     manifest   written last, once files/ is whole: "OGBox previous version 1", then
-//                "version 1.0.2", "label v1.0.2", a "file <SHA-256> <bytes> <path>" line for
+//                "version 1.0.2", "label v1.0.2", "installed 1.0.3" (the version the update put
+//                in: the copy is offered only while that one runs, not after one copied by hand), a "file <SHA-256> <bytes> <path>" line for
 //                each of files/ and an "added <path>" line for each file and folder (ending in
 //                '/') the install added, which a going back takes away
 //
@@ -1592,7 +1593,7 @@ struct KeptFile
 
 struct Kept
 {
-	std::string version, label;
+	std::string version, label, installed;
 	std::vector<KeptFile> files;
 	std::vector<std::string> added;
 	uint64_t bytes = 0;
@@ -1618,6 +1619,8 @@ std::string ReadKept(const std::string& app_dir, Kept& kept, bool digests)
 			kept.version = line.substr(8);
 		else if (StartsWith(line, "label "))
 			kept.label = OneLine(line.substr(6));
+		else if (StartsWith(line, "installed "))
+			kept.installed = line.substr(10);
 		else if (StartsWith(line, "added "))
 		{
 			const std::string path = line.substr(6);
@@ -1662,11 +1665,13 @@ std::string ReadKept(const std::string& app_dir, Kept& kept, bool digests)
 	return "";
 }
 
-// What GetStatus() says of the kept version (g_state_mutex held by the caller, or nobody else).
+// What GetStatus() says of the kept version (g_state_mutex held by the caller, or nobody else):
+// one that is whole, kept by the update to the version that runs (g_setup's).
 void SetKept(const std::string& app_dir)
 {
 	Kept kept;
-	const bool usable = ReadKept(app_dir, kept, false).empty();
+	const bool usable = ReadKept(app_dir, kept, false).empty() &&
+	                    (kept.installed.empty() || CompareVersions(ParseVersion(kept.installed), ParseVersion(g_setup.version)) == 0);
 	g_previous.clear();
 	g_previous_label.clear();
 	g_previous_bytes = 0;
@@ -1695,7 +1700,8 @@ void KeepPrevious(const Setup& use, const std::string& version, const std::vecto
 		return;
 	}
 	std::string manifest = std::string(KEPT_HEADER) + "\nversion " + ToString(running) + "\nlabel " +
-	                       OneLine(use.running_label.empty() ? "v" + ToString(running) : use.running_label) + "\n";
+	                       OneLine(use.running_label.empty() ? "v" + ToString(running) : use.running_label) + "\ninstalled " +
+	                       ToString(ParseVersion(version)) + "\n";
 	uint64_t bytes = 0;
 	size_t files = 0;
 	for (const std::string& path : plan)

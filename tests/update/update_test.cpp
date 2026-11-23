@@ -1429,7 +1429,16 @@ static void TestKeepAndRollBack(const std::string& work, const std::string& app,
 	}
 	CHECK(Get(app + "/eboot.bin").compare(0, 12, "EBOOT 1.2.0\n") == 0);
 	CHECK(!Exists(app + "/.update"));
+	CHECK(Contains(Get(app + "/.previous/manifest"), "\ninstalled 1.2.0\n"));
 	const auto installed = Snapshot(app);
+	// Another version running (one copied over by hand): the kept copy is not offered.
+	Init(MakeSetup(app, "1.2.1"));
+	CHECK(GetStatus().previous.empty());
+	RollBack();
+	CHECK(GetStatus().state == State::Failed);
+	CHECK(Snapshot(app) == installed);
+	Init(MakeSetup(app, "1.2.0"));
+	CHECK(GetStatus().previous == "1.0.0");
 
 	// Going back: the old version's files exactly as they were, what the update added gone, and
 	// the kept copy used up.
