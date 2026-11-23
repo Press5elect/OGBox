@@ -6,6 +6,12 @@ OGBox writes `ogbox-boot.log` in the title folder (`/data/homebrew/PPSA99251/`);
 is kept as `ogbox-boot.previous.log`. A session's log runs on across relaunches (starting a game
 restarts the title), so one file can hold several games.
 
+- After a crash (a fault, abort, `std::terminate`, a resource limit; not SIGTERM or SIGHUP, which a
+  close may send) the handler leaves `ogbox-crashed.txt` (one line: what it was). The next start
+  copies the report, with up to 256 KiB of the lines before it, out of the log that holds it
+  (`ogbox-boot.previous.log`) into `ogbox-crash.log`, which stays until the next crash, and the game
+  list says so once (`ps5_crash.cpp`: `pshakux_crash_previous`). A game's start (autoboot) copies it
+  and leaves the notice for the next game list.
 - **Settings > Advanced > Boot log** is "Only when something goes wrong" by default: the log is
   kept in memory and written after a crash, a failed game, 15 s without a new frame, or the quick
   menu's **Save the Log**. A file with only `[log: this session's log is kept in memory ...]` and a

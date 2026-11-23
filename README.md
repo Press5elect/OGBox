@@ -50,6 +50,8 @@ sound comes out of the PS5's normal audio output.
 
 When something goes wrong, the file `ogbox-boot.log` in the title folder says what happened (the
 run before it is kept as `ogbox-boot.previous.log`). Please attach both when you open an issue.
+After a crash, the next start says so once on the game list and copies the crash report to
+`ogbox-crash.log` in the title folder, where it stays until the next crash.
 
 **Before you report a game's problem**, please:
 1. Use a dump of your own disc that matches Redump (the names in OGBox's game database are
@@ -124,6 +126,13 @@ downloads nothing without asking. The download is checked against GitHub's SHA-2
 OGBox's own files are replaced. Your settings, the Xbox hard disk, save states, `boot.txt` and
 games are left alone. OGBox then closes, ready to be started again, and if a power cut interrupts
 an update, it's undone at the next start.
+
+The offer's **What's new** shows the notes of every release since yours (the right stick scrolls),
+and **Skip this version** stops that version being offered at each start; a newer one is offered
+again, and **Updates** in Settings still installs it. After an update, the files of the version it
+replaced are kept in the title folder's `.previous` (until the next update; not when the drive has
+less than 256 MB left, and removed first when an update needs their room). **Settings > Updates >
+Go back to <version>** puts that version back the same careful way and closes OGBox.
 
 ## Settings
 
