@@ -189,6 +189,22 @@ to run properly: they're always on and shown greyed out, so you can see what's a
 patches that are new or changed in this repository (Settings > Interface > Download game fixes at
 start, on by default), checks each against its listed checksum, and says which games got fixes.
 
+**Your own patches.** Copy `.jmp` (Jay's Magic Patcher), `.ips` and `.bps` patches into the data
+folder's `patches` folder (`/data/ogbox/patches` unless you chose another data folder; one level of
+folders inside it is fine, to keep it tidy). OGBox works out which game each is for: a BPS by the
+checksum of the `default.xbe` it was made from, a JMP by the checksum or title ID on its `version=`
+line, and an IPS (or a JMP that says neither) by the title ID or the game's name in its file or
+folder name (`4D530064 hud.ips`, `4D530064/hud.ips`, `Starfall Tactics 60fps.ips`). They show on
+the game's Game Patches screen under **Your patches**, off until you turn them on. A file nothing
+ties to a game is listed under **Add a patch from the patches folder** on every game's screen:
+pick it to attach it to that game (and again to detach it). The same checks apply as for the
+other patches: one made for another release, or a `.jmp` with a line OGBox can't read (the line
+number is shown), is greyed out. An IPS file can't say which release it is for, so attach one only
+to the game it was made for. Files over 4 MiB, names with `/`, `\`, `:` and the like or `..`, and
+more than 64 for one game are left out; the boot log lists every file it found for the game and
+whether it was applied. OGBox's updates, game-fix downloads and rollbacks never write in that
+folder (moving the data folder in Settings > Storage moves it with the rest).
+
 **HD texture packs.** OGBox can replace a game's textures with your own. Turn on **Dump textures**
 (Settings > Picture > Textures, for one game) and play: each texture the game uses is saved once
 into the data folder's `textures/<title ID>/dump`, compressed ones as DDS and the rest as PNG,

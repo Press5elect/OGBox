@@ -411,6 +411,31 @@ int main(int argc, char **argv)
 		"a patch whose bytes are not in this disc's XBE is left out (the boot log says so).";
 	mods.aside.note = "/data/ogbox/mods.txt \xC2\xB7 default.xbe CRC-32 1A2B3C4D";
 	mods.footer = { { "UD", "Choose" }, { "X", "On / off" }, { "O", "Back" } };
+	/* 1.0.4: the player's own patches: their group, with the files to attach by hand shown */
+	ui::ListScreenView yours = mods;
+	{
+		using R = ui::ListRow;
+		yours.rows.clear();
+		R r;
+		r.kind = R::Kind::Section; r.key = "s1"; r.title = "Patches"; yours.rows.push_back(r);
+		r = {}; r.key = "p1"; r.title = "16:9 widescreen"; r.sub = "by Mobcat"; r.toggle = 0; yours.rows.push_back(r);
+		r = {}; r.kind = R::Kind::Section; r.key = "s2"; r.title = "Your patches"; yours.rows.push_back(r);
+		r = {}; r.key = "u1"; r.title = "Starfall Tactics 60fps"; r.sub = "patches/Starfall Tactics 60fps.jmp"; r.toggle = 1; yours.rows.push_back(r);
+		r = {}; r.key = "u2"; r.title = "4D530064 hud"; r.sub = "patches/4D530064/hud.ips"; r.toggle = 0;
+		r.right = "release not checked"; yours.rows.push_back(r);
+		r = {}; r.key = "u3"; r.title = "broken"; r.sub = "patches/broken.jmp"; r.toggle = -1; r.dim = true;
+		r.right = "Incompatible"; yours.rows.push_back(r);
+		r = {}; r.key = "uadd"; r.title = "Add a patch from the patches folder"; r.icon = ui::Icon::Plus;
+		r.sub = "2 files no rule gives a game"; r.right = "hide"; yours.rows.push_back(r);
+		r = {}; r.key = "f1"; r.title = "crt-filter.ips"; r.toggle = 1; r.indent = 1; yours.rows.push_back(r);
+		r = {}; r.key = "f2"; r.title = "misc/no-intro.ips"; r.toggle = 0; r.indent = 1; yours.rows.push_back(r);
+		r = {}; r.kind = R::Kind::Section; r.key = "s3"; r.title = "Cheats"; yours.rows.push_back(r);
+		r = {}; r.key = "c1"; r.title = "Infinite health"; r.toggle = 0; yours.rows.push_back(r);
+	}
+	yours.sel = 6;
+	yours.aside.title = "Add a patch from the patches folder";
+	yours.aside.text = "Copy .jmp, .ips and .bps patches into /data/ogbox/patches (or a folder in it): each game lists its own "
+		"here, off till turned on. The others are listed here to attach to the game by hand (CROSS), or detach.";
 
 	ui::ListScreenView storage;
 	storage.head = { logo, "Data folder", "where OGBox keeps the Xbox hard disk, caches, covers", {} };
@@ -690,6 +715,10 @@ int main(int argc, char **argv)
 		{ "mods", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "mods", { 0.2f, 0.3f }, 0.6f });
 			ui::drawListScreen(dl, S, mods);
+		} },
+		{ "mods-yours", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "mods", { 0.2f, 0.3f }, 0.6f });
+			ui::drawListScreen(dl, S, yours);
 		} },
 		{ "storage", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "storage", { 0.2f, 0.3f }, 0.6f });

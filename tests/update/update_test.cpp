@@ -607,6 +607,9 @@ static void TestHelpers()
 	CHECK(!VersionIn("PPSA99251").valid);
 
 	CHECK(IsManaged("eboot.bin"));
+	/* 1.0.4: the player's own patches (the data folder's patches/, the title folder if it is the data folder) */
+	CHECK(!IsManaged("patches/4D530064 hud.ips"));
+	CHECK(!IsManaged("patches/4D530064/ws.jmp"));
 	CHECK(IsManaged("sce_sys/param.json"));
 	CHECK(IsManaged("sce_module/libc.prx"));
 	CHECK(IsManaged("assets/fonts/Roboto-Bold.ttf"));

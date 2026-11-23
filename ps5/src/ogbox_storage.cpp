@@ -251,9 +251,10 @@ std::string storagePath(const char *part)
 const std::vector<const char *> &storageParts()
 {
 	/* 0.1.54: the save states, the saves copied out (0.1.53) and the trainers move with it too;
-	 * 1.0.2: the texture packs and dumps, and the console dumps saves are re-signed with (ogbox_resign.h) */
+	 * 1.0.2: the texture packs and dumps, and the console dumps saves are re-signed with (ogbox_resign.h);
+	 * 1.0.4: the player's own patches (core/ogbox_patches.h) */
 	static const std::vector<const char *> parts = { "hdd", "cache", "covers", "shots", "states", "backups", "trainers", "textures",
-		"console" };
+		"console", "patches" };
 	return parts;
 }
 
