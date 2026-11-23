@@ -83,6 +83,7 @@ public:
 
 	/* hakuX's core's arguments for this run (native/core/options.h). */
 	std::vector<std::string> coreArgs() const;
+	unsigned speedLimit() const;   // 1.0.4: "speed_limit" as a percentage, 0 Unlimited
 
 private:
 	std::string gameKey;

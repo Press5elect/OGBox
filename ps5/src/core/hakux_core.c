@@ -809,6 +809,18 @@ void pshx_core_pause(bool on)
     nc_pause_set(on);
 }
 
+/* (weak: a core without the speed limit still links; native/kernel/ke.c) */
+void nc_speed_set(unsigned pct) __attribute__((weak));
+
+bool pshx_core_set_speed(unsigned pct)
+{
+    if (!nc_speed_set) {
+        return false;
+    }
+    nc_speed_set(pct);
+    return true;
+}
+
 void pshx_core_drawlog(int n, unsigned delay_ms)
 {
     hle_pbd_drawlog(n, delay_ms);
