@@ -67,7 +67,7 @@ for patch in "$ps5"/patches/hakux/*.patch; do
     fi
 done
 rm -rf "$stage/.git"
-rsync -a --delete --checksum "$stage/" "$out/"
+rsync -a --no-times --delete --checksum "$stage/" "$out/"
 rm -rf "$stage"
 {
     echo "source: $src"

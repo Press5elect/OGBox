@@ -70,6 +70,11 @@ OGBox when the patch is regenerated.
 
 ## Lessons that cost builds
 
+- **A build with an older core must recompile what went back to upstream.** `prepare-hakux.sh`
+  copied the core's tree into `build/hakux-src` keeping each file's time; a file the patch no
+  longer touched came back with upstream's (older) time, so ninja kept the object built from the
+  newer core. Three bisect builds mixed two versions of the upload arena and one crashed at its
+  first full arena. The copy now gives every changed file the current time (`--no-times`).
 - **Installing a build does not delete old files.** A mod folder removed from the source stays on
   the console (`/data/homebrew/PPSA99251/mods/<key>/`) until the owner deletes it. When a mod or
   game fix is withdrawn, say so and ask for the folder to be deleted, and check the next log's
