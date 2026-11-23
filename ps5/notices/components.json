@@ -2,7 +2,7 @@
  "components": [
   {
    "id": "ogbox",
-   "name": "OGBox: the PS5 port of hakuX (the front end, the Core seam, the console's replacements for hakuX's Android parts in ps5/hakux, the patches to hakuX, the build and the tools) and OGBox's logo (ps5/art/ogbox-logo.png: the start screen, the icon and the launcher pictures made from it by ps5/tools/make-title-art.py)",
+   "name": "OGBox: the PS5 port of hakuX (the front end, the Core seam, the console's replacements for hakuX's Android parts in ps5/hakux, the patches to hakuX, the write broker (ps5/broker: write-broker.elf), the build and the tools) and OGBox's logo (ps5/art/ogbox-logo.png: the start screen, the icon and the launcher pictures made from it by ps5/tools/make-title-art.py)",
    "licence": "GPL-3.0-or-later, with the attribution term of NOTICE.txt (GPL-3.0 section 7(b): keep \"OGBox by Press5elect\")",
    "copyright": "Copyright (C) 2026 Press5elect (OGBox by Press5elect)",
    "modifications": "-",
@@ -11,6 +11,7 @@
    },
    "artifacts": [
     "eboot.bin",
+    "write-broker.elf",
     "sce_sys/param.json",
     "sce_sys/icon0.png",
     "sce_sys/pic0.dds",
@@ -428,7 +429,8 @@
     "PS5_PayloadSDK-LICENSE.txt": "../PS5_PayloadSDK/LICENSE"
    },
    "artifacts": [
-    "eboot.bin"
+    "eboot.bin",
+    "write-broker.elf"
    ],
    "source": {
     "url": "https://github.com/mihawk-99/PS5_PayloadSDK",
@@ -497,7 +499,8 @@
     "LLVM-LICENSE.TXT": "/usr/lib/llvm-20/build/utils/lit/LICENSE.TXT"
    },
    "artifacts": [
-    "eboot.bin"
+    "eboot.bin",
+    "write-broker.elf"
    ],
    "source": {
     "url": "https://github.com/llvm/llvm-project (the payload SDK's and the build machine's LLVM 20)",

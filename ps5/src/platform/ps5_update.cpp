@@ -130,6 +130,7 @@ size_t MaxEntries()
 // put into the title folder: eboot.bin, sce_sys/ (param.json and the pictures), sce_module/
 // (libc.prx), assets/ (the logo, the fonts), shaders/ (the presenter's), gamedata/ (the game and
 // patch databases), mods/ (hakuX's mods), licenses/, sandbox-elevator.elf (the USB helper),
+// write-broker.elf (1.0.4: the storage write test's payload),
 // cacert.pem (the certificates HTTPS is checked with), ogbox-imports.txt, README.md, LEGAL.txt,
 // NOTICE.txt and boot.example.txt. The
 // user's own files there (boot.txt, props.txt, elevation-off.txt, the boot logs, the games
@@ -137,7 +138,7 @@ size_t MaxEntries()
 // is left where it is.
 constexpr const char* MANAGED_FOLDERS[] = {"sce_sys/", "sce_module/", "assets/", "shaders/", "gamedata/", "mods/",
 	"licenses/"};
-constexpr const char* MANAGED_FILES[] = {"eboot.bin", "sandbox-elevator.elf", "cacert.pem", "ogbox-imports.txt", "LEGAL.txt",
+constexpr const char* MANAGED_FILES[] = {"eboot.bin", "sandbox-elevator.elf", "write-broker.elf", "cacert.pem", "ogbox-imports.txt", "LEGAL.txt",
 	"NOTICE.txt", "README.md", "README.txt", "CHANGELOG.md", "CHANGELOG.txt", "boot.example.txt"};
 // Inside those folders, but the user's (none in OGBox yet; the list ends with nullptr). Compared
 // without regard to case, as exFAT names are.

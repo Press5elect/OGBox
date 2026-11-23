@@ -106,6 +106,7 @@
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
 #include "ogbox_fixes_fetch.h"
+#include "platform/ps5_broker.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
@@ -5916,6 +5917,7 @@ public:
 			hddJobTick();     // 1.0.3
 			fixesTick();      // 1.0.2
 			cheatsTick();     // 1.0.3
+			writeTestTick();  // 1.0.4
 		}
 		drawOverlays();
 	}
@@ -6655,6 +6657,77 @@ public:
 		if (r.fetched) {
 			cheatsRescan = true;
 		}
+	}
+
+	/* 1.0.4: Settings > Advanced > Storage write test (platform/ps5_broker.h, a diagnostic): asked for
+	 * once more, then on a thread of its own; how far it is in a popup (a toast once that is closed),
+	 * what it found at the end. Every number goes into the boot log ("writetest:" lines). */
+	bool writeTestAsked{ false }, writeTestShown{ false };
+	static constexpr const char *kWriteTest = "Storage write test";
+	void askWriteTest()
+	{
+		if (ogbox::broker::WriteTest::Get().State().running) {
+			showToast("The storage write test is running already.");
+			return;
+		}
+		openPopup(kWriteTest, "It takes about 10 minutes, and writes and then deletes about 8 GiB in " + ogbox::storageRoot() +
+			"/writetest (it needs 10 GiB free there). For part of it OGBox sends a helper of its own to the payload loader (port "
+			"9021). Stay in the menus while it runs: starting a game ends it. Every number goes into the boot log "
+			"(ogbox-boot.log in OGBox's folder).", { "Start", "Cancel" }, [this](int i) {
+				if (i == 0) {
+					startWriteTest();
+				}
+			});
+	}
+	void startWriteTest()
+	{
+		const std::string dir = ogbox::storageRoot() + "/writetest";
+		const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
+		const ogbox::broker::Connector connect = [elf](std::string &why) { return ogbox::broker::Launch(elf, why); };
+		const ogbox::broker::Log log = [](const std::string &line) { pshakux_log("%s", line.c_str()); };
+		if (!ogbox::broker::WriteTest::Get().Start(dir, connect, ogbox::broker::Plan{}, log)) {
+			showToast("The storage write test is running already.");
+			return;
+		}
+		pshakux_log("writetest: asked for (Settings > Advanced): in %s, the broker %s", dir.c_str(), elf.c_str());
+		writeTestAsked = writeTestShown = true;
+		openPopup(kWriteTest, writeTestText(ogbox::broker::WriteTest::Get().State()), { "Hide (it goes on)" },
+			[this](int) { writeTestShown = false; });
+	}
+	static std::string writeTestText(const ogbox::broker::WriteTest::Progress &s)
+	{
+		char took[64];
+		std::snprintf(took, sizeof(took), "%.0f s of about 10 minutes", s.seconds);
+		return s.phase + (s.detail.empty() ? std::string() : "\n" + s.detail) + "\n\n" + took;
+	}
+	std::string writeTestLine() const
+	{
+		const ogbox::broker::WriteTest::Progress s = ogbox::broker::WriteTest::Get().State();
+		return s.running ? "running: " + s.phase : std::string("about 10 minutes");
+	}
+	void writeTestTick()
+	{
+		if (!writeTestAsked) {
+			return;
+		}
+		const ogbox::broker::WriteTest::Progress s = ogbox::broker::WriteTest::Get().State();
+		const bool ours = writeTestShown && pop.open && pop.title == kWriteTest;
+		if (s.running) {
+			if (ours) {
+				pop.text = writeTestText(s);
+			} else {
+				toast = "Storage write test: " + s.phase;   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			}
+			return;
+		}
+		if (!s.done || (pop.open && !ours)) {
+			return;   // (another popup first)
+		}
+		writeTestAsked = writeTestShown = false;
+		pop.open = false;
+		openPopup(s.ok ? "Storage write test: done" : "Storage write test: stopped", s.summary +
+			"\nThe numbers are in the boot log (ogbox-boot.log, the \"writetest:\" lines).", { "OK" }, nullptr);
 	}
 
 	void showToast(const std::string &text)
@@ -9278,6 +9351,16 @@ public:
 			actionRow("hdd", "Saves and caches", "open", "The games' saves on the Xbox hard disk: copy them to a USB drive or the "
 				"console's backups, bring saves in, delete them; empty the cache drives.", [this]() { openHdd(0); }, rows, acts,
 				ui::Icon::Console);
+			break;
+		case SP_ADVANCED:
+			/* 1.0.4: the storage write test (platform/ps5_broker.h), in the game list's settings only (a game's
+			 * start relaunches OGBox, which ends it) */
+			if (library && !forGame) {
+				groupRow("Diagnostics", rows, acts);
+				actionRow("writetest", "Storage write test", writeTestLine(), "Takes about 10 minutes; writes and then deletes about "
+					"8 GiB in the data folder. It measures how fast OGBox, and a helper of its own sent to the payload loader, can "
+					"write there; the numbers go into the boot log.", [this]() { askWriteTest(); }, rows, acts, ui::Icon::Gear);
+			}
 			break;
 		case SP_UPDATES:
 			actionRow("check", "Look for an update now", updateLine(), "Asks GitHub whether a newer OGBox is out and offers it with "

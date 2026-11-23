@@ -50,6 +50,7 @@ the distinct messages, then look closely around the problem:
 | `hakuX-hle-pb: draw N:` | The draw log: one line a draw (program, counts, state, textures) |
 | `hakuX-hle-tex:` | Texture packs: found, used, refused |
 | `hakuX-native-mods:` | Each mod patch line applied |
+| `writetest:` | The storage write test (Settings > Advanced; `ps5/src/platform/ps5_broker.cpp`): each phase's start, its 256 MiB steps (`step N a-bMiB s MiB/s`), its end (bytes, time, MiB/s, the fsync, each write's p50/p95/p99, `direct=`, `error=`), the read-back check and a summary. The broker's own lines are in klog as `[write-broker]` |
 
 ## Switches
 

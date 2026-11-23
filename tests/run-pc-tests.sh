@@ -30,6 +30,7 @@ run pad tests/pad/run-pad-tests.sh build/pad-tests
 run shares tests/shares/run-shares-tests.sh build/shares-tests
 run update tests/update/run-update-tests.sh build/update-tests
 run fixes tests/fixes/run-fixes-tests.sh build/fixes-tests
+run broker tests/broker/run-broker-tests.sh build/broker-tests
 run savesync ps5/tests/savesync/run.sh build/savesync-tests
 run resign ps5/tests/resign/run.sh build/resign-tests
 run storage ps5/tests/storage/run.sh build/storage-tests
