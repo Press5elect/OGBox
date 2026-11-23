@@ -47,6 +47,7 @@ FORBIDDEN_SUFFIXES = {
     ".rom", ".eeprom", ".pup", ".bios",                                                           # BIOS, boot ROM, firmware
     ".key", ".keys", ".xsv", ".sav", ".state", ".hxs",                                            # keys, saves, savestates
     ".log", ".env", ".ini", ".cfg",                                                               # a console's own files
+    ".etm", ".xbtf",                                                                              # trainers (1.0.3: downloaded, never shipped)
 }
 FORBIDDEN_NAMES = {"boot.txt", "props.txt", "network.cfg", "test-run.txt", ".env", "eeprom.bin",
                    "mcpx_1.0.bin", "complex_4627.bin"}

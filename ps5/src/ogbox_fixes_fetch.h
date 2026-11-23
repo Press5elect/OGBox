@@ -53,4 +53,39 @@ bool Sync(const std::string& base, const std::string& titleDir, const std::strin
 void Start(const std::string& titleDir);
 /// Its report, once, when it is done: true then.
 bool Poll(Report& report);
+
+// OGBox 1.0.3: "Download cheats" (Settings > Updates), only when the user asks. The title's
+// gamedata/cheats-xbased.txt (ps5/tools/import-xbased-cheats.py) lists the Xbox scene's trainers xbased
+// keeps in its repository:
+//
+//     # OGBox cheats 1 crazyriddler/xbased <commit, 40 hex>
+//     <sha256> <bytes> cheats/<title ID, 8 hex>/<file>      (the name may have spaces)
+//
+// Cheats() fetches each from raw.githubusercontent.com/crazyriddler/xbased/<commit>/<path> into
+// <trainers>/<title ID>/<file>, checked against its size and SHA-256, written beside its place and
+// renamed there. A file already there with the same contents is left; one of the same name with
+// other contents (the user's own) is kept as it is and counted; nothing is deleted. A name the
+// tool would not list is refused here too (SafeCheatPath). The files are not OGBox's: none ships.
+struct CheatsReport
+{
+	bool ok = false;        // the index was read and every file it names is in place (or kept)
+	std::string error;      // why not, a sentence
+	unsigned listed = 0, fetched = 0, present = 0, kept = 0, failed = 0;
+};
+
+/// cheats/<8 hex digits>/<name>, the name as import-xbased-cheats.py allows it.
+bool SafeCheatPath(const std::string& path);
+
+/// The work (any thread): index is cheats-xbased.txt's path, raw the address before the commit
+/// ("https://raw.githubusercontent.com/crazyriddler/xbased/"), trainers the user's trainers folder.
+/// progress (may be empty) is told each file done, of how many.
+bool Cheats(const std::string& index, const std::string& raw, const std::string& trainers, const Getter& get,
+	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress);
+
+/// Cheats() on a thread of its own with OGBoxNet::Get: false when one is running already.
+bool StartCheats(const std::string& index, const std::string& trainers);
+/// While one runs: true, with how far it is.
+bool CheatsRunning(unsigned& done, unsigned& total);
+/// Its report, once, when it is done: true then.
+bool PollCheats(CheatsReport& report);
 } // namespace ogbox::fixes

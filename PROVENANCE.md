@@ -169,6 +169,13 @@ Among it:
   the repository has); its box scans and thumbnails are downloaded by the console when a game needs
   one, and none is carried;
 - XBMC4Xbox's trainer loading (Team XBMC and team xored);
+- xbased (crazyriddler, https://github.com/crazyriddler/xbased): its collection of the Xbox scene's
+  trainers (`cheats/<title ID>/`, from the Xbox Original ETM Trainers collection on the Internet
+  Archive), whose files were made by the Xbox scene's trainer makers (xboxtrainers.net, Team
+  Evox-T, Team Xored and the others xbased names). OGBox carries none of them: the index
+  `ps5/gamedata/cheats-xbased.txt` (ps5/tools/import-xbased-cheats.py) holds only their paths,
+  sizes and SHA-256s at a pinned commit, and the console downloads the files from xbased's
+  repository only when the user asks (Settings > Updates > Download cheats);
 - Crux2's platform code and frame generation (Press5elect, under Crux2's own attribution term);
 - MihawkGen (Mihawk, GPL-3.0-or-later);
 - the AMD FidelityFX SDK and FSR 1 (AMD, MIT), NVIDIA Image Scaling (NVIDIA, MIT), and SMAA (its

@@ -5738,6 +5738,7 @@ public:
 			placeTick();      // 1.0.3
 			hddJobTick();     // 1.0.3
 			fixesTick();      // 1.0.2
+			cheatsTick();     // 1.0.3
 		}
 		drawOverlays();
 	}
@@ -6286,6 +6287,77 @@ public:
 		openPopup("Game fixes downloaded", text + "They apply the next time each game starts.", { "OK" }, nullptr);
 		fixesReady = false;
 		fixesReport = {};
+	}
+
+	/* 1.0.3: "Download cheats" (Settings > Updates): xbased's trainers into the data folder's trainers,
+	 * on a thread of its own; how far it is in a toast, what it did at the end; then the trainers are
+	 * read again (the Mods screens show them) */
+	bool cheatsAsked{ false }, cheatsRescan{ false };
+	void downloadCheats()
+	{
+		unsigned done = 0, total = 0;
+		if (cheatsAsked || ogbox::fixes::CheatsRunning(done, total)) {
+			showToast("The cheats are being downloaded already.");
+			return;
+		}
+		OGBoxUpdate::Start();   // (curl's set-up, once)
+		const std::string trainers = ogbox::storagePath("trainers");
+		mkdir(trainers.c_str(), 0777);
+		if (!ogbox::fixes::StartCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers)) {
+			return;
+		}
+		cheatsAsked = true;
+		pshakux_log("cheats: the download was asked for, into %s", trainers.c_str());
+		showToast("Downloading the cheats from xbased's repository...");
+	}
+
+	std::string cheatsLine() const
+	{
+		unsigned done = 0, total = 0;
+		if (ogbox::fixes::CheatsRunning(done, total)) {
+			return total ? "downloading " + std::to_string(done) + " of " + std::to_string(total) : std::string("downloading");
+		}
+		return "xbased's trainers";
+	}
+
+	void cheatsTick()
+	{
+		if (cheatsRescan && ogbox_trainers_state(nullptr, nullptr) != 1) {
+			cheatsRescan = false;
+			scanTrainers();   // (not while a scan runs: it would be skipped)
+		}
+		if (!cheatsAsked) {
+			return;
+		}
+		unsigned done = 0, total = 0;
+		if (ogbox::fixes::CheatsRunning(done, total)) {
+			if (total) {
+				toast = "Downloading cheats: " + std::to_string(done) + " of " + std::to_string(total);   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			}
+			return;
+		}
+		ogbox::fixes::CheatsReport r;
+		if (!ogbox::fixes::PollCheats(r)) {
+			return;
+		}
+		cheatsAsked = false;
+		std::string text = std::to_string(r.fetched) + " downloaded, " + std::to_string(r.present) + " already there";
+		if (r.kept) {
+			text += ", " + std::to_string(r.kept) + " kept (a file of yours has the name)";
+		}
+		if (r.failed) {
+			text += ", " + std::to_string(r.failed) + " failed";
+		}
+		text = r.listed || r.ok ? "Cheats: " + text + "." : std::string();
+		if (!r.error.empty()) {
+			text += (text.empty() ? "" : " ") + r.error;
+		}
+		showToast(text);
+		toastUntil = now_seconds() + 6.0;
+		if (r.fetched) {
+			cheatsRescan = true;
+		}
 	}
 
 	void showToast(const std::string &text)
@@ -8906,6 +8978,15 @@ public:
 			actionRow("check", "Look for an update now", updateLine(), "Asks GitHub whether a newer OGBox is out and offers it with "
 				"what is new. Nothing is downloaded without asking; your settings, the hard disk, states and games stay.",
 				[this]() { checkForUpdate(); }, rows, acts, ui::Icon::Check);
+			/* 1.0.3: the Xbox scene's trainers xbased keeps, downloaded only from here (ogbox_fixes_fetch.h); in
+			 * the game list's settings (its ticks show how far it is) */
+			if (library) {
+				actionRow("cheats", "Download cheats", cheatsLine(), "Downloads the Xbox scene's cheat files (.etm and .xbtf "
+					"trainers) from xbased's repository on GitHub into " + ogbox::storagePath("trainers") + "; each game's appear on "
+					"its Mods screen. They are third-party files, not part of OGBox, made by the Xbox scene's trainer makers: use "
+					"them only with games you own. Files already there are kept as they are.", [this]() { downloadCheats(); }, rows,
+					acts, ui::Icon::Puzzle);
+			}
 			/* 0.0.6: this version's release notes (the README beside eboot.bin) */
 			actionRow("news", "What's New?", "this version", "What was added, changed and fixed in this version.",
 				[this]() { openPopup(std::string("What's new in OGBox ") + pshakux_build_label(), whatsNew(), { "Close" }, [](int) {}); },
