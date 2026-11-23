@@ -5,8 +5,7 @@ requires credit to Press5elect.
 
 OGBox's own mods, beside hakuX's (its `mods` folder): the build copies this folder over hakuX's
 into the title folder's `mods` (`ps5/tools/build.sh`), so a game's folder gets these beside
-hakuX's, and a mod of the same name replaces hakuX's. This file is not copied. A hakuX mod that
-must not ship at all is excluded in `ps5/tools/build.sh` (`5443000D.5/120fps`, withdrawn).
+hakuX's, and a mod of the same name replaces hakuX's. This file is not copied.
 
 The layout and the file formats are hakuX's (`mods/README.md` in hakuX's source):
 

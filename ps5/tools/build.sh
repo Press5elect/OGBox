@@ -92,13 +92,11 @@ fi
 app="$root/dist/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["titleId"])' "$ps5/sce_sys/param.json")"
 python3 "$ps5/tools/build-assets.py" --install "$app"
 # hakuX's mods and cheats (its mods/ folder, one folder a game: 0.1.19) beside eboot.bin, as the work
-# tree has them (ps5/src/core/ogbox_mods.c reads them). One is withdrawn, not shipped:
-# 5443000D.5/120fps stops the game at its first switch from a real-time scene to play (the
-# console's logs of 2026-11-23; docs/dev/open-work.md). A fixed one goes in ps5/mods.
+# tree has them (ps5/src/core/ogbox_mods.c reads them).
 rm -rf "$app/mods"
 if [[ -d $hakux_tree/mods ]]; then
     mkdir -p "$app/mods"
-    rsync -a --exclude .git --exclude /5443000D.5/120fps/ "$hakux_tree/mods/" "$app/mods/"
+    rsync -a --exclude .git "$hakux_tree/mods/" "$app/mods/"
 fi
 # 0.0.2: OGBox's own mods (ps5/mods, Press5elect's, the same layout: mods/<title ID>.<version>/<mod>/)
 # over hakuX's: a game's folder gets them beside hakuX's, and one of the same name replaces hakuX's.
