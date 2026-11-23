@@ -87,6 +87,7 @@
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
 #include "ogbox_fixes_fetch.h"   // OGBox 1.0.2: game fixes from GitHub at start
+#include "platform/ps5_broker.h"   // OGBox 1.0.4: the write broker and the storage write test
 #include "VulkanTexture.h"
 #include <cctype>
 #include <cfloat>

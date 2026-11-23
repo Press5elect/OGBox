@@ -94,6 +94,7 @@ add_custom_target(pshakux_identity
 # Crux2's libc additions and virtual file layer
 add_library(pshakux_platform OBJECT
 	src/platform/ps5_bootlog.cpp
+	src/platform/ps5_broker.cpp
 	src/platform/ps5_crash.cpp
 	src/platform/ps5_build_stamp.cpp
 	src/platform/ps5_clock.c

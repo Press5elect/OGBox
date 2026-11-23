@@ -23,7 +23,8 @@
 #     link-title.sh binds them), except the ones whose replacement calls the console's own.
 #
 # The title folder, dist/<TITLE_ID>/, gets the signed eboot.bin, sce_sys/, sce_module/libc.prx,
-# the presenter's shaders, sandbox-elevator.elf (tools/build-elevator.sh); tools/build.sh then lays
+# the presenter's shaders, sandbox-elevator.elf (tools/build-elevator.sh), write-broker.elf
+# (tools/build-broker.sh); tools/build.sh then lays
 # in the assets (tools/build-assets.py) and the
 # notices (tools/stage-notices.py: LEGAL.txt, NOTICE.txt and licenses/).
 #
@@ -251,6 +252,9 @@ done
 # Leaving the sandbox: the helper the title sends to the payload loader (tools/build-elevator.sh;
 # src/platform/ps5_sandbox.cpp).
 cp "$(bash "$ps5/tools/build-elevator.sh")" "$app/sandbox-elevator.elf"
+# OGBox 1.0.4: the write broker, a payload the storage write test sends to the same loader
+# (tools/build-broker.sh; src/platform/ps5_broker.cpp).
+cp "$(bash "$ps5/tools/build-broker.sh")" "$app/write-broker.elf"
 # What a user writes: an example boot.txt (the title reads /data/homebrew/<TITLE_ID>/boot.txt).
 cp "$ps5/package/boot.example.txt" "$app/boot.example.txt"
 # OGBox 0.0.1, Crux2's: the certificates the updater's HTTPS requests are checked with: Mozilla's

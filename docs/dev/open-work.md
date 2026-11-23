@@ -19,6 +19,37 @@ done or something new is learned; delete what no longer applies.
 | **Widescreen (any release)** (1.0.4: OgXHD's database again for 30 games, `N` records; `docs/dev/game-fixes.md`) | Passed its PC test (`tests/patches`: each of the 30 applies on a file of its own patterns and is refused with one more copy of one; `N` itself). Not seen on a console: an entry offered (not greyed) on a PAL or other non-USA disc and 16:9 with it on. The patterns were never checked against a real XBE here (none is in the repository), so how many of the 30 fit a given release is not known; one that doesn't is shown greyed with the count it found |
 | Texture packs with palette (P8) textures whose palette animates | Each palette is a different code: a pack needs one file per palette state |
 
+## The write broker: the storage write test (1.0.4, untested on the console)
+
+The console holds a title's writes back after a burst of about 1.3 GiB at 242 MiB/s, then about
+2 MiB/s, per process (PS5_PayloadSDK `platform/docs/PROBE.md`, "Sustained writes" to "Writing
+through another process"). The console's FTP server, a payload, wasn't held by a title's budget but
+wrote only about 7 MiB/s a connection (22-25 MiB/s in all), which may be its own cost (a `write()`
+a small `recv()`) rather than a limit on payloads; its STOR also can't write at an offset. Whether
+OGBox's writes (the Xbox hard disk) should go through a payload of its own depends on what a payload
+sustains past 2 GiB, so this build only measures: **Settings > Advanced > Storage write test**
+(`ps5/src/platform/ps5_broker.cpp`), with the broker `write-broker.elf` (`ps5/broker`, built by
+`ps5/tools/build-broker.sh`, sent to the payload loader on 127.0.0.1:9021 like the elevation helper).
+Nothing in OGBox writes through the broker yet. Passed its PC test (`tests/broker`: offsets out of
+order, short `pwrite`s, errors, pipelined requests in order, the path check, the whole test on a
+small plan); the payload builds with the SDK's `prospero-clang++`. Not run on a console.
+
+What the `writetest:` lines will decide:
+
+| Result | Then |
+| --- | --- |
+| B (the broker's own 16 MiB writes, right after A spent the title's budget) stays near 242 MiB/s past 2 GiB, and F (the title again) is still about 2 MiB/s | A payload has a budget of its own or none: route the hard disk's writes through the broker (E's numbers say what the loopback adds) |
+| B falls to about 2 MiB/s after its own 1.3 GiB | Payloads are held the same way, each its own budget: a broker only adds one burst; not worth it |
+| B starts near 2 MiB/s | The budget is shared beyond the process (or A's spending held B): the broker can't help |
+| B sustains, C (64 KiB writes) much lower | A write's own cost dominates (ftpsrv's 7 MiB/s): the broker must write in large pieces (gather small writes) |
+| F faster than A's tail | Something refilled the title's budget during B to E (the idle time, about 7 minutes): note it |
+| The view line says "different", or the read-back check fails | The broker sees other files than the title: fix that before anything else |
+
+Risks to watch on the first run: the loader on 9021 must be free (the elevation helper uses it at
+start, briefly); a broker left running ends itself after 10 minutes without a request, or when the
+title's connection closes; starting a game during the test ends it (the files are deleted at the
+next run's start); `O_DIRECT` is dropped by itself where the file system refuses it (`direct=0`).
+
 ## Known problems, cause not found
 
 | Problem | What is known |
