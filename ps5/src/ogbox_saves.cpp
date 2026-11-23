@@ -19,6 +19,7 @@
 #include <cctype>
 #include <condition_variable>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <cerrno>
 #include <cstdio>
@@ -480,22 +481,84 @@ bool hddImportSave(const SaveCopy &copy, const std::string &hddRoot, bool overwr
 		return false;
 	}
 	const std::string to = child(dir, copy.folder.c_str());
-	if (isDir(to)) {
-		if (!overwrite) {
-			why = "the hard disk has that save already";
-			return false;
+	/* 1.0.3: the save that was there is put aside beside the hard disk's drives under its own names (a
+	 * fixed name for every save was deleted by the next import of any save, with the only copy in it
+	 * when an import was cut between its renames): one an import left there is put back when the save
+	 * isn't in its place, deleted only when that import put its copy in place (<save>.placed), and
+	 * otherwise kept (a game may have made the save again meanwhile) */
+	const std::string asideDir = hddRoot + "/.ogbox-import-aside/" + dir.substr(dir.find_last_of('/') + 1);
+	const std::string old = asideDir + "/" + to.substr(to.find_last_of('/') + 1), placed = old + ".placed";
+	struct stat st;
+	if (isDir(old)) {
+		if (!isDir(to)) {
+			if (rename(old.c_str(), to.c_str()) != 0) {
+				why = to + ": what an earlier import put aside can't be put back: " + std::strerror(errno);
+				return false;
+			}
+			pshakux_log("saves: %s put back from where an import that stopped put it aside", to.c_str());
+		} else if (stat(placed.c_str(), &st) == 0) {
+			removeTree(old);   // (what replaced it is there whole; the mark stays till it is gone)
+		} else {
+			const std::string kept = old + ".kept-" + std::to_string(static_cast<long long>(time(nullptr)));
+			if (rename(old.c_str(), kept.c_str()) != 0) {
+				why = old + ": " + std::strerror(errno);
+				return false;
+			}
+			pshakux_log("saves: what an import that stopped put aside is kept in %s", kept.c_str());
 		}
-		removeTree(to);
+	}
+	if (!isDir(old)) {
+		unlink(placed.c_str());
+	}
+	const bool had = isDir(to);
+	if (had && !overwrite) {
+		why = "the hard disk has that save already";
+		return false;
 	}
 	/* the game's name file, when the hard disk has none for the game yet */
 	const std::string meta = child(dir, "TitleMeta.xbx");
-	struct stat st;
 	const std::string from = copy.path.substr(0, copy.path.find_last_of('/'));
 	if (stat(meta.c_str(), &st) != 0 && stat((from + "/TitleMeta.xbx").c_str(), &st) == 0) {
 		std::string ignored;
 		copyFile(from + "/TitleMeta.xbx", meta, ignored);
 	}
-	return copyTree(copy.path, to, why);
+	/* 1.0.3: copied beside the hard disk's drives first (no Xbox drive: no game sees it half made),
+	 * then put in the save's place; the save that was there is deleted only once the copy is in it
+	 * (it was deleted first, and a copy that failed lost it) */
+	const std::string fresh = hddRoot + "/.ogbox-import";
+	removeTree(fresh);
+	if (!copyTree(copy.path, fresh, why)) {
+		removeTree(fresh);
+		return false;
+	}
+	if (had && !makeFolders(asideDir)) {
+		why = asideDir + ": " + std::strerror(errno);
+		removeTree(fresh);
+		return false;
+	}
+	if (had && rename(to.c_str(), old.c_str()) != 0) {
+		why = to + ": " + std::strerror(errno);
+		removeTree(fresh);
+		return false;
+	}
+	if (rename(fresh.c_str(), to.c_str()) != 0) {
+		why = to + ": " + std::strerror(errno);
+		if (had) {
+			rename(old.c_str(), to.c_str());
+		}
+		removeTree(fresh);
+		return false;
+	}
+	if (had) {
+		const int fd = open(placed.c_str(), O_WRONLY | O_CREAT, 0666);   // (what is aside: safe to delete)
+		if (fd >= 0) {
+			close(fd);
+			if (removeTree(old)) {
+				unlink(placed.c_str());
+			}
+		}
+	}
+	return true;
 }
 
 /* ---- 0.0.8: the save sync's file access and its job ---- */
@@ -515,19 +578,51 @@ bool syncList(const std::string &folder, std::vector<savesync::Entry> *out)
 			return false;
 		}
 		ps5vfs_dirent e;
-		while (ps5vfs_readdir(d, &e) == 1) {
+		int got = 0;
+		while ((got = ps5vfs_readdir(d, &e)) == 1) {
 			if (std::strcmp(e.name, ".") && std::strcmp(e.name, "..")) {
 				out->push_back({ e.name, e.is_directory != 0, e.size > 0 ? static_cast<uint64_t>(e.size) : 0, e.mtime });
 			}
 		}
 		ps5vfs_closedir(d);
+		if (got < 0) {   // (1.0.3: cut short)
+			out->clear();
+			return false;
+		}
 		return true;
 	}
 	DIR *d = opendir(folder.c_str());
 	if (!d) {
 		return false;
 	}
+	/* 1.0.3: a file a write stopped between its renames left aside (.<name>.old, with no <name>) is put
+	 * back before it is listed (the sync skips hidden names: it took the save for deleted here, and
+	 * deleted it on the other side) */
+	std::vector<std::string> aside;
 	while (struct dirent *e = readdir(d)) {
+		const size_t n = std::strlen(e->d_name);
+		if (n > 5 && e->d_name[0] == '.' && !std::strcmp(e->d_name + n - 4, ".old")) {
+			aside.emplace_back(e->d_name);
+		}
+	}
+	for (const std::string &name : aside) {
+		const std::string was = folder + "/" + name.substr(1, name.size() - 5);
+		struct stat st;
+		if (lstat(was.c_str(), &st) != 0 && errno == ENOENT && stat((folder + "/" + name).c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+			rename((folder + "/" + name).c_str(), was.c_str());
+		}
+	}
+	rewinddir(d);
+	/* 1.0.3 (after Crux2's backup listing): a listing cut short by a read error is no listing (the
+	 * sync takes what isn't listed for not there) */
+	int error = 0;
+	for (;;) {
+		errno = 0;
+		struct dirent *e = readdir(d);
+		if (!e) {
+			error = errno;
+			break;
+		}
 		if (!std::strcmp(e->d_name, ".") || !std::strcmp(e->d_name, "..")) {
 			continue;
 		}
@@ -535,9 +630,16 @@ bool syncList(const std::string &folder, std::vector<savesync::Entry> *out)
 		if (stat((folder + "/" + e->d_name).c_str(), &st) == 0) {
 			out->push_back({ e->d_name, S_ISDIR(st.st_mode), S_ISREG(st.st_mode) ? static_cast<uint64_t>(st.st_size) : 0,
 				static_cast<int64_t>(st.st_mtime) });
+		} else if (errno != ENOENT) {   // (one gone meanwhile is no failure)
+			error = errno;
+			break;
 		}
 	}
 	closedir(d);
+	if (error) {
+		out->clear();
+		return false;
+	}
 	return true;
 }
 
@@ -563,15 +665,30 @@ bool syncRead(const std::string &path, std::string *data)
 }
 
 /* whole: a share's beside its place first (ps5vfs_store); the console's in a hidden file beside it,
- * then moved there (a save is never half written on the hard disk) */
+ * then moved there (a save is never half written on the hard disk). 1.0.3 (after Crux2's WriteFile):
+ * never renamed onto the old file (on an exFAT drive, a USB drive's, a rename onto a file can report
+ * success and keep the old one): the old one is put aside, the new one in its place and checked
+ * there, and only then the old one deleted; one a stop left aside is put back by the next write. */
 bool syncWrite(const std::string &path, const std::string &data)
 {
 	if (remotePath(path)) {
 		return ps5vfs_store(path.c_str(), data.data(), data.size()) == 0;
 	}
 	const size_t slash = path.find_last_of('/');
-	const std::string tmp = slash == std::string::npos ? "." + path + ".part"
-		: path.substr(0, slash + 1) + "." + path.substr(slash + 1) + ".part";
+	const std::string base = slash == std::string::npos ? "." + path : path.substr(0, slash + 1) + "." + path.substr(slash + 1);
+	const std::string tmp = base + ".part", old = base + ".old";
+	const auto sizeOf = [](const std::string &file, off_t *size) {
+		struct stat st;
+		if (stat(file.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+			return false;
+		}
+		*size = st.st_size;
+		return true;
+	};
+	off_t size = 0;
+	if (!sizeOf(path, &size) && sizeOf(old, &size)) {
+		rename(old.c_str(), path.c_str());   // what a write stopped between its renames left
+	}
 	FILE *f = std::fopen(tmp.c_str(), "wb");
 	if (!f) {
 		return false;
@@ -580,9 +697,35 @@ bool syncWrite(const std::string &path, const std::string &data)
 	ok = std::fflush(f) == 0 && ok;
 	ok = fsync(fileno(f)) == 0 && ok;
 	ok = std::fclose(f) == 0 && ok;
-	if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+	ok = ok && sizeOf(tmp, &size) && static_cast<uint64_t>(size) == data.size();
+	if (!ok) {
 		unlink(tmp.c_str());
 		return false;
+	}
+	off_t was = 0, moved = 0;
+	const bool had = sizeOf(path, &was);
+	if (had && ((unlink(old.c_str()) != 0 && errno != ENOENT) || rename(path.c_str(), old.c_str()) != 0 || sizeOf(path, &moved) ||
+				   !sizeOf(old, &moved) || moved != was)) {
+		if (!sizeOf(path, &moved)) {
+			rename(old.c_str(), path.c_str());
+		}
+		unlink(tmp.c_str());
+		return false;
+	}
+	off_t placed = 0;
+	const bool renamed = std::rename(tmp.c_str(), path.c_str()) == 0;
+	if (!renamed || sizeOf(tmp, &placed) || !sizeOf(path, &placed) || static_cast<uint64_t>(placed) != data.size()) {
+		if (had) {
+			if (renamed) {
+				unlink(path.c_str());
+			}
+			rename(old.c_str(), path.c_str());
+		}
+		unlink(tmp.c_str());
+		return false;
+	}
+	if (had) {
+		unlink(old.c_str());
 	}
 	return true;
 }
@@ -653,7 +796,7 @@ void saveSyncAskStop()
 	std::lock_guard<std::mutex> lock(g_syncMutex);
 	if (g_syncRunning && !g_syncStop) {
 		g_syncStop = true;
-		pshakux_log("save sync: OGBox closes: the sync stops after the save it is copying");
+		pshakux_log("save sync: asked to stop (OGBox closes or starts again): it stops after the save it is copying");
 	}
 }
 
@@ -718,6 +861,10 @@ savesync::Io syncIo(const std::string &list)
  * it returns is called once the next one can start (its done: the menu may start another then). */
 bool startSyncJob(std::function<std::function<void()>()> job)
 {
+	if (StorageMove::get().progress().running) {   // 1.0.3: the hard disk and the sync's list are being moved
+		pshakux_log("save sync: not started: the data folder is being moved");
+		return false;
+	}
 	{
 		std::lock_guard<std::mutex> lock(g_syncMutex);
 		if (g_syncRunning) {
@@ -726,17 +873,27 @@ bool startSyncJob(std::function<std::function<void()>()> job)
 		g_syncRunning = true;
 		g_syncStop = false;
 	}
-	std::thread([job] {
-		const std::function<void()> then = job();
+	try {
+		std::thread([job] {
+			const std::function<void()> then = job();
+			{
+				std::lock_guard<std::mutex> lock(g_syncMutex);
+				g_syncRunning = false;
+			}
+			g_syncEnded.notify_all();
+			if (then) {
+				then();
+			}
+		}).detach();
+	} catch (const std::system_error &) {   // 1.0.3: no thread: not running (it showed running for good)
 		{
 			std::lock_guard<std::mutex> lock(g_syncMutex);
 			g_syncRunning = false;
 		}
 		g_syncEnded.notify_all();
-		if (then) {
-			then();
-		}
-	}).detach();
+		pshakux_log("save sync: not started: no thread for it");
+		return false;
+	}
 	return true;
 }
 
@@ -758,7 +915,7 @@ bool startSaveSync(const std::string &hddRoot, const SyncPlace &place, std::func
 		}
 		const std::string summary = savesync::summary(r, place.name);
 		pshakux_log("save sync: %s (%d unchanged)", summary.c_str(), r.unchanged);
-		const SyncOutcome o{ summary, r.listed, r.sent, r.brought, r.failed };
+		const SyncOutcome o{ summary, r.listed && !r.hereFailed, r.sent, r.brought, r.failed };
 		return std::function<void()>([done, o] {
 			if (done) {
 				done(o);

@@ -16,6 +16,9 @@
  * moved there once it has come (its source's name was the folder's until then: a cover from
  * libretro had the Redump name, not the file's). Covers kept under a source's name by 0.0.3 are
  * moved the same way the first time they are shown.
+ * 1.0.3: MobCat's picture found by the disc's title ID and version in MobCat's database (the index
+ * gamedata/covers-mobcat.txt), and its thumbnail (the front alone) where it has no scan; either is
+ * kept as mc-<name>.jpg, as before.
  */
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
@@ -185,9 +188,11 @@ int httpGet(const std::string &host, const std::string &path, std::string &body,
 		location = data.substr(a, data.find("\r\n", a) - a);
 	}
 	body = data.substr(end + 4);
+	bool whole = true;   // (the body came to its end: a cover cut off midway is not a cover)
 	if (head.find("transfer-encoding: chunked") != std::string::npos) {
 		std::string plain;
 		size_t at = 0;
+		whole = false;
 		while (at < body.size()) {
 			const size_t le = body.find("\r\n", at);
 			if (le == std::string::npos) {
@@ -195,12 +200,29 @@ int httpGet(const std::string &host, const std::string &path, std::string &body,
 			}
 			const size_t len = std::strtoul(body.c_str() + at, nullptr, 16);
 			if (!len) {
+				whole = true;
 				break;
+			}
+			if (len > body.size() - (le + 2)) {
+				break;   // (a length past the bytes there are: cut short, or it would wrap)
 			}
 			plain.append(body, le + 2, len);
 			at = le + 2 + len + 2;
 		}
 		body.swap(plain);
+	} else {
+		const size_t cl = head.find("\r\ncontent-length:");
+		if (cl != std::string::npos) {
+			const unsigned long long want = std::strtoull(head.c_str() + cl + 17, nullptr, 10);
+			whole = body.size() >= want;
+			if (body.size() > want) {
+				body.resize(static_cast<size_t>(want));
+			}
+		}
+	}
+	if (!whole || data.size() > (16u << 20)) {
+		body.clear();
+		return 0;
 	}
 	return status;
 }
@@ -366,32 +388,72 @@ std::vector<std::string> coverNames(const std::string &fileName, uint32_t titleI
 
 namespace {
 std::mutex g_mcMutex;
-std::vector<std::string> g_mc;   // the stems, sorted
+/* 1.0.3: gamedata/covers-mobcat.txt (ps5/tools/import-mobcat-covers.py): MobCat's releases by title
+ * ID and version, each with its pictures' names in the database's order, and every name with
+ * whether the repository has its scan (cover/) or only its front (thumbnail/) */
+struct McRelease {
+	uint32_t titleId, version;
+	std::vector<std::string> names;
+};
+struct McPicture {
+	bool scan;           // the repository has its scan, else its thumbnail alone
+	std::string label;   // the box it is ("NTSC-U", "PAL-GBR-Classics"; "" not known)
+};
+std::vector<McRelease> g_mcReleases;   // in the file's order: by title ID
+std::map<std::string, McPicture> g_mc;
 bool g_mcRead = false;
 
-const std::vector<std::string> &mobcatIndex()
+void readMobcatIndex()
 {
 	std::lock_guard<std::mutex> lock(g_mcMutex);
-	if (!g_mcRead) {
-		g_mcRead = true;
-		FILE *f = std::fopen((std::string(pshakux_title_dir()) + "/gamedata/covers-mobcat.txt").c_str(), "r");
-		if (f) {
-			char line[160];
-			while (std::fgets(line, sizeof(line), f)) {
-				std::string l(line);
-				while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) {
-					l.pop_back();
-				}
-				if (!l.empty() && l[0] != '#') {
-					g_mc.push_back(l);
-				}
-			}
-			std::fclose(f);
-			std::sort(g_mc.begin(), g_mc.end());
-		}
-		pshakux_log("covers: MobCat's index: %zu scans", g_mc.size());
+	if (g_mcRead) {
+		return;
 	}
-	return g_mc;
+	g_mcRead = true;
+	FILE *f = std::fopen((std::string(pshakux_title_dir()) + "/gamedata/covers-mobcat.txt").c_str(), "r");
+	if (f) {
+		char line[1024];
+		while (std::fgets(line, sizeof(line), f)) {
+			char tid[9], xmid[9], region;
+			unsigned ver = 0;
+			int at = 0;
+			if (line[0] == '#' || std::sscanf(line, "%8s %x %c %8s%n", tid, &ver, &region, xmid, &at) != 4 ||
+				std::strlen(tid) != 8 || std::strlen(xmid) != 8) {
+				continue;   // (a comment, an icon's line: "i <title ID>")
+			}
+			McRelease r{ static_cast<uint32_t>(std::strtoul(tid, nullptr, 16)), ver, {} };
+			for (const char *p = line + at; *p;) {
+				while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+					p++;
+				}
+				const char *e = p;
+				while (*e && *e != ' ' && *e != '\t' && *e != '\n' && *e != '\r') {
+					e++;
+				}
+				if (e == p) {
+					break;
+				}
+				/* "ct=NTSC-U", "t-PAL-DEU": where it is (c the scan, t the thumbnail), then the label of
+				 * <XMID>.jpg after "=", or <XMID>-<label>.jpg's */
+				const char *q = p;
+				bool scan = false, thumb = false;
+				for (; q < e && (*q == 'c' || *q == 't'); q++) {
+					(*q == 'c' ? scan : thumb) = true;
+				}
+				if ((scan || thumb) && (q == e || *q == '-' || *q == '=')) {
+					const std::string name = std::string(xmid) + (*q == '-' ? std::string(q, e) : std::string());
+					r.names.push_back(name);
+					g_mc[name] = McPicture{ scan, q == e ? std::string() : std::string(q + 1, e) };
+				}
+				p = e;
+			}
+			if (!r.names.empty()) {
+				g_mcReleases.push_back(std::move(r));
+			}
+		}
+		std::fclose(f);
+	}
+	pshakux_log("covers: MobCat's index: %zu releases, %zu pictures", g_mcReleases.size(), g_mc.size());
 }
 
 /* a region letter of MobCat's (the certificate's bits: A 1, J 2, K 3, E 4, L 5, W 7) */
@@ -407,11 +469,59 @@ uint32_t regionBits(char c)
 	default: return 0;
 	}
 }
+
+/* a picture's score for the regions wanted: st is <serial><2 digits><region letter>[-<label>], its
+ * serial sn characters long (the release's version not counted: the caller's) */
+int mobcatScore(const std::string &st, size_t sn, uint32_t regions)
+{
+	const unsigned ver = static_cast<unsigned>(std::atoi(st.substr(sn, 2).c_str()));
+	const uint32_t rb = regionBits(st[sn + 2]);
+	int score = static_cast<int>(ver);                              // the later release
+	score += st.size() == sn + 3 ? 40 : 0;                        // a plain scan, not a variant's
+	/* a scan whose box is the market wanted ("-NTSC-U-Platinum", "-PAL-GBR"; 1.0.3: the plain scan's
+	 * too, the database's label for it): that box's, the plain one before its variants */
+	const auto pic = g_mc.find(st);
+	const std::string var = pic != g_mc.end() ? pic->second.label : st.size() > sn + 3 ? st.substr(sn + 3) : std::string();
+	if (!var.empty() && (((regions & 1) && var.find("NTSC-U") != std::string::npos) ||
+			((regions & 2) && var.find("NTSC-J") != std::string::npos) ||
+			((regions & 4) && var.find("PAL") != std::string::npos))) {
+		score += 60;
+	}
+	score += regions && (rb & regions) ? 200 : 0;                 // the regions'
+	score += regions && rb == regions ? 50 : 0;
+	return score;
+}
 } // namespace
 
 std::string mobcatCover(uint32_t titleId, const std::string &serial, uint32_t version, uint32_t regions)
 {
-	/* the serial without its dash: the record's, else the title ID's (two letters, the number) */
+	readMobcatIndex();
+	/* 1.0.3: the disc's own release first, by its title ID and version (any version when it isn't
+	 * known): of its pictures (and those of its other regions' releases of that version), the one
+	 * for the regions wanted */
+	if (titleId) {
+		std::string best;
+		int bestScore = -1;
+		auto it = std::lower_bound(g_mcReleases.begin(), g_mcReleases.end(), titleId,
+			[](const McRelease &r, uint32_t t) { return r.titleId < t; });
+		for (; it != g_mcReleases.end() && it->titleId == titleId; ++it) {
+			if (version && it->version != version) {
+				continue;
+			}
+			for (const std::string &st : it->names) {
+				const int score = mobcatScore(st, 5, regions);   // (an XMID: <2 letters><3 digits><2><region>)
+				if (score > bestScore) {
+					bestScore = score;
+					best = st;
+				}
+			}
+		}
+		if (!best.empty()) {
+			return best;
+		}
+	}
+	/* else a guess: the serial without its dash: the record's, else the title ID's (two letters, the
+	 * number), and of the pictures under it, the release's version and regions' */
 	std::string sn;
 	for (char c : serial) {
 		if (c != '-' && c != ' ') {
@@ -427,28 +537,16 @@ std::string mobcatCover(uint32_t titleId, const std::string &serial, uint32_t ve
 	if (sn.size() < 5) {
 		return std::string();
 	}
-	const std::vector<std::string> &idx = mobcatIndex();
 	std::string best;
 	int bestScore = -1;
-	for (auto it = std::lower_bound(idx.begin(), idx.end(), sn); it != idx.end() && !it->compare(0, sn.size(), sn); ++it) {
-		const std::string &st = *it;
+	for (auto it = g_mc.lower_bound(sn); it != g_mc.end() && !it->first.compare(0, sn.size(), sn); ++it) {
+		const std::string &st = it->first;
 		if (st.size() < sn.size() + 3 || !std::isdigit(static_cast<unsigned char>(st[sn.size()])) ||
 			!std::isdigit(static_cast<unsigned char>(st[sn.size() + 1]))) {
 			continue;   // (another serial that starts the same: MS01 and MS013)
 		}
 		const unsigned ver = static_cast<unsigned>(std::atoi(st.substr(sn.size(), 2).c_str()));
-		const uint32_t rb = regionBits(st[sn.size() + 2]);
-		int score = static_cast<int>(ver);                              // the later release
-		score += st.size() == sn.size() + 3 ? 40 : 0;                 // a plain scan, not a variant's
-		/* a variant's scan named for the market wanted ("-NTSC-U-Platinum", "-PAL-GBR"): that box's */
-		const std::string var = st.size() > sn.size() + 3 ? st.substr(sn.size() + 3) : std::string();
-		if (!var.empty() && (((regions & 1) && var.find("NTSC-U") != std::string::npos) ||
-				((regions & 2) && var.find("NTSC-J") != std::string::npos) ||
-				((regions & 4) && var.find("PAL") != std::string::npos))) {
-			score += 60;
-		}
-		score += regions && (rb & regions) ? 200 : 0;                 // the regions'
-		score += regions && rb == regions ? 50 : 0;
+		int score = mobcatScore(st, sn.size(), regions);
 		score += version && ver == (version & 0xFF) ? 400 : 0;        // this very release
 		if (score > bestScore) {
 			bestScore = score;
@@ -456,6 +554,13 @@ std::string mobcatCover(uint32_t titleId, const std::string &serial, uint32_t ve
 		}
 	}
 	return best;
+}
+
+bool mobcatScan(const std::string &name)
+{
+	readMobcatIndex();
+	const auto it = g_mc.find(name);
+	return it == g_mc.end() || it->second.scan;
 }
 
 std::vector<std::string> coverSources(const std::string &fileName, const std::string &path, uint32_t titleId,
@@ -474,7 +579,8 @@ std::vector<std::string> coverSources(const std::string &fileName, const std::st
 			: r.empty() ? 0 : 4;
 	}
 	/* libretro's fronts first (a PNG of ~250 KB), MobCat's scans of the whole box for what libretro
-	 * hasn't (1 to 2 MB each: the home's covers came in at one every two seconds) */
+	 * hasn't (1 to 2 MB each: the home's covers came in at one every two seconds; 1.0.3: or its
+	 * thumbnail of the front, where it has no scan) */
 	std::vector<std::string> out = coverNames(fileName, given, givenRegions);
 	/* 0.0.4: the game's own cover, covers/<file name> (Covers::findAny), before every source */
 	if (!fileName.empty()) {
@@ -602,12 +708,14 @@ struct Covers::Impl {
 	}
 
 	/* MobCat's scan: the box's front (the right of the scan: back, spine, front), at most 720 high, as
-	 * a JPEG. The status (-1 the network). */
+	 * a JPEG. 1.0.3: where the repository has no scan, its thumbnail (the front already, 300 x 427),
+	 * kept the same way. The status (-1 the network). */
 	int fetchMobcat(const std::string &name, size_t &bytes)
 	{
 		const std::string stem = name.substr(4);
-		const std::string url = "https://raw.githubusercontent.com/MobCat/MobCats-original-xbox-game-list/main/cover/" +
-			stem.substr(0, 2) + "/" + stem + ".jpg";
+		const bool scan = mobcatScan(stem);
+		const std::string url = std::string("https://raw.githubusercontent.com/MobCat/MobCats-original-xbox-game-list/main/") +
+			(scan ? "cover/" : "thumbnail/") + stem.substr(0, 2) + "/" + stem + ".jpg";
 		std::vector<uint8_t> body;
 		const int status = OGBoxNet::Get(url, body, 60);
 		if (status != 200) {
@@ -623,7 +731,7 @@ struct Covers::Impl {
 		}
 		/* a wrap-around scan is wider than high: its front is the right 47.4% (Xbox cases: two
 		 * 129 mm covers and a 14 mm spine) */
-		const int fx = w > h ? w - static_cast<int>(w * 0.474f + 0.5f) : 0, fw = w - fx;
+		const int fx = scan && w > h ? w - static_cast<int>(w * 0.474f + 0.5f) : 0, fw = w - fx;
 		const int oh = std::min(h, 720), ow = std::max(1, static_cast<int>(static_cast<int64_t>(fw) * oh / h));
 		std::vector<uint8_t> out(static_cast<size_t>(ow) * oh * 3);
 		for (int y = 0; y < oh; y++) {
@@ -785,6 +893,8 @@ struct Covers::Impl {
 				}
 				if (status == 200 && !(body.size() > 8 && !body.compare(0, 8, "\x89PNG\r\n\x1a\n", 8))) {
 					status = 415;
+				} else if (status == 200 && body.compare(body.size() - 8, 8, "IEND\xAE\x42\x60\x82", 8) != 0) {
+					status = 0;   // (a PNG cut off before its end chunk: asked again, not kept)
 				}
 				if (status == 200 && writeFile(pathOf(name, ".png"), body)) {
 					bytes = body.size();
@@ -806,6 +916,12 @@ struct Covers::Impl {
 				writeFile(pathOf(name, ".none"), std::string());
 				missing++;
 				pshakux_log("covers: %s: %s has none", name.c_str(), from);
+			} else if (status >= 300 && status < 400) {
+				/* a redirect not followed (to https, or too many hops) is this cover's: it is passed over, the
+				 * network's rest is not for it (every cover would wait a minute for one) */
+				writeFile(pathOf(name, ".none"), std::string());
+				missing++;
+				pshakux_log("covers: %s: %s: HTTP %d, a redirect not followed: passed over", name.c_str(), from, status);
 			} else {
 				failed++;
 				asked.erase(name);

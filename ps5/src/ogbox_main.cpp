@@ -170,6 +170,7 @@ struct BootConfig {
 	bool autoboot{ false };
 	std::string gameKey;        // 0.1.26: --game <title ID>.<version> (the game list read it)
 	bool back{ false };         // 0.1.43: --back, from a game to the game list (no boot screen)
+	size_t bootTxtOptions{ 0 }; // the first options, boot.txt's (each run reads them again)
 };
 
 std::string trim(const std::string &s)
@@ -271,6 +272,7 @@ bool readBootConfig(BootConfig &config)
 			}
 		}
 		std::fclose(file);
+		config.bootTxtOptions = config.options.size();
 		return true;
 	}
 	return false;
@@ -604,19 +606,24 @@ bool writeBmp(const std::string &path, const uint8_t *rgba, uint32_t w, uint32_t
 	header[26] = 1;
 	header[28] = 24;
 	put32(34, row * h);
-	std::fwrite(header, 1, sizeof(header), f);
+	bool ok = std::fwrite(header, 1, sizeof(header), f) == sizeof(header);
 	std::vector<uint8_t> line(row, 0);
-	for (uint32_t y = 0; y < h; y++) {
+	for (uint32_t y = 0; ok && y < h; y++) {
 		const uint8_t *src = rgba + size_t(h - 1 - y) * stride;
 		for (uint32_t x = 0; x < w; x++) {
 			line[x * 3 + 0] = src[x * 4 + 2];
 			line[x * 3 + 1] = src[x * 4 + 1];
 			line[x * 3 + 2] = src[x * 4 + 0];
 		}
-		std::fwrite(line.data(), 1, row, f);
+		ok = std::fwrite(line.data(), 1, row, f) == row;
 	}
-	std::fclose(f);
-	return true;
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok) {
+		const int error = errno;   // (the caller logs the write's reason)
+		std::remove(path.c_str());   // (a full drive: no truncated picture left, and the caller says it failed)
+		errno = error;
+	}
+	return ok;
 }
 
 /* 0.1.17: the share layer's last failure ("connecting to smb://... failed: <the server's reason>"),
@@ -687,7 +694,7 @@ void wakeShares(const std::vector<std::string> &mounts)
 				std::vector<char> buf(64 * 1024);
 				got = ps5vfs_fread(buf.data(), 1, buf.size(), f);
 				struct stat st;
-				if (ps5vfs_fstat(f, &st) == 0 && st.st_size > static_cast<off_t>(4 * buf.size())) {
+				if (ps5vfs_fstat(f, &st) == 1 && st.st_size > static_cast<off_t>(4 * buf.size())) {
 					std::mt19937_64 rng(static_cast<uint64_t>(t0 * 1e6));
 					const off_t at = static_cast<off_t>(rng() % static_cast<uint64_t>(st.st_size - static_cast<off_t>(buf.size())));
 					if (ps5vfs_fseeko(f, at & ~static_cast<off_t>(4095), SEEK_SET) == 0) {
@@ -923,6 +930,7 @@ public:
 	double quitHeldSince{ -1.0 };
 	int lastState{ -1 };
 	bool relaunchAsked{ false };
+	bool guestRelaunchRefused{ false };   // the console refused the game's next XBE: not asked again
 
 	// The game list (0.1.14): shown when no game was named
 	bool library{ false };
@@ -933,6 +941,7 @@ public:
 	int selected{ 0 };
 	std::string startPath;                    // chosen: started on the next frame
 	int startDelay{ 0 };
+	double startSyncWait{ -1.0 };             // since when the start waits for a save sync to end
 	std::string selectName;                   // to select once the listing comes (going up)
 	std::string startState;                   // 0.1.53: the game starts with this save state
 	double shotHeldSince{ -1.0 };             // L3 + R3 held since (a screenshot)
@@ -987,6 +996,7 @@ public:
 		stbi_uc *px{ nullptr };
 		int w{ 0 }, h{ 0 };
 		bool failed{ false };
+		uint64_t seq{ 0 };                    // the order it was decoded in
 	};
 	struct Decoder {
 		std::mutex mutex;
@@ -994,6 +1004,7 @@ public:
 		std::deque<std::string> queue;          // paths
 		std::set<std::string> pending;
 		std::map<std::string, Decoded> done;    // by path
+		uint64_t decoded{ 0 };
 		bool started{ false };
 
 		void request(const std::string &path)
@@ -1043,9 +1054,17 @@ public:
 				}
 				std::lock_guard<std::mutex> lock(mutex);
 				pending.erase(path);
+				d.seq = ++decoded;
 				done[path] = d;
-				while (done.size() > 96) {        // decoded but never drawn (scrolled past)
+				while (done.size() > 96) {        // decoded but never drawn (scrolled past): the oldest goes
+					/* (not the first by name: that could be the one just decoded, asked for again and
+					 * decoded again each frame) */
 					auto old = done.begin();
+					for (auto c = done.begin(); c != done.end(); ++c) {
+						if (c->second.seq < old->second.seq) {
+							old = c;
+						}
+					}
 					if (old->second.px) {
 						stbi_image_free(old->second.px);
 					}
@@ -1633,7 +1652,9 @@ public:
 		if (!listing) {
 			return;
 		}
-		std::lock_guard<std::mutex> lock(listing->mutex);
+		/* (a copy kept to the end: listing.reset() below would otherwise free the mutex still held) */
+		const std::shared_ptr<Listing> job = listing;
+		std::lock_guard<std::mutex> lock(job->mutex);
 		if (!listing->done) {
 			return;
 		}
@@ -2018,6 +2039,9 @@ public:
 		relaunchAsked = true;
 		std::vector<std::string> words = { "--boot", boot.image, "--hdd", boot.hdd, "--relaunch" };
 		for (const std::string &option : boot.options) {
+			if (static_cast<size_t>(&option - boot.options.data()) < boot.bootTxtOptions) {
+				continue;   // boot.txt's: the next run reads them itself (passed too, they doubled at each switch)
+			}
 			if (option != "relaunch" && option.rfind("loadstate=", 0) != 0) {
 				words.push_back("--option");
 				words.push_back(option);
@@ -2030,7 +2054,14 @@ public:
 		args.push_back(nullptr);
 		saveFrozenFrame();
 		quiesceForExit();
-		pshakux_relaunch(args.data());
+		const int r = pshakux_relaunch(args.data());
+		/* the title goes on: the quick menu (its way back to the list) open to the player again, the
+		 * guest's reboot not asked for again each frame */
+		pshakux_log("ogbox: the relaunch for the game's next XBE was refused (%#x)", static_cast<unsigned>(r));
+		std::remove(frozenPath().c_str());
+		guestRelaunchRefused = true;
+		relaunchAsked = false;
+		showToast("The console refused to start the game's next part (" + std::to_string(r) + ").");
 	}
 
 	/* 0.0.2: a game starting another XBE keeps its picture: the last frame, kept for the title as it
@@ -2170,7 +2201,10 @@ public:
 			/* 0.0.8: an extracted game is its folder's default.xbe: the list opens the folder it is in */
 			const bool folderGame = strcasecmp(baseName(lastGame).c_str(), "default.xbe") == 0;
 			const std::string lastPlace = folderGame ? parentOf(parentOf(lastGame)) : parentOf(lastGame);
-			if (!lastGame.empty() && lastGame != "none" && isFolder(lastPlace)) {
+			/* a folder on a share isn't looked at here (its server may take seconds to answer, the
+			 * start waiting on it): the listing's job finds out, and says it, with the list drawing */
+			const auto there = [](const std::string &p) { return ps5vfs_is_virtual(p.c_str()) != 0 || isFolder(p); };
+			if (!lastGame.empty() && lastGame != "none" && there(lastPlace)) {
 				last = lastPlace;
 			}
 			const std::string select = !lastGame.empty() && lastPlace == last ? (folderGame ? lastGame : baseName(lastGame))
@@ -2179,7 +2213,7 @@ public:
 				screen = Screen::Library;
 				fadeSince = -2.0;   // from the list's first frame
 			}
-			if (!last.empty() && isFolder(last)) {
+			if (!last.empty() && there(last)) {
 				openFolder(last, select);
 			} else {
 				openFolder(std::string());
@@ -2487,6 +2521,9 @@ public:
 		picture.memory = VK_NULL_HANDLE;
 		picture.width = picture.height = 0;
 		picture.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		/* the sets written for it are written again: a new view can come back with the old handle */
+		postPictureView = VK_NULL_HANDLE;
+		smaaPictureView = VK_NULL_HANDLE;
 	}
 
 	void ensureStaging(Staging &s, VkDeviceSize size)
@@ -3218,6 +3255,7 @@ public:
 			smaaW = srcW;
 			smaaH = srcH;
 			smaaPictureView = VK_NULL_HANDLE;
+			postSmaaView = VK_NULL_HANDLE;   // (Debanding's set for smaaOut: written again)
 			smaaValid = false;
 			VkDescriptorImageInfo edges{ sampler, smaaEdges.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 			VkDescriptorImageInfo area{ sampler, smaaArea.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -3310,6 +3348,7 @@ public:
 			downW = vw;
 			downH = vh;
 			downValid = false;
+			smaaPictureView = VK_NULL_HANDLE;   // (SMAA's sets for ssaaDown: written again)
 			pshakux_log("presenter: SSAA + SMAA's image %ux%u", vw, vh);
 		}
 		ensureSmaa(ssaaDown.view, vw, vh);
@@ -3689,6 +3728,14 @@ public:
 			passTimes.takeWorst = std::max(passTimes.takeWorst, ms);
 			passTimes.takes++;
 			passTimes.takesLong += ms > 2.0 ? 1 : 0;
+		}
+		if (fw < w) {
+			/* the frame shrank after its size was read: its rows came w * 4 bytes apart; packed now, as
+			 * the upload, frame generation and a screenshot read them (it was one sheared frame) */
+			uint8_t *px = static_cast<uint8_t *>(s.mapped);
+			for (uint32_t y = 1; y < fh; y++) {
+				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * w * 4, size_t(fw) * 4);
+			}
 		}
 		ensurePicture(fw, fh);
 		fgFresh = true;
@@ -4759,6 +4806,29 @@ public:
 		}
 		collectListing();
 		coverHousekeeping();
+		/* a save sync under way: asked to stop after the save it is copying, the start waiting for it with
+		 * the list drawing ("Starting..."; it waited inside saveSyncFinish, the screen frozen, as long as a
+		 * share took to answer). Not ended in 30 s: not started (cut off by the relaunch, a save could be
+		 * left half copied), and said. */
+		if (!startPath.empty() && startDelay <= 0 && ogbox::saveSyncRunning()) {
+			const double now = now_seconds();
+			if (startSyncWait < 0.0) {
+				startSyncWait = now;
+				ogbox::saveSyncAskStop();
+				pshakux_log("library: %s waits for the save sync to end", startPath.c_str());
+			}
+			startDelay = 1;
+			if (now - startSyncWait > 30.0) {
+				pshakux_log("library: the save sync didn't end in 30 s: %s not started", startPath.c_str());
+				startPath.clear();
+				startState.clear();
+				startSyncWait = -1.0;
+				openPopup("Not started", "Your saves' sync with its place is still copying a save (the place may not be "
+					"answering). Start the game again in a moment.", { "OK" }, [](int) {});
+			}
+		} else if (!startPath.empty() && startDelay <= 0) {
+			startSyncWait = -1.0;
+		}
 		if (!startPath.empty() && --startDelay < 0) {
 			const std::string path = startPath;
 			startPath.clear();
@@ -4816,6 +4886,7 @@ public:
 			renderLibrary();
 			return;
 		}
+		coverHousekeeping();   // in a game too: the frame's upload count, and retired pictures freed
 		if (shareWait.active) {
 			pollShareWait();
 		}
@@ -4828,7 +4899,7 @@ public:
 				pshakux_log_keep("the game failed");   // 0.0.7: a log kept in memory goes to the file
 			}
 		}
-		if (!relaunchAsked && pshx_core_relaunch_wanted()) {
+		if (!relaunchAsked && !guestRelaunchRefused && pshx_core_relaunch_wanted()) {
 			relaunchForGuest();
 		}
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
@@ -4840,7 +4911,8 @@ public:
 		fetchPicture();
 		frameGenPlan();
 		probeStall(state);
-		if (shotWanted && upload && havePicture) {
+		/* (fgPush: frame generation takes the new frame instead of the upload; it is in this staging buffer all the same) */
+		if (shotWanted && (upload || fgPush) && havePicture) {
 			shotWanted = false;
 			takeShot();
 		}
@@ -5065,6 +5137,19 @@ public:
 			std::lock_guard<std::mutex> disc(g_discInfoMutex);
 			OgboxGameInfo info{};
 			ogbox_game_info(path.c_str(), &info);
+			countDetails(info, *job);
+			std::lock_guard<std::mutex> lock(job->mutex);
+			job->info = info;
+			job->done = true;
+		}).detach();
+	}
+
+	/* The game's mods, patches, cheats, trainers and own settings counted into its details (on the
+	 * details' thread; again after a screen the game page opened closes: refreshDetailCounts). */
+	static void countDetails(const OgboxGameInfo &info, Details &out)
+	{
+		{
+			Details *job = &out;
 			int mods = 0, modsOn = 0, cheats = 0, cheatsOn = 0, overrides = 0, patches = 0, patchesOn = 0;
 			if (info.ok) {
 				std::vector<OgboxModEntry> list(480);
@@ -5090,7 +5175,6 @@ public:
 			std::lock_guard<std::mutex> lock(job->mutex);
 			job->trainers = trainers;
 			job->trainerOn = trainerOn;
-			job->info = info;
 			job->mods = mods;
 			job->modsOn = modsOn;
 			job->cheats = cheats;
@@ -5098,7 +5182,28 @@ public:
 			job->overrides = overrides;
 			job->patches = patches;
 			job->patchesOn = patchesOn;
-			job->done = true;
+		}
+	}
+
+	/* The game page's counts looked at again (its own settings, the patches on), without reading the
+	 * disc again: what its Settings or Game Patches changed shows when the page comes back. */
+	void refreshDetailCounts()
+	{
+		if (!details || detailsPath != gp.path) {
+			return;
+		}
+		OgboxGameInfo info{};
+		{
+			std::lock_guard<std::mutex> lock(details->mutex);
+			if (!details->done || !details->info.ok) {
+				return;   // (being read: the reading counts them)
+			}
+			info = details->info;
+		}
+		auto job = details;
+		std::thread([job, info]() {
+			std::lock_guard<std::mutex> disc(g_discInfoMutex);
+			countDetails(info, *job);
 		}).detach();
 	}
 
@@ -5275,6 +5380,7 @@ public:
 			storageMessage = why;
 			return;
 		}
+		storageFollow(now);
 		storageDone("OGBox keeps its data in " + target + ".");
 	}
 
@@ -5324,6 +5430,16 @@ public:
 		}
 	}
 
+	/* 1.0.3: the Xbox hard disk follows a new data folder at once (boot.hdd was set at the start only:
+	 * the hard disk manager, the sync and the games used the old one), unless boot.txt's hdd= or --hdd
+	 * named another */
+	void storageFollow(const std::string &was)
+	{
+		if (boot.hdd == was + "/hdd") {
+			boot.hdd = ogbox::storagePath("hdd");
+		}
+	}
+
 	/* A move under way: its end. */
 	void storageTick()
 	{
@@ -5335,7 +5451,8 @@ public:
 			return;
 		}
 		if (pr.ok) {
-			storageDone("Done: OGBox keeps its data in " + storageTarget + " now.");
+			storageFollow(pr.from);
+			storageDone("Done: OGBox keeps its data in " + storageTarget + " now." + (pr.note.empty() ? "" : " " + pr.note));
 		} else {
 			storageMessage = "The move stopped: " + pr.error + ". Your data is still in " + ogbox::storageRoot() + ".";
 			storageStep = StorageStep::Places;
@@ -5466,8 +5583,14 @@ public:
 			r.icon = ui::Icon::Check;
 			r.accent = true;
 			add(r, [this, now]() {
-				ogbox::StorageMove::get().start(now, storageTarget);
-				storageStep = StorageStep::Moving;
+				if (ogbox::saveSyncRunning()) {   // 1.0.3: the sync writes to the hard disk and its list in the cache
+					storageMessage = "The saves are being synced: move the data when that is done.";
+					return;
+				}
+				if (ogbox::StorageMove::get().start(now, storageTarget)) {
+					storageMessage.clear();
+					storageStep = StorageStep::Moving;
+				}
 			});
 			r = {};
 			r.key = "empty";
@@ -5477,6 +5600,7 @@ public:
 			add(r, [this, now]() {
 				std::string why;
 				if (ogbox::setStorageRoot(storageTarget, why)) {
+					storageFollow(now);
 					storageDone("OGBox keeps its data in " + storageTarget + " from now on. What was in " + now + " is still there.");
 				} else {
 					storageMessage = why;
@@ -5494,7 +5618,9 @@ public:
 		}
 		case StorageStep::Moving: {
 			const ogbox::StorageMove::Progress pr = ogbox::StorageMove::get().progress();
-			v.intro = "Moving your data to " + storageTarget + ". Leave OGBox open until it's done.";
+			v.intro = pr.removing ? "Your data is in " + storageTarget + " now; deleting the old copy in " + pr.from +
+					". Leave OGBox open until it's done."
+								  : "Moving your data to " + storageTarget + ". Leave OGBox open until it's done.";
 			v.progress = pr.total ? std::min(1.0f, static_cast<float>(static_cast<double>(pr.bytes) / static_cast<double>(pr.total))) : 0.0f;
 			v.progressText = sizeText(static_cast<int64_t>(pr.bytes)) + " of " + sizeText(static_cast<int64_t>(pr.total)) + " \xC2\xB7 " +
 				pr.current;
@@ -5610,7 +5736,9 @@ public:
 			updateTick();
 			saveSyncTick();   // 0.0.8
 			placeTick();      // 1.0.3
+			hddJobTick();     // 1.0.3
 			fixesTick();      // 1.0.2
+			cheatsTick();     // 1.0.3
 		}
 		drawOverlays();
 	}
@@ -5824,10 +5952,12 @@ public:
 		const std::string path = qm.applyPath, tmp = path + ".part";
 		std::thread([result, why, tmp, path]() {
 			char err[256] = "";
-			const bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
-			if (ok) {
-				std::rename(tmp.c_str(), path.c_str());
-			} else {
+			bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			if (ok && std::rename(tmp.c_str(), path.c_str()) != 0) {
+				std::snprintf(err, sizeof(err), "the state could not be put in place (%s)", std::strerror(errno));
+				ok = false;
+			}
+			if (!ok) {
 				std::remove(tmp.c_str());
 				*why = err;
 			}
@@ -5909,11 +6039,15 @@ public:
 		const uint32_t tw = qm.thumbW, th = qm.thumbH;
 		std::thread([result, why, tmp, path, thumbPath, thumb, tw, th]() {
 			char err[256] = "";
-			const bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			bool ok = pshx_core_save_state(tmp.c_str(), err, sizeof(err));
+			if (ok && std::rename(tmp.c_str(), path.c_str()) != 0) {
+				std::snprintf(err, sizeof(err), "the state could not be put in place (%s)", std::strerror(errno));
+				ok = false;
+			}
 			if (ok) {
-				std::rename(tmp.c_str(), path.c_str());
-				if (!thumb.empty()) {
-					writeBmp(thumbPath, thumb.data(), tw, th, tw * 4);
+				/* the picture of this state, or none (a state before's picture must not stay beside it) */
+				if (thumb.empty() || !writeBmp(thumbPath, thumb.data(), tw, th, tw * 4)) {
+					std::remove(thumbPath.c_str());
 				}
 			} else {
 				std::remove(tmp.c_str());
@@ -5948,6 +6082,10 @@ public:
 		const int r = pshakux_relaunch(args.data());
 		pshakux_log("quick menu: the relaunch was refused (%#x)", static_cast<unsigned>(r));
 		relaunchAsked = false;
+		qm.busy.clear();   // ("Loading slot N" kept every button of the menu away)
+		if (!qm.open) {
+			pshx_core_pause(false);
+		}
 		showToast("The console refused to start the game again.");
 	}
 
@@ -5971,8 +6109,14 @@ public:
 		args.push_back(nullptr);
 		pshakux_log("quick menu: restarting the game");
 		quiesceForExit();
-		pshakux_relaunch(args.data());
+		const int r = pshakux_relaunch(args.data());
+		pshakux_log("quick menu: the relaunch was refused (%#x)", static_cast<unsigned>(r));
 		relaunchAsked = false;
+		qm.busy.clear();   // (the menu answers again)
+		if (!qm.open && pshx_core_state() != PSHX_CORE_IDLE) {
+			pshx_core_pause(false);   // (the exit's pause: the game goes on)
+		}
+		showToast("The console refused to start the game again.");
 	}
 
 	/* ---- 0.0.1: the updater (Crux2's, ps5_update.h) --------------------------------------------
@@ -6075,7 +6219,12 @@ public:
 				if (PS5Update::Install()) {
 					pshakux_log("update: installed; OGBox closes");
 					openPopup("OGBox was updated", "The update is installed. OGBox will now close: start it again "
-						"from the home screen.", { "Close OGBox" }, [this](int) { quit = true; });
+						"from the home screen.", { "Close OGBox" }, [this](int) {
+							leaveAfterWrites("OGBox closes", [this]() {
+								prefs.flush();   // settings not yet written (as every other way out)
+								quit = true;
+							});
+						});
 				} else {
 					openPopup("The update was not installed", PS5Update::GetStatus().error + "\nOGBox is as it was.",
 						{ "OK" }, nullptr);
@@ -6140,6 +6289,77 @@ public:
 		fixesReport = {};
 	}
 
+	/* 1.0.3: "Download cheats" (Settings > Updates): xbased's trainers into the data folder's trainers,
+	 * on a thread of its own; how far it is in a toast, what it did at the end; then the trainers are
+	 * read again (the Mods screens show them) */
+	bool cheatsAsked{ false }, cheatsRescan{ false };
+	void downloadCheats()
+	{
+		unsigned done = 0, total = 0;
+		if (cheatsAsked || ogbox::fixes::CheatsRunning(done, total)) {
+			showToast("The cheats are being downloaded already.");
+			return;
+		}
+		OGBoxUpdate::Start();   // (curl's set-up, once)
+		const std::string trainers = ogbox::storagePath("trainers");
+		mkdir(trainers.c_str(), 0777);
+		if (!ogbox::fixes::StartCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers)) {
+			return;
+		}
+		cheatsAsked = true;
+		pshakux_log("cheats: the download was asked for, into %s", trainers.c_str());
+		showToast("Downloading the cheats from xbased's repository...");
+	}
+
+	std::string cheatsLine() const
+	{
+		unsigned done = 0, total = 0;
+		if (ogbox::fixes::CheatsRunning(done, total)) {
+			return total ? "downloading " + std::to_string(done) + " of " + std::to_string(total) : std::string("downloading");
+		}
+		return "xbased's trainers";
+	}
+
+	void cheatsTick()
+	{
+		if (cheatsRescan && ogbox_trainers_state(nullptr, nullptr) != 1) {
+			cheatsRescan = false;
+			scanTrainers();   // (not while a scan runs: it would be skipped)
+		}
+		if (!cheatsAsked) {
+			return;
+		}
+		unsigned done = 0, total = 0;
+		if (ogbox::fixes::CheatsRunning(done, total)) {
+			if (total) {
+				toast = "Downloading cheats: " + std::to_string(done) + " of " + std::to_string(total);   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			}
+			return;
+		}
+		ogbox::fixes::CheatsReport r;
+		if (!ogbox::fixes::PollCheats(r)) {
+			return;
+		}
+		cheatsAsked = false;
+		std::string text = std::to_string(r.fetched) + " downloaded, " + std::to_string(r.present) + " already there";
+		if (r.kept) {
+			text += ", " + std::to_string(r.kept) + " kept (a file of yours has the name)";
+		}
+		if (r.failed) {
+			text += ", " + std::to_string(r.failed) + " failed";
+		}
+		text = r.listed || r.ok ? "Cheats: " + text + "." : std::string();
+		if (!r.error.empty()) {
+			text += (text.empty() ? "" : " ") + r.error;
+		}
+		showToast(text);
+		toastUntil = now_seconds() + 6.0;
+		if (r.fetched) {
+			cheatsRescan = true;
+		}
+	}
+
 	void showToast(const std::string &text)
 	{
 		toast = text;
@@ -6157,6 +6377,7 @@ public:
 			const bool ok = qm.result->load() == 1;
 			const int slot = qm.busySlot;
 			qm.busy.clear();
+			qm.result.reset();   // (taken: a later "Loading" or "Restarting" is not this save's end again)
 			if (qm.after == Quick::After::Apply) {
 				if (ok) {
 					quickLoad(qm.applyPath, true);
@@ -6395,7 +6616,10 @@ public:
 		case QR_QUIT:
 			openPopup("Quit the game", "Save where you are, to go on from there next time?",
 				{ "Quit, and save where I am", "Quit without saving", "Go back" }, [this](int i) {
-					if (i == 0) {
+					if (i == 0 && runKey.empty()) {
+						/* no title ID to keep a state under (Save State is greyed out for it too) */
+						showToast("Not saved: this game has no title ID to keep a state under. Quit without saving, or go back.");
+					} else if (i == 0) {
 						quickSave(ogbox::kQuitSlot, Quick::After::Library);
 					} else if (i == 1) {
 						qm.busy = "Back to the game list";
@@ -6579,6 +6803,8 @@ public:
 			gp.returnTo = false;
 			gp.open = true;
 			gp.since = now_seconds();
+			gp.savesKnown.clear();   // (saves brought in or deleted there: "Saves" or "Import Saves" looked at again)
+			refreshDetailCounts();   // (and its own settings and patches on: Crux2 37502c4's "looks up again")
 		}
 	}
 
@@ -6673,10 +6899,13 @@ public:
 			news->quiet = quiet;
 			news->outcome = o;
 		});
-		pshakux_log("save sync: %s with %s (%s)", started ? "started" : "not started (one is under way)",
-			place.name.c_str(), place.path.c_str());
+		/* 1.0.3: refused while the data folder is moved: said so (it said a sync was under way) */
+		const bool moving = !started && ogbox::StorageMove::get().progress().running;
+		pshakux_log("save sync: %s with %s (%s)", started ? "started" : moving ? "not started (the data folder is being moved)" :
+			"not started (one is under way)", place.name.c_str(), place.path.c_str());
 		if (!quiet) {
-			showToast(started ? "Syncing the saves with " + place.name + "..." : "The saves are being synced already.");
+			showToast(started ? "Syncing the saves with " + place.name + "..." :
+				moving ? "The data folder is being moved: sync the saves once it is done." : "The saves are being synced already.");
 		}
 	}
 
@@ -6838,6 +7067,57 @@ public:
 
 	enum HddAction { HA_SYNC, HA_PLACE, HA_IMPORT, HA_EXPORT_ALL, HA_CACHES, HA_COUNT };   // 0.0.8: HA_SYNC; 1.0.3: HA_PLACE
 
+	/* 1.0.3: the manager's copies, moves and deletions on a thread of their own (a USB drive's or a
+	 * share's copy of every save, the cache drives emptied, took the screen for their whole length):
+	 * the screen says how far the job is and takes no button until it is done (as the data folder's
+	 * move), then the result as before (hddDone). The job's thread touches nothing of the screen's. */
+	struct HddJob {
+		std::atomic<int> done{ 0 }, total{ 0 };
+		std::atomic<bool> finished{ false };
+		bool ok{ true };                      // (these three written by the job before finished)
+		std::string yes, why;
+		bool newCopies{ false };              // the copies to bring in, listed again after it
+		std::vector<ogbox::SaveCopy> copies;
+	};
+	std::shared_ptr<HddJob> hddJob;
+	std::string hddJobWhat;
+
+	void hddRun(const std::string &what, int total, std::function<void(HddJob &)> work)
+	{
+		if (hddJob) {
+			return;
+		}
+		auto job = std::make_shared<HddJob>();
+		job->total = total;
+		hddJob = job;
+		hddJobWhat = what;
+		pshakux_log("hard disk: %s", what.c_str());
+		try {
+			std::thread([job, work]() {
+				pshakux_thread_named("ogbox-hdd");
+				work(*job);
+				job->finished.store(true);
+			}).detach();
+		} catch (...) {   // (no thread: the job ends with a reason, the screen not left waiting, the title not ended)
+			hddJob.reset();
+			hddDone(false, "", "it could not be started");
+		}
+	}
+
+	/* Each frame: a job's end (its result shown, the hard disk looked at again). */
+	void hddJobTick()
+	{
+		if (!hddJob || !hddJob->finished.load()) {
+			return;
+		}
+		const std::shared_ptr<HddJob> job = std::move(hddJob);
+		hddJob.reset();
+		if (job->newCopies) {
+			hdd.copies = job->copies;
+		}
+		hddDone(job->ok, job->yes, job->why);
+	}
+
 	void openHdd(uint32_t onlyTitle)
 	{
 		hdd.back = screen == Screen::Hdd ? hdd.back : screen;
@@ -6864,11 +7144,40 @@ public:
 
 	void hddRescan()
 	{
+		/* the game chosen stays chosen by its title ID (the list's order is the newest save first, and a
+		 * game goes with its last save): gone, the games' pane is chosen again, not the next game's saves */
+		const ogbox::HddTitle *was = hddTitle();
+		const bool hadTitle = was != nullptr;
+		const uint32_t wasId = was ? was->titleId : 0;
 		hdd.titles = ogbox::hddScan(boot.hdd);
 		hdd.cacheBytes = ogbox::hddCacheBytes(boot.hdd);
 		hdd.usedBytes = ogbox::hddUsedBytes(boot.hdd);
 		const int rows = HA_COUNT + static_cast<int>(hdd.titles.size());
+		if (hadTitle) {
+			bool found = false;
+			for (size_t i = 0; i < hdd.titles.size() && !found; i++) {
+				if (hdd.titles[i].titleId == wasId) {
+					hdd.selT = HA_COUNT + static_cast<int>(i);
+					found = true;
+				}
+			}
+			if (!found && !hdd.importing && !hdd.place) {
+				hdd.pane = 0;
+				hdd.selS = 0;
+			}
+		}
 		hdd.selT = std::min(hdd.selT, rows - 1);
+		/* the right pane's choice within its list as it is now */
+		int right = -1;
+		if (hdd.importing) {
+			right = 1 + static_cast<int>(hdd.copies.size());
+		} else if (!hdd.place) {
+			const ogbox::HddTitle *t = hddTitle();
+			right = t ? static_cast<int>(t->saves.size()) : 0;
+		}
+		if (right >= 0) {
+			hdd.selS = std::max(0, std::min(hdd.selS, right - 1));
+		}
 	}
 
 	const ogbox::HddTitle *hddTitle() const
@@ -6901,6 +7210,10 @@ public:
 
 	void hddInput(uint32_t pressed)
 	{
+		hddJobTick();
+		if (hddJob) {
+			return;   // a copy or a deletion under way: the screen waits for it (its line at the foot)
+		}
 		if (pressed & PAD_CIRCLE) {
 			if (hdd.importing || hdd.place) {
 				hdd.importing = false;
@@ -6944,12 +7257,14 @@ public:
 					[this, title](int i) {
 						if (i == 0) {
 							hddPickPlace("Copy to", [this, title](const ogbox::SavePlace &p) {
-								std::string why;
-								bool ok = true;
-								for (const ogbox::HddSave &s : title.saves) {
-									ok = ogbox::hddExportSave(title, s, p.path, why) && ok;
-								}
-								hddDone(ok, std::to_string(title.saves.size()) + " saves copied to " + p.name, why);
+								hddRun("Copying " + title.name + "'s saves to " + p.name, static_cast<int>(title.saves.size()),
+									[title, p](HddJob &job) {
+										for (const ogbox::HddSave &s : title.saves) {
+											job.ok = ogbox::hddExportSave(title, s, p.path, job.why) && job.ok;
+											job.done++;
+										}
+										job.yes = std::to_string(title.saves.size()) + " saves copied to " + p.name;
+									});
 							});
 						} else if (i == 1 && syncOn()) {
 							/* 1.0.3: kept in sync: deleted only here, the place's copies come back at the next sync */
@@ -6963,8 +7278,11 @@ public:
 										d.label = "all the saves of " + title.name;
 										placeDelete(d);
 									} else if (j == 1) {
-										std::string why;
-										hddDone(ogbox::hddDeleteTitle(title, true, false, boot.hdd, why), "Its saves are deleted here", why);
+										const std::string root = boot.hdd;
+										hddRun("Deleting " + title.name + "'s saves", 0, [title, root](HddJob &job) {
+											job.ok = ogbox::hddDeleteTitle(title, true, false, root, job.why);
+											job.yes = "Its saves are deleted here";
+										});
 									}
 								});
 						} else if (i == 1 || i == 2) {
@@ -6972,9 +7290,12 @@ public:
 								title.name + (i == 1 ? ": every save on the hard disk goes." : ": its settings and caches go; the game makes them again."),
 								{ "Delete", "Go back" }, [this, title, i](int j) {
 									if (j == 0) {
-										std::string why;
-										const bool ok = ogbox::hddDeleteTitle(title, i == 1, i == 2, boot.hdd, why);
-										hddDone(ok, i == 1 ? "Its saves are deleted" : "Its own data is deleted", why);
+										const std::string root = boot.hdd;
+										hddRun(i == 1 ? "Deleting " + title.name + "'s saves" : "Deleting " + title.name + "'s own data", 0,
+											[title, i, root](HddJob &job) {
+												job.ok = ogbox::hddDeleteTitle(title, i == 1, i == 2, root, job.why);
+												job.yes = i == 1 ? "Its saves are deleted" : "Its own data is deleted";
+											});
 									}
 								});
 						}
@@ -7010,23 +7331,32 @@ public:
 				});
 			} else if (hdd.selT == HA_EXPORT_ALL) {
 				hddPickPlace("Copy every save to", [this](const ogbox::SavePlace &p) {
-					std::string why;
-					bool ok = true;
-					size_t n = 0;
-					for (const ogbox::HddTitle &title : hdd.titles) {
-						for (const ogbox::HddSave &s : title.saves) {
-							ok = ogbox::hddExportSave(title, s, p.path, why) && ok;
-							n++;
-						}
+					const std::vector<ogbox::HddTitle> titles = hdd.titles;
+					int total = 0;
+					for (const ogbox::HddTitle &title : titles) {
+						total += static_cast<int>(title.saves.size());
 					}
-					hddDone(ok, std::to_string(n) + " saves copied to " + p.name, why);
+					hddRun("Copying every save to " + p.name, total, [titles, p](HddJob &job) {
+						size_t n = 0;
+						for (const ogbox::HddTitle &title : titles) {
+							for (const ogbox::HddSave &s : title.saves) {
+								job.ok = ogbox::hddExportSave(title, s, p.path, job.why) && job.ok;
+								n++;
+								job.done++;
+							}
+						}
+						job.yes = std::to_string(n) + " saves copied to " + p.name;
+					});
 				});
 			} else if (hdd.selT == HA_CACHES) {
 				openPopup("Empty the cache drives?", "X:, Y: and Z: hold what games keep for later (" + ogbox::bytesText(hdd.cacheBytes) +
 					"); they fill them again as they need.", { "Empty them", "Go back" }, [this](int i) {
 						if (i == 0) {
-							std::string why;
-							hddDone(ogbox::hddClearCaches(boot.hdd, why), "The cache drives are empty", why);
+							const std::string root = boot.hdd;
+							hddRun("Emptying the cache drives", 0, [root](HddJob &job) {
+								job.ok = ogbox::hddClearCaches(root, job.why);
+								job.yes = "The cache drives are empty";
+							});
 						}
 					});
 			} else if (t && !t->saves.empty()) {
@@ -7055,27 +7385,48 @@ public:
 				return;
 			}
 			if (hdd.selS == 0) {
-				std::string why;
-				size_t n = 0, kept = 0;
-				for (const ogbox::SaveCopy &c : hdd.copies) {
-					if (c.onDisk) {
-						kept++;
-						continue;
-					}
-					if (ogbox::hddImportSave(c, boot.hdd, false, why)) {
-						n++;
-					}
+				const std::vector<ogbox::SaveCopy> copies = hdd.copies;
+				const std::string root = boot.hdd, from = hdd.importPlace;
+				int total = 0;
+				for (const ogbox::SaveCopy &c : copies) {
+					total += c.onDisk ? 0 : 1;
 				}
-				hdd.copies = ogbox::saveCopiesIn(hdd.importPlace, boot.hdd);
-				hddDone(true, std::to_string(n) + " saves brought in" + (kept ? ", " + std::to_string(kept) + " the hard disk had already" : std::string()), why);
+				hddRun("Bringing the saves in from " + hdd.importName, total, [copies, root, from](HddJob &job) {
+					size_t n = 0, kept = 0, failed = 0;
+					std::string why;
+					for (const ogbox::SaveCopy &c : copies) {
+						if (c.onDisk) {
+							kept++;
+							continue;
+						}
+						if (ogbox::hddImportSave(c, root, false, why)) {
+							n++;
+						} else {
+							failed++;
+							pshakux_log("hard disk: %s not brought in: %s", c.path.c_str(), why.c_str());
+						}
+						job.done++;
+					}
+					job.copies = ogbox::saveCopiesIn(from, root);
+					job.newCopies = true;
+					const std::string had = kept ? ", " + std::to_string(kept) + " the hard disk had already" : std::string();
+					job.ok = failed == 0;
+					job.yes = std::to_string(n) + " saves brought in" + had;
+					job.why = std::to_string(failed) + (failed == 1 ? " save" : " saves") + " could not be brought in (" + why + "); " +
+						std::to_string(n) + " were" + had;
+				});
 				return;
 			}
 			const ogbox::SaveCopy c = hdd.copies[static_cast<size_t>(hdd.selS - 1)];
 			const auto bring = [this, c](bool overwrite) {
-				std::string why;
-				const bool ok = ogbox::hddImportSave(c, boot.hdd, overwrite, why);
-				hdd.copies = ogbox::saveCopiesIn(hdd.importPlace, boot.hdd);
-				hddDone(ok, "Brought in: " + c.name, why);
+				const std::string root = boot.hdd, from = hdd.importPlace;
+				hddRun("Bringing in " + c.name, 1, [c, overwrite, root, from](HddJob &job) {
+					job.ok = ogbox::hddImportSave(c, root, overwrite, job.why);
+					job.done++;
+					job.copies = ogbox::saveCopiesIn(from, root);
+					job.newCopies = true;
+					job.yes = "Brought in: " + c.name;
+				});
 			};
 			if (c.onDisk) {
 				openPopup("Replace the save?", "The hard disk has \"" + c.folder + "\" of this game already.", { "Replace it", "Go back" },
@@ -7112,12 +7463,14 @@ public:
 			{ "Copy to...", "Move to...", "Delete", "Go back" }, [this, title, save](int i) {
 				if (i == 0 || i == 1) {
 					hddPickPlace(i == 0 ? "Copy to" : "Move to", [this, title, save, i](const ogbox::SavePlace &p) {
-						std::string why;
-						bool ok = ogbox::hddExportSave(title, save, p.path, why);
-						if (ok && i == 1) {
-							ok = ogbox::hddDeleteSave(save, why);
-						}
-						hddDone(ok, (i == 0 ? "Copied to " : "Moved to ") + p.name, why);
+						hddRun((i == 0 ? "Copying " : "Moving ") + save.name + " to " + p.name, 1, [title, save, i, p](HddJob &job) {
+							job.ok = ogbox::hddExportSave(title, save, p.path, job.why);
+							if (job.ok && i == 1) {
+								job.ok = ogbox::hddDeleteSave(save, job.why);
+							}
+							job.done++;
+							job.yes = (i == 0 ? "Copied to " : "Moved to ") + p.name;
+						});
 					});
 				} else if (i == 2 && syncOn()) {
 					/* 1.0.3: kept in sync: deleted only here, the place's copy comes back at the next sync */
@@ -7132,15 +7485,19 @@ public:
 								d.label = save.name + " (" + title.name + ")";
 								placeDelete(d);
 							} else if (j == 1) {
-								std::string why;
-								hddDone(ogbox::hddDeleteSave(save, why), "The save is deleted here", why);
+								hddRun("Deleting " + save.name, 0, [save](HddJob &job) {
+									job.ok = ogbox::hddDeleteSave(save, job.why);
+									job.yes = "The save is deleted here";
+								});
 							}
 						});
 				} else if (i == 2) {
 					openPopup("Delete the save?", save.name + " (" + title.name + ")", { "Delete", "Go back" }, [this, save](int j) {
 						if (j == 0) {
-							std::string why;
-							hddDone(ogbox::hddDeleteSave(save, why), "The save is deleted", why);
+							hddRun("Deleting " + save.name, 0, [save](HddJob &job) {
+								job.ok = ogbox::hddDeleteSave(save, job.why);
+								job.yes = "The save is deleted";
+							});
 						}
 					});
 				}
@@ -7355,6 +7712,13 @@ public:
 		v.footer = hdd.pane == 0 ? std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Open" }, { "T", "Copy, delete" }, { "O", "Back" } }
 			: hdd.place ? std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Delete" }, { "O", "Back" } }
 			: std::vector<ui::Hint>{ { "UD", "Choose" }, { "X", "Choose this" }, { "O", "Back" } };
+		if (hddJob) {
+			/* a job under way: what it does and how far, and no buttons (as the data folder's Moving) */
+			const int done = hddJob->done.load(), total = hddJob->total.load();
+			v.footer.clear();
+			v.footerRight = hddJobWhat + "\xE2\x80\xA6" + (total > 1 ? " " + std::to_string(std::min(done, total)) + " of " +
+				std::to_string(total) : std::string());
+		}
 		bd.key = "hdd";
 		bd.blur = ui::Tex{};
 		bd.tint = 0;
@@ -7420,6 +7784,7 @@ public:
 		std::string status;
 		bool bad{ false };
 		std::shared_ptr<ShareTest> test;
+		bool letGo{ false };                   // the edited share's mount let go by a save (formRemount)
 		double since{ 0.0 };
 		/* 0.0.3: the SMB servers on the network, looked for as the form opens (ogbox::findServers) */
 		struct Found {
@@ -7674,8 +8039,19 @@ public:
 	{
 		const std::string first = entries.empty() ? std::string() : entries.front().path;
 		const std::string last = entries.empty() ? std::string() : entries.back().path;
+		/* (and each game where it was: a listing sorted again, by last played, can keep the size, the
+		 * buffer and both ends, with its games in another order between them) */
+		const auto sameOrder = [this]() {
+			for (size_t g = 0; g < hc.games.size(); g++) {
+				const size_t at = static_cast<size_t>(hc.games[g]);
+				if (at >= entries.size() || entries[at].kind != LibraryEntry::Image || entries[at].path != hc.list[g].id) {
+					return false;
+				}
+			}
+			return true;
+		};
 		if (hc.n == entries.size() && hc.data == entries.data() && hc.tab == tab && hc.folder == folder && hc.first == first &&
-			hc.last == last) {
+			hc.last == last && sameOrder()) {
 			return;
 		}
 		hc.n = entries.size();
@@ -8159,7 +8535,7 @@ public:
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
 				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
-					"audio_mixing", "audio_resampler", "console_ram", "high_res" } },
+					"audio_mixing", "audio_resampler", "audio_hrtf", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {
@@ -8423,7 +8799,12 @@ public:
 		}
 		a.reset = [this, op]() {
 			if (forGame) {
+				/* as a changed row: in a running game what follows from it now (afterGameChange) */
 				prefs.setOverride(op->key, std::string());
+				if (op->section == ogbox::Section::Controller) {
+					loadPadMap();
+				}
+				afterGameChange(*op);
 			} else {
 				setValue(*op, op->def);
 			}
@@ -8483,8 +8864,8 @@ public:
 			if (line.rfind("## ", 0) == 0) {
 				break;
 			}
-			if (!inVersion || line.empty()) {
-				continue;
+			if (!inVersion || line.find_first_not_of(" \t\r") == std::string::npos) {
+				continue;   // (a line of only spaces is an empty one: its "next line" had nothing to take)
 			}
 			std::string t = line;
 			for (const char *mark : { "**", "`" }) {
@@ -8522,7 +8903,7 @@ public:
 			{ "Dear ImGui", "Omar Cornut and contributors (MIT): the menus' drawing." },
 			{ "Network shares", "libsmb2 and libnfs by Ronnie Sahlberg (LGPL-2.1-or-later)." },
 			{ "Disc images", "libchdr (BSD-3-Clause), with the LZMA SDK, zstd and dr_flac." },
-			{ "Covers and descriptions", "libretro's thumbnails, MobCat's scans of the boxes, and Wikipedia's articles (CC BY-SA 4.0)." },
+			{ "Covers and descriptions", "libretro's thumbnails, MobCat's box art (its scans and thumbnails) and database, and Wikipedia's articles (CC BY-SA 4.0)." },
 			{ "Game data", "Redump's disc database (CC BY-SA 4.0); the patches' and trainers' authors are named beside each one." },
 			{ "Everything else", "LEGAL.txt, NOTICE.txt and licenses/ in OGBox's folder name every part, its authors and its licence." },
 		};
@@ -8583,7 +8964,11 @@ public:
 			actionRow("hddpath", "Where it is", hdd, "", nullptr, rows, acts);
 			break;
 		case SP_XBOX:
-			/* 0.0.6: the Xbox hard disk's saves here (its place: About) */
+			/* 0.0.6: the Xbox hard disk's saves here (its place: About); not in a running game's settings,
+			 * where the manager can't be shown (the game has the hard disk; the game list's page has it) */
+			if (!library) {
+				break;
+			}
 			groupRow("Xbox hard disk", rows, acts);
 			actionRow("hdd", "Saves and caches", "open", "The games' saves on the Xbox hard disk: copy them to a USB drive or the "
 				"console's backups, bring saves in, delete them; empty the cache drives.", [this]() { openHdd(0); }, rows, acts,
@@ -8593,6 +8978,15 @@ public:
 			actionRow("check", "Look for an update now", updateLine(), "Asks GitHub whether a newer OGBox is out and offers it with "
 				"what is new. Nothing is downloaded without asking; your settings, the hard disk, states and games stay.",
 				[this]() { checkForUpdate(); }, rows, acts, ui::Icon::Check);
+			/* 1.0.3: the Xbox scene's trainers xbased keeps, downloaded only from here (ogbox_fixes_fetch.h); in
+			 * the game list's settings (its ticks show how far it is) */
+			if (library) {
+				actionRow("cheats", "Download cheats", cheatsLine(), "Downloads the Xbox scene's cheat files (.etm and .xbtf "
+					"trainers) from xbased's repository on GitHub into " + ogbox::storagePath("trainers") + "; each game's appear on "
+					"its Mods screen. They are third-party files, not part of OGBox, made by the Xbox scene's trainer makers: use "
+					"them only with games you own. Files already there are kept as they are.", [this]() { downloadCheats(); }, rows,
+					acts, ui::Icon::Puzzle);
+			}
 			/* 0.0.6: this version's release notes (the README beside eboot.bin) */
 			actionRow("news", "What's New?", "this version", "What was added, changed and fixed in this version.",
 				[this]() { openPopup(std::string("What's new in OGBox ") + pshakux_build_label(), whatsNew(), { "Close" }, [](int) {}); },
@@ -8618,7 +9012,22 @@ public:
 		case SP_GAME_RESET:
 			actionRow("reset", "Set everything to Default", std::to_string(prefs.overrides()) + " of its own",
 				"Every setting of this game back to Default.", [this]() {
+					/* the settings it had, then what follows from each in a running game (afterGameChange) */
+					std::vector<const ogbox::Option *> had;
+					for (const ogbox::Option &o : ogbox::options()) {
+						if (!prefs.override_(o.key).empty()) {
+							had.push_back(&o);
+						}
+					}
 					prefs.clearOverrides();
+					bool pad = false;
+					for (const ogbox::Option *o : had) {
+						pad = pad || o->section == ogbox::Section::Controller;
+						afterGameChange(*o);
+					}
+					if (pad) {
+						loadPadMap();
+					}
 					pshakux_log("settings: %s: every setting back to the app's", forGameKey.c_str());
 					showToast("This game uses the Default settings again");
 				}, rows, acts);
@@ -8771,13 +9180,18 @@ public:
 				acts[static_cast<size_t>(setRowSel)].square();
 			} else if (page == SP_PICTURE || page == SP_XBOX || page == SP_ADVANCED || page == SP_LIST || page == SP_INTERFACE ||
 				page == SP_NETWORK) {
+				/* the settings' rows only: a share's TRIANGLE removes the share, not a setting */
+				std::vector<std::function<void()>> resets;
+				for (size_t k = 0; k < acts.size() && k < rows.size(); k++) {
+					if (acts[k].reset && rows[k].kind != ui::SetRow::Kind::Share) {
+						resets.push_back(acts[k].reset);
+					}
+				}
 				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here are removed, and it uses "
-					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, acts](int i) {
+					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, resets](int i) {
 						if (i == 1) {
-							for (const RowAct &a : acts) {
-								if (a.reset) {
-									a.reset();
-								}
+							for (const std::function<void()> &reset : resets) {
+								reset();
 							}
 							showToast("Reset");
 						}
@@ -9090,7 +9504,16 @@ public:
 	void formInput(uint32_t p)
 	{
 		if (form.test) {
-			return;   // connecting: wait
+			/* connecting: CIRCLE stops waiting for the answer (a server that is down takes the SMB
+			 * timeout, twice for a guest); the share is let go and the form stays, as after no answer */
+			if (p & PAD_CIRCLE) {
+				form.test.reset();
+				ogbox::unmountShare(form.s);
+				form.status = "Stopped before " + form.s.host + " answered: not saved. Try again, or save it as it is.";
+				form.bad = true;
+				pshakux_log("settings: the share test was stopped (CIRCLE)");
+			}
+			return;
 		}
 		const std::vector<int> rows = formRows();
 		const int n = static_cast<int>(rows.size());
@@ -9109,6 +9532,7 @@ public:
 		}
 		if (p & PAD_CIRCLE) {
 			form.open = false;
+			formRemount();
 			return;
 		}
 		const int row = rows[static_cast<size_t>(form.sel)];
@@ -9229,7 +9653,9 @@ public:
 			s.name = ogbox::shareDefaultName(s);
 		}
 		if (form.index >= 0 && form.index < static_cast<int>(shares.shares.size())) {
-			ogbox::unmountShare(shares.shares[static_cast<size_t>(form.index)]);
+			ogbox::Share &old = shares.shares[static_cast<size_t>(form.index)];
+			form.letGo = form.letGo || !old.mount.empty();
+			ogbox::unmountShare(old);
 		}
 		s.mount.clear();
 		std::string why;
@@ -9245,6 +9671,28 @@ public:
 		form.status = "Connecting to " + s.host + "\xE2\x80\xA6";
 		form.bad = false;
 		form.test = testShare(s.mount);
+	}
+
+	/* The form cancelled: the share edited, when a save that didn't finish let its mount go, mounted
+	 * again as it was (its games were gone from the Network tab until OGBox started again). */
+	void formRemount()
+	{
+		if (!form.letGo || form.index < 0 || form.index >= static_cast<int>(shares.shares.size())) {
+			return;
+		}
+		form.letGo = false;
+		ogbox::Share &sh = shares.shares[static_cast<size_t>(form.index)];
+		if (!sh.mount.empty()) {
+			return;
+		}
+		std::string why;
+		if (ogbox::mountShare(sh, shares, mountsTaken(), &why)) {
+			testShare(sh.mount);
+			pshakux_log("settings: %s mounted again as it was (the edit cancelled)", sh.mount.c_str());
+		} else {
+			pshakux_log("settings: %s can't be mounted again: %s", sh.name.c_str(), why.c_str());
+		}
+		placesRead = -100.0;
 	}
 
 	void formCommit()
@@ -9378,7 +9826,22 @@ public:
 			std::snprintf(id, sizeof(id), "%08x", static_cast<unsigned>(gp.info.title_id));
 			const std::string hddRoot = boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd;
 			gp.hasSaves = false;
-			if (DIR *d = opendir((hddRoot + "/Partition1/UDATA/" + id).c_str())) {
+			/* each name by its letters, case aside, as the hard disk manager finds them: a save brought
+			 * in keeps its folder's spelling ("4D530039"), and the console's own storage tells cases apart */
+			const auto child = [](const std::string &dir, const char *name) {
+				if (DIR *d = opendir(dir.c_str())) {
+					while (struct dirent *e = readdir(d)) {
+						if (!strcasecmp(e->d_name, name)) {
+							const std::string found = dir + "/" + e->d_name;
+							closedir(d);
+							return found;
+						}
+					}
+					closedir(d);
+				}
+				return dir + "/" + name;
+			};
+			if (DIR *d = opendir(child(child(child(hddRoot, "Partition1"), "UDATA"), id).c_str())) {
 				while (struct dirent *e = readdir(d)) {
 					if (e->d_name[0] != '.' && std::strcmp(e->d_name, "TitleMeta.xbx") != 0 && std::strcmp(e->d_name, "TitleImage.xbx") != 0) {
 						gp.hasSaves = true;
@@ -9430,6 +9893,9 @@ public:
 						if (i != 0) {
 							return;
 						}
+						/* the button chosen stays chosen ("From the start" goes with "Where I left off") */
+						const std::vector<int> before = gameActs();
+						const int was = gp.pill >= 0 && gp.pill < static_cast<int>(before.size()) ? before[static_cast<size_t>(gp.pill)] : GA_PLAY;
 						const bool ok = std::remove(st.path.c_str()) == 0;
 						std::remove(st.thumb.c_str());
 						pshakux_log("library: the state %s %s", st.path.c_str(), ok ? "deleted" : "could not be deleted");
@@ -9438,6 +9904,11 @@ public:
 						gp.stateSel = std::max(0, std::min(gp.stateSel, left - 1));
 						if (!left) {
 							gp.states = false;
+						}
+						const std::vector<int> after = gameActs();
+						const auto at = std::find(after.begin(), after.end(), was);
+						if (at != after.end()) {
+							gp.pill = static_cast<int>(at - after.begin());
 						}
 					});
 			} else if ((p & PAD_CROSS) && n && startPath.empty()) {

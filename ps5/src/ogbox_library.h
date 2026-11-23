@@ -61,8 +61,12 @@ std::vector<std::string> coverNames(const std::string &fileName, uint32_t titleI
  * default.xbe ("@xbe:<title ID>|<disc path>", path known: read only when no other has one). */
 std::vector<std::string> coverSources(const std::string &fileName, const std::string &path, uint32_t titleId = 0,
 	uint32_t regions = 0, uint32_t version = 0);
-/* 0.0.3: MobCat's scan for a title ("" none): its stem in gamedata/covers-mobcat.txt. */
+/* 0.0.3: MobCat's scan for a title ("" none): its name in gamedata/covers-mobcat.txt (<XMID> or
+ * <XMID>-<label>). 1.0.3: the release with this title ID and version (any version when 0) first, else
+ * a guess from the serial (the record's, else the title ID's). */
 std::string mobcatCover(uint32_t titleId, const std::string &serial, uint32_t version, uint32_t regions);
+/* 1.0.3: whether MobCat's repository has that name's scan (cover/), not only its thumbnail */
+bool mobcatScan(const std::string &name);
 
 /* 0.0.3: one reader of a share's discs at a time (the game list's details, the title images) */
 std::mutex &discMutex();

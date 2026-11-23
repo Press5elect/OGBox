@@ -70,6 +70,11 @@ OGBox when the patch is regenerated.
 
 ## Lessons that cost builds
 
+- **A build with an older core must recompile what went back to upstream.** `prepare-hakux.sh`
+  copied the core's tree into `build/hakux-src` keeping each file's time; a file the patch no
+  longer touched came back with upstream's (older) time, so ninja kept the object built from the
+  newer core. Three bisect builds mixed two versions of the upload arena and one crashed at its
+  first full arena. The copy now gives every changed file the current time (`--no-times`).
 - **Installing a build does not delete old files.** A mod folder removed from the source stays on
   the console (`/data/homebrew/PPSA99251/mods/<key>/`) until the owner deletes it. When a mod or
   game fix is withdrawn, say so and ask for the folder to be deleted, and check the next log's
@@ -115,6 +120,8 @@ OGBox when the patch is regenerated.
 | `tests/run-pc-tests.sh [--fetch]` | Every PC test; CI runs it on each push. It builds with warnings as errors, stricter than the console build: run it before a release. The `update` test links clang's address sanitizer; on a machine without that runtime it fails at link (compare with `main` before blaming a change) |
 | `ps5/tools/stage-notices.py --check dist/PPSA99251` | The release check (licences, notices, nothing forbidden) |
 | `ps5/tools/import-gamedata.py` | The patch database (`ps5/gamedata/patches.db`) from its sources and `gamedata-own-patches.txt` |
+| `ps5/tools/import-mobcat-covers.py [titleIDs.db] [clone]` | The covers' index of MobCat's box pictures (`ps5/gamedata/covers-mobcat.txt`) from MobCat's database and its repository's file list (identifiers only) |
+| `python3 -I ps5/tools/import-xbased-cheats.py [clone]` | The index of xbased's trainers (`ps5/gamedata/cheats-xbased.txt`: paths, sizes, SHA-256s at the commit the tool pins; none of the files) for Settings > Updates > Download cheats. Not in `ps5/game-fixes.txt` (that lists `mods/`, `gamedata/files/` and `patches.db` only): a new index reaches consoles with a build |
 | `ps5/tools/make-release-zip.py` | The release ZIP |
 
 The build needs LLVM 20's clang and the PS5 stack checked out beside this repository

@@ -38,6 +38,7 @@ static struct {
     VkCommandPool pool;
     VkCommandBuffer cb;
     VkFence fence;
+    bool pending;               /* the fence's submit not seen done (a wait that failed): nothing reused */
     uint64_t taken;
 } g_ph = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
@@ -251,9 +252,18 @@ static VkBuffer imp_buffer(void *dst, size_t bytes)
 void pshx_present_forget(void *dst)
 {
     pthread_mutex_lock(&g_ph.lock);
+    /* a copy whose wait failed (pending) may still write into the buffers: then they are only
+     * forgotten (never matched again; dropped as the oldest by imp_buffer, which take calls once
+     * the fence is seen signalled, or at shutdown after the device is idle) */
+    const bool busy = g_ph.pending && g_hvk.dev && T.vkGetFenceStatus(g_hvk.dev, g_ph.fence) != VK_SUCCESS;
     for (int i = 0; i < IMPORTS; i++) {
         if (g_imp[i].ptr == dst && g_hvk.dev) {
-            imp_drop(i);    /* (no copy is in flight: take waits for its own) */
+            if (busy) {
+                g_imp[i].ptr = NULL;
+                g_imp[i].used = 0;
+            } else {
+                imp_drop(i);    /* (no copy is in flight: take waits for its own) */
+            }
         }
     }
     pthread_mutex_unlock(&g_ph.lock);
@@ -284,10 +294,21 @@ bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_
         return false;
     }
     pthread_mutex_lock(&g_ph.lock);
+    if (g_ph.pending) {
+        /* the last copy's wait failed: its command buffer, fence and buffers aren't touched again
+         * before the fence is seen signalled */
+        if (T.vkGetFenceStatus(g_hvk.dev, g_ph.fence) != VK_SUCCESS) {
+            pthread_mutex_unlock(&g_ph.lock);
+            return false;
+        }
+        g_ph.pending = false;
+    }
     bool ok = false;
     HleDispFrame f;
+    /* the slots' images stay until the copy is done: inside use before the frame is taken, as
+     * swapchain.c's hle_present_frame (a display resize between the two destroys its image) */
+    hle_disp_use_begin();
     if (make() && hle_disp_acquire(&f)) {
-        hle_disp_use_begin();           /* the slots' images stay until the copy is done */
         const VkDeviceSize size = (VkDeviceSize)f.w * f.h * 4;
         /* straight into dst: rows packed (pitch a row's bytes) and the import's whole pages hold it */
         VkBuffer direct = VK_NULL_HANDLE;
@@ -328,8 +349,30 @@ bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_
             hle_vk_queue_lock();
             const VkResult sr = T.vkQueueSubmit(g_hvk.queue, 1, &si, g_ph.fence);
             hle_vk_queue_unlock();
-            if (hle_vk_check(sr, "vkQueueSubmit (host present)") &&
-                T.vkWaitForFences(g_hvk.dev, 1, &g_ph.fence, VK_TRUE, 2000000000ull) == VK_SUCCESS) {
+            /* Until the fence signals, the GPU still reads f.img and writes the buffer, and the
+             * command buffer and fence are in use: none of them may be let go, reset or reused, so a
+             * slow copy is waited for (a line each 2 s), never given up on. Only a failed wait (the
+             * GPU lost) leaves without the fence: then pending keeps them all as they are. */
+            VkResult wr = VK_ERROR_UNKNOWN;
+            if (hle_vk_check(sr, "vkQueueSubmit (host present)")) {
+                for (unsigned waited = 0;;) {
+                    wr = T.vkWaitForFences(g_hvk.dev, 1, &g_ph.fence, VK_TRUE, 2000000000ull);
+                    if (wr != VK_TIMEOUT) {
+                        break;
+                    }
+                    waited += 2;
+                    hle_log("hakuX-hle-back", "present (host image): the frame's copy not done after %u s: "
+                            "waiting on", waited);
+                    if (hle_vk_lost()) {
+                        break;
+                    }
+                }
+                if (wr != VK_SUCCESS) {
+                    g_ph.pending = true;
+                    hle_vk_check(wr, "vkWaitForFences (host present)");
+                }
+            }
+            if (wr == VK_SUCCESS) {
                 if (!direct) {
                     const uint8_t *src = g_ph.map;
                     for (uint32_t y = 0; y < f.h; y++) {
@@ -343,9 +386,9 @@ bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_
                 ok = true;
             }
         }
-        hle_disp_use_end();
         hle_disp_release(f.slot);
     }
+    hle_disp_use_end();
     pthread_mutex_unlock(&g_ph.lock);
     return ok;
 }
@@ -362,6 +405,7 @@ void pshx_present_shutdown(void)
         T.vkDestroyFence(g_hvk.dev, g_ph.fence, NULL);
         T.vkDestroyCommandPool(g_hvk.dev, g_ph.pool, NULL);
         g_ph.made = false;
+        g_ph.pending = false;
     }
     pthread_mutex_unlock(&g_ph.lock);
 }

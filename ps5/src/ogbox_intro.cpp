@@ -99,6 +99,7 @@ struct IntroPlayer::Impl {
 	std::condition_variable cv;
 	std::thread decoder;
 	std::atomic<bool> quit{ false };
+	std::atomic<bool> failed{ false };   // the decoder ended with no frame to show: the intro is skipped
 	std::atomic<int> wanted{ 0 };        // the frame the clock is at: frames before it aren't converted
 	std::atomic<int> decoded{ -1 };      // the newest frame decoded and converted
 	std::atomic<bool> done{ false };     // the decoder is through
@@ -248,6 +249,7 @@ struct IntroPlayer::Impl {
 		cfg.h = height;
 		if (vpx_codec_dec_init(&codec, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) {
 			pshakux_log("intro: the VP9 decoder cannot start: no video");
+			failed.store(true);
 			done.store(true);
 			return;
 		}
@@ -269,6 +271,11 @@ struct IntroPlayer::Impl {
 			const vpx_image_t *img = vpx_codec_get_frame(&codec, &iter);
 			if (!img || img->fmt != VPX_IMG_FMT_I420) {
 				continue;
+			}
+			if (img->d_w != width || img->d_h != height) {
+				// (the rows would shear: the frame is not the size the header gave)
+				pshakux_log("intro: frame %zu is %u x %u, the header says %u x %u: the video ends there", i, img->d_w, img->d_h, width, height);
+				break;
 			}
 			const double t1 = now_seconds();
 			decodeTime += t1 - t0;
@@ -313,6 +320,9 @@ struct IntroPlayer::Impl {
 			}
 		}
 		vpx_codec_destroy(&codec);
+		if (frames == 0 && !quit.load()) {
+			failed.store(true);   // (nothing to show: finished() lets the start go on, not a black screen for the video's length)
+		}
 		done.store(true);
 		pshakux_log("intro: decoding %.1f ms a frame, turning into RGBA %.1f ms (%d threads), the slowest frame %.1f ms; "
 			"%u frames shown of %zu, %u decoded behind the clock (not shown)", 1000.0 * decodeTime / std::max<size_t>(1, packets.size()),
@@ -362,7 +372,7 @@ double IntroPlayer::duration() const { return d->length; }
 
 bool IntroPlayer::finished() const
 {
-	if (d->file.empty()) {
+	if (d->file.empty() || d->failed.load()) {
 		return true;
 	}
 	if (d->skippedAt >= 0.0) {
@@ -428,7 +438,10 @@ void IntroPlayer::close()
 	if (!d) {
 		return;
 	}
-	d->quit.store(true);
+	{
+		std::lock_guard<std::mutex> lock(d->mu);   // (set under the mutex the decoder waits with: no wake-up is lost)
+		d->quit.store(true);
+	}
 	d->cv.notify_all();
 	if (d->decoder.joinable()) {
 		d->decoder.join();

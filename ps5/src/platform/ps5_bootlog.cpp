@@ -107,6 +107,9 @@ size_t s_head_len = 0;
 char s_hist[LOG_HIST];
 size_t s_hist_head = 0, s_hist_len = 0;     // the oldest byte kept, and how many
 unsigned long long s_hist_lost = 0;          // bytes between the head and the history, let go
+// pshakux_log_keep writing the memory log out, outside s_ring_lock: the head and the history are
+// its alone, and the lines given meanwhile wait in the ring (under s_ring_lock)
+bool s_keeping = false;
 
 // Into the memory log (the caller holds s_ring_lock, or is the only thread).
 void HistPut(const char* data, size_t n)
@@ -166,9 +169,9 @@ void HistWriteOut(int fd, const char* why)
   s_hist_lost = 0;
 }
 
-void RingPut(const char* data, size_t n)
+// Into the ring (the caller holds s_ring_lock).
+void RingPutLocked(const char* data, size_t n)
 {
-  pthread_mutex_lock(&s_ring_lock);
   if (s_ring_len + n > LOG_RING)
   {
     s_ring_dropped += n;
@@ -185,6 +188,12 @@ void RingPut(const char* data, size_t n)
     }
     s_ring_len += n;
   }
+}
+
+void RingPut(const char* data, size_t n)
+{
+  pthread_mutex_lock(&s_ring_lock);
+  RingPutLocked(data, n);
   pthread_cond_signal(&s_ring_cond);
   pthread_mutex_unlock(&s_ring_lock);
 }
@@ -199,7 +208,10 @@ void LogWrite(const char* data, size_t n)
   else if (s_memory.load(std::memory_order_acquire))
   {
     pthread_mutex_lock(&s_ring_lock);
-    HistPut(data, n);
+    if (s_keeping)
+      RingPutLocked(data, n);   // (after the memory log, by pshakux_log_keep)
+    else
+      HistPut(data, n);
     pthread_mutex_unlock(&s_ring_lock);
   }
   else
@@ -210,6 +222,8 @@ void LogWrite(const char* data, size_t n)
 void RingWriteOut()
 {
   static char chunk[256 * 1024];
+  if (s_keeping)
+    return;   // the memory log is being written out: the ring's lines come after it
   // OGBox 0.0.7: kept in memory: a copy, under the lock (no file system to wait for)
   while (s_ring_len && s_memory.load(std::memory_order_acquire))
   {
@@ -256,7 +270,7 @@ void* LogWriterMain(void*)
   pthread_mutex_lock(&s_ring_lock);
   for (;;)
   {
-    if (!s_ring_len)
+    if (!s_ring_len || s_keeping)
     {
       struct timespec until;
       clock_gettime(CLOCK_REALTIME, &until);
@@ -774,6 +788,13 @@ extern "C" void pshakux_log_drain_crash(void)
     HistWriteOut(s_log_fd, "OGBox stopped (the crash report follows)");
     if (!locked)
       return;
+    if (s_keeping)
+    {
+      // (pshakux_log_keep is writing the memory log out, as it did holding the lock: the ring's
+      // lines stay rather than go in among it)
+      pthread_mutex_unlock(&s_ring_lock);
+      return;
+    }
     while (s_ring_len)
     {
       const size_t n = std::min(s_ring_len, LOG_RING - s_ring_head);
@@ -801,6 +822,32 @@ extern "C" void pshakux_thread_named(const char* name)
   pshakux_thread_named_for(pthread_self(), name);
 }
 
+// A thread that names itself lets its name go as it ends, whether it says so (pshakux_thread_gone)
+// or not: the front end's short-lived threads didn't, and after 64 of them the table was full and
+// every new thread went unnamed in the crash report.
+static pthread_key_t s_thread_key;
+static pthread_once_t s_thread_key_once = PTHREAD_ONCE_INIT;
+static bool s_thread_key_made = false;
+
+static void ThreadNameEnds(void*)
+{
+  pshakux_thread_gone();
+}
+
+static void ThreadKeyMake()
+{
+  s_thread_key_made = pthread_key_create(&s_thread_key, &ThreadNameEnds) == 0;
+}
+
+static void ThreadNameEndsWithIt(pthread_t self)
+{
+  if (!pthread_equal(self, pthread_self()))
+    return;   // (another thread's: its helper says when it ends)
+  pthread_once(&s_thread_key_once, &ThreadKeyMake);
+  if (s_thread_key_made)
+    (void)pthread_setspecific(s_thread_key, reinterpret_cast<void*>(1));
+}
+
 extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
 {
   for (int i = 0; i < MAX_THREADS; i++)
@@ -808,6 +855,7 @@ extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
     if (s_thread_used[i].load(std::memory_order_acquire) == 2 && pthread_equal(s_thread_ids[i], self))
     {
       s_thread_names[i] = name;
+      ThreadNameEndsWithIt(self);   // (a slot left by an ended thread with the same pthread_t)
       return;
     }
   }
@@ -819,6 +867,7 @@ extern "C" void pshakux_thread_named_for(pthread_t self, const char* name)
       s_thread_ids[i] = self;
       s_thread_names[i] = name;
       s_thread_used[i].store(2, std::memory_order_release);
+      ThreadNameEndsWithIt(self);
       return;
     }
   }
@@ -1065,11 +1114,21 @@ extern "C" int pshakux_log_keep(const char* why)
   if (s_log_fd < 0 || !s_memory.load(std::memory_order_acquire))
     return 0;
   pthread_mutex_lock(&s_ring_lock);
-  if (s_memory.load(std::memory_order_acquire))
+  if (s_memory.load(std::memory_order_acquire) && !s_keeping)
   {
     RingWriteOut();   // (the ring's lines into the memory log)
-    s_memory.store(false, std::memory_order_release);
+    // written outside the lock (megabytes, the file system's pace): every thread that logs takes
+    // it; the lines given meanwhile wait in the ring and follow
+    s_keeping = true;
+    pthread_mutex_unlock(&s_ring_lock);
     HistWriteOut(s_log_fd, why);
+    pthread_mutex_lock(&s_ring_lock);
+    s_memory.store(false, std::memory_order_release);
+    s_keeping = false;
+    if (s_writer_up.load(std::memory_order_acquire))
+      pthread_cond_signal(&s_ring_cond);
+    else
+      RingWriteOut();   // (no writer thread: the lines given meanwhile, here)
   }
   pthread_mutex_unlock(&s_ring_lock);
   fsync(s_log_fd);

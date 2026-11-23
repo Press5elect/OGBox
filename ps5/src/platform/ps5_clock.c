@@ -29,6 +29,7 @@
 
 #include "ps5_clock.h"
 
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -71,10 +72,16 @@ static struct ps5_clock_base
 current_base(uint64_t *tsc)
 {
    struct ps5_clock_base base;
-   for (;;) {
+   for (unsigned spins = 0;; spins++) {
       const uint64_t before = atomic_load_explicit(&s_seq, memory_order_acquire);
-      if (before & 1)
+      if (before & 1) {
+         /* OGBox: a publisher taken off its core between its two stores keeps the count odd: a
+          * pause each time, and the core given up now and then, rather than a bare spin */
+         __builtin_ia32_pause();
+         if ((spins & 63) == 63)
+            sched_yield();
          continue;
+      }
       base.tsc0 = atomic_load_explicit(&s_tsc0, memory_order_relaxed);
       base.mono0 = atomic_load_explicit(&s_mono0, memory_order_relaxed);
       base.mult = atomic_load_explicit(&s_mult, memory_order_relaxed);

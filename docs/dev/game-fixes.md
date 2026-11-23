@@ -40,6 +40,9 @@ removed (a withdrawn fix); files it didn't fetch are never removed.
 - An imported patch that one of OGBox's replaces is listed in `SUPERSEDED` in
   `import-gamedata.py`, so it doesn't show beside it.
 - Each `F` find must occur exactly once in the original file.
+- A record the loader can't read (an unknown kind, a missing field, a number that isn't whole hex,
+  a file name with a `..` part or a leading `/`, over 8191 characters) fails its whole patch, which
+  shows greyed ("a record it cannot read"). Every shipped record passed this check when it came in.
 
 ## Writing a patch from the game's code
 

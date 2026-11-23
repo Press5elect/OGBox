@@ -321,6 +321,12 @@ pad_poll(struct pad *pad)
          if (s->connected && !(s->buttons & PAD_INTERCEPTED))
             state->last = *s;
       }
+      /* OGBox: a controller that went away (a failed read, or samples saying so) lets go of its
+       * buttons and sticks: its last sample stayed held in the menus until it came back */
+      if (!state->connected) {
+         memset(&state->last, 0, sizeof(state->last));
+         state->last.left_x = state->last.left_y = state->last.right_x = state->last.right_y = 128;
+      }
    }
    (void)pad_player(0, pad);
 }

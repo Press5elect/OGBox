@@ -1170,9 +1170,13 @@ static void TestRefusedZips(const std::string& work, const std::string& app)
 	}
 }
 
-static void TestInterrupted(const std::string& work, const std::string& app)
+// `links`: the drive keeps links (the console's own drive; the PC's), and the new files are renamed
+// onto the old ones; otherwise as on exFAT, where each old file is moved aside first.
+static void TestInterrupted(const std::string& work, const std::string& app, bool links)
 {
-	std::fprintf(stderr, "installs interrupted, renames that fail or say they worked when they did not\n");
+	std::fprintf(stderr, "installs interrupted, renames that fail or say they worked when they did not (%s)\n",
+		links ? "a drive with links" : "a drive without links");
+	Test::no_links = links ? 0 : 1;
 	const std::string zip = MakeZip(work, Package("1.2.0"));
 	OldFolder(work + "/reference");
 	const auto original = Snapshot(work + "/reference");
@@ -1203,6 +1207,10 @@ static void TestInterrupted(const std::string& work, const std::string& app)
 		Test::stop_after = -1;
 		CHECK(!done);
 		CHECK(Exists(app + "/.update/journal"));
+		CHECK(Exists(app + "/.update/linked") == links);
+		// With links, no power cut leaves the title without a program to start.
+		if (links)
+			CHECK(Exists(app + "/eboot.bin"));
 		// A few undos are themselves interrupted, at each of their steps.
 		const bool nested = k == 1 || k == renames / 2 || k == renames;
 		for (int j = 0; nested && j < 6 && Exists(app + "/.update/journal"); j++)
@@ -1221,6 +1229,27 @@ static void TestInterrupted(const std::string& work, const std::string& app)
 		cuts++;
 	}
 	std::fprintf(stderr, "  %d power cuts and %d interrupted undos, each put back exactly\n", cuts, undos);
+
+	// An interrupted install not undone yet (an undo that could not finish): a new download must
+	// not take its backups away. It is refused, nothing moves, and the next start undoes it.
+	for (const int k : {1, renames / 2, renames - 1})
+	{
+		CHECK(ToReady(work, app, zip).state == State::Ready);
+		Test::stop_after = k;
+		CHECK(!Install());
+		Test::stop_after = -1;
+		CHECK(Exists(app + "/.update/journal"));
+		const auto pending = Snapshot(app);
+		Init(MakeSetup(app, "1.0.0"));
+		Check();
+		CHECK(Wait().state == State::Available);
+		Download();
+		const Status refused = Wait();
+		CHECK(refused.state == State::Failed && Contains(refused.error, "not undone"));
+		CHECK(Unchanged(app, pending));
+		CHECK(Recover(app));
+		CHECK(Unchanged(app, original));
+	}
 
 	for (int k = 0; k < renames; k++)
 	{
@@ -1274,6 +1303,7 @@ static void TestInterrupted(const std::string& work, const std::string& app)
 	Put(app + "/.update/backup/inis/PCSX2.ini", "an attacker's");
 	CHECK(Recover(app));
 	CHECK(Unchanged(app, original));
+	Test::no_links = 0;
 }
 
 static void TestCancel(const std::string& work, const std::string& app)
@@ -1408,7 +1438,8 @@ int main(int argc, char** argv)
 	TestInstall(work, app);
 	TestChecksums(work, app);
 	TestRefusedZips(work, app);
-	TestInterrupted(work, app);
+	TestInterrupted(work, app, true);
+	TestInterrupted(work, app, false);
 	TestCancel(work, app);
 	TestFreeSpace(work, app);
 	if (argc >= 3)

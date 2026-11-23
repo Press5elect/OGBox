@@ -16,7 +16,7 @@
 namespace OGBoxNet
 {
 /// 0.0.3: GET an HTTPS (or HTTP) address with curl and the title's certificates (cacert.pem), redirects
-/// followed: its status (-1 when the network failed) and its body (16 MiB at most).
+/// followed (to HTTPS only): its status (-1 when the network failed) and its body (16 MiB at most).
 int Get(const std::string& url, std::vector<uint8_t>& out, unsigned seconds);
 } // namespace OGBoxNet
 

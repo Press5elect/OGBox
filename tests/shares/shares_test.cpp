@@ -1,7 +1,9 @@
 // OGBox 0.0.3: network.cfg as the settings read and write it (ps5/src/ogbox_shares.cpp)
 #include <cassert>
 #include <cstdio>
+#include <string>
 #include "ogbox_shares.h"
+extern "C" char shares_test_last_url[];
 using namespace ogbox;
 int main()
 {
@@ -28,6 +30,10 @@ int main()
 	Share m = back.shares[3];
 	assert(mountShare(m, back, {}));
 	assert(m.mount == "/smb/Syn_ology");
+	// domain;user: the ';' reaches the address as it is (ps5vfs splits the domain off at it), each side encoded
+	Share d; d.name = "dom"; d.host = "nas"; d.path = "games"; d.user = "WORK;bo b"; d.password = "p;w";
+	assert(mountShare(d, back, {}));
+	assert(std::string(shares_test_last_url) == "smb://WORK;bo%20b:p%3Bw@nas/games");
 	// percent escapes cut short or not hex stay as they are
 	assert(percentDecode("a%4") == "a%4" && percentDecode("%") == "%" && percentDecode("%zz%41") == "%zzA");
 	assert(percentDecode(percentEncode("x:y z@\xff/%")) == "x:y z@\xff/%");
@@ -40,6 +46,16 @@ int main()
 	assert(readShares(f, odd));
 	assert(odd.user == "guest" && odd.shares.size() >= 3);
 	assert(odd.shares[1].host == "pc" && odd.shares[1].name == "pc");
+	// the long line read whole: one share, its path all there
+	assert(odd.shares.back().host == "h" && odd.shares.back().path == std::string(5000, 'x'));
+	// a line break in a value is refused, and the file stays as it was
+	ShareFile bad = back;
+	bad.shares[0].name = "two\npath = evil/x";
+	assert(writeShares(f, back));
+	std::string why;
+	assert(!writeShares(f, bad, &why) && !why.empty());
+	ShareFile again;
+	assert(readShares(f, again) && again.shares.size() == back.shares.size());
 	std::remove(f);
 	std::puts("shares: ok");
 }

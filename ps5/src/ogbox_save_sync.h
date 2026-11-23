@@ -104,6 +104,7 @@ struct Folders {
 
 struct Result {
 	bool listed{ false };    // the other side could be listed (false: nothing was done)
+	bool hereFailed{ false };   // 1.0.3: the console's E:\UDATA could not be listed (nothing was done)
 	bool stopped{ false };
 	int sent{ 0 }, brought{ 0 }, bothChanged{ 0 }, failed{ 0 }, unchanged{ 0 };
 	std::vector<std::string> lines;   // one for each save copied or not, for the log

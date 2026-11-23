@@ -1,4 +1,4 @@
-// OGBox - the PC test of the game fixes fetched at start (src/ogbox_fixes_fetch.cpp).
+// OGBox - the PC test of the game fixes fetched at start and the cheats fetched at the user's asking (src/ogbox_fixes_fetch.cpp).
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
@@ -120,6 +120,80 @@ int main(int argc, char** argv)
 	server.erase(B + "game-fixes.txt");
 	CHECK(!Sync(B, title, record, Get, r) && !r.error.empty());
 	CHECK(Read(title + "/mods/4D530039.1/trees/mod.txt") == modA2);
+
+	// 6 (1.0.3): the cheats, at the user's asking: the index's files fetched into the trainers folder
+	//   by their URL-encoded names, each checked; a file already there kept as it is
+	{
+		const std::string R = "https://raw.example/xbased/", C = "0123456789abcdef0123456789abcdef01234567";
+		const std::string tr = dir + "/trainers", index = dir + "/cheats-xbased.txt";
+		const std::string a = "ETM a", b = "ETM b", c = "ETM c", d = "ETM d", mine = "the user's own";
+		if (system(("mkdir -p '" + tr + "/4D530039'").c_str()) != 0)
+			return 2;
+		{ std::ofstream(tr + "/4D530039/Mine [plus3].etm") << mine; }
+		{ std::ofstream(tr + "/4D530039/Same.ETM") << d; }
+		{
+			std::ofstream(index) << "# OGBox cheats 1 crazyriddler/xbased " << C << "\n# a comment\n" <<
+				Line("cheats/4D530039/Name [plus5] (v1).etm", a) + Line("cheats/45410049/b.xbtf", b) +
+				Line("cheats/45410049/tampered.etm", c) + Line("cheats/4D530039/Mine [plus3].etm", "xbased's") +
+				Line("cheats/4D530039/Same.ETM", d) + Line("cheats/4D530039/../../escape.etm", "x") +
+				Line("cheats/4D530039/v0..etm", "x") + Line("cheats/4d530039/lower.etm", "x") +
+				Line("cheats/4D530039/a:b.etm", "x") + Line("cheats/4D530039/readme.txt", "x") +
+				Line("cheats/4D530039/.hidden.etm", "x") + Line("cheats/4D530039/tab\t.etm", "x") +
+				Line("mods/4D530039.1/x/mod.txt", "x");
+		}
+		server.clear();
+		server[R + C + "/cheats/4D530039/Name%20%5Bplus5%5D%20%28v1%29.etm"] = a;
+		server[R + C + "/cheats/45410049/b.xbtf"] = b;
+		server[R + C + "/cheats/45410049/tampered.etm"] = c + "!";
+		server[R + C + "/cheats/4D530039/Mine%20%5Bplus3%5D.etm"] = "xbased's";
+		server[R + C + "/cheats/4D530039/v0..etm"] = "x";
+		requests = 0;
+		unsigned lastDone = 0, lastTotal = 0;
+		CheatsReport cr;
+		CHECK(!Cheats(index, R, tr, Get, cr, [&](unsigned dn, unsigned tot) { lastDone = dn; lastTotal = tot; }));
+		fprintf(stderr, "  cheats: %u listed, %u fetched, %u there, %u kept, %u failed: %s\n", cr.listed, cr.fetched, cr.present,
+			cr.kept, cr.failed, cr.error.c_str());
+		CHECK(cr.listed == 5 && cr.fetched == 2 && cr.present == 1 && cr.kept == 1 && cr.failed == 1);
+		CHECK(lastDone == 5 && lastTotal == 5 && requests == 3);
+		CHECK(Read(tr + "/4D530039/Name [plus5] (v1).etm") == a && Read(tr + "/45410049/b.xbtf") == b);
+		CHECK(!Exists(tr + "/45410049/tampered.etm") && !Exists(tr + "/45410049/tampered.etm.part"));
+		CHECK(Read(tr + "/4D530039/Mine [plus3].etm") == mine && Read(tr + "/4D530039/Same.ETM") == d);
+		CHECK(!Exists(dir + "/escape.etm") && !Exists(tr + "/4D530039/v0..etm") && !Exists(tr + "/mods"));
+
+		// again, corrected: only the missing one is asked for
+		server[R + C + "/cheats/45410049/tampered.etm"] = c;
+		requests = 0;
+		CHECK(Cheats(index, R, tr, Get, cr, nullptr));
+		CHECK(cr.fetched == 1 && cr.present == 3 && cr.kept == 1 && cr.failed == 0 && requests == 1);
+
+		// no network: each missing one failed, with a sentence why; an index of another kind or none: nothing asked
+		if (system(("rm -rf '" + tr + "/45410049'").c_str()) != 0)
+			return 2;
+		requests = 0;
+		const Getter offline = [](const std::string&, std::vector<uint8_t>&) { requests++; return -1; };
+		CHECK(!Cheats(index, R, tr, offline, cr, nullptr) && cr.failed == 2 && !cr.error.empty() && requests == 2);
+		{ std::ofstream(index) << "# OGBox cheats 2 crazyriddler/xbased " << C << "\n" << Line("cheats/45410049/b.xbtf", b); }
+		requests = 0;
+		CHECK(!Cheats(index, R, tr, Get, cr, nullptr) && !cr.error.empty() && requests == 0);
+		CHECK(!Cheats(dir + "/none.txt", R, tr, Get, cr, nullptr) && !cr.error.empty() && requests == 0);
+
+		// the names: as the import tool allows them
+		CHECK(SafeCheatPath("cheats/4D530039/Name [plus4] (USA)(v1).etm") && SafeCheatPath("cheats/4D530039/X.XBTF"));
+		CHECK(!SafeCheatPath("cheats/4D530039/") && !SafeCheatPath("cheats/4D530039/a/b.etm") && !SafeCheatPath("cheats/4D53003/a.etm"));
+		CHECK(!SafeCheatPath("cheats/4D530039/a.etm ") && !SafeCheatPath("cheats/4D530039/ a.etm") && !SafeCheatPath("cheats/4D530039/a\\b.etm"));
+		// the shipped index (the run script passes it): every line of it read
+		if (argc > 2)
+		{
+			std::ifstream f(argv[2]);
+			unsigned lines = 0;
+			for (std::string l; std::getline(f, l);)
+				lines += !l.empty() && l[0] != '#';
+			const Getter none = [](const std::string&, std::vector<uint8_t>&) { return 404; };
+			CHECK(!Cheats(argv[2], R, dir + "/shipped", none, cr, nullptr) && cr.listed == lines && lines > 0);
+			fprintf(stderr, "  cheats: the shipped index lists %u files, %u read\n", lines, cr.listed);
+		}
+		CHECK(!SafeCheatPath("cheats/4D530039/a\x7f.etm") && !SafeCheatPath("cheats/4D530039/\xc3\xa9.etm") && !SafeCheatPath("cheats/4D530039/a.etm.part"));
+	}
 
 	fprintf(stderr, g_fail ? "fixes: %d failed\n" : "fixes: all passed\n", g_fail);
 	printf(g_fail ? "fixes: FAILED\n" : "fixes: passed\n");

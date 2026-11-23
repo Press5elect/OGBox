@@ -11,6 +11,7 @@
 #include "ogbox_settings.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <string>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "platform/ps5_bootlog.h"
 #include "core/ogbox_patches.h"
@@ -264,6 +266,11 @@ std::vector<Option> makeOptions()
 	o.push_back({ "audio_resampler", Section::Audio, "Resampler",
 		"Normal: the Xbox's own 8-point interpolation. Sinc: cleaner highs than the Xbox. Linear: a little dull.",
 		{ { "mcpx", "Normal" }, { "sinc", "Sinc" }, { "linear", "Linear" } }, "mcpx", true });
+	/* the 3D voices' HRTF filters (NC_APU_HRTF; the core's default is on) */
+	o.push_back({ "audio_hrtf", Section::Audio, "HRTF",
+		"Positional sound: the filters the Xbox puts on 3D voices so their direction can be heard on headphones. "
+		"Turn off for a plain pan.",
+		kOnOff, "1", true });
 	// ---- Console: the Xbox itself
 	o.push_back({ "language", Section::Console, "Language",
 		"Affects the in-game language.",
@@ -581,15 +588,22 @@ void writeFile(const std::string &path, const std::map<std::string, std::string>
 		pshakux_log("settings: %s cannot be written", tmp.c_str());
 		return;
 	}
-	std::fprintf(f, "# %s\n", head);
+	/* 1.0.3: put in place only when it was written whole (a full drive left a cut-off file there, and
+	 * the settings after its last line were lost) */
+	bool ok = std::fprintf(f, "# %s\n", head) >= 0;
 	for (const Option &o : options()) {
 		const auto it = values.find(o.key);
 		if (it != values.end()) {
-			std::fprintf(f, "%s=%s\n", o.key, it->second.c_str());
+			ok = std::fprintf(f, "%s=%s\n", o.key, it->second.c_str()) >= 0 && ok;
 		}
 	}
-	std::fclose(f);
-	std::rename(tmp.c_str(), path.c_str());
+	ok = std::fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+		pshakux_log("settings: %s cannot be written: %s", path.c_str(), std::strerror(errno));
+		std::remove(tmp.c_str());
+	}
 }
 
 } // namespace
@@ -893,6 +907,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("audio_resampler") == "linear" || value("audio_resampler") == "sinc") {
 		a.push_back("NC_APU_RESAMPLER=" + value("audio_resampler"));   // (the core's own default: mcpx)
+	}
+	if (value("audio_hrtf") == "0" && !std::getenv("NC_APU_HRTF")) {
+		a.push_back("NC_APU_HRTF=0");   // (the core's own default: on)
 	}
 	if (value("exact_depth") == "0") {   // 0.0.1
 		a.push_back("NC_HLE_EXACT_DEPTH=0");

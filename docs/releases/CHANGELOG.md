@@ -4,6 +4,40 @@ A short entry for each release, newest first. The full notes of a release (what 
 installation, the build's versions and checksum) are its page in this folder: see
 [`README.md`](README.md).
 
+## 1.0.3
+
+Added
+- Download cheats (Settings > Updates): the Xbox scene's trainers that xbased keeps on GitHub,
+  fetched at a pinned commit into the data folder's `trainers` and checked against their sizes and
+  SHA-256s, only when asked. OGBox ships only the index; the files are third-party, for games you
+  own, and files already there are kept.
+- HRTF on or off (Settings > Advanced, per game).
+- Covers from MobCat's database by the disc's title ID and version: the release's own box, its
+  region's, and thumbnails where there is no scan.
+- A mod for `4156002A` (v1 and v3), after xbased: animated water and lights.
+- The hard disk manager's copies, moves and deletions run in the background with their progress; a
+  data folder move shows its "deleting the old copy" phase.
+
+Fixed
+- Games: `54540079` froze in races (a compare instruction the emulator couldn't take on a watched
+  page; writes beside a watched page now count towards a hot page). `4D530004` and `4D53000D`:
+  mipmapped textures drawn from render targets (water reflections, hair, light, the pond).
+  `5553001D`: a halo round characters at high internal resolution (small glow targets now at 1x)
+  and a band down the right. `4D530039`: cars white after several stages (cube reflections freed).
+  `49470004`: shadows (F24 depth).
+- Fixes ported from xbased, by title ID: `49470007`, `4947001F`, `534E0007`, `42560004`,
+  `42530009`, `53550007`, `4B4F0004`, `4541006D`, `4C41000D`, `534300FD`, `54430006`, `45410015`,
+  `4E4D0015`, `5553003B`, `55530058`, `5553004B`, `544D0003`, `544D000D`, `49470038`, `5655002D`,
+  `534300FA`, `4541003E`, `5454000F`, `454D0003` and `56550013`.
+- After HakuXP's records: `4D440003` (a yield to a lower-priority thread); a game's crash stops the
+  game with a message instead of closing OGBox; `\??\CdRom0:` paths.
+- Save states: the clean-up of the cache copies deleted every copy at each save, so a state could
+  fail to load once the game rewrote its cache. A cache drive's format empties it in the background.
+- The front end: a data folder move finishes visibly and the hard disk manager follows it; crashes,
+  frozen screens and menus; saves, settings, shares and the updater written safely.
+- `5443000D`'s 120 fps mod (hakuX's) withdrawn: it stopped the game at the end of the first
+  chapter's opening scene. Consoles that have it get an empty one through the game-fixes download.
+
 ## 1.0.2
 
 Added

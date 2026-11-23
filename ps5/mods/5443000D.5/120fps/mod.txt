@@ -1,0 +1,11 @@
+name: 120 fps (withdrawn)
+description: Withdrawn: this mod stops the game where its first real-time scene hands over to play (the stage never loads). It now changes nothing; for a smooth picture on a 120 Hz screen use Frame generation in the game's picture settings instead.
+author: hakuX (withdrawn by Press5elect)
+
+# Title 5443000D v5. hakuX's 120fps mod (its mods/5443000D.5/120fps) ran every task that had
+# drawn on the frames between the 60 Hz ticks too; tasks that draw and also run game logic then
+# stepped twice a tick, a resource group was loaded twice, the next load found no memory
+# (0x1720B0 returned -1), ADXF_ReadNw failed (-3) and the load queue (0x1649D0) polled forever.
+# This file replaces hakuX's on consoles that have it (the game-fixes download overwrites a file
+# that differs) and in the build, with no patch lines and no refresh, so turning it on does
+# nothing. See docs/dev/open-work.md.

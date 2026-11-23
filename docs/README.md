@@ -25,6 +25,7 @@ Start with [`../CLAUDE.md`](../CLAUDE.md): the rules that always apply, and this
 | [`dev/game-fixes.md`](dev/game-fixes.md) | Writing an XBE patch or a game fix; the checks a patch must pass |
 | [`dev/releasing.md`](dev/releasing.md) | Making a release |
 | [`dev/open-work.md`](dev/open-work.md) | What is known to be unfinished or untested, and ideas not taken up |
+| [`dev/frontend-fix-plan.md`](dev/frontend-fix-plan.md) | The front-end defects found after 1.0.2 and the order they are fixed in |
 | [`xbox-reference-notes.md`](xbox-reference-notes.md) | Facts about the Xbox itself: memory map, SMBus, boot, kernel, XBE, FATX |
 
 ## History
@@ -39,6 +40,11 @@ Start with [`../CLAUDE.md`](../CLAUDE.md): the rules that always apply, and this
 - `ps5/patches/mesa-27/README.md`: the patches to Mesa's RADV.
 - `ps5/third_party/*/README.md`: the frame generation's sources (FidelityFX, MihawkGen, NIS).
 - `ps5/art/intro/README.md`, `ps5/ASSETS.md`: the startup video and the generated art.
+- `ps5/gamedata/covers-mobcat.txt`: MobCat's box pictures by title ID and version, the covers' third
+  source (made by `ps5/tools/import-mobcat-covers.py`; its header gives the format).
+- `ps5/gamedata/cheats-xbased.txt`: the trainers xbased keeps (paths, sizes, SHA-256s only), which
+  Settings > Updates > Download cheats fetches (made by `ps5/tools/import-xbased-cheats.py`; its
+  header gives the format).
 - `ps5/notices/components.json`: every third-party part, its licence and revision (the build
   stages it into the title folder's `licenses/`).
 - Code comments carry the version a behaviour dates from ("0.1.52: ...", "OGBox 1.0.2: ..."):

@@ -4,7 +4,7 @@ OGBox is developed by Press5elect.
 
 Repository: https://github.com/Press5elect/OGBox
 
-This record is current to OGBox 1.0.2.
+This record is current to OGBox 1.0.3.
 
 ## The OGBox-specific PS5 work
 
@@ -12,7 +12,7 @@ The following components contain OGBox's own PS5 implementation work, written by
 
 - **Native CPU backend**: `native/cpu/cpu_native.c` and `native/cpu/codepatch.c` in the hakuX tree
   (`Press5elect/hakux-native`: branch `ps5-native`, `tiers3` for 1.0.0's work, `tiers5` for
-  1.0.1's and `tiers6` for 1.0.2's), with the
+  1.0.1's, `tiers6` for 1.0.2's and `tiers7` for 1.0.3's), with the
   PS5 half of the CPU in `ps5/patches/hakux/ps5.patch`.
 - **PS5 kernel-call integration**: the gate between the Xbox's kernel calls and the emulator's kernel
   (`hw/xbox/hle/core/`, `native/kernel/`), and the platform layer in `ps5/src/platform/`.
@@ -102,6 +102,38 @@ The following components contain OGBox's own PS5 implementation work, written by
     wrong (`native/dev/nv2a.c`);
   - diagnostics: the vertex-program log and the per-frame draw census (`HAKUX_HLE_VSHLOG`,
     `HAKUX_HLE_CENSUS`).
+- **Fixes in hakuX's GPU, CPU emulation and kernel** (1.0.3), in hakuX-native and the patch:
+  - the SSE compares `COMISS`, `UCOMISS`, `COMISD` and `UCOMISD` on memory in the emulation of an
+    access (`native/cpu/x86emu.c`), an instruction it still can't take on a page a neighbour keeps
+    closed given its block back, and the guest's accesses beside a guard on its 16 KiB host block
+    counted towards a hot page (`native/hle/dirty.c`, `hw/xbox/hle/mem/barrier.c`), with new
+    `tests/coh16k` rows;
+  - a mipmapped texture over its levels' render targets sampled from copies of them, level by
+    level (`hw/xbox/hle/pb/pbdraw.c`), after xbased (below), with the `tests/cohalias` scenario
+    `mips`;
+  - a full object table freeing an old cube and its face views together (`pbdraw.c`), with the
+    `tests/cohalias` scenario `cubes`; an F24 depth target as a shadow buffer compared at its own
+    range (`hw/xbox/hle/shader/psh.c`, `vk/draw.c`);
+  - a page fault the title doesn't handle stopping the game rather than the process
+    (`native/core/core.c`), a yield giving way to a ready thread of any priority
+    (`native/kernel/ps.c`), and `\??\` links longer than a drive letter (`native/kernel/io.c`);
+    these three and the two before them after HakuXP's records (below);
+  - save states: the blob store's clean-up counting OGBox's `.state` files, and a cache file whose
+    copy is missing loaded when the drive holds the content as saved (`native/state/cache.c`), with
+    the PC test `tests/statecache`;
+  - diagnostics: XAPI's cache drive records and who formats a cache drive (`native/kernel/io.c`).
+- **Download cheats** (1.0.3): the download of xbased's trainers at the user's asking, checked
+  against the index's sizes and SHA-256s (`ps5/src/ogbox_main.cpp`, `ps5/src/ogbox_fixes_fetch.cpp`,
+  `ps5/tools/import-xbased-cheats.py`), tested in `tests/fixes`.
+- **Covers by release** (1.0.3): MobCat's picture looked up by the disc's title ID and version, its
+  thumbnails used where there is no scan (`ps5/src/ogbox_library.cpp`,
+  `ps5/tools/import-mobcat-covers.py`).
+- **The front end's review fixes** (1.0.3): the hard disk manager's jobs off the UI thread with their
+  progress, the data folder move's delete phase and checks (with the PC test `ps5/tests/storage`),
+  and fixes to saves, settings, shares, the updater, the quick menu and the menus
+  (`ps5/src/`); among them, the game page looking again after a screen it opened closes, the save
+  sync's writes and listings, and `SIGPIPE` ignored from the first mount, after Crux2's `37502c4` and
+  `474dbc6` (also by Press5elect).
 - **A patch for several releases** (1.0.2): a patch's release check may name up to three
   releases (`ps5/src/core/ogbox_patches.c`).
 - **Saves from a console re-signed** (1.0.2): at a game's start, its saves that another console
@@ -148,6 +180,20 @@ Among it:
     request #219);
   - xbased (crazyriddler, by way of Prodigy488's xbased-modern-gui): the never-initialized critical
     section, MMX with a `0x66` prefix, and the vertex alignment and three-component attribute fixes;
+  - xbased again in 1.0.3 (crazyriddler, https://github.com/crazyriddler/xbased): fixes after its
+    releases 1.0.1 to 1.2.4, each commit naming the release it follows: the kernel's handles,
+    timers, yields, suspended waits, base priorities and stack pages, the I/O's share access,
+    overlapped requests, file events and closes, cache drive formats and partition counts, trimmed
+    images' reads, contiguous allocations, a development build's `xbdm.dll` imports, the DSP's DMA,
+    and GPU fixes (render targets' rows, parts and landings, mipmapped textures over render targets,
+    small targets at guest resolution, depth and shadow buffers, signed blends, offset textures,
+    fog, cube look-ups, the texture table's size, the occlusion query ring);
+- HakuXP (MobCat): its test records (`docs/testing/` of HakuXP), after which hakuX-native's 1.0.3
+  fixes for an unhandled page fault, `NtYieldExecution`, `\??\CdRom0:` paths, a full table of cubes
+  and F24 shadow buffers were made;
+- xbased's mod "Animated water and lights" for `4156002A` (versions 1 and 3; crazyriddler,
+  GPL-3.0-or-later), ported in 1.0.3 with its author credit (`ps5/mods/4156002A.1/matfx-uvanim/`,
+  `ps5/mods/4156002A.3/matfx-uvanim/`);
   - open pull requests to hakuX by Jbbrack03, Robby Czesany and Möhle Jonas;
 - hakuX's Android app's save re-signer (`SaveResigner.kt`, `ConsoleKeys.kt`, `XCrypto.kt`, rfandango
   and its contributors, GPL-3.0-or-later), ported to C++ in 1.0.2 (`ps5/src/ogbox_resign.cpp`), with
@@ -163,7 +209,19 @@ Among it:
   the `45410083` mods' timing follows; none of its code is carried;
 - the game data: the patches from Jay's PatchHub and Xbox Magic Patches (jayxbox.com) and the other
   authors `patches.db` names, and the disc database from libretro-database (Redump's data);
+- MobCat's original Xbox game list (https://github.com/MobCat/MobCats-original-xbox-game-list and
+  its database, mobcat.zip/XboxIDs): the index `ps5/gamedata/covers-mobcat.txt` holds only
+  identifiers from it (title IDs, versions, XMIDs and the labels of its pictures, with which of them
+  the repository has); its box scans and thumbnails are downloaded by the console when a game needs
+  one, and none is carried;
 - XBMC4Xbox's trainer loading (Team XBMC and team xored);
+- xbased (crazyriddler, https://github.com/crazyriddler/xbased): its collection of the Xbox scene's
+  trainers (`cheats/<title ID>/`, from the Xbox Original ETM Trainers collection on the Internet
+  Archive), whose files were made by the Xbox scene's trainer makers (xboxtrainers.net, Team
+  Evox-T, Team Xored and the others xbased names). OGBox carries none of them: the index
+  `ps5/gamedata/cheats-xbased.txt` (ps5/tools/import-xbased-cheats.py) holds only their paths,
+  sizes and SHA-256s at a pinned commit, and the console downloads the files from xbased's
+  repository only when the user asks (Settings > Updates > Download cheats);
 - Crux2's platform code and frame generation (Press5elect, under Crux2's own attribution term);
 - MihawkGen (Mihawk, GPL-3.0-or-later);
 - the AMD FidelityFX SDK and FSR 1 (AMD, MIT), NVIDIA Image Scaling (NVIDIA, MIT), and SMAA (its

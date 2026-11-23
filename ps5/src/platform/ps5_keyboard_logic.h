@@ -228,6 +228,10 @@ namespace PS5KeyboardLogic
 		int tab = 0;
 		int up = 0, down = 0, left = 0, right = 0;
 		int home = 0, end = 0;
+		/// OGBox: the text and the keys a text field takes, in the order they were typed ('\b'
+		/// Backspace, '\x02' and '\x03' Left and Right, '\x1b' Escape, '\n' Enter): the counts
+		/// above lose it (a Backspace after a letter of the same report went before it).
+		std::string sequence;
 
 		bool Any() const
 		{
@@ -240,6 +244,8 @@ namespace PS5KeyboardLogic
 		{
 			if (text.size() < max_text)
 				text.append(other.text, 0, std::min(other.text.size(), max_text - text.size()));
+			if (sequence.size() < max_text)
+				sequence.append(other.sequence, 0, std::min(other.sequence.size(), max_text - sequence.size()));
 			const auto add = [](int& a, int b) { a = std::min(a + b, 64); };
 			add(backspace, other.backspace);
 			add(del, other.del);
@@ -330,15 +336,15 @@ namespace PS5KeyboardLogic
 			switch (usage)
 			{
 				case 0x28:
-				case 0x58: typed->enter++; return;
-				case 0x29: typed->escape++; return;
-				case 0x2a: typed->backspace++; return;
+				case 0x58: typed->enter++; typed->sequence.push_back('\n'); return;
+				case 0x29: typed->escape++; typed->sequence.push_back('\x1b'); return;
+				case 0x2a: typed->backspace++; typed->sequence.push_back('\b'); return;
 				case 0x2b: typed->tab++; return;
 				case 0x4c: typed->del++; return;
 				case 0x4a: typed->home++; return;
 				case 0x4d: typed->end++; return;
-				case 0x4f: typed->right++; return;
-				case 0x50: typed->left++; return;
+				case 0x4f: typed->right++; typed->sequence.push_back('\x03'); return;
+				case 0x50: typed->left++; typed->sequence.push_back('\x02'); return;
 				case 0x51: typed->down++; return;
 				case 0x52: typed->up++; return;
 				case 0x39: m_caps = !m_caps; return;
@@ -352,7 +358,10 @@ namespace PS5KeyboardLogic
 			if (m_caps && usage >= 0x04 && usage <= 0x1d)
 				shift = !shift;
 			if (const char ch = Character(usage, shift))
+			{
 				typed->text.push_back(ch);
+				typed->sequence.push_back(ch);
+			}
 		}
 
 		std::array<uint8_t, 16> m_held = {};

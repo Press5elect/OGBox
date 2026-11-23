@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# OGBox - the PC test of the game fixes fetched at start (src/ogbox_fixes_fetch.cpp), with the address
-# and undefined-behaviour sanitizers, and the check that ps5/game-fixes.txt is current.
+# OGBox - the PC test of the game fixes fetched at start and the cheats fetched at the user's asking
+# (src/ogbox_fixes_fetch.cpp), with the address and undefined-behaviour sanitizers, and the check that
+# ps5/game-fixes.txt is current.
 # SPDX-FileCopyrightText: 2026 Press5elect
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
@@ -27,4 +28,4 @@ echo 'int main(){}' | "${CXX:-clang++}" -x c++ "${san[@]}" - -o "$work/san-probe
 	-isystem "$libzip_src/lib" -isystem "$zipwork" \
 	"$here/fixes_test.cpp" "$root/ps5/src/ogbox_fixes_fetch.cpp" "$root/ps5/src/platform/ps5_update.cpp" \
 	"$zipwork/lib/libzip.a" -lz -o "$work/fixes_test"
-"$work/fixes_test" "$work/run" 2> "$work/fixes_test.log" || { cat "$work/fixes_test.log"; exit 1; }
+"$work/fixes_test" "$work/run" "$root/ps5/gamedata/cheats-xbased.txt" 2> "$work/fixes_test.log" || { cat "$work/fixes_test.log"; exit 1; }

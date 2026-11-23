@@ -142,6 +142,17 @@ static void *out_thread(void *arg)
             said = true;
             nc_log("hakuX-apu", "no sound output (sceAudioOut): draining without sound at 48 kHz");
         }
+        {
+            /* next counts on from the last grain drained this way: after grains the port played
+             * (or a long stall) it lies behind, and the ring went out at the processor's pace until
+             * it caught up. More than a grain behind, the count starts again from now. */
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const int64_t behind = (int64_t)(now.tv_sec - next.tv_sec) * 1000000000LL + (now.tv_nsec - next.tv_nsec);
+            if (behind > period_ns) {
+                next = now;
+            }
+        }
         next.tv_nsec += period_ns;
         while (next.tv_nsec >= 1000000000L) {
             next.tv_nsec -= 1000000000L;

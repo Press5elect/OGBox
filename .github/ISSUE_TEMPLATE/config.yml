@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to report a problem
+    url: https://github.com/Press5elect/OGBox#what-to-expect
+    about: What to check before you report, and what to include.

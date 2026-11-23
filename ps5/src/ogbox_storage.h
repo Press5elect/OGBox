@@ -51,21 +51,28 @@ uint64_t storageBytes(const std::string &root);
 bool writableFolder(const std::string &path, std::string &why);
 
 /* Moving the data folder's parts to another, on a thread of its own: renamed when both are on one
- * drive, else copied then deleted. The new folder is the data folder once everything is there. */
+ * drive, else copied then deleted. The new folder is the data folder once everything is there (its
+ * note written and read back); only then is the old copy deleted. A copy is marked in the new folder
+ * till then, and a move begun again to it goes on with it (what is there whole isn't copied again). */
 class StorageMove {
 public:
 	struct Progress {
 		bool running{ false }, done{ false }, ok{ false };
+		bool removing{ false };   // 1.0.3: everything is there; the old copy is being deleted (bytes of total)
 		uint64_t bytes{ 0 }, total{ 0 };
-		std::string current;   // the file being copied
+		std::string current;   // the file being copied (or deleted)
 		std::string error;
+		std::string note;      // 1.0.3: done, but what of the old copy is left there
+		std::string from;      // the data folder it is moved from
 	};
 	static StorageMove &get();
-	/* Start moving from -> to. false: one is under way already. */
+	/* Start moving from -> to. false: one is under way already. Refused (done, with the reason):
+	 * into the data folder itself or one of its parts. */
 	bool start(const std::string &from, const std::string &to);
 	Progress progress();
 
 private:
+	bool run(const std::string &from, const std::string &to, std::string &why, std::string &note);
 	std::mutex mutex;
 	Progress state;
 };

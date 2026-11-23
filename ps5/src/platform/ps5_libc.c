@@ -362,12 +362,14 @@ ps5px_memrchr(const void *memory, int value, size_t length)
    return NULL;
 }
 
-/* basename: curl's MIME parts (libSceLibcInternal only). POSIX's: may return static storage. */
+/* basename: curl's MIME parts (libSceLibcInternal only). POSIX's: may return static storage.
+ * OGBox: the storage is the thread's own (it stands for basename in the whole title: two threads
+ * at once wrote into each other's answer). */
 char *
 ps5px_basename(char *path)
 {
    static char dot[] = ".";
-   static char result[1024];
+   static _Thread_local char result[1024];
    if (!path || !path[0])
       return dot;
    size_t end = strlen(path);
