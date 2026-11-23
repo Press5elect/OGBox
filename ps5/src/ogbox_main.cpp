@@ -105,6 +105,10 @@
 #include "platform/ps5_sandbox.h"
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
+/* 1.0.4: the crash of the last time (ps5_crash.cpp): 1 when OGBox stopped unexpectedly; what it was, and
+ * the file its report is in (ogbox-crash.log, copied out of the boot log). consume 0: kept to be said
+ * on a later start (a game's start shows no home screen). */
+extern "C" int pshakux_crash_previous(char *what, unsigned whatSize, char *report, unsigned reportSize, int consume);
 #include "ogbox_fixes_fetch.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
@@ -957,6 +961,7 @@ public:
 	PS5Update::State updateSeen{ PS5Update::State::Idle };
 	bool updateByHand{ false }, updateWanted{ false };
 	bool rollbackWanted{ false };             // 1.0.4: Settings > Updates > Go back was chosen
+	std::string crashNotice;                  // 1.0.4: the last run crashed: said once on the game list
 	double screenSince{ 0.0 };
 	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
@@ -2163,6 +2168,17 @@ public:
 		if (!named && !boot.back && boot.autoboot && !boot.bootTxtImage.empty()) {   // (0.1.43: back is the list)
 			boot.image = boot.bootTxtImage;
 			boot.source = boot.source + " (autoboot)";
+		}
+		/* 1.0.4: a crash the last time: said once on the game list (crashTick); its report copied to where
+		 * it stays. Nothing starts OGBox again by itself. */
+		{
+			char what[256] = "", report[256] = "";
+			if (pshakux_crash_previous(what, sizeof(what), report, sizeof(report), boot.image.empty() ? 1 : 0)) {
+				const bool copied = std::strstr(report, "ogbox-crash.log") != nullptr;
+				crashNotice = std::string("OGBox stopped unexpectedly last time (") + what + "); its report is in " + report +
+					(copied ? ". To report the problem, copy that file, and ogbox-boot.previous.log before OGBox starts again."
+							: ". To report the problem, copy that file before OGBox starts again.");
+			}
 		}
 		if (boot.image.empty()) {
 			library = true;
@@ -5734,6 +5750,7 @@ public:
 			case Screen::Storage: drawStorage(); break;
 			case Screen::Hdd: drawHdd(); break;
 			}
+			crashTick();      // 1.0.4
 			updateTick();
 			saveSyncTick();   // 0.0.8
 			placeTick();      // 1.0.3
@@ -6344,6 +6361,18 @@ public:
 		default:
 			break;
 		}
+	}
+
+	/* 1.0.4: OGBox stopped unexpectedly last time (ps5_crash.cpp): said once, on the game list, with nothing
+	 * else open */
+	void crashTick()
+	{
+		if (crashNotice.empty() || screen != Screen::Library || pop.open || gp.open || !startPath.empty()) {
+			return;
+		}
+		pshakux_log("ogbox: the crash of the last time is said");
+		openPopup("OGBox stopped unexpectedly", crashNotice, { "OK" }, nullptr);
+		crashNotice.clear();
 	}
 
 	/* 1.0.2: the game fixes fetched at start: which games got fixes, once, when no other popup is up */

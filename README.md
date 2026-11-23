@@ -50,6 +50,8 @@ sound comes out of the PS5's normal audio output.
 
 When something goes wrong, the file `ogbox-boot.log` in the title folder says what happened (the
 run before it is kept as `ogbox-boot.previous.log`). Please attach both when you open an issue.
+After a crash, the next start says so once on the game list and copies the crash report to
+`ogbox-crash.log` in the title folder, where it stays until the next crash.
 
 **Before you report a game's problem**, please:
 1. Use a dump of your own disc that matches Redump (the names in OGBox's game database are
