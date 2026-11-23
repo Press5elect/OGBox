@@ -1157,7 +1157,9 @@ static void jmp_parse(char *text, Jmp *j)
         }
         if (all_hex(line)) {
             char *repl = NULL;
-            if (next) {
+            /* 1.0.4: blank lines between a find and its replacement are skipped (one of Jay's
+             * collection, a 54510004 widescreen patch, has one) */
+            while (next && (!repl || !*repl)) {
                 char *r = next;
                 next = strchr(r, '\n');
                 if (next) {

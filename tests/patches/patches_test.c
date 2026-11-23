@@ -700,7 +700,7 @@ static void test_user(void)
     char text[2048];
     snprintf(text, sizeof(text),
              "name=Widescreen\nauthor=Tester\nversion=1.0 {%08X}\nnotes=Wide.\n\n# default.xbe - widescreen\n"
-             "0x10: AA BB\nF00DFACE\n0BADC0DE\n# [-] default.xbe - an alternative, off\n20: CCDD\nAPPEND: 0102\n"
+             "0x10: AA BB\nF00DFACE\n\r\n\n0BADC0DE\n# [-] default.xbe - an alternative, off\n20: CCDD\nAPPEND: 0102\n"
              "# default.xbe - more\r\nAPPEND: 0304\r\n", crc);
     write_text(patches, "ws.jmp", text);
     write_text(patches, "other.jmp", "version=1.0 {DEADBEEF}\n0x10: 00\n");             /* another game's */
