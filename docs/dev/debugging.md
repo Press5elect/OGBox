@@ -62,6 +62,7 @@ the test: some cost speed. Only the ones that have earned their keep are listed;
 | `HAKUX_HLE_TEXDUMP=<id>` | One texture's raw texels to a file (the pack feature's dumps are the general tool) |
 | `NC_DEVTIME=disc_us,disc_kBps,hdd_us,hdd_kBps` | The drives' modelled speed, with Fast disc drive off (e.g. `125,27600,8000,20000` for a console-like hard disk) |
 | `NC_APU_DSP=0/1`, `NC_APU_MON=gp` | The sound path (the Sound mixing setting sets these; in boot.txt they override it) |
+| `NC_APU_HRTF=0` | The 3D voices' HRTF filters off (the HRTF setting sets it; in boot.txt it overrides it) |
 | `NC_APU_VOICE_LOG=1` | Each sound's sends, for mixing questions |
 | `OGBOX_LOG=file` | The log always written, whatever the setting |
 
