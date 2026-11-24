@@ -79,8 +79,10 @@ bool SafeCheatPath(const std::string& path);
 /// The work (any thread): index is cheats-xbased.txt's path, raw the address before the commit
 /// ("https://raw.githubusercontent.com/crazyriddler/xbased/"), trainers the user's trainers folder.
 /// progress (may be empty) is told each file done, of how many.
+/// 1.0.4: connections (1 to 16) files fetched at once, get called from that many threads (it must allow
+/// it; progress is called under a lock, from any of them).
 bool Cheats(const std::string& index, const std::string& raw, const std::string& trainers, const Getter& get,
-	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress);
+	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress, unsigned connections = 1);
 
 /// Cheats() on a thread of its own with OGBoxNet::Get: false when one is running already.
 bool StartCheats(const std::string& index, const std::string& trainers);
