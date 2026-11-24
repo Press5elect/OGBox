@@ -863,6 +863,88 @@ void writeLastGame(const std::string &path)
  * one disc descriptor; the mods' catalog is the core's one table). */
 std::mutex &g_discInfoMutex = ogbox::discMutex();   // 0.0.3: the covers' title images take it too
 
+/* One device (NC_HLE_ONE_DEVICE=1): the title's queue is the HLE GPU's too (the console's graphics
+ * family has one queue), and Vulkan wants every use of a queue, and vkDeviceWaitIdle, from one
+ * thread at a time. volk's entry points for them are replaced by ones under this lock, which the
+ * HLE GPU takes around its own (pshx_core_gpu_share): every submit of the title's (the frame, the
+ * template's uploads, frame generation's) goes through them. */
+std::mutex g_queueMutex;
+PFN_vkQueueSubmit g_queueSubmit;
+PFN_vkQueueSubmit2 g_queueSubmit2;
+PFN_vkQueueSubmit2KHR g_queueSubmit2KHR;
+PFN_vkQueueWaitIdle g_queueWaitIdle;
+PFN_vkDeviceWaitIdle g_deviceWaitIdle;
+PFN_vkQueuePresentKHR g_queuePresent;
+
+void queueLock()
+{
+	g_queueMutex.lock();
+}
+
+void queueUnlock()
+{
+	g_queueMutex.unlock();
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFence fence)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueSubmit(q, n, si, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2 *si, VkFence fence)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueSubmit2(q, n, si, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueSubmit2KHR(VkQueue q, uint32_t n, const VkSubmitInfo2 *si, VkFence fence)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueSubmit2KHR(q, n, si, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueWaitIdle(VkQueue q)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueWaitIdle(q);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedDeviceWaitIdle(VkDevice d)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_deviceWaitIdle(d);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueuePresent(VkQueue q, const VkPresentInfoKHR *pi)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queuePresent(q, pi);
+}
+
+/* volk's device-level entry points for the queue, each under g_queueMutex (once) */
+void lockQueueEntryPoints()
+{
+	if (g_queueSubmit) {
+		return;
+	}
+	g_queueSubmit = vkQueueSubmit;
+	vkQueueSubmit = lockedQueueSubmit;
+	if ((g_queueSubmit2 = vkQueueSubmit2)) {
+		vkQueueSubmit2 = lockedQueueSubmit2;
+	}
+	if ((g_queueSubmit2KHR = vkQueueSubmit2KHR)) {
+		vkQueueSubmit2KHR = lockedQueueSubmit2KHR;
+	}
+	g_queueWaitIdle = vkQueueWaitIdle;
+	vkQueueWaitIdle = lockedQueueWaitIdle;
+	g_deviceWaitIdle = vkDeviceWaitIdle;
+	vkDeviceWaitIdle = lockedDeviceWaitIdle;
+	if ((g_queuePresent = vkQueuePresentKHR)) {
+		vkQueuePresentKHR = lockedQueuePresent;
+	}
+}
+
 } // namespace
 
 /* The overlay's colours and typeface: src/ogbox_theme.cpp (at file scope, where the base class
@@ -906,6 +988,17 @@ public:
 	VkPipeline pipeline{ VK_NULL_HANDLE };
 
 	uint64_t frameSeen{ 0 };
+	/* One device (NC_HLE_ONE_DEVICE=1, pshx_core_gpu_share): the title's device made with what the HLE
+	 * GPU needs and offered to it; the frame then is its display image (slot), copied on the GPU into
+	 * this frame's staging buffer in the frame's own command buffer */
+	bool oneDeviceOffer{ false };
+	VkPhysicalDeviceFeatures titleFeatures{};          // the title's own (the template reads them)
+	std::vector<const char *> oneDeviceExtensions;     // what the device was made with
+	VkPhysicalDeviceFeatures2 oneDeviceFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+	PshxSlotFrame slotFrame{};
+	bool slotHeld{ false };                            // slotFrame taken, its copy in this frame's commands
+	std::array<bool, maxConcurrentFrames> stagingOnGpu{};   // a staging buffer's copy submitted, its fence not waited
+	int shotBuffer{ -1 };                              // a screenshot of this staging buffer once its copy is done
 	bool upload{ false };       // this frame copies a new picture in
 	bool havePicture{ false };  // a picture has been shown: it stays until a newer one
 	// OGBox 0.0.7: frame generation (ogbox_framegen.h): the game's frames go into its ring, and the
@@ -2099,6 +2192,7 @@ public:
 		if (!havePicture || showingLogo || pictureBuffer < 0 || !picture.width || !picture.height) {
 			return;
 		}
+		settleStaging(static_cast<size_t>(pictureBuffer));   // one device: its GPU copy done
 		const Staging &s = staging[static_cast<size_t>(pictureBuffer)];
 		const size_t bytes = size_t(picture.width) * picture.height * 4;
 		if (!s.mapped || s.size < bytes) {
@@ -2459,6 +2553,7 @@ public:
 		}
 		checkInstanceTable("quit");
 		vkDeviceWaitIdle(device);
+		deviceKept = pshx_core_gpu_shared();   // one device: the HLE GPU's still (the base class leaves it)
 		frameGen.destroy();
 		destroyPicture();
 		for (auto &s : staging) {
@@ -2572,7 +2667,8 @@ public:
 			return;
 		}
 		destroyStaging(s);
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		// (one device: the HLE GPU's display image is copied into it on the GPU, TRANSFER_DST)
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, size, &s.buffer, &s.memory));
 		VK_CHECK_RESULT(vkMapMemory(device, s.memory, 0, VK_WHOLE_SIZE, 0, &s.mapped));
 		s.size = size;
@@ -3629,8 +3725,150 @@ public:
 		vkDestroySampler(device, pointSampler, nullptr);
 	}
 
+	/* One device: env NC_HLE_ONE_DEVICE=1 (boot.txt's env line, or the core's NC_ switch from the settings
+	 * or the arguments: pshx_core_configure sets it, in the constructor, before the device is made).
+	 * The device gets the HLE GPU's extensions and features besides the title's; offered to it in
+	 * prepare. A game that waits for its share is configured after this: its own device then. */
+	void getEnabledExtensions() override
+	{
+		const char *asked = std::getenv("NC_HLE_ONE_DEVICE");
+		if (library || !asked || asked[0] != '1') {
+			return;
+		}
+		PshxGpuNeeds needs{};
+		char why[200] = "";
+		if (!pshx_core_gpu_needs(instance, apiVersion, physicalDevice, &needs, why, sizeof(why))) {
+			pshakux_log("GPU: own device (the HLE GPU can't share the title's: %s)", why);
+			return;
+		}
+		const uint32_t family = vulkanDevice->getQueueFamilyIndex(VK_QUEUE_GRAPHICS_BIT);
+		if (needs.queue_family != family) {
+			pshakux_log("GPU: own device (the title's queue family %u, the HLE GPU's %u)", family, needs.queue_family);
+			return;
+		}
+		for (uint32_t i = 0; i < needs.extension_count; i++) {
+			const char *e = needs.extensions[i];
+			const bool have = std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0 ||   // (the template adds it)
+				std::any_of(enabledDeviceExtensions.begin(), enabledDeviceExtensions.end(),
+					[e](const char *x) { return std::strcmp(x, e) == 0; });
+			if (!have) {
+				enabledDeviceExtensions.push_back(e);
+			}
+		}
+		/* the features: the HLE GPU's chain (Vulkan13Features among them on the console, where the
+		 * title's own dynamic rendering struct may not be too), with the title's dynamic rendering on */
+		auto *f2 = static_cast<VkPhysicalDeviceFeatures2 *>(needs.features);
+		titleFeatures = enabledFeatures;
+		VkBool32 *on = &enabledFeatures.robustBufferAccess;
+		const VkBool32 *want = &f2->features.robustBufferAccess;
+		for (size_t i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++) {
+			on[i] = on[i] || want[i];
+		}
+		bool dynamicRendering = false;
+		VkBaseOutStructure *tail = nullptr;
+		for (auto *n = static_cast<VkBaseOutStructure *>(f2->pNext); n; n = n->pNext) {
+			if (n->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES) {
+				reinterpret_cast<VkPhysicalDeviceVulkan13Features *>(n)->dynamicRendering = VK_TRUE;
+				dynamicRendering = true;
+			} else if (n->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES) {
+				reinterpret_cast<VkPhysicalDeviceDynamicRenderingFeatures *>(n)->dynamicRendering = VK_TRUE;
+				dynamicRendering = true;
+			}
+			tail = n;
+		}
+		if (!dynamicRendering) {
+			baseDynamicRenderingFeatures.pNext = nullptr;
+			if (tail) {
+				tail->pNext = reinterpret_cast<VkBaseOutStructure *>(&baseDynamicRenderingFeatures);
+			} else {
+				f2->pNext = &baseDynamicRenderingFeatures;
+			}
+		}
+		deviceCreatepNextChain = f2->pNext;
+		/* what vkCreateDevice gets (the template's createLogicalDevice), for the HLE GPU's check */
+		oneDeviceExtensions = enabledDeviceExtensions;
+		oneDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+		oneDeviceFeatures.features = enabledFeatures;
+		oneDeviceFeatures.pNext = deviceCreatepNextChain;
+		oneDeviceOffer = true;
+		pshakux_log("GPU: the title's device made for one device: %u extensions and the features of the HLE GPU's",
+			needs.extension_count);
+	}
+
+	/* One device: the device made, the queue's uses under one lock, and the device offered to the HLE GPU
+	 * (before the core starts; it says in the boot log whether it took it) */
+	void shareDevice()
+	{
+		if (!oneDeviceOffer || device == VK_NULL_HANDLE) {
+			return;
+		}
+		vulkanDevice->enabledFeatures = titleFeatures;   // the template's own use of them as before
+		lockQueueEntryPoints();
+		PshxGpuShare share{};
+		share.instance = instance;
+		share.api_version = apiVersion;
+		share.physical_device = physicalDevice;
+		share.device = device;
+		share.queue_family = vulkanDevice->queueFamilyIndices.graphics;
+		share.queue = queue;
+		share.queue_lock = queueLock;
+		share.queue_unlock = queueUnlock;
+		share.extension_count = static_cast<uint32_t>(oneDeviceExtensions.size());
+		share.extensions = oneDeviceExtensions.data();
+		share.features = &oneDeviceFeatures;
+		pshx_core_gpu_share(&share);
+	}
+
+	/* One device: this frame's slot into its staging buffer, first in the frame's commands (the submit
+	 * waits for the slot's timeline value at the transfer stage); the buffer then read as one the CPU
+	 * filled: the upload, frame generation, and (after the frame's fence) a screenshot or save state */
+	void recordSlotCopy(VkCommandBuffer cmd)
+	{
+		const VkImage image = reinterpret_cast<VkImage>(slotFrame.image);
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		VkImageMemoryBarrier toSrc{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		toSrc.srcAccessMask = 0;
+		toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toSrc.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toSrc.srcQueueFamilyIndex = toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toSrc.image = image;
+		toSrc.subresourceRange = range;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+			nullptr, 1, &toSrc);
+		VkBufferImageCopy copy{};
+		copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.imageExtent = { slotFrame.width, slotFrame.height, 1 };
+		vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging[currentBuffer].buffer, 1, &copy);
+		/* the slot back as the HLE GPU keeps it; the copy's writes to whatever reads the buffer next,
+		 * the host's reads (after the fence) among them */
+		VkImageMemoryBarrier back = toSrc;
+		back.srcAccessMask = 0;
+		back.dstAccessMask = 0;
+		back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkMemoryBarrier written{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+		written.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		written.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_HOST_READ_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &written, 0, nullptr, 1, &back);
+	}
+
+	/* One device: staging buffer i as the CPU reads it: its GPU copy, if one is submitted, done */
+	void settleStaging(size_t i)
+	{
+		if (i < stagingOnGpu.size() && stagingOnGpu[i]) {
+			const VkResult r = vkWaitForFences(device, 1, &waitFences[i], VK_TRUE, 2000000000ull);
+			if (r != VK_SUCCESS) {
+				pshakux_log("presenter: the frame's copy into staging buffer %zu not seen done (%d)", i, static_cast<int>(r));
+			}
+			stagingOnGpu[i] = false;
+		}
+	}
+
 	void prepare() override
 	{
+		shareDevice();   // (before the template's first submits and the core's start)
 		VulkanExampleBase::prepare();
 		preparePresenter();
 		preparePassTimes();
@@ -3757,7 +3995,18 @@ public:
 		pshx_core_display_pickup();   // 0.0.4: the guest's vblank keeps clear of it
 		// 0.0.4: the HLE GPU copies the frame straight into the staging buffer where it can
 		const double takeFrom = now_seconds();
-		if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
+		/* one device: the HLE GPU's display image itself, copied into the staging buffer on the GPU in
+		 * this frame's commands (recordSlotCopy) */
+		const bool slot = pshx_core_gpu_shared();
+		if (slot) {
+			if (!pshx_core_take_slot(&frameSeen, &slotFrame)) {
+				return;
+			}
+			slotHeld = true;
+			fw = w = slotFrame.width;
+			fh = slotFrame.height;
+			ensureStaging(s, VkDeviceSize(fw) * fh * 4);
+		} else if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
 			return;
 		}
 		{
@@ -3785,8 +4034,8 @@ public:
 		showingLogo = false;
 		showingFrozen = false;
 		if (!picturesTaken++) {
-			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames", fw, fh,
-				static_cast<unsigned long long>(framesDrawn));
+			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames%s", fw, fh,
+				static_cast<unsigned long long>(framesDrawn), slot ? " (one device: the HLE GPU's display image, copied on the GPU)" : "");
 			checkInstanceTable("the first frame (the HLE GPU's instance made)");
 		}
 	}
@@ -3955,6 +4204,9 @@ public:
 			stampPass(cmdBuffer, 0);
 		}
 		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		if (slotHeld) {
+			recordSlotCopy(cmdBuffer);   // one device: the frame into the staging buffer, on the GPU
+		}
 		pictureChanged = upload || fgShow;
 		if (fgPush) {
 			frameGen.push(cmdBuffer, staging[currentBuffer].buffer);
@@ -5010,6 +5262,7 @@ public:
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
 		// template's settings window.
 		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
+		settleStaging(currentBuffer);   // one device: before prepareFrame resets the fence
 		VulkanExampleBase::prepareFrame();
 		passAcquiredAt = now_seconds();
 		pshx_core_display_vsync();    // 0.0.4: the display let the loop go (FIFO: once a refresh)
@@ -5019,10 +5272,31 @@ public:
 		/* (fgPush: frame generation takes the new frame instead of the upload; it is in this staging buffer all the same) */
 		if (shotWanted && (upload || fgPush) && havePicture) {
 			shotWanted = false;
-			takeShot();
+			if (slotHeld) {
+				shotBuffer = static_cast<int>(currentBuffer);   // one device: once the GPU's copy is done
+			} else {
+				takeShot(currentBuffer);
+			}
 		}
 		buildCommandBuffer();
+		const uint32_t submitted = currentBuffer;
+		if (slotHeld) {
+			submitWaitTimeline = reinterpret_cast<VkSemaphore>(slotFrame.semaphore);
+			submitWaitValue = slotFrame.value;
+			submitWaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		}
 		VulkanExampleBase::submitFrame();
+		if (slotHeld) {
+			/* submitted: the HLE GPU may write the slot again (its write comes after on the queue) */
+			slotHeld = false;
+			stagingOnGpu[submitted] = true;
+			pshx_core_slot_done(slotFrame.slot);
+		}
+		if (shotBuffer >= 0) {
+			settleStaging(static_cast<size_t>(shotBuffer));
+			takeShot(static_cast<size_t>(shotBuffer));
+			shotBuffer = -1;
+		}
 		framesDrawn++;
 	}
 
@@ -5066,14 +5340,14 @@ public:
 	}
 
 	/* The frame just taken from the core (this frame's staging buffer) to /data/ogbox/shots. */
-	void takeShot()
+	void takeShot(size_t buffer)
 	{
 		const std::string folder = ogbox::storagePath("shots");
 		mkdir(folder.c_str(), 0777);
 		char name[96];
 		std::snprintf(name, sizeof(name), "/shot-%04u-%.0fs.bmp", ++shotsTaken, now_seconds());
 		const std::string path = folder + name;
-		const bool ok = writeBmp(path, static_cast<const uint8_t *>(staging[currentBuffer].mapped), picture.width,
+		const bool ok = writeBmp(path, static_cast<const uint8_t *>(staging[buffer].mapped), picture.width,
 			picture.height, picture.width * 4);
 		pshakux_log("ogbox: screenshot %ux%u %s: %s", picture.width, picture.height, path.c_str(), ok ? "saved" : std::strerror(errno));
 	}
@@ -6244,6 +6518,9 @@ public:
 		/* the frozen picture, 320 wide, for a state saved now */
 		qm.thumb.clear();
 		qm.thumbW = qm.thumbH = 0;
+		if (pictureBuffer >= 0) {
+			settleStaging(static_cast<size_t>(pictureBuffer));   // one device: its GPU copy done
+		}
 		if (pictureBuffer >= 0 && picture.width && picture.height && staging[static_cast<size_t>(pictureBuffer)].mapped) {
 			const uint8_t *src = static_cast<const uint8_t *>(staging[static_cast<size_t>(pictureBuffer)].mapped);
 			const uint32_t tw = 320, th = std::max(1u, static_cast<uint32_t>(320.0f / displayAspect() + 0.5f));

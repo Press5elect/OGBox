@@ -815,6 +815,32 @@ void pshx_core_frame_size(uint32_t *w, uint32_t *h)
     pshx_present_size(w, h);
 }
 
+bool pshx_core_gpu_needs(void *instance, uint32_t api_version, void *physical_device, PshxGpuNeeds *needs,
+                         char *why, unsigned why_size)
+{
+    return pshx_present_gpu_needs(instance, api_version, physical_device, needs, why, why_size);
+}
+
+void pshx_core_gpu_share(const PshxGpuShare *share)
+{
+    pshx_present_gpu_share(share);
+}
+
+bool pshx_core_gpu_shared(void)
+{
+    return pshx_present_gpu_shared();
+}
+
+bool pshx_core_take_slot(uint64_t *seen, PshxSlotFrame *frame)
+{
+    return pshx_present_slot_take(seen, frame);
+}
+
+void pshx_core_slot_done(int slot)
+{
+    pshx_present_slot_done(slot);
+}
+
 bool pshx_core_widescreen(void)
 {
     return g_widescreen;

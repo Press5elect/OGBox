@@ -166,6 +166,12 @@ protected:
 	std::array<VkSemaphore, maxConcurrentFrames> presentCompleteSemaphores{};
 	std::vector<VkSemaphore> renderCompleteSemaphores{};
 	std::array<VkFence, maxConcurrentFrames> waitFences;
+	/** @brief OGBox: a timeline semaphore the next submitFrame's submit also waits for (at value, in stage); cleared by it */
+	VkSemaphore submitWaitTimeline{ VK_NULL_HANDLE };
+	uint64_t submitWaitValue{ 0 };
+	VkPipelineStageFlags submitWaitStage{ 0 };
+	/** @brief OGBox: the device and instance are in use elsewhere still (the emulator's GPU shares them): not destroyed */
+	bool deviceKept{ false };
 
 	bool requiresStencil{ false };
 public:
