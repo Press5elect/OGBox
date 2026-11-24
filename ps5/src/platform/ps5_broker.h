@@ -11,8 +11,9 @@
 // title sends it to the payload loader on 127.0.0.1:9021, as it sends the elevation helper, and then
 // speaks ps5/broker/protocol.hpp with it over the same connection. Whether a payload's writes are
 // held back the same way decides whether OGBox's writes should go through it; the write test
-// measures that and logs every number to the boot log as "writetest:" lines. Nothing else in OGBox
-// uses the broker yet.
+// measures that and logs every number to the boot log as "writetest:" lines. 1.0.4: the cache
+// drives' write-back goes through it too (Settings > Advanced > Fast writes on the console's
+// storage: ps5_wbremote.h).
 
 #pragma once
 
@@ -21,6 +22,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <sys/uio.h>
 #include <vector>
 
 #include "../../broker/protocol.hpp"
@@ -50,6 +52,13 @@ public:
 
 	bool Send(Op op, uint32_t handle, uint64_t offset, uint64_t length, uint32_t flags, const void* body, size_t size,
 		uint32_t* seq = nullptr);
+	/// 1.0.4: a request whose body is the n pieces one after the other (a WRITE from the cache
+	/// drives' held items).
+	bool SendV(Op op, uint32_t handle, uint64_t offset, const struct iovec* iov, int n);
+	/// 1.0.4: no more requests: the connection's sending side shut, the broker's answers read and
+	/// let go until it ends (it carries out every request it got whole first), for at most wait_ms;
+	/// then closed. false: it hadn't ended by then.
+	bool Finish(int wait_ms);
 	/// The next reply (and its body, when it has one and body is given).
 	bool Receive(Reply& reply, std::vector<uint8_t>* body, int timeout_ms);
 	/// Send, then its reply; -1 or the reply's error.

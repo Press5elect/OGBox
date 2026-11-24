@@ -23,6 +23,23 @@ rm -rf "$work/run"
 "$work/broker_test" "$work/run" 2> "$work/broker_test.log" || { cat "$work/broker_test.log"; exit 1; }
 tail -n 1 "$work/broker_test.log"
 rm -rf "$work/run"
+# 1.0.4: Fast writes on the console's storage: the core's write-back (wback.c) through the real
+# broker and client (wbremote_test.cpp), when the core tree (HAKUX_NATIVE: a hakux-native work tree;
+# else build/hakux-src) has the helper's calls
+core=${HAKUX_NATIVE:-$root/build/hakux-src}
+if grep -qs nc_wb_set_remote "$core/native/kernel/wback.h"; then
+	"${CC:-clang}" -std=gnu11 -g -O1 -Wall -Wextra -Werror "${san[@]}" -fno-omit-frame-pointer -pthread -I "$core" \
+		-c "$core/native/kernel/wback.c" -o "$work/wback.o"
+	"${CXX:-clang++}" -std=c++20 -g -O1 -Wall -Wextra -Werror -Wno-unused-result "${san[@]}" -fno-omit-frame-pointer -pthread \
+		-I "$root/ps5/src" -I "$root/ps5/src/platform" -I "$core" \
+		"$here/wbremote_test.cpp" "$root/ps5/src/platform/ps5_wbremote.cpp" "$root/ps5/broker/server.cpp" \
+		"$root/ps5/src/platform/ps5_broker.cpp" "$work/wback.o" -o "$work/wbremote_test"
+	"$work/wbremote_test" "$work/run" "${WBREMOTE_SEEDS:-30}" 2> "$work/wbremote_test.log" || { cat "$work/wbremote_test.log"; exit 1; }
+	tail -n 1 "$work/wbremote_test.log"
+	rm -rf "$work/run"
+else
+	echo "broker: the core at $core has no nc_wb_set_remote (HAKUX_NATIVE=<hakux-native work tree>): wbremote not run"
+fi
 # the payload, for the console (skipped where the SDK isn't set up: CI without .deps)
 if [[ -x $root/.deps/native/ps5-payload-sdk/bin/prospero-clang++ ]]; then
 	bash "$root/ps5/tools/build-broker.sh" "$work/write-broker.elf" > /dev/null

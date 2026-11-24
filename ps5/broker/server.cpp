@@ -28,6 +28,8 @@ struct Server
     int fds[kMaxHandles];
     unsigned char *body = nullptr;
     std::size_t room = 0;
+    unsigned served = 0;
+    bool silent = false;              // the PC test's death: the request carried out, not answered
 
     Server(const ServerOptions &o, int i, int w) : opt(o), in(i), out(w)
     {
@@ -66,9 +68,18 @@ struct Server
         return true;
     }
 
+    void handle_silently(const Request &q)
+    {
+        silent = true;
+        End end = End::closed;
+        handle(q, end);
+    }
+
     bool reply(const Request &q, int error, std::uint64_t value = 0, const void *data = nullptr, std::uint32_t size = 0,
                std::uint32_t flags = 0)
     {
+        if (silent)
+            return true;
         Reply r;
         r.op = q.op;
         r.seq = q.seq;
@@ -119,7 +130,14 @@ struct Server
             if (const int e = open_file(real, q.flags, &fd, &direct))
                 return reply(q, e);
             fds[slot] = fd;
-            return reply(q, 0, slot + 1, nullptr, 0, direct ? 1 : 0);
+            OpenInfo info;
+            struct stat st;
+            if (fstat(fd, &st) == 0)
+            {
+                info.dev = static_cast<std::uint64_t>(st.st_dev);
+                info.ino = static_cast<std::uint64_t>(st.st_ino);
+            }
+            return reply(q, 0, slot + 1, &info, sizeof(info), direct ? 1 : 0);
         }
         case Op::write: {
             const int fd = file(q.handle);
@@ -244,6 +262,11 @@ struct Server
             if (q.size != 0 && !recv_exact(in, body, q.size, opt.message_ms))
                 return End::closed;
             End end = End::closed;
+            if (opt.die_after != 0 && ++served >= opt.die_after)
+            {
+                handle_silently(q);
+                return End::closed;
+            }
             if (!handle(q, end))
                 return End::closed;
             if (end == End::quit)

@@ -294,6 +294,13 @@ std::vector<Option> makeOptions()
 		"failed game, 15 s without a new frame, or the quick menu's Save the Log (no writing to the drive otherwise). "
 		"Always written: every line goes to the file as it happens. Takes effect at the next start of OGBox.",
 		{ { "problems", "Only when something goes wrong" }, { "always", "Always written" } }, "problems", false });
+	/* 1.0.4: the cache drives' write-back through the write broker (platform/ps5_wbremote.h): the console
+	 * holds a title's own writes back after about 1.3 GiB, the broker's (a payload) not */
+	o.push_back({ "fast_writes", Section::Performance, "Fast writes on the console's storage (helper)",
+		"On: with the data folder on the console's storage, a helper started with the game writes what the game puts on "
+		"its cache drives (the console slows OGBox's own writes down after about 1.3 GB written, the helper's not). If "
+		"the helper can't start or stops, OGBox writes them itself. Nothing changes with the data folder on USB storage. "
+		"Takes effect at the next start of a game.", kOnOff, "1", false });
 	/* 1.0.4: Settings > Advanced > Diagnostics: one of the core's A/B switches for a test run, one at a
 	 * time (coreArgs: the environment switches hakuX-native reads) */
 	o.push_back({ "core_experiment", Section::Performance, "Core experiment",

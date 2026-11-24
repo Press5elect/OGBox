@@ -51,6 +51,10 @@ the distinct messages, then look closely around the problem:
 | `hakuX-hle-tex:` | Texture packs: found, used, refused |
 | `hakuX-native-mods:` | Each mod patch line applied |
 | `writetest:` | The storage write test (Settings > Advanced; `ps5/src/platform/ps5_broker.cpp`): each phase's start, its 256 MiB steps (`step N a-bMiB s MiB/s`), its end (bytes, time, MiB/s, the fsync, each write's p50/p95/p99, `direct=`, `error=`), the read-back check and a summary. The broker's own lines are in klog as `[write-broker]` |
+| `ogbox: fast writes on the console's storage (helper): in use ...` / `not in use: <why>` | Settings > Advanced > **Fast writes on the console's storage (helper)** (on by default; `ps5/src/platform/ps5_wbremote.cpp`), said once at a game's start: whether the cache drives' (X/Y/Z) write-back goes through the write broker, and why not (the setting off; the hard disk not under `/data/`; the broker not started: no payload loader, no answer in 8 s; a core without the hook) |
+| `hakuX-native-wb: the held bytes written by the helper ...` / `... by OGBox itself (no helper)` | The core's start (`native/kernel/wback.c`): which path the held bytes take, with the requests in flight (`NC_WB_PIPE`, 4) |
+| `hakuX-native-wb: helper in use: last 10 s: ...` | Every 10 s while it writes: MiB and requests through the broker, the most in flight, the round trip's p50/p99, MiB OGBox wrote itself, the totals, the bytes held, the fallbacks |
+| `hakuX-native-wb: helper ...: <why>: OGBox writes the cache drives itself from here on; N held write(s) ...` | The broker failed (no answer in 120 s, a write refused, the connection gone): what it hadn't answered was written again by OGBox in order; no byte lost. `<path>: the helper can't open it (...)`: that one file written by OGBox |
 
 ## Switches
 
@@ -72,6 +76,7 @@ the test: some cost speed. Only the ones that have earned their keep are listed;
 | `NC_APU_HRTF=0` | The 3D voices' HRTF filters off (the HRTF setting sets it; in boot.txt it overrides it) |
 | `NC_APU_VOICE_LOG=1` | Each sound's sends, for mixing questions |
 | `OGBOX_LOG=file` | The log always written, whatever the setting |
+| `NC_WB_PIPE=<1..16>` | With Fast writes (helper) in use: the requests the cache drives' write-back keeps in flight to the broker (4) |
 | `NC_HLE_ONE_DEVICE=1` | One Vulkan device: the HLE GPU renders on the title's device and the title copies its display image on the GPU (no read back, no fence waited on the render thread). Read when the title makes its device, so a boot.txt `env` line or the core switch from the settings works; a game started after waiting for its share gets two devices. The log's `GPU: one device (shared with the title)` or `GPU: own device (why)` (the title's and the core's lines), and `presenter: the first frame ... (one device: ...)`. Off: two devices, as before |
 | `NC_HLE_GUEST_RAM_IMPORT=1` | Guest RAM imported into the GPU (VK_EXT_external_memory_host on its host view): vertex arrays read in place, guarded by whole 16 KiB blocks; uploads and readbacks still copy. The log's `guest RAM imported: memtype N flags 0xe ...` or `guest RAM import ...: <why>` then `copy fallback`; every 10 s `vb in place N copied M`. `HAKUX_HLE_VB_COPY=1` keeps the copies for an A/B. Off: every vertex array copied, as before |
 
