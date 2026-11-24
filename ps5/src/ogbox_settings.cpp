@@ -300,7 +300,7 @@ std::vector<Option> makeOptions()
 		"For testing only: changes one thing in how the emulator runs, to compare with Off. Off: as normal. "
 		"Takes effect at the next start of a game.",
 		{ { "off", "Off" }, { "no_fbfetch", "No framebuffer fetch" }, { "no_batch", "No strip batching" },
-			{ "short_spins", "Short spins" }, { "gpl_eds3", "Pipeline library + EDS3 on" },
+			{ "short_spins", "Short spins" },
 			{ "ram_import", "Guest RAM imported" }, { "one_device", "One GPU device" } },
 		"off", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
@@ -990,8 +990,6 @@ std::vector<std::string> Settings::coreArgs() const
 	} else if (exp == "short_spins") {
 		a.push_back("HLE_KICK_SPIN_MS=2");       // pb/pbmode.c: the decoder's spin on the kick count (20 ms)
 		a.push_back("NC_IDLE_SPIN_MS=2");        // core/irq.c: an idle wait's awake part (20 ms)
-	} else if (exp == "gpl_eds3") {
-		a.push_back("HAKUX_HLE_GPL_EDS3=1");     // vk/vkdev.c: the two extensions enabled though unused
 	} else if (exp == "ram_import") {
 		a.push_back("NC_HLE_GUEST_RAM_IMPORT=1");
 	} else if (exp == "one_device") {

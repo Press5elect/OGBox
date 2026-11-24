@@ -78,8 +78,7 @@ the test: some cost speed. Only the ones that have earned their keep are listed;
 Settings > Advanced > Diagnostics > **Core experiment** (global or a game's) sets one of the core's
 A/B switches at the next start, and the log says which (`ogbox: core experiment: <name>`): No
 framebuffer fetch (`HAKUX_HLE_NO_FBFETCH=1`), No strip batching (`HAKUX_HLE_BATCH=0`), Short spins
-(`HLE_KICK_SPIN_MS=2`, `NC_IDLE_SPIN_MS=2`; 20 ms each by default on the console), Pipeline library
-+ EDS3 on (`HAKUX_HLE_GPL_EDS3=1`: the two extensions enabled though nothing uses them), Guest RAM
+(`HLE_KICK_SPIN_MS=2`, `NC_IDLE_SPIN_MS=2`; 20 ms each by default on the console), Guest RAM
 imported (`NC_HLE_GUEST_RAM_IMPORT=1`), One GPU device (`NC_HLE_ONE_DEVICE=1`). A core argument
 that starts `NC_`, `HAKUX_HLE_` or `HLE_` is set as an environment switch (`ps5/src/core/hakux_core.c`).
 

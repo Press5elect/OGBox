@@ -70,6 +70,12 @@ OGBox when the patch is regenerated.
 
 ## Lessons that cost builds
 
+- A Vulkan feature "nothing uses" can still be used by the driver. Test build EU turned off
+  graphics pipeline library and EDS3 because no core code called them, and a game crashed in RADV
+  (`radv_shader_part_cache_get`, address 0): RADV makes its fragment-shader epilog cache only when
+  the device enables extended dynamic state, EDS3's blend features, GPL or shader objects, and a
+  shader that writes depth under dynamic depth-test enable needs an epilog. Before turning a
+  feature off, check the driver's own uses of it (`radv_device.c` `enabled_features`), not just ours.
 - **A build with an older core must recompile what went back to upstream.** `prepare-hakux.sh`
   copied the core's tree into `build/hakux-src` keeping each file's time; a file the patch no
   longer touched came back with upstream's (older) time, so ninja kept the object built from the
