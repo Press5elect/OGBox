@@ -1351,6 +1351,11 @@ public:
 	// a run's picture and overlay (the settings' Graphics and Interface)
 	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };   // (0.0.6: FSR1's EASU in SGSR's place)
 	VkPipeline pipelineSharp{ VK_NULL_HANDLE };                                  // 0.0.6: Bilinear (Sharp)
+	/* FSR1's RCAS (rcas.frag) after EASU: EASU drawn into rcasIn (the swapchain's format, the screen's
+	 * size) where the picture goes, then RCAS from it 1:1 into the screen (or HDR's picture layer);
+	 * rcasSharp FsrRcasCon's con.x (exp2(-stops)), 0 off */
+	VkPipeline pipelineRcas{ VK_NULL_HANDLE };
+	float rcasSharp{ 0.0f };
 	VkPipeline pipelineLogo{ VK_NULL_HANDLE };                                   // 0.0.7: the start's logo, faded and shining
 	std::string aspectMode{ "auto" };
 	bool fxaaOn{ false }, sgsrOn{ false }, showFps{ true }, rainOn{ true };
@@ -1404,7 +1409,7 @@ public:
 	float hdrWhite{ 203.0f }, hdrPeak{ 1000.0f };
 	/* 0.0.9: the presenter's time a pass on the GPU, by stage (timestamps at its stages' ends, read once the
 	 * pass's slot is done), and on the CPU between passes; a line every 10 s (collectPassTimes) */
-	static constexpr uint32_t kStamps = 6;   // the start, the picture in, its passes, scaled, the menus, the end
+	static constexpr uint32_t kStamps = 7;   // the start, the picture in, its passes, FSR1's EASU before RCAS, scaled, the menus, the end
 	VkQueryPool passQueries{ VK_NULL_HANDLE };
 	bool passStamped[8]{};
 	double stampNs{ 1.0 };
@@ -1440,6 +1445,9 @@ public:
 	bool adjustOn{ false }, postTwoNow{ false };
 	float adjustParams[4]{ 1.0f, 1.0f, 1.0f, 0.0f };
 	AaImage ssaaDown{};         // 0.0.9: SSAA + SMAA: the picture at the screen's size
+	AaImage rcasIn{};           // FSR1's EASU at the screen's size, RCAS's input (ensureRcas)
+	uint32_t rcasW{ 0 }, rcasH{ 0 };
+	VkDescriptorSet rcasSet{ VK_NULL_HANDLE };   // the present pipelines' layout, rcasIn
 	uint32_t downW{ 0 }, downH{ 0 };
 	uint32_t postW{ 0 }, postH{ 0 };
 	uint32_t smaaW{ 0 }, smaaH{ 0 };
@@ -2512,7 +2520,8 @@ public:
 		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s%s, anti-aliasing %s, upscaling %s, FPS counter %s",
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
 			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaSmaa ? "SSAA + SMAA" : ssaaOn ? "SSAA" : quincunxOn ? "Quincunx" : "off",
-			sgsrOn ? "FSR1" : sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
+			sgsrOn ? (rcasSharp > 0.0f ? ("FSR1, sharpening " + prefs.value("fsr_sharpness")).c_str() : "FSR1, no sharpening") :
+			sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
 		pshakux_log("ogbox: debanding %s; SSAA down-sampling %s; CRT look %s; brightness %s, contrast %s, colour %s",
 			debandOn ? prefs.value("deband").c_str() : "off", ssaaSharp ? "sharp" : "soft",
 			crtMode == 2 ? "strong" : crtMode == 1 ? "light" : "off", prefs.value("pic_brightness").c_str(),
@@ -2603,6 +2612,7 @@ public:
 		vkDestroyPipeline(device, pipeline, nullptr);
 		vkDestroyPipeline(device, pipelineFxaa, nullptr);
 		vkDestroyPipeline(device, pipelineSgsr, nullptr);
+		vkDestroyPipeline(device, pipelineRcas, nullptr);
 		vkDestroyPipeline(device, pipelineSharp, nullptr);
 		vkDestroyPipeline(device, pipelineLogo, nullptr);
 		destroySmaa();
@@ -2833,7 +2843,7 @@ public:
 			VkPipeline *out;
 		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp }, { "ogbox/logo.frag.spv", &pipelineLogo },
 			{ "ogbox/ssaa.frag.spv", &pipelineSsaa }, { "ogbox/quincunx.frag.spv", &pipelineQuincunx },
-			{ "ogbox/crt.frag.spv", &pipelineCrt } };
+			{ "ogbox/crt.frag.spv", &pipelineCrt }, { "ogbox/rcas.frag.spv", &pipelineRcas } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
 			pipelineCI.pStages = stages.data();
@@ -2931,6 +2941,29 @@ public:
 		pshakux_log("presenter: HDR targets %ux%u", width, height);
 	}
 
+	/* FSR1's RCAS: rcasIn at the screen's size (the swapchain's format, as hdrPicture: every pipeline
+	 * drawing to the screen draws to it) and rcasSet on it; made when first needed and again when
+	 * the screen's size changes (the GPU waited, as ensurePost does). false: it can't be used. */
+	bool ensureRcas()
+	{
+		if (pipelineRcas == VK_NULL_HANDLE || rcasSet == VK_NULL_HANDLE || pointSampler == VK_NULL_HANDLE) {
+			return false;
+		}
+		if (rcasW == width && rcasH == height && rcasIn.image != VK_NULL_HANDLE) {
+			return true;
+		}
+		vkDeviceWaitIdle(device);
+		destroyAaImage(rcasIn);
+		createAaImage(rcasIn, swapChain.colorFormat, width, height, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		VkDescriptorImageInfo info{ pointSampler, rcasIn.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(rcasSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &info);
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+		rcasW = width;
+		rcasH = height;
+		pshakux_log("presenter: FSR1's sharpening (RCAS) image %ux%u", width, height);
+		return true;
+	}
+
 	/* ---- 0.0.9: the presenter's time a pass (passTimes) ---- */
 	void preparePassTimes()
 	{
@@ -3004,12 +3037,13 @@ public:
 			const double g = static_cast<double>(std::max<uint64_t>(pt.gaps, 1));
 			pshakux_log_later("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
 				"GPU a pass %.2f ms (the worst %.2f, %llu over 8.3 ms, %llu over 16.7): the picture in %.2f (frame generation, "
-				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's) | the frame's copy "
+				"upload), its passes %.2f, FSR1's upscale before its sharpening %.2f, scaled to the screen %.2f (FSR1's sharpening, when on), "
+				"the menus %.2f, the end %.2f (HDR's) | the frame's copy "
 				"%llu times, %.2f ms on average (the longest %.1f, %llu over 2 ms: the pass waited on the HLE GPU's queue)",
 				static_cast<unsigned long long>(pt.gaps), now - pt.logAt, static_cast<double>(pt.gaps) / (now - pt.logAt),
 				pt.gapSum / g, pt.gapWorst, static_cast<unsigned long long>(pt.gapsLong), pt.sum[0] / n, pt.worst[0],
 				static_cast<unsigned long long>(pt.over8), static_cast<unsigned long long>(pt.over16), pt.sum[1] / n, pt.sum[2] / n,
-				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, static_cast<unsigned long long>(pt.takes),
+				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, pt.sum[6] / n, static_cast<unsigned long long>(pt.takes),
 				pt.takeSum / static_cast<double>(std::max<uint64_t>(pt.takes, 1)), pt.takeWorst,
 				static_cast<unsigned long long>(pt.takesLong));
 			const double lastAt = pt.lastAt;
@@ -3571,9 +3605,9 @@ public:
 	void preparePost(VkGraphicsPipelineCreateInfo pipelineCI)
 	{
 		/* 0.0.9: three sets of the passes' layout (from the picture, SMAA's result, postA) and two of the
-		 * present's (postA, postB) */
-		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12);
-		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 5);
+		 * present's (postA, postB); and the present's for FSR1's RCAS (rcasIn) */
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 13);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 6);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &postPool));
 		const VkDescriptorSetLayout three[3] = { smaaSetLayout, smaaSetLayout, smaaSetLayout };
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, three, 3);
@@ -3588,6 +3622,8 @@ public:
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, shown));
 		presentFromA = shown[0];
 		presentFromB = shown[1];
+		allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, &descriptorSetLayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &rcasSet));
 		const struct {
 			const char *frag;
 			VkPipeline *out;
@@ -3756,6 +3792,7 @@ public:
 		vkDestroyPipeline(device, pipelineCrt, nullptr);
 		vkDestroyPipeline(device, ssaaToImage, nullptr);
 		destroyAaImage(ssaaDown);
+		destroyAaImage(rcasIn);
 		destroyAaImage(postA);
 		destroyAaImage(postB);
 		vkDestroyDescriptorPool(device, postPool, nullptr);
@@ -4292,17 +4329,17 @@ public:
 			recordSsaaSmaa(cmdBuffer, postSet != VK_NULL_HANDLE ? postSet : descriptorSet,
 				static_cast<uint32_t>(std::lround(gameW)), static_cast<uint32_t>(std::lround(gameH)));
 		stampPass(cmdBuffer, 2);   // its passes: SMAA, Debanding, Brightness and Colour, SSAA + SMAA
-		/* 0.0.9: HDR output: the picture and the menus into layers of their own (resolveHdr) */
-		const bool hdrNow = hdrOn;
-		if (hdrNow) {
-			beginHdrLayer(cmdBuffer, hdrPicture);
-		} else {
-			beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
-		}
 		const bool splash = library && screen == Screen::Boot && showingLogo;
 		const bool introNow = showingIntro && library && screen == Screen::Boot;
-		if ((havePicture || (showingLogo && (!library || splash)) || introNow) &&
-			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+		/* where the picture goes and how it is drawn, known before the screen's pass begins (FSR1's EASU
+		 * is drawn into rcasIn before it when RCAS follows) */
+		const bool drawPicture = (havePicture || (showingLogo && (!library || splash)) || introNow) &&
+			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkViewport viewport{};
+		VkRect2D scissor{};
+		VkPipeline chosen = pipeline;
+		VkDescriptorSet set = descriptorSet;
+		if (drawPicture) {
 			const float aspect = introNow ? static_cast<float>(picture.width) / static_cast<float>(picture.height) : displayAspect();
 			/* 0.1.26: the boot screen's logo in a box above its middle */
 			const float boxW = static_cast<float>(width), boxH = splash ? static_cast<float>(height) * 0.46f : static_cast<float>(height);
@@ -4314,18 +4351,14 @@ public:
 			}
 			const float x = std::floor((static_cast<float>(width) - w) * 0.5f);
 			const float y = splash ? std::floor(static_cast<float>(height) * kSplashTop) : std::floor((static_cast<float>(height) - h) * 0.5f);
-			VkViewport viewport{ x, y, w, h, 0.0f, 1.0f };
+			viewport = VkViewport{ x, y, w, h, 0.0f, 1.0f };
 			if (cropOn && ((havePicture && !showingLogo) || showingFrozen)) {
 				/* the overscan cropped: the picture drawn 1 / (1 - 2 * 3/80) larger about its
 				 * middle, the scissor keeping its place (its shape kept: both sides alike) */
 				const float k = 1.0f / (1.0f - 2.0f * 3.0f / 80.0f);
 				viewport = VkViewport{ x - (k - 1.0f) * w * 0.5f, y - (k - 1.0f) * h * 0.5f, w * k, h * k, 0.0f, 1.0f };
 			}
-			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
-			VkRect2D scissor{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
-			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
-			VkPipeline chosen = pipeline;
-			VkDescriptorSet set = descriptorSet;
+			scissor = VkRect2D{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
 			if (havePicture && !showingLogo) {
 				const bool smaller = static_cast<float>(picture.width) < viewport.width - 0.5f || static_cast<float>(picture.height) < viewport.height - 0.5f;
 				const bool larger = static_cast<float>(picture.width) > viewport.width + 0.5f || static_cast<float>(picture.height) > viewport.height + 0.5f;
@@ -4359,6 +4392,33 @@ public:
 			if (splash && pipelineLogo != VK_NULL_HANDLE) {
 				chosen = pipelineLogo;
 			}
+		}
+		/* FSR1 is AMD's EASU then RCAS: with its sharpening on, EASU into rcasIn where the picture goes
+		 * (the rest of it cleared to black, which stops RCAS at the picture's border), then RCAS from it
+		 * into the screen, in the same place (its texels the screen's pixels, read 1:1) */
+		const bool rcasNow = drawPicture && chosen == pipelineSgsr && pipelineSgsr != VK_NULL_HANDLE && rcasSharp > 0.0f && ensureRcas();
+		if (rcasNow) {
+			beginHdrLayer(cmdBuffer, rcasIn);   // (a layer as HDR's are: the screen's format, cleared, the depth buffer)
+			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
+			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineSgsr);
+			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
+			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
+			endHdrLayer(cmdBuffer, rcasIn);
+			chosen = pipelineRcas;
+			set = rcasSet;
+		}
+		stampPass(cmdBuffer, 3);   // FSR1's EASU before its RCAS (nothing when that is off)
+		/* 0.0.9: HDR output: the picture and the menus into layers of their own (resolveHdr) */
+		const bool hdrNow = hdrOn;
+		if (hdrNow) {
+			beginHdrLayer(cmdBuffer, hdrPicture);
+		} else {
+			beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
+		}
+		if (drawPicture) {
+			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
 			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
 			if (chosen == pipelineLogo) {
@@ -4369,6 +4429,9 @@ public:
 				/* .x 1: SSAA's Sharp down-sampling (0.0.9) */
 				const float metrics[4] = { chosen == pipelineSsaa && ssaaSharp ? 1.0f : 0.0f, 0.0f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
+			} else if (chosen == pipelineRcas) {
+				const float metrics[4] = { rcasSharp, 0.0f, viewport.width, viewport.height };   // .x FsrRcasCon's con.x
+				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			} else if (chosen == pipelineCrt) {
 				/* the game's own lines (the picture's at its resolution scale), the strength, the viewport */
 				const float lines = std::max(120.0f, static_cast<float>(picture.height) / static_cast<float>(std::max(coreScale, 1)));
@@ -4377,7 +4440,7 @@ public:
 			}
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 		}
-		stampPass(cmdBuffer, 3);   // scaled to the screen (the filter, or the CRT look)
+		stampPass(cmdBuffer, 4);   // scaled to the screen (the filter, or the CRT look; FSR1's RCAS)
 		if (hdrNow) {
 			endHdrLayer(cmdBuffer, hdrPicture);
 			beginHdrLayer(cmdBuffer, hdrUi);
@@ -4385,14 +4448,14 @@ public:
 			drawUI(cmdBuffer);
 			ui.coverage = false;
 			endHdrLayer(cmdBuffer, hdrUi);
-			stampPass(cmdBuffer, 4);   // the menus
+			stampPass(cmdBuffer, 5);   // the menus
 			resolveHdr(cmdBuffer, !library && havePicture && !showingLogo);
 		} else {
 			drawUI(cmdBuffer);
-			stampPass(cmdBuffer, 4);
+			stampPass(cmdBuffer, 5);
 			endDynamicRendering(cmdBuffer);
 		}
-		stampPass(cmdBuffer, 5);   // the end (HDR's pixels and their copy, when it is on)
+		stampPass(cmdBuffer, 6);   // the end (HDR's pixels and their copy, when it is on)
 		if (passQueries != VK_NULL_HANDLE) {
 			passStamped[currentBuffer] = true;
 		}
@@ -9579,7 +9642,7 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
+			return { { "", { "render_scale", "aspect", "upscale", "fsr_sharpness", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
 				"deband", "crt", "crop_overscan", "show_fps" } },
 				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
 				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } }, { "Textures", { "tex_replace", "tex_dump" } } };
@@ -9675,6 +9738,9 @@ public:
 		postValid = false;
 		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
 		sharpOn = prefs.value("upscale") == "sharp";
+		/* FSR1's RCAS: AMD's stops (FsrRcasCon: 0 the sharpest, each stop half as sharp) */
+		const std::string rcas = prefs.value("fsr_sharpness");
+		rcasSharp = rcas == "off" ? 0.0f : std::exp2(-(rcas == "low" ? 2.0f : rcas == "high" ? 0.5f : 1.0f));
 		showFps = prefs.value("show_fps") != "0";
 		fpsCorner = prefs.value("show_fps");
 	}
@@ -9684,8 +9750,8 @@ public:
 	 * which restarts the game from a state saved where it is. */
 	static bool liveKey(const std::string &k)
 	{
-		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality",
-			"deband", "ssaa_filter", "crt", "pic_brightness", "pic_contrast", "pic_colour" };
+		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "fsr_sharpness", "show_fps", "framegen",
+			"framegen_quality", "deband", "ssaa_filter", "crt", "pic_brightness", "pic_contrast", "pic_colour" };
 		for (const char *x : keys) {
 			if (k == x) {
 				return true;
@@ -9962,7 +10028,7 @@ public:
 			{ "nxdk", "The Xbox kernel's export table (CC0)." },
 			{ "Mesa (RADV)", "The Vulkan driver (MIT and other permissive licences); its PS5 parts by Mihawk." },
 			{ "PS5 Vulkan and the payload SDK", "Mihawk's PS5_Vulkan and platform layer; John Tornblom and ps5-payload-dev's SDK." },
-			{ "FidelityFX FSR 1.0", "AMD's EASU upscaler (MIT)." },
+			{ "FidelityFX FSR 1.0", "AMD's EASU upscaler and RCAS sharpening (MIT)." },
 			{ "SMAA", "Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT)." },
 			{ "Dear ImGui", "Omar Cornut and contributors (MIT): the menus' drawing." },
 			{ "Network shares", "libsmb2 and libnfs by Ronnie Sahlberg (LGPL-2.1-or-later)." },
@@ -9982,6 +10048,12 @@ public:
 				const ogbox::Option *o = ogbox::option(key);
 				if (!o || (forGame && !o->perGame) || (key == "rain" && prefs.global("theme") != "code")) {
 					continue;
+				}
+				if (key == "fsr_sharpness") {   // FSR1's sharpening: with FSR1 only (the page's value, as optionRow reads it)
+					const std::string own = forGame ? prefs.override_("upscale") : std::string();
+					if ((own.empty() ? prefs.global("upscale") : own) != "fsr") {
+						continue;
+					}
 				}
 				if (!any && !grp.first.empty()) {
 					groupRow(grp.first, rows, acts);
