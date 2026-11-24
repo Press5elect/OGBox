@@ -175,6 +175,12 @@ std::vector<Option> makeOptions()
 	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
 		"Bilinear: the default. FSR1 scales the picture up to 4K; it does nothing at an internal resolution above 4x.",
 		{ { "bilinear", "Bilinear" }, { "sharp", "Bilinear (Sharp)" }, { "fsr", "FSR1" } }, "bilinear", true });
+	/* FSR1's second pass, RCAS (AMD's sharpening after EASU: ogbox_main.cpp, rcas.frag), shown with FSR1
+	 * only (settingsModel); its stops as AMD's FsrRcasCon takes them: 2, 1 and 0.5 */
+	o.push_back({ "fsr_sharpness", Section::Graphics, "FSR1 sharpening",
+		"For FSR1: AMD's sharpening after the upscale (RCAS), as FSR1 is meant to be used. Medium: the default. "
+		"Off: FSR1's upscale alone, softer.",
+		{ { "off", "Off" }, { "low", "Low" }, { "medium", "Medium" }, { "high", "High" } }, "medium", true });
 	/* 0.0.1: the depth vertex programs store, exactly their screen-space z (hakuX-native's
 	 * shader/ff.h HLE_ZEXACT_IN_GLSL); off: the GPU's own, with its early depth test */
 	/* 0.0.7: the display's mode, asked of the driver at the title's start (Crux2's switches) */
