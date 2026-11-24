@@ -27,6 +27,7 @@
 
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 
 #define T (g_hvk.t)
 
@@ -41,6 +42,15 @@ static struct {
     VkCommandBuffer cb;
     VkFence fence;
     bool pending;               /* the fence's submit not seen done (a wait that failed): nothing reused */
+    /* OGBox 1.0.5: the copy submitted and not yet seen done (one at a time): its slot held and the
+     * display's use taken (hle_disp_use_begin) until then, on the title's render thread */
+    struct {
+        bool on, direct;        /* direct: written into dst itself (an import), else into buf */
+        HleDispFrame f;
+        void *dst;
+        uint32_t pitch, said;   /* said: the seconds a "not done" line was logged for */
+        uint64_t at;            /* submitted (CLOCK_MONOTONIC, ns) */
+    } copy;
     uint64_t taken;
 } g_ph = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
@@ -251,9 +261,18 @@ static VkBuffer imp_buffer(void *dst, size_t bytes)
     return buf;
 }
 
+static int copy_poll(bool wait, uint64_t *seen, uint32_t *w, uint32_t *h);
+
 void pshx_present_forget(void *dst)
 {
     pthread_mutex_lock(&g_ph.lock);
+    /* 1.0.5: a copy in flight (pshx_present_take_start) may write into dst: waited for first (the
+     * title's frame from it is lost: the title is letting go of dst, and takes the frame again) */
+    if (g_ph.copy.on && g_hvk.dev) {
+        uint64_t seen = 0;
+        uint32_t w, h;
+        copy_poll(true, &seen, &w, &h);
+    }
     /* a copy whose wait failed (pending) may still write into the buffers: then they are only
      * forgotten (never matched again; dropped as the oldest by imp_buffer, which take calls once
      * the fence is seen signalled, or at shutdown after the device is idle) */
@@ -264,7 +283,7 @@ void pshx_present_forget(void *dst)
                 g_imp[i].ptr = NULL;
                 g_imp[i].used = 0;
             } else {
-                imp_drop(i);    /* (no copy is in flight: take waits for its own) */
+                imp_drop(i);    /* (no copy is in flight: waited for above) */
             }
         }
     }
@@ -280,119 +299,202 @@ bool pshx_present_take(uint64_t *seen, void *dst, uint32_t pitch, uint32_t max_w
     return pshx_present_take_into(seen, dst, 0, pitch, max_w, max_h, w, h);
 }
 
+static uint64_t now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* A failed submit or wait (the GPU lost) left the fence unsignalled: nothing of the copy's is
+ * reused before it reads signalled. Under g_ph.lock; true: free to submit. */
+static bool settled(void)
+{
+    if (g_ph.pending) {
+        if (T.vkGetFenceStatus(g_hvk.dev, g_ph.fence) != VK_SUCCESS) {
+            return false;
+        }
+        g_ph.pending = false;
+    }
+    return true;
+}
+
+/* The front frame's copy into dst (or this presenter's buffer) submitted on the HLE GPU's queue,
+ * when it is newer than *seen. true: in flight (g_ph.copy): its slot held and inside
+ * hle_disp_use_begin until copy_end; false: nothing submitted, nothing held. Under g_ph.lock. */
+static bool copy_begin(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                       uint32_t max_h)
+{
+    uint32_t gen = 0, swap_id = 0;
+    if (g_ph.copy.on || !hle_disp_front(&gen, &swap_id) || ((uint64_t)gen << 32 | swap_id) == *seen || !settled()) {
+        return false;
+    }
+    HleDispFrame f;
+    /* the slots' images stay until the copy is done: inside use before the frame is taken, as
+     * swapchain.c's hle_present_frame (a display resize between the two destroys its image) */
+    hle_disp_use_begin();
+    if (!make() || !hle_disp_acquire(&f)) {
+        hle_disp_use_end();
+        return false;
+    }
+    const VkDeviceSize size = (VkDeviceSize)f.w * f.h * 4;
+    /* straight into dst: rows packed (pitch a row's bytes) and the import's whole pages hold it */
+    VkBuffer direct = VK_NULL_HANDLE;
+    if (dst_bytes && pitch == f.w * 4u && f.w <= max_w && f.h <= max_h) {
+        direct = imp_buffer(dst, dst_bytes);
+        if (direct) {
+            for (int i = 0; i < IMPORTS; i++) {
+                if (g_imp[i].buf == direct && g_imp[i].bytes < size) {
+                    direct = VK_NULL_HANDLE;    /* the frame is larger than its whole pages */
+                }
+            }
+        }
+    }
+    if (f.w > max_w || f.h > max_h || !(direct || ensure_buffer(size))) {
+        hle_disp_release(f.slot);
+        hle_disp_use_end();
+        return false;
+    }
+    const VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    T.vkResetCommandBuffer(g_ph.cb, 0);
+    T.vkBeginCommandBuffer(g_ph.cb, &bi);
+    hle_img_barrier(g_ph.cb, f.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const VkBufferImageCopy r = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                 .imageExtent = {f.w, f.h, 1}};
+    T.vkCmdCopyImageToBuffer(g_ph.cb, f.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, direct ? direct : g_ph.buf, 1, &r);
+    hle_img_barrier(g_ph.cb, f.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    /* the copy's writes out of the GPU's caches before the fence: the host (and the title's
+     * device, reading the same memory) sees them */
+    const VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    T.vkCmdPipelineBarrier(g_ph.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0,
+                           NULL, 0, NULL);
+    T.vkEndCommandBuffer(g_ph.cb);
+    const VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                             .pCommandBuffers = &g_ph.cb};
+    T.vkResetFences(g_hvk.dev, 1, &g_ph.fence);
+    hle_vk_queue_lock();
+    const VkResult sr = T.vkQueueSubmit(g_hvk.queue, 1, &si, g_ph.fence);
+    hle_vk_queue_unlock();
+    if (!hle_vk_check(sr, "vkQueueSubmit (host present)")) {
+        hle_disp_release(f.slot);       /* (nothing submitted: the next copy resets the fence as before) */
+        hle_disp_use_end();
+        return false;
+    }
+    g_ph.copy.on = true;
+    g_ph.copy.f = f;
+    g_ph.copy.dst = dst;
+    g_ph.copy.pitch = pitch;
+    g_ph.copy.direct = direct != VK_NULL_HANDLE;
+    g_ph.copy.at = now_ns();
+    g_ph.copy.said = 0;
+    return true;
+}
+
+/* The copy in flight let go: its slot released, the display's use ended. done: its fence read
+ * signalled, the frame is in dst (rows copied here when it went through this presenter's buffer);
+ * otherwise (the GPU lost) pending keeps the command buffer, fence and buffers as they are.
+ * Under g_ph.lock. */
+static bool copy_end(bool done, uint64_t *seen, uint32_t *w, uint32_t *h)
+{
+    const HleDispFrame f = g_ph.copy.f;
+    if (done) {
+        if (!g_ph.copy.direct) {
+            const uint8_t *src = g_ph.map;
+            for (uint32_t y = 0; y < f.h; y++) {
+                memcpy((uint8_t *)g_ph.copy.dst + (size_t)y * g_ph.copy.pitch, src + (size_t)y * f.w * 4,
+                       (size_t)f.w * 4);
+            }
+        }
+        *w = f.w;
+        *h = f.h;
+        *seen = (uint64_t)f.gen << 32 | f.swap_id;
+        __atomic_add_fetch(&g_ph.taken, 1, __ATOMIC_RELAXED);
+    } else {
+        g_ph.pending = true;
+    }
+    g_ph.copy.on = false;
+    hle_disp_release(f.slot);
+    hle_disp_use_end();
+    return done;
+}
+
+/* The copy in flight: its fence read, or (wait) waited for until it signals. Until then the GPU
+ * still reads the slot's image and writes the buffer, and the command buffer and fence are in use:
+ * none of them is let go, reset or reused, so a slow copy is waited for (a line each 2 s), never
+ * given up on; only the GPU lost ends it without the fence. Under g_ph.lock. */
+static int copy_poll(bool wait, uint64_t *seen, uint32_t *w, uint32_t *h)
+{
+    if (!g_ph.copy.on) {
+        return PSHX_TAKE_NONE;
+    }
+    for (;;) {
+        const VkResult r = wait ? T.vkWaitForFences(g_hvk.dev, 1, &g_ph.fence, VK_TRUE, 2000000000ull)
+                                : T.vkGetFenceStatus(g_hvk.dev, g_ph.fence);
+        if (r == VK_SUCCESS) {
+            copy_end(true, seen, w, h);
+            return PSHX_TAKE_DONE;
+        }
+        if (r != VK_TIMEOUT && r != VK_NOT_READY) {
+            hle_vk_check(r, wait ? "vkWaitForFences (host present)" : "vkGetFenceStatus (host present)");
+            copy_end(false, seen, w, h);
+            return PSHX_TAKE_FAILED;
+        }
+        const unsigned s = (unsigned)((now_ns() - g_ph.copy.at) / 2000000000ull) * 2;
+        if (s > g_ph.copy.said) {
+            g_ph.copy.said = s;
+            hle_log("hakuX-hle-back", "present (host image): the frame's copy not done after %u s: waiting on", s);
+        }
+        if (hle_vk_lost()) {
+            copy_end(false, seen, w, h);
+            return PSHX_TAKE_FAILED;
+        }
+        if (!wait) {
+            return PSHX_TAKE_PENDING;
+        }
+    }
+}
+
 bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                             uint32_t max_h, uint32_t *w, uint32_t *h)
 {
     if (!pshx_present_ready()) {
         return false;
     }
-    uint32_t gen = 0, swap_id = 0;
-    if (!hle_disp_front(&gen, &swap_id)) {
-        return false;
-    }
-    /* The frame's identity: the slots' generation (a resize) and the swap. */
-    const uint64_t id = (uint64_t)gen << 32 | swap_id;
-    if (id == *seen) {
-        return false;
-    }
     pthread_mutex_lock(&g_ph.lock);
-    if (g_ph.pending) {
-        /* the last copy's wait failed: its command buffer, fence and buffers aren't touched again
-         * before the fence is seen signalled */
-        if (T.vkGetFenceStatus(g_hvk.dev, g_ph.fence) != VK_SUCCESS) {
-            pthread_mutex_unlock(&g_ph.lock);
-            return false;
-        }
-        g_ph.pending = false;
-    }
-    bool ok = false;
-    HleDispFrame f;
-    /* the slots' images stay until the copy is done: inside use before the frame is taken, as
-     * swapchain.c's hle_present_frame (a display resize between the two destroys its image) */
-    hle_disp_use_begin();
-    if (make() && hle_disp_acquire(&f)) {
-        const VkDeviceSize size = (VkDeviceSize)f.w * f.h * 4;
-        /* straight into dst: rows packed (pitch a row's bytes) and the import's whole pages hold it */
-        VkBuffer direct = VK_NULL_HANDLE;
-        if (dst_bytes && pitch == f.w * 4u && f.w <= max_w && f.h <= max_h) {
-            direct = imp_buffer(dst, dst_bytes);
-            if (direct) {
-                for (int i = 0; i < IMPORTS; i++) {
-                    if (g_imp[i].buf == direct && g_imp[i].bytes < size) {
-                        direct = VK_NULL_HANDLE;    /* the frame is larger than its whole pages */
-                    }
-                }
-            }
-        }
-        if (f.w <= max_w && f.h <= max_h && (direct || ensure_buffer(size))) {
-            const VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                                 .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-            T.vkResetCommandBuffer(g_ph.cb, 0);
-            T.vkBeginCommandBuffer(g_ph.cb, &bi);
-            hle_img_barrier(g_ph.cb, f.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            const VkBufferImageCopy r = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                         .imageExtent = {f.w, f.h, 1}};
-            T.vkCmdCopyImageToBuffer(g_ph.cb, f.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, direct ? direct : g_ph.buf,
-                                     1, &r);
-            hle_img_barrier(g_ph.cb, f.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            /* the copy's writes out of the GPU's caches before the fence: the host (and the title's
-             * device, reading the same memory) sees them */
-            const VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                                        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                        .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
-            T.vkCmdPipelineBarrier(g_ph.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0,
-                                   NULL, 0, NULL);
-            T.vkEndCommandBuffer(g_ph.cb);
-            const VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
-                                     .pCommandBuffers = &g_ph.cb};
-            T.vkResetFences(g_hvk.dev, 1, &g_ph.fence);
-            hle_vk_queue_lock();
-            const VkResult sr = T.vkQueueSubmit(g_hvk.queue, 1, &si, g_ph.fence);
-            hle_vk_queue_unlock();
-            /* Until the fence signals, the GPU still reads f.img and writes the buffer, and the
-             * command buffer and fence are in use: none of them may be let go, reset or reused, so a
-             * slow copy is waited for (a line each 2 s), never given up on. Only a failed wait (the
-             * GPU lost) leaves without the fence: then pending keeps them all as they are. */
-            VkResult wr = VK_ERROR_UNKNOWN;
-            if (hle_vk_check(sr, "vkQueueSubmit (host present)")) {
-                for (unsigned waited = 0;;) {
-                    wr = T.vkWaitForFences(g_hvk.dev, 1, &g_ph.fence, VK_TRUE, 2000000000ull);
-                    if (wr != VK_TIMEOUT) {
-                        break;
-                    }
-                    waited += 2;
-                    hle_log("hakuX-hle-back", "present (host image): the frame's copy not done after %u s: "
-                            "waiting on", waited);
-                    if (hle_vk_lost()) {
-                        break;
-                    }
-                }
-                if (wr != VK_SUCCESS) {
-                    g_ph.pending = true;
-                    hle_vk_check(wr, "vkWaitForFences (host present)");
-                }
-            }
-            if (wr == VK_SUCCESS) {
-                if (!direct) {
-                    const uint8_t *src = g_ph.map;
-                    for (uint32_t y = 0; y < f.h; y++) {
-                        memcpy((uint8_t *)dst + (size_t)y * pitch, src + (size_t)y * f.w * 4, (size_t)f.w * 4);
-                    }
-                }
-                *w = f.w;
-                *h = f.h;
-                *seen = (uint64_t)f.gen << 32 | f.swap_id;
-                __atomic_add_fetch(&g_ph.taken, 1, __ATOMIC_RELAXED);
-                ok = true;
-            }
-        }
-        hle_disp_release(f.slot);
-    }
-    hle_disp_use_end();
+    /* (a copy pshx_present_take_start left in flight is waited for first: one at a time; the two
+     * aren't mixed, NC_PRESENT_WAIT picks one for the run) */
+    uint32_t pw = 0, ph = 0;
+    uint64_t pseen = *seen;
+    copy_poll(true, &pseen, &pw, &ph);
+    const bool ok = copy_begin(seen, dst, dst_bytes, pitch, max_w, max_h) && copy_poll(true, seen, w, h) == PSHX_TAKE_DONE;
     pthread_mutex_unlock(&g_ph.lock);
     return ok;
+}
+
+int pshx_present_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                            uint32_t max_h)
+{
+    if (!pshx_present_ready()) {
+        return PSHX_TAKE_NONE;
+    }
+    pthread_mutex_lock(&g_ph.lock);
+    const int r = g_ph.copy.on ? PSHX_TAKE_PENDING
+                  : copy_begin(seen, dst, dst_bytes, pitch, max_w, max_h) ? PSHX_TAKE_STARTED : PSHX_TAKE_NONE;
+    pthread_mutex_unlock(&g_ph.lock);
+    return r;
+}
+
+int pshx_present_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h)
+{
+    pthread_mutex_lock(&g_ph.lock);
+    const int r = g_ph.copy.on && g_hvk.dev ? copy_poll(false, seen, w, h) : PSHX_TAKE_NONE;
+    pthread_mutex_unlock(&g_ph.lock);
+    return r;
 }
 
 void pshx_present_shutdown(void)
@@ -400,6 +502,11 @@ void pshx_present_shutdown(void)
     pthread_mutex_lock(&g_ph.lock);
     if (g_ph.made && g_hvk.dev) {
         T.vkDeviceWaitIdle(g_hvk.dev);
+        if (g_ph.copy.on) {
+            uint64_t seen = 0;
+            uint32_t w, h;
+            copy_end(false, &seen, &w, &h);     /* (the device idle: its slot and the display let go) */
+        }
         drop_buffer();
         for (int i = 0; i < IMPORTS; i++) {
             imp_drop(i);

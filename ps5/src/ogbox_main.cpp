@@ -114,6 +114,7 @@
 #include "core/ogbox_trainers.h"
 #include "ogbox_settings.h"
 #include "ogbox_framegen.h"
+#include "ogbox_take.h"
 #include "framegen/ps5_framegen_pacer.h"
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
@@ -999,6 +1000,13 @@ public:
 	bool slotHeld{ false };                            // slotFrame taken, its copy in this frame's commands
 	std::array<bool, maxConcurrentFrames> stagingOnGpu{};   // a staging buffer's copy submitted, its fence not waited
 	int shotBuffer{ -1 };                              // a screenshot of this staging buffer once its copy is done
+	/* 1.0.5: two devices: the HLE GPU's copy into a staging buffer submitted, picked up by a later pass
+	 * once its fence reads done (ogbox_take.h); env NC_PRESENT_WAIT=1: each copy waited for, as before */
+	ogbox::TakeAsync<maxConcurrentFrames> take;
+	int presentWait{ -1 };                             // NC_PRESENT_WAIT read (-1: not yet)
+	uint32_t takeRowW{ 0 };                            // the width the copy in flight was started with (its rows' pitch)
+	uint64_t takePass{ 0 };
+	int uploadFrom{ -1 };                              // the staging buffer this pass uploads (-1: this frame's)
 	bool upload{ false };       // this frame copies a new picture in
 	bool havePicture{ false };  // a picture has been shown: it stays until a newer one
 	// OGBox 0.0.7: frame generation (ogbox_framegen.h): the game's frames go into its ring, and the
@@ -3045,6 +3053,18 @@ public:
 				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, pt.sum[6] / n, static_cast<unsigned long long>(pt.takes),
 				pt.takeSum / static_cast<double>(std::max<uint64_t>(pt.takes, 1)), pt.takeWorst,
 				static_cast<unsigned long long>(pt.takesLong));
+			/* 1.0.5: two devices, the copy not waited for (ogbox_take.h) */
+			if (presentWait == 0 && !pshx_core_gpu_shared()) {
+				pshakux_log_later("presenter: the frame's copy in 10 s, not waited for: %llu started, picked up in the same pass %llu, "
+					"the next %llu, later %llu; %llu passes kept the previous picture (the copy not done), %llu found no "
+					"staging buffer free, %llu copies lost; the oldest picked up after %.1f ms (%llu passes)",
+					static_cast<unsigned long long>(take.started), static_cast<unsigned long long>(take.samePass),
+					static_cast<unsigned long long>(take.nextPass), static_cast<unsigned long long>(take.laterPass),
+					static_cast<unsigned long long>(take.keptOld), static_cast<unsigned long long>(take.noBuffer),
+					static_cast<unsigned long long>(take.failed), take.ageWorstMs,
+					static_cast<unsigned long long>(take.ageWorstPasses));
+				take.clear();
+			}
 			const double lastAt = pt.lastAt;
 			pt = PassTimes{};
 			pt.lastAt = lastAt;
@@ -4056,7 +4076,7 @@ public:
 	{
 		upload = false;
 		fgFresh = fgPush = fgShow = false;
-		if (fetchLogo()) {
+		if (take.target < 0 && fetchLogo()) {   // (1.0.5: never into a staging buffer a copy writes)
 			upload = true;
 			return;
 		}
@@ -4065,8 +4085,6 @@ public:
 		if (!w || !h) {
 			return;
 		}
-		Staging &s = staging[currentBuffer];
-		ensureStaging(s, VkDeviceSize(w) * h * 4);
 		uint32_t fw = 0, fh = 0;
 		pshx_core_display_pickup();   // 0.0.4: the guest's vblank keeps clear of it
 		// 0.0.4: the HLE GPU copies the frame straight into the staging buffer where it can
@@ -4074,17 +4092,50 @@ public:
 		/* one device: the HLE GPU's display image itself, copied into the staging buffer on the GPU in
 		 * this frame's commands (recordSlotCopy) */
 		const bool slot = pshx_core_gpu_shared();
+		if (presentWait < 0) {
+			const char *e = std::getenv("NC_PRESENT_WAIT");
+			presentWait = e && std::strcmp(e, "1") == 0 ? 1 : 0;
+			if (!slot) {
+				pshakux_log("presenter: two devices: %s", presentWait ? "each frame's copy waited for (NC_PRESENT_WAIT=1)" :
+					"the frame's copy picked up by a later pass, not waited for (NC_PRESENT_WAIT=1: waited for)");
+			}
+		}
+		size_t into = currentBuffer;   // the staging buffer the new picture is in
+		uint32_t rowW = w;             // its rows' pitch in pixels
 		if (slot) {
+			Staging &s = staging[currentBuffer];
 			if (!pshx_core_take_slot(&frameSeen, &slotFrame)) {
 				return;
 			}
 			slotHeld = true;
-			fw = w = slotFrame.width;
+			fw = w = rowW = slotFrame.width;
 			fh = slotFrame.height;
 			ensureStaging(s, VkDeviceSize(fw) * fh * 4);
-		} else if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
-			return;
+		} else if (presentWait) {
+			Staging &s = staging[currentBuffer];
+			ensureStaging(s, VkDeviceSize(w) * h * 4);
+			if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
+				return;
+			}
+		} else {
+			/* 1.0.5: the copy started here is picked up by a later pass (its fence read, no wait); meanwhile the
+			 * picture stays as it is. A staging buffer the copy writes is made large enough only before it starts. */
+			const int got = take.pass(++takePass, takeFrom, pictureBuffer, static_cast<int>(currentBuffer),
+				[&]() { return pshx_core_take_poll(&frameSeen, &fw, &fh); },
+				[&](size_t i) {
+					Staging &t = staging[i];
+					ensureStaging(t, VkDeviceSize(w) * h * 4);
+					takeRowW = w;
+					return pshx_core_take_start(&frameSeen, t.mapped, static_cast<size_t>(t.size), w * 4, w, h);
+				},
+				[&](int k) { return vkGetFenceStatus(device, waitFences[static_cast<size_t>(k)]) == VK_SUCCESS; });
+			if (got < 0) {
+				return;
+			}
+			into = static_cast<size_t>(got);
+			rowW = takeRowW;
 		}
+		Staging &s = staging[into];
 		{
 			/* 1.0.2: its wait (the copy queued behind the HLE renderer's work for the next frame) */
 			const double ms = (now_seconds() - takeFrom) * 1000.0;
@@ -4093,12 +4144,12 @@ public:
 			passTimes.takes++;
 			passTimes.takesLong += ms > 2.0 ? 1 : 0;
 		}
-		if (fw < w) {
-			/* the frame shrank after its size was read: its rows came w * 4 bytes apart; packed now, as
+		if (fw < rowW) {
+			/* the frame shrank after its size was read: its rows came rowW * 4 bytes apart; packed now, as
 			 * the upload, frame generation and a screenshot read them (it was one sheared frame) */
 			uint8_t *px = static_cast<uint8_t *>(s.mapped);
 			for (uint32_t y = 1; y < fh; y++) {
-				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * w * 4, size_t(fw) * 4);
+				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * rowW * 4, size_t(fw) * 4);
 			}
 		}
 		ensurePicture(fw, fh);
@@ -4106,7 +4157,8 @@ public:
 		fgPush = frameGenFor(fw, fh);
 		upload = !fgPush;
 		havePicture = true;
-		pictureBuffer = static_cast<int>(currentBuffer);   // 0.1.53: a save state's picture comes from it
+		pictureBuffer = static_cast<int>(into);   // 0.1.53: a save state's picture comes from it
+		uploadFrom = static_cast<int>(into);
 		showingLogo = false;
 		showingFrozen = false;
 		if (!picturesTaken++) {
@@ -4284,8 +4336,14 @@ public:
 			recordSlotCopy(cmdBuffer);   // one device: the frame into the staging buffer, on the GPU
 		}
 		pictureChanged = upload || fgShow;
+		/* 1.0.5: the staging buffer the picture came in (two devices: the one its copy went into) */
+		const size_t from = uploadFrom >= 0 ? static_cast<size_t>(uploadFrom) : currentBuffer;
+		uploadFrom = -1;
+		if (upload || fgPush) {
+			take.reading(from, static_cast<int>(currentBuffer));   // read on the GPU until this slot's fence
+		}
 		if (fgPush) {
-			frameGen.push(cmdBuffer, staging[currentBuffer].buffer);
+			frameGen.push(cmdBuffer, staging[from].buffer);
 		}
 		if (fgShow) {
 			frameGen.show(cmdBuffer, currentBuffer, fgTime, picture.image, picture.layout);
@@ -4299,7 +4357,7 @@ public:
 			VkBufferImageCopy copy{};
 			copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 			copy.imageExtent = { picture.width, picture.height, 1 };
-			vkCmdCopyBufferToImage(cmdBuffer, staging[currentBuffer].buffer, picture.image,
+			vkCmdCopyBufferToImage(cmdBuffer, staging[from].buffer, picture.image,
 				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 			vks::tools::insertImageMemoryBarrier(cmdBuffer, picture.image,
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -5493,7 +5551,7 @@ public:
 			if (slotHeld) {
 				shotBuffer = static_cast<int>(currentBuffer);   // one device: once the GPU's copy is done
 			} else {
-				takeShot(currentBuffer);
+				takeShot(uploadFrom >= 0 ? static_cast<size_t>(uploadFrom) : currentBuffer);
 			}
 		}
 		buildCommandBuffer();

@@ -42,7 +42,21 @@ bool pshx_present_take(uint64_t *seen, void *dst, uint32_t pitch, uint32_t max_w
  * Rows packed (pitch = w * 4) for that; otherwise, and with dst_bytes 0, as pshx_present_take. */
 bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                             uint32_t max_h, uint32_t *w, uint32_t *h);
-/* dst is going (the title frees its upload buffer): the HLE GPU's device lets go of it first. */
+/* OGBox 1.0.5: the same without the wait (the two devices' handoff off the title's render thread's
+ * critical path). take_start submits the front frame's copy into dst, when newer than *seen, and
+ * returns: PSHX_TAKE_STARTED (in flight: dst is written by the HLE GPU until take_poll says DONE or
+ * FAILED; the title neither reads, writes nor frees it before), PSHX_TAKE_NONE (nothing new, or none
+ * fits: nothing started) or PSHX_TAKE_PENDING (one is in flight already: one at a time). take_poll
+ * reads its fence, no wait: PSHX_TAKE_DONE (the frame is in dst, its size in *w, *h, *seen its),
+ * PSHX_TAKE_PENDING (not yet: a line each 2 s, never given up on), PSHX_TAKE_FAILED (the GPU lost:
+ * dst holds no frame) or PSHX_TAKE_NONE (none in flight). The display slot it reads is held, and a
+ * display resize waits, until then. Both on the title's render thread. */
+enum { PSHX_TAKE_NONE, PSHX_TAKE_STARTED, PSHX_TAKE_PENDING, PSHX_TAKE_DONE, PSHX_TAKE_FAILED };
+int pshx_present_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                            uint32_t max_h);
+int pshx_present_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h);
+/* dst is going (the title frees its upload buffer): the HLE GPU's device lets go of it first (a copy
+ * in flight waited for). */
 void pshx_present_forget(void *dst);
 
 /* The front frame's size without taking it (0 x 0: none yet). */

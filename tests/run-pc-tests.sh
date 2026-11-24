@@ -34,6 +34,7 @@ run broker tests/broker/run-broker-tests.sh build/broker-tests
 run savesync ps5/tests/savesync/run.sh build/savesync-tests
 run resign ps5/tests/resign/run.sh build/resign-tests
 run storage ps5/tests/storage/run.sh build/storage-tests
+run present ps5/tests/present-ogbox/run.sh build/present-tests
 run ui tests/ui/run-ui-tests.sh build/ui-tests
 run frontend tests/ui/check-frontend.sh
 if ((${#failed[@]})); then

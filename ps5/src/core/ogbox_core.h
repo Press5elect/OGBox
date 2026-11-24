@@ -95,6 +95,14 @@ bool pshx_core_take_frame(uint64_t *seen, void *dst, uint32_t pitch, uint32_t ma
 bool pshx_core_take_frame_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                                uint32_t max_h, uint32_t *w, uint32_t *h);
 void pshx_core_frame_forget(void *dst);
+/* OGBox 1.0.5: take_frame_into without the wait: take_start submits the copy into dst (STARTED; NONE:
+ * nothing new; PENDING: one in flight already), take_poll reads whether it is done (DONE: the frame
+ * in dst, *w x *h, *seen its; PENDING: not yet; FAILED: the GPU lost; NONE: none in flight). dst is
+ * the HLE GPU's until DONE or FAILED: not read, written or freed (frame_forget waits for it). */
+enum { PSHX_CORE_TAKE_NONE, PSHX_CORE_TAKE_STARTED, PSHX_CORE_TAKE_PENDING, PSHX_CORE_TAKE_DONE, PSHX_CORE_TAKE_FAILED };
+int pshx_core_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                         uint32_t max_h);
+int pshx_core_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h);
 /* OGBox 0.0.4: the display's timing, for the emulated vblank (hakuX's nv2a.c locks it to the panel,
  * as its Android front end's Choreographer does). display_vsync: the presenter's loop was let go by
  * the display (its swapchain image acquired, FIFO: once a refresh); display_pickup: it looks for a

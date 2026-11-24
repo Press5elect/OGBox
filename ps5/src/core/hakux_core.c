@@ -811,6 +811,20 @@ void pshx_core_frame_forget(void *dst)
     pshx_present_forget(dst);
 }
 
+int pshx_core_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                         uint32_t max_h)
+{
+    _Static_assert(PSHX_TAKE_NONE == PSHX_CORE_TAKE_NONE && PSHX_TAKE_STARTED == PSHX_CORE_TAKE_STARTED &&
+                   PSHX_TAKE_PENDING == PSHX_CORE_TAKE_PENDING && PSHX_TAKE_DONE == PSHX_CORE_TAKE_DONE &&
+                   PSHX_TAKE_FAILED == PSHX_CORE_TAKE_FAILED, "the take's answers, the same both sides");
+    return pshx_present_take_start(seen, dst, dst_bytes, pitch, max_w, max_h);
+}
+
+int pshx_core_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h)
+{
+    return pshx_present_take_poll(seen, w, h);
+}
+
 void pshx_core_frame_size(uint32_t *w, uint32_t *h)
 {
     pshx_present_size(w, h);
