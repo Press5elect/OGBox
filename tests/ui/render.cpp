@@ -623,7 +623,7 @@ int main(int argc, char **argv)
 		r.choice = 2; light.rows.push_back(r);
 		r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gl"; r.name = "Lighting and Effects"; light.rows.push_back(r);
 		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "ff_pixel_light"; r.name = "Per-pixel lighting"; light.rows.push_back(r);
-		r = {}; r.key = "shadow_pcf"; r.name = "Shadow softness"; r.choices = { "Game's own (2x2)", "Soft (3x3)", "Softer (5x5)" };
+		r = {}; r.key = "shadow_pcf"; r.name = "Shadow softness"; r.choices = { "Game's default (2x2)", "Soft (3x3)", "Soft, wide (4 taps)", "Softer (5x5)" };
 		r.choice = 2; light.rows.push_back(r);
 		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "smallrt_filter"; r.name = "Smooth small effects"; r.on = true;
 		light.rows.push_back(r);

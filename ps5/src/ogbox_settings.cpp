@@ -272,8 +272,8 @@ std::vector<Option> makeOptions()
 		"resolution, instead of showing as shimmering blocks. Off: as before.",
 		kOnOff, "1", true });
 	o.push_back({ "shadow_pcf", Section::Graphics, "Shadow softness",
-		"For games with shadow maps: softer shadow edges. Game's default: the Xbox's 2x2 filter.",
-		{ { "0", "Game's default (2x2)" }, { "3", "Soft (3x3)" }, { "5", "Softer (5x5)" } }, "0", true });
+		"For games with shadow maps: softer shadow edges. Game's default: the Xbox's 2x2 filter. Soft, wide: as wide as Softer for the cost of Soft (four turned taps; a fine grain at 1x).",
+		{ { "0", "Game's default (2x2)" }, { "3", "Soft (3x3)" }, { "4", "Soft, wide (4 taps)" }, { "5", "Softer (5x5)" } }, "0", true });
 	o.push_back({ "ff_pixel_light", Section::Graphics, "Per-pixel lighting",
 		"The game's lights worked out for each pixel instead of each corner of a model: rounder highlights, no "
 		"lights that pop on large flat surfaces. Only for games lit without vertex programs; the log says if a game is.",
@@ -1073,7 +1073,7 @@ std::vector<std::string> Settings::coreArgs() const
 	if (value("smallrt_filter") == "0") {
 		a.push_back("NC_HLE_SMALLRT_FILTER=0");
 	}
-	if (value("shadow_pcf") == "3" || value("shadow_pcf") == "5") {
+	if (value("shadow_pcf") == "3" || value("shadow_pcf") == "4" || value("shadow_pcf") == "5") {
 		a.push_back("NC_HLE_SHADOW_PCF=" + value("shadow_pcf"));
 	}
 	if (value("ff_pixel_light") == "1") {
