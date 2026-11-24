@@ -7032,18 +7032,30 @@ public:
 			showToast("The storage write test is running already.");
 			return;
 		}
-		openPopup(kWriteTest, "It takes about 10 minutes, and writes and then deletes about 8 GiB in " + ogbox::storageRoot() +
-			"/writetest (it needs 10 GiB free there). For part of it OGBox sends a helper of its own to the payload loader (port "
-			"9021). Stay in the menus while it runs: starting a game ends it. Every number goes into the boot log "
-			"(ogbox-boot.log in OGBox's folder).", { "Start", "Cancel" }, [this](int i) {
+		/* 1.0.4: the console's own storage (/data), where the title's writes are held back, or the data
+		 * folder when that is elsewhere (a USB drive: the owner's first run measured that one) */
+		const std::string root = ogbox::storageRoot();
+		const bool elsewhere = root.rfind("/data/", 0) != 0;
+		std::vector<std::string> buttons = { "Console storage" };
+		if (elsewhere) {
+			buttons.push_back("Data folder");
+		}
+		buttons.push_back("Cancel");
+		openPopup(kWriteTest, std::string("It takes about 10 minutes, and writes and then deletes about 8 GiB in a writetest folder (it "
+			"needs 10 GiB free there): Console storage is /data/ogbox/writetest") +
+			(elsewhere ? ", Data folder is " + root + "/writetest" : std::string()) +
+			". For part of it OGBox sends a helper of its own to the payload loader (port 9021). Stay in the menus while it runs: "
+			"starting a game ends it. Every number goes into the boot log (ogbox-boot.log in OGBox's folder).", buttons,
+			[this, elsewhere, root](int i) {
 				if (i == 0) {
-					startWriteTest();
+					startWriteTest("/data/ogbox/writetest");
+				} else if (elsewhere && i == 1) {
+					startWriteTest(root + "/writetest");
 				}
 			});
 	}
-	void startWriteTest()
+	void startWriteTest(const std::string &dir)
 	{
-		const std::string dir = ogbox::storageRoot() + "/writetest";
 		const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
 		const ogbox::broker::Connector connect = [elf](std::string &why) { return ogbox::broker::Launch(elf, why); };
 		const ogbox::broker::Log log = [](const std::string &line) { pshakux_log("%s", line.c_str()); };
@@ -9723,7 +9735,7 @@ public:
 			if (library && !forGame) {
 				// (under the Diagnostics group's header, the options' last: setGroups)
 				actionRow("writetest", "Storage write test", writeTestLine(), "Takes about 10 minutes; writes and then deletes about "
-					"8 GiB in the data folder. It measures how fast OGBox, and a helper of its own sent to the payload loader, can "
+					"8 GiB on the console's storage or in the data folder. It measures how fast OGBox, and a helper of its own sent to the payload loader, can "
 					"write there; the numbers go into the boot log.", [this]() { askWriteTest(); }, rows, acts, ui::Icon::Gear);
 			}
 			break;
