@@ -6304,7 +6304,10 @@ public:
 					storageMessage = "The saves are being synced: move the data when that is done.";
 					return;
 				}
-				if (ogbox::StorageMove::get().start(now, storageTarget)) {
+				/* 1.0.4: onto the console's storage, the write broker copies the files (ogbox_storage.h) */
+				const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
+				const ogbox::StorageMove::HelperConnect helper = [elf](std::string &why) { return ogbox::broker::Launch(elf, why); };
+				if (ogbox::StorageMove::get().start(now, storageTarget, helper)) {
 					storageMessage.clear();
 					storageStep = StorageStep::Moving;
 				}

@@ -13,5 +13,6 @@ g++ -std=gnu++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -I"$p
 "$work/save_sync_test"
 g++ -std=gnu++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -I"$ps5/src" -I"$ps5/src/platform" \
     "-DOGBOX_STORAGE_FILE=\"$work/storage.txt\"" \
-    "$here/saves_files_test.cpp" "$ps5/src/ogbox_save_sync.cpp" "$ps5/src/ogbox_storage.cpp" -o "$work/saves_files_test" -lpthread
+    "$here/saves_files_test.cpp" "$ps5/src/ogbox_save_sync.cpp" "$ps5/src/ogbox_storage.cpp" \
+    "$ps5/src/platform/ps5_broker.cpp" -o "$work/saves_files_test" -lpthread
 "$work/saves_files_test" "$work/files"

@@ -8,10 +8,16 @@
  * system to its last file and the old copy's deletion, a target inside the data folder refused, a
  * note that can't be written deleting nothing, a link left where it was, a move begun again going
  * on with what it copied (and deleting what the data folder no longer has), a rename on one file
- * system, and a note that doesn't read back put back as it was.
+ * system, and a note that doesn't read back put back as it was. 1.0.4: a move onto the console's
+ * storage (/data/) copied by the write broker (its real request handler on a socketpair, every pwrite
+ * cut short), with files of 0 bytes to more than one COPY's; one whose path the broker doesn't take
+ * copied by OGBox; the broker dying part-way (the rest copied by OGBox, the file it was on again);
+ * no broker; and a move elsewhere not using it. The copies are the files' bytes, each time.
  *   storage_test <work folder> <a folder on another file system>
  */
 #include "ogbox_storage.h"
+#include "../../broker/protocol.hpp"
+#include "../../broker/server.hpp"
 
 #include <chrono>
 #include <cstdarg>
@@ -19,20 +25,28 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <mutex>
 #include <string>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
+
+std::mutex g_logMutex;
+std::vector<std::string> g_log;   // 1.0.4: the lines, for the helper's
 
 extern "C" void pshakux_log(const char *format, ...)
 {
+	char line[2048];
 	va_list a;
 	va_start(a, format);
-	std::fprintf(stdout, "  log: ");
-	std::vfprintf(stdout, format, a);
-	std::fprintf(stdout, "\n");
+	std::vsnprintf(line, sizeof(line), format, a);
 	va_end(a);
+	std::fprintf(stdout, "  log: %s\n", line);
+	std::lock_guard<std::mutex> lock(g_logMutex);
+	g_log.push_back(line);
 }
 
 namespace {
@@ -120,10 +134,11 @@ void removeAll(const std::string &path)
 }
 
 /* The move to its end: it must end (the owner's fault: it stood at its last file). */
-ogbox::StorageMove::Progress move(const std::string &from, const std::string &to, bool *sawRemoving = nullptr)
+ogbox::StorageMove::Progress move(const std::string &from, const std::string &to, bool *sawRemoving = nullptr,
+	ogbox::StorageMove::HelperConnect helper = nullptr, const std::string &helperRoot = "")
 {
 	ogbox::StorageMove &m = ogbox::StorageMove::get();
-	expect(m.start(from, to), "a move starts");
+	expect(m.start(from, to, helper, helperRoot), "a move starts");
 	const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
 	for (;;) {
 		const ogbox::StorageMove::Progress p = m.progress();
@@ -139,6 +154,179 @@ ogbox::StorageMove::Progress move(const std::string &from, const std::string &to
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	}
+}
+
+/* 1.0.4: the write broker for the move: its real request handler on a socketpair, in a thread */
+struct Brokers {
+	std::string root;
+	::broker::ServerOptions options;
+	std::vector<std::thread> threads;
+	int launched{ 0 };
+	ogbox::StorageMove::HelperConnect connect()
+	{
+		return [this](std::string &why) {
+			launched++;
+			int fds[2];
+			if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+				why = "no socketpair";
+				return -1;
+			}
+			const int server = fds[1];
+			::broker::ServerOptions o = options;
+			o.root = root.c_str();
+			threads.emplace_back([server, o]() {
+				::broker::serve(server, server, o);
+				shutdown(server, SHUT_RDWR);   // (the payload's end: its process gone, the connection with it)
+				close(server);
+			});
+			why = "the test's broker";
+			return fds[0];
+		};
+	}
+	void join()
+	{
+		for (std::thread &t : threads) {
+			t.join();
+		}
+		threads.clear();
+	}
+};
+
+/* a file's bytes from its name: checked once its source is gone */
+std::string bytesOf(const std::string &name, size_t size)
+{
+	std::string d(size, '\0');
+	uint64_t salt = 1469598103934665603ull;
+	for (char ch : name) {
+		salt = (salt ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+	}
+	::broker::fill_pattern(d.data(), d.size(), 0, salt);
+	return d;
+}
+
+bool logged(const std::string &part, size_t from)
+{
+	std::lock_guard<std::mutex> lock(g_logMutex);
+	for (size_t i = from; i < g_log.size(); i++) {
+		if (g_log[i].find(part) != std::string::npos) {
+			return true;
+		}
+	}
+	return false;
+}
+
+size_t logAt()
+{
+	std::lock_guard<std::mutex> lock(g_logMutex);
+	return g_log.size();
+}
+
+void helperMoves(const std::string &w, const std::string &other)
+{
+	/* the console's paths under a root of the test's: /data/ there on the work folder's file system,
+	 * /mnt/usb0 a link to a folder on the other one (a copy, not a rename) */
+	const std::string r = w + "/console";
+	makeFolders(r + "/data");
+	makeFolders(r + "/mnt");
+	makeFolders(other + "/usb0");
+	makeFolders(other + "/usb1");
+	expect(symlink((other + "/usb0").c_str(), (r + "/mnt/usb0").c_str()) == 0, "helper: the USB drive's link made");
+	expect(symlink((other + "/usb1").c_str(), (r + "/mnt/usb1").c_str()) == 0, "helper: the other USB drive's link made");
+	std::string deep = "/hdd/deep";
+	for (int i = 0; i < 5; i++) {
+		deep += "/" + std::string(220, 'd');   // (past the broker's 1024 bytes)
+	}
+	struct File {
+		std::string name;
+		size_t size;
+	};
+	std::vector<File> files = { { "/hdd/Partition1/empty.bin", 0 }, { "/hdd/Partition1/one.bin", 1 },
+		{ "/hdd/Partition1/big.bin", (70u << 20) + 4097 }, { "/cache/a.bin", 4096 }, { "/cache/b.bin", (1u << 20) + 3 },
+		{ "/covers/4D530039.png", 12345 }, { deep + "/x.bin", 3000 } };
+	uint64_t seed = 12345;
+	for (int i = 0; i < 12; i++) {   // and some of random sizes
+		seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+		files.push_back({ "/shots/s" + std::to_string(i) + ".bin", static_cast<size_t>((seed >> 33) % (5u << 20)) });
+	}
+	const auto fill = [&](const std::string &root) {
+		for (const File &f : files) {
+			put(root + f.name, bytesOf(f.name, f.size), 1550000000);
+		}
+	};
+	const auto same = [&](const std::string &root, const char *what) {
+		bool ok = true;
+		for (const File &f : files) {
+			if (get(root + f.name) != bytesOf(f.name, f.size) || mtimeOf(root + f.name) != 1550000000) {
+				std::fprintf(stderr, "  %s: %s differs\n", what, f.name.c_str());
+				ok = false;
+			}
+		}
+		expect(ok, what);
+	};
+	Brokers b;
+	b.root = r;
+	b.options.io_cap = (1u << 20) + 3;   // every pwrite cut short (the broker's loop finishes each)
+	b.options.message_ms = 10000;
+
+	/* USB -> console storage: through the broker, every file but the one whose path it doesn't take */
+	std::string from = r + "/mnt/usb0/OGBox", to = r + "/data/OGBox";
+	fill(from);
+	size_t at = logAt();
+	ogbox::StorageMove::Progress p = move(from, to, nullptr, b.connect(), r);
+	b.join();
+	expect(p.done && p.ok && p.error.empty(), "helper: the move ends well");
+	expect(ogbox::storageRoot() == to, "helper: the new folder is the data folder");
+	same(to, "helper: every file's bytes and date there");
+	expect(!there(from + "/hdd") && !there(from + "/cache") && !there(from + "/shots"), "helper: the old copy deleted");
+	expect(b.launched == 1, "helper: one broker for the move");
+	expect(logged("storage: moving through the helper", at), "helper: said");
+	expect(logged("the helper " + std::to_string(files.size() - 1) + " files", at) && logged("; 1 files fell back", at),
+		"helper: every file but one copied by it");
+	expect(logged("the helper doesn't take its path; OGBox copies it itself", at), "helper: the long path copied by OGBox");
+
+	/* console storage -> USB: not through the broker */
+	from = to;
+	to = r + "/mnt/usb1/OGBox";
+	at = logAt();
+	p = move(from, to, nullptr, b.connect(), r);
+	b.join();
+	expect(p.done && p.ok && b.launched == 1, "elsewhere: moved, no broker started");
+	expect(logged("not moving through the helper: the new folder isn't on the console's storage", at), "elsewhere: said");
+	same(to, "elsewhere: every file there");
+
+	/* the broker dies part-way (after carrying out a request it doesn't answer): the file it was on
+	 * copied again by OGBox, and the rest */
+	for (const unsigned die : { 2u, 9u, 40u }) {
+		from = to;
+		to = r + "/data/OGBox" + std::to_string(die);
+		b.options.die_after = die;
+		at = logAt();
+		p = move(from, to, nullptr, b.connect(), r);
+		b.join();
+		const std::string what = "dying after " + std::to_string(die) + " requests: ";
+		expect(p.done && p.ok, (what + "the move ends well").c_str());
+		same(to, (what + "every file's bytes and date there").c_str());
+		expect(logged("storage: the helper stops:", at), (what + "said").c_str());
+		expect(!there(from + "/hdd"), (what + "the old copy deleted").c_str());
+		to = r + "/mnt/usb" + std::to_string(die % 2) + "/OGBox";   // (back to a USB drive, without it)
+		from = r + "/data/OGBox" + std::to_string(die);
+		p = move(from, to);
+		expect(p.done && p.ok, (what + "moved back").c_str());
+	}
+	b.options.die_after = 0;
+
+	/* no broker: OGBox copies */
+	from = to;
+	to = r + "/data/OGBox-none";
+	at = logAt();
+	p = move(from, to, nullptr, [](std::string &why) {
+		why = "no payload loader (the test's)";
+		return -1;
+	}, r);
+	expect(p.done && p.ok, "no broker: moved");
+	same(to, "no broker: every file there");
+	expect(logged("not moving through the helper: it could not be started: no payload loader", at), "no broker: said");
+	removeAll(r);
 }
 
 } // namespace
@@ -256,6 +444,8 @@ int main(int argc, char **argv)
 	removeAll(w + "/long");
 
 	removeAll(other);
+	helperMoves(w, other);
+
 	std::printf("storage: %d checks, %d failed\n", g_checks, g_failed);
 	return g_failed ? 1 : 0;
 }

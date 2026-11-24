@@ -27,6 +27,11 @@
  *   UNLINK    body = the path
  *   BENCH     body = BenchArgs then the path          -> body = BenchResult, then its steps
  *   QUIT                                              -> the broker answers, then ends
+ *   COPY      handle = to, offset = to's offset, length (at most kMaxBody), body = CopyArgs
+ *                                                     -> value = bytes copied (1.0.4: the data
+ *             folder's move; the broker reads `from` and writes `to` itself, kCopyChunk at a time:
+ *             the bytes don't cross the connection. Short only at from's end, or with error set:
+ *             value is then what was written. A broker from before answers ENOSYS)
  *
  * Paths: only under /data/, /mnt/usb<n>/ and /mnt/ext<n>/, and none with a "." or ".." part.
  */
@@ -45,6 +50,7 @@ inline constexpr std::uint32_t kMaxPath = 1024;
 inline constexpr unsigned kMaxHandles = 64;               // 1.0.4: 16 before (the cache drives' files)
 inline constexpr unsigned kMaxSteps = 64;                 // BENCH's steps (of 256 MiB: 16 GiB)
 inline constexpr std::uint64_t kStep = 256ull << 20;
+inline constexpr std::uint32_t kCopyChunk = 16u << 20;    // COPY's pread and pwrite, at most this a time
 
 enum class Op : std::uint16_t
 {
@@ -58,6 +64,7 @@ enum class Op : std::uint16_t
     unlink = 8,
     bench = 9,
     quit = 10,
+    copy = 11, // 1.0.4
 };
 
 // The broker's own open flags (the title's and the host's O_ values differ).
@@ -78,6 +85,15 @@ struct OpenInfo
     std::uint64_t ino = 0;
 };
 static_assert(sizeof(OpenInfo) == 16);
+
+// 1.0.4: COPY's body: the file it reads (a handle of this connection) and where from.
+struct CopyArgs
+{
+    std::uint32_t from = 0;
+    std::uint32_t reserved = 0;
+    std::uint64_t from_offset = 0;
+};
+static_assert(sizeof(CopyArgs) == 16);
 
 struct Request
 {

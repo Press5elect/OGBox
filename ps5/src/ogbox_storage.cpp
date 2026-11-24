@@ -28,6 +28,7 @@
 #endif
 
 #include "platform/ps5_bootlog.h"
+#include "platform/ps5_broker.h"
 
 namespace ogbox {
 
@@ -356,6 +357,114 @@ std::vector<StoragePlace> storagePlaces()
 
 namespace {
 
+uint64_t nowNs()
+{
+	struct timespec t {};
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return static_cast<uint64_t>(t.tv_sec) * 1000000000ull + static_cast<uint64_t>(t.tv_nsec);
+}
+
+double mibPerSecond(uint64_t bytes, uint64_t ns)
+{
+	return ns ? double(bytes) / double(1 << 20) / (double(ns) / 1e9) : 0.0;
+}
+
+/* 1.0.4: the write broker (platform/ps5_broker.h), for a move onto the console's storage: the title's
+ * own writes to /data are held back after a burst of about 1.3 GiB (the owner's console: 190 MiB/s,
+ * then 32, 27, 12 MiB/s and less), the broker's, a process of its own, were not (about 200 MiB/s past
+ * 2 GiB). It reads each file and writes its copy itself (COPY), so the bytes don't cross the
+ * connection; started at the first file to copy, one for the move, told to quit at its end. */
+struct MoveHelper {
+	static constexpr int kHelloMs = 8000;      // the loader starts the payload: its first answer
+	static constexpr int kReplyMs = 120000;    // a request's answer (a piece of 32 MiB from a slow drive)
+	static constexpr int kSyncMs = 300000;     // a file's fsync
+	static constexpr int kFinishMs = 60000;    // given up: its end (what it was sent carried out first)
+	static constexpr uint64_t kPiece = 32ull << 20;   // a COPY: the progress moves a piece at a time
+
+	StorageMove::HelperConnect connect;   // none: OGBox copies every file itself
+	std::string root;                     // the PC test's: off the paths the broker is given
+	bool wanted{ false };                 // the new folder is on the console's storage
+	bool tried{ false };
+	std::unique_ptr<ogbox::broker::Client> client;
+	uint64_t bytes{ 0 }, ns{ 0 };         // what it copied, in how long (opening to closing)
+	unsigned files{ 0 }, fellBack{ 0 };   // files it copied; files OGBox copied itself after all
+
+	/* the path as the broker sees it; false: not one it takes */
+	bool path(const std::string &local, std::string &out) const
+	{
+		out = !root.empty() && local.compare(0, root.size(), root) == 0 ? local.substr(root.size()) : local;
+		return ::broker::path_allowed(out.data(), out.size());
+	}
+
+	/* started at the first file (a move that only renames needs none); false: OGBox copies */
+	bool up()
+	{
+		if (!wanted) {
+			if (!tried) {
+				tried = true;
+				pshakux_log("storage: not moving through the helper: %s; OGBox copies the files itself", connect ?
+					"the new folder isn't on the console's storage (/data/)" : "none was given");
+			}
+			return false;
+		}
+		if (!tried) {
+			tried = true;
+			std::string launched, text;
+			const int fd = connect(launched);
+			if (fd < 0) {
+				pshakux_log("storage: not moving through the helper: it could not be started: %s; OGBox copies the files itself",
+					launched.c_str());
+				return false;
+			}
+			client = std::make_unique<ogbox::broker::Client>(fd);
+			client->timeout_ms = kReplyMs;
+			uint32_t version = 0;
+			const int e = client->Hello(text, version, kHelloMs);
+			if (e != 0 || version != ::broker::kVersion) {
+				pshakux_log("storage: not moving through the helper: %s; OGBox copies the files itself", e != 0 ?
+					("it didn't answer (" + (e < 0 ? client->Error() : std::string(std::strerror(e))) + ")").c_str() :
+					("it is of another version (" + std::to_string(version) + ")").c_str());
+				client.reset();
+				return false;
+			}
+			pshakux_log("storage: moving through the helper (%s; %s)", launched.c_str(), text.c_str());
+		}
+		return client != nullptr;
+	}
+
+	/* a request failed: the rest copied by OGBox; the broker ended first (what it was sent carried
+	 * out), so nothing of it writes into a file OGBox copies again */
+	void drop(const std::string &why)
+	{
+		pshakux_log("storage: the helper stops: %s; OGBox copies this file again and the rest itself", why.c_str());
+		if (client && !client->Finish(kFinishMs)) {
+			pshakux_log("storage: the helper didn't end within %d s", kFinishMs / 1000);
+		}
+		client.reset();
+	}
+
+	/* the move's end: told to quit */
+	void end()
+	{
+		if (client) {
+			const int e = client->Quit();
+			if (e != 0) {
+				pshakux_log("storage: the helper's quit: %s", e < 0 ? client->Error().c_str() : std::strerror(e));
+			}
+			client->Finish(kFinishMs);
+			client.reset();
+		}
+	}
+
+	std::string said(int e) const
+	{
+		if (e < 0) {
+			return client ? client->Error() : std::string("no connection");
+		}
+		return e == ENOSYS ? std::string("this helper can't copy (ENOSYS: one from before)") : std::string(std::strerror(e));
+	}
+};
+
 struct Copier {
 	StorageMove::Progress *state{ nullptr };
 	std::mutex *mutex{ nullptr };
@@ -364,6 +473,9 @@ struct Copier {
 	std::set<std::string> kept;    // 1.0.3: what isn't a file or a folder (a link made by hand): not copied, left where it was
 	uint64_t left{ 0 };            // what of the old copy could not be deleted
 	std::string leftFirst;
+	MoveHelper *helper{ nullptr }; // 1.0.4
+	uint64_t localBytes{ 0 }, localNs{ 0 };   // what OGBox copied itself, in how long
+	unsigned localFiles{ 0 };
 
 	void say(const std::string &file, uint64_t add)
 	{
@@ -372,6 +484,85 @@ struct Copier {
 		if (!file.empty()) {
 			state->current = file;
 		}
+	}
+
+	/* what say() counted for a file taken back (it is copied again) */
+	void unsay(uint64_t sub)
+	{
+		std::lock_guard<std::mutex> lock(*mutex);
+		state->bytes -= sub;
+	}
+
+	/* 1.0.4: the file copied by the broker: opened there (the copy created or truncated), copied a
+	 * piece at a time, synced and closed, its size checked here and its date set as copyFile's.
+	 * false: not copied (counted back), with why; *dropped when the helper is to be given up. */
+	bool helperFile(const std::string &from, const std::string &to, const std::string &shown, const struct stat &src,
+		std::string &why, bool &dropped)
+	{
+		MoveHelper &h = *helper;
+		ogbox::broker::Client &c = *h.client;
+		std::string f, t;
+		dropped = false;
+		if (!h.path(from, f) || !h.path(to, t)) {
+			why = "the helper doesn't take its path";
+			return false;
+		}
+		dropped = true;
+		const uint64_t began = nowNs(), size = static_cast<uint64_t>(src.st_size);
+		uint32_t in = 0, out = 0;
+		bool direct = false;
+		int e = c.Open(f, ::broker::open_read, in, direct);
+		if (e != 0) {
+			why = "opening " + from + ": " + h.said(e);
+			return false;
+		}
+		e = c.Open(t, ::broker::open_write | ::broker::open_create | ::broker::open_truncate | ::broker::open_direct, out, direct);
+		if (e != 0) {
+			why = "opening " + to + ": " + h.said(e);
+			c.Close(in);
+			return false;
+		}
+		say(shown, 0);
+		uint64_t at = 0;
+		while (e == 0 && at < size) {
+			const uint64_t n = size - at < MoveHelper::kPiece ? size - at : MoveHelper::kPiece;
+			uint64_t got = 0;
+			e = c.Copy(in, at, out, at, n, got, MoveHelper::kReplyMs);
+			if (e != 0) {
+				why = "copying " + from + " at " + std::to_string(at) + ": " + h.said(e);
+			} else if (got != n) {
+				why = "copying " + from + ": it ended at " + std::to_string(at + got) + " of " + std::to_string(size) + " bytes";
+				e = EIO;
+			} else {
+				at += got;
+				say(std::string(), got);
+				copied += got;
+			}
+		}
+		if (e == 0 && (e = c.Sync(out, MoveHelper::kSyncMs)) != 0) {
+			why = "syncing " + to + ": " + h.said(e);
+		}
+		const int closedIn = c.Close(in), closedOut = c.Close(out);
+		if (e == 0 && (closedOut != 0 || closedIn != 0)) {
+			e = closedOut != 0 ? closedOut : closedIn;
+			why = "closing " + std::string(closedOut != 0 ? to : from) + ": " + h.said(e);
+		}
+		struct stat there;
+		if (e == 0 && (lstat(to.c_str(), &there) != 0 || !S_ISREG(there.st_mode) || static_cast<uint64_t>(there.st_size) != size)) {
+			why = to + ": not the size it was copied at (" + std::to_string(size) + " bytes)";
+			e = EIO;
+		}
+		if (e != 0) {
+			unsay(at);
+			copied -= at;
+			return false;
+		}
+		h.bytes += size;
+		h.ns += nowNs() - began;
+		h.files++;
+		struct timeval times[2] = { { src.st_atime, 0 }, { src.st_mtime, 0 } };
+		utimes(to.c_str(), times);   // (a failure: the next move copies it again)
+		return true;
 	}
 
 	bool copyFile(const std::string &from, const std::string &to, const std::string &shown, const struct stat &src)
@@ -386,6 +577,21 @@ struct Copier {
 			copied += static_cast<uint64_t>(src.st_size);
 			return true;
 		}
+		/* 1.0.4: by the helper when there is one; a file it fails is copied here from its start */
+		if (helper && helper->up()) {
+			std::string why;
+			bool dropped = false;
+			if (helperFile(from, to, shown, src, why, dropped)) {
+				return true;
+			}
+			helper->fellBack++;
+			if (dropped) {
+				helper->drop(why);
+			} else {
+				pshakux_log("storage: %s: %s; OGBox copies it itself", from.c_str(), why.c_str());
+			}
+		}
+		const uint64_t began = nowNs();
 		const int in = open(from.c_str(), O_RDONLY);
 		if (in < 0) {
 			error = from + ": " + std::strerror(errno);
@@ -434,6 +640,9 @@ struct Copier {
 		if (ok) {
 			struct timeval times[2] = { { src.st_atime, 0 }, { src.st_mtime, 0 } };
 			utimes(to.c_str(), times);   // (a failure: the next move copies it again)
+			localBytes += static_cast<uint64_t>(src.st_size);
+			localNs += nowNs() - began;
+			localFiles++;
 		}
 		return ok;
 	}
@@ -630,7 +839,7 @@ StorageMove::Progress StorageMove::progress()
 	return state;
 }
 
-bool StorageMove::start(const std::string &from, const std::string &to)
+bool StorageMove::start(const std::string &from, const std::string &to, HelperConnect helper, const std::string &helperRoot)
 {
 	{
 		std::lock_guard<std::mutex> lock(mutex);
@@ -642,11 +851,11 @@ bool StorageMove::start(const std::string &from, const std::string &to)
 		state.from = from;
 	}
 	try {
-		std::thread([this, from, to]() {
+		std::thread([this, from, to, helper, helperRoot]() {
 			std::string why, note;
 			bool ok = false;
 			try {
-				ok = run(from, to, why, note);
+				ok = run(from, to, why, note, helper, helperRoot);
 			} catch (...) {   // (1.0.3: it ends with a reason, never with the screen left at "Moving")
 				ok = false;
 				why = "the move stopped unexpectedly";
@@ -669,7 +878,8 @@ bool StorageMove::start(const std::string &from, const std::string &to)
 	return true;
 }
 
-bool StorageMove::run(const std::string &from, const std::string &to, std::string &why, std::string &note)
+bool StorageMove::run(const std::string &from, const std::string &to, std::string &why, std::string &note, const HelperConnect &helper,
+	const std::string &helperRoot)
 {
 	bool ok = !notedBadly(to, why) && writableFolder(to, why);
 	if (ok && refusedMove(from, to, why)) {
@@ -688,6 +898,17 @@ bool StorageMove::run(const std::string &from, const std::string &to, std::strin
 	Copier c;
 	c.state = &state;
 	c.mutex = &mutex;
+	/* 1.0.4: onto the console's storage (/data/), and only there, the files copied by the helper */
+	MoveHelper h;
+	h.connect = helper;
+	h.root = helperRoot;
+	{
+		std::string seen;
+		h.path(to, seen);
+		h.wanted = helper && seen.compare(0, 6, "/data/") == 0;
+	}
+	c.helper = &h;
+	const uint64_t copyBegan = nowNs();
 	for (const char *part : storageParts()) {
 		if (!ok) {
 			break;
@@ -729,6 +950,16 @@ bool StorageMove::run(const std::string &from, const std::string &to, std::strin
 		} else {
 			why = c.error;
 		}
+	}
+	h.end();
+	if (c.localFiles || h.tried) {
+		const uint64_t took = nowNs() - copyBegan;
+		pshakux_log("storage: copied %llu MB in %.1f s (%.1f MiB/s): the helper %u files, %llu MB in %.1f s (%.1f MiB/s); OGBox "
+			"itself %u files, %llu MB in %.1f s (%.1f MiB/s); %u files fell back from the helper",
+			static_cast<unsigned long long>((h.bytes + c.localBytes) >> 20), double(took) / 1e9, mibPerSecond(h.bytes + c.localBytes, took),
+			h.files, static_cast<unsigned long long>(h.bytes >> 20), double(h.ns) / 1e9, mibPerSecond(h.bytes, h.ns), c.localFiles,
+			static_cast<unsigned long long>(c.localBytes >> 20), double(c.localNs) / 1e9, mibPerSecond(c.localBytes, c.localNs),
+			h.fellBack);
 	}
 	if (ok) {
 		ok = setStorageRoot(to, why);

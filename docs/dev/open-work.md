@@ -91,6 +91,26 @@ To watch: a game writing many small files or small random writes may be slower t
 broker (each request costs it about 2.7 ms: 372/s in flight against its own 565 IOPS); what to
 compare is a game that copies to its cache drive on first start, with the setting off and on.
 
+## The data folder's move onto the console's storage through the helper (1.0.4, untested on the console)
+
+Moving the data folder from a USB drive to `/data` copied at the title's held-back rate (the write
+test above: 190 MiB/s for about 1.3 GiB, then 32, 27, 12 MiB/s and less). Now a move whose new
+folder is under `/data/` (only then; renames and folders stay OGBox's) has the write broker copy each
+file (`ps5/src/ogbox_storage.cpp` `MoveHelper`, the broker's COPY in `ps5/broker/server.cpp`: it
+reads the source and writes the copy itself, 16 MiB at a time, so the bytes don't cross the
+loopback): 32 MiB a request (the progress moves with each), then SYNC and CLOSE, the copy's size
+checked, its date set as before. One broker for the move, started at the first file to copy, told to
+quit at the end of copying. A request that fails stops the broker (it is let end first) and that file
+and every one after are copied by OGBox from their start; the old copy is deleted, as before, only
+once everything is there and the note names the new folder. No setting. Passed its PC tests
+(`tests/broker`: COPY of random sizes from 0 to 70 MiB, pieces up to 64 MiB, every pwrite cut short
+with O_DIRECT, short at the end, the errors; `ps5/tests/storage`: moves through the real broker on a
+socketpair, byte for byte, with the broker dying part-way, not starting, a path it refuses, and a
+move to USB not using it). Not seen on a console: the speed (the broker reads the USB drive and
+writes `/data` one after the other, not overlapped), O_DIRECT on the copies, the loader on 9021 from
+the game list. To test: a data folder of a few GiB from USB to the console's storage, timed, with the
+log's `storage: copied ...` line; then a game from it.
+
 ## Known problems, cause not found
 
 | Problem | What is known |

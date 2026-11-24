@@ -10,7 +10,9 @@ mkdir -p "$work"
 work=$(cd "$work" && pwd)
 rm -rf "$work/tree"
 mkdir -p "$work/tree"
-g++ -std=gnu++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -I"$ps5/src" \
+# 1.0.4: with the write broker's client and its request handler (a move onto /data/ through it)
+g++ -std=gnu++20 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -I"$ps5/src" -I"$ps5/src/platform" \
     "-DOGBOX_STORAGE_FILE=\"$work/tree/conf/storage.txt\"" \
-    "$here/storage_test.cpp" "$ps5/src/ogbox_storage.cpp" -o "$work/storage_test" -lpthread
+    "$here/storage_test.cpp" "$ps5/src/ogbox_storage.cpp" "$ps5/src/platform/ps5_broker.cpp" "$ps5/broker/server.cpp" \
+    -o "$work/storage_test" -lpthread
 "$work/storage_test" "$work/tree" "${OGBOX_STORAGE_OTHER_FS:-/dev/shm}"
