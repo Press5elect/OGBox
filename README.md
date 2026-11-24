@@ -145,7 +145,10 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
 
 - **Graphics:** resolution scale (up to 6x), anti-aliasing (FXAA, SMAA or SSAA), aspect ratio, the
   upscaling filter, anisotropic filtering, sharpening, forced 32-bit colour, 16-bit dithering,
-  exact depth, cropping the overscan, HD texture packs and texture dumps.
+  exact depth, cropping the overscan, HD texture packs and texture dumps; and, off by default and
+  experimental: texture upscaling (2x or 4x), foliage coverage, softer shadows, per-pixel lighting
+  and ambient occlusion (smoother small glow effects and texture sharpness for colour textures only
+  are on).
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
   compiling shaders in the background, and building cached shaders at start.
 - **Audio:** sound mixing (Default: the game's own sound program mixes, as on the console; Fast:

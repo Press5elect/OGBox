@@ -9641,10 +9641,13 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fsr_sharpness", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
+			return { { "", { "render_scale", "aspect", "upscale", "fsr_sharpness", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "tex_role", "sharpen", "dither",
 				"deband", "crt", "crop_overscan", "show_fps" } },
 				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
-				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } }, { "Textures", { "tex_replace", "tex_dump" } } };
+				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } },
+				{ "Textures", { "tex_replace", "tex_dump", "tex_upscale", "alpha_aa" } },
+				{ "Lighting and Effects", { "ff_pixel_light", "shadow_pcf", "smallrt_filter", "ao", "ao_strength", "ao_radius",
+					"ao_near", "ao_far", "ao_fov" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format", "hdd_size" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
@@ -10048,11 +10051,21 @@ public:
 				if (!o || (forGame && !o->perGame) || (key == "rain" && prefs.global("theme") != "code")) {
 					continue;
 				}
-				if (key == "fsr_sharpness") {   // FSR1's sharpening: with FSR1 only (the page's value, as optionRow reads it)
-					const std::string own = forGame ? prefs.override_("upscale") : std::string();
-					if ((own.empty() ? prefs.global("upscale") : own) != "fsr") {
-						continue;
-					}
+				/* the page's value of a key, as optionRow reads it */
+				const auto pageValue = [this](const char *k) {
+					const std::string own = forGame ? prefs.override_(k) : std::string();
+					return own.empty() ? prefs.global(k) : own;
+				};
+				if (key == "fsr_sharpness" && pageValue("upscale") != "fsr") {   // FSR1's sharpening: with FSR1 only
+					continue;
+				}
+				/* 1.0.5: colour textures only, with Texture sharpness or Anisotropic filtering above their default;
+				 * ambient occlusion's values with it on */
+				if (key == "tex_role" && pageValue("lod_bias") == "0" && pageValue("aniso") == "0") {
+					continue;
+				}
+				if (key.compare(0, 3, "ao_") == 0 && pageValue("ao") != "1") {
+					continue;
 				}
 				if (!any && !grp.first.empty()) {
 					groupRow(grp.first, rows, acts);

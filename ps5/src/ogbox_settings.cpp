@@ -11,6 +11,7 @@
 #include "ogbox_settings.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -222,6 +223,14 @@ std::vector<Option> makeOptions()
 		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
 		"patterns may shimmer.",
 		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
+	/* 1.0.5: Texture sharpness and Anisotropic filtering on colour textures only (hakuX-native's
+	 * shader/texrole.h, NC_HLE_TEXROLE, the core's default on); shown with either above its default
+	 * (settingsModel) */
+	o.push_back({ "tex_role", Section::Graphics, "Sharpness for colour textures only",
+		"For Texture sharpness and Anisotropic filtering: only the textures you see take them; masks, normal maps, "
+		"shadows and the game's own effects keep the game's filtering. Off: every texture, as before (some games' "
+		"characters look too bright).",
+		kOnOff, "1", true });
 	/* OGBox 1.0.2: texture packs (hakuX's tex/texpack.h: NC_HLE_TEXPACK_DIR and NC_HLE_TEXDUMP_DIR,
 	 * <data folder>/textures/<title ID>, ogbox_main.cpp) */
 	o.push_back({ "tex_replace", Section::Graphics, "HD texture packs",
@@ -234,12 +243,62 @@ std::vector<Option> makeOptions()
 		"ones as DDS, the rest as PNG. Edit or upscale them and copy them to textures/<title ID> to make a "
 		"pack. Writing them can slow the game the first time it shows them.",
 		kOnOff, "0", true });
+	/* 1.0.5: texture upscaling at upload (hakuX-native's tex/texup.h, NC_HLE_TEXUP 2 or 4; its memory
+	 * budget, NC_HLE_TEXUP_MIB, left at the core's 1 GiB) */
+	o.push_back({ "tex_upscale", Section::Graphics, "Texture upscaling",
+		"Draws the game's textures again at 2x or 4x their size with an edge-keeping filter, once each stays the "
+		"same for a second. Text, masks, normal maps and pixel-art textures stay as they are. Uses up to 1 GB of "
+		"the GPU's memory. An HD texture pack's textures are not upscaled again.",
+		{ { "0", "Off" }, { "2", "2x" }, { "4", "4x" } }, "0", true });
+	/* 1.0.5: alpha-tested textures' smaller levels keep level 0's coverage (hakuX-native's tex/alpha_cov.h,
+	 * NC_HLE_ALPHA_AA 1 or 2) */
+	o.push_back({ "alpha_aa", Section::Graphics, "Foliage coverage",
+		"Leaves, grass and fences that thin out and flicker in the distance stay as full as up close. Alpha-tested: "
+		"the cut-out textures. And blended: blended ones too, for a game whose foliage is also see-through.",
+		{ { "0", "Off" }, { "1", "Alpha-tested" }, { "2", "Alpha-tested and blended" } }, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
 		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
 		"borders.", kOnOff, "0", true });
+	/* 1.0.5: the core's lighting and shadow options (hakuX-native): 1x glow and blur targets read through a
+	 * B-spline (NC_HLE_SMALLRT_FILTER, the core's default on), shadow buffers' compare over 3 x 3 or 5 x 5
+	 * (NC_HLE_SHADOW_PCF), fixed-function lights per pixel (NC_HLE_FF_PIXEL_LIGHT), ambient occlusion from
+	 * the frame's depth buffer (NC_HLE_AO and its _STRENGTH, _RADIUS, _NEAR, _FAR, _FOV); all read at the
+	 * game's start */
+	o.push_back({ "smallrt_filter", Section::Graphics, "Smooth small effects",
+		"Glows and blurs the game draws at the Xbox's resolution are smoothed when stretched to the internal "
+		"resolution, instead of showing as shimmering blocks. Off: as before.",
+		kOnOff, "1", true });
+	o.push_back({ "shadow_pcf", Section::Graphics, "Shadow softness",
+		"For games with shadow maps: softer shadow edges. Game's own: the Xbox's 2x2 filter.",
+		{ { "0", "Game's own (2x2)" }, { "3", "Soft (3x3)" }, { "5", "Softer (5x5)" } }, "0", true });
+	o.push_back({ "ff_pixel_light", Section::Graphics, "Per-pixel lighting",
+		"The game's lights worked out for each pixel instead of each corner of a model: rounder highlights, no "
+		"lights that pop on large flat surfaces. Only for games lit without vertex programs; the log says if a game is.",
+		kOnOff, "0", true });
+	o.push_back({ "ao", Section::Graphics, "Ambient occlusion",
+		"Darkens corners and creases from the game's depth, drawn under the HUD. Works by itself for games without "
+		"vertex programs; for the others set Near and Far below (the log says which a game is and why none is drawn).",
+		kOnOff, "0", true });
+	o.push_back({ "ao_strength", Section::Graphics, "Ambient occlusion strength", "",
+		{ { "50", "Light" }, { "100", "Normal" }, { "150", "Strong" } }, "100", true });
+	o.push_back({ "ao_radius", Section::Graphics, "Ambient occlusion radius",
+		"How far around each point it looks, as a share of the picture's height.",
+		{ { "2", "Small (2%)" }, { "4", "Normal (4%)" }, { "6", "Large (6%)" } }, "4", true });
+	o.push_back({ "ao_near", Section::Graphics, "Ambient occlusion near",
+		"For games drawn with vertex programs: the game camera's near plane, in its own units. Not set: none for them.",
+		{ { "0", "Not set" }, { "0.1", "0.1" }, { "0.5", "0.5" }, { "1", "1" }, { "2", "2" }, { "5", "5" }, { "10", "10" } },
+		"0", true });
+	o.push_back({ "ao_far", Section::Graphics, "Ambient occlusion far",
+		"For games drawn with vertex programs: the game camera's far plane, in its own units. Not set: none for them.",
+		{ { "0", "Not set" }, { "100", "100" }, { "500", "500" }, { "1000", "1000" }, { "2000", "2000" }, { "5000", "5000" },
+			{ "10000", "10000" }, { "50000", "50000" } },
+		"0", true });
+	o.push_back({ "ao_fov", Section::Graphics, "Ambient occlusion field of view",
+		"For games drawn with vertex programs: the camera's vertical field of view.",
+		{ { "45", "45 degrees" }, { "60", "60 degrees" }, { "75", "75 degrees" }, { "90", "90 degrees" } }, "60", true });
 	// ---- Performance: how games run
 	/* 0.0.1: the HLE GPU's two threads (the push-buffer decoder, the renderer) on cores of their own */
 	o.push_back({ "gpu_cores", Section::Performance, "GPU on separate cores",
@@ -999,6 +1058,39 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
 		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
+	}
+	/* 1.0.5: the core's texture, lighting and shadow options (hakuX-native; each word read once, at the
+	 * game's start); the ones on in the core by default are said only when off */
+	if (value("tex_role") == "0") {
+		a.push_back("NC_HLE_TEXROLE=0");
+	}
+	if (value("tex_upscale") == "2" || value("tex_upscale") == "4") {
+		a.push_back("NC_HLE_TEXUP=" + value("tex_upscale"));
+	}
+	if (value("alpha_aa") == "1" || value("alpha_aa") == "2") {
+		a.push_back("NC_HLE_ALPHA_AA=" + value("alpha_aa"));
+	}
+	if (value("smallrt_filter") == "0") {
+		a.push_back("NC_HLE_SMALLRT_FILTER=0");
+	}
+	if (value("shadow_pcf") == "3" || value("shadow_pcf") == "5") {
+		a.push_back("NC_HLE_SHADOW_PCF=" + value("shadow_pcf"));
+	}
+	if (value("ff_pixel_light") == "1") {
+		a.push_back("NC_HLE_FF_PIXEL_LIGHT=1");
+	}
+	if (value("ao") == "1") {
+		a.push_back("NC_HLE_AO=1");
+		for (const char *k : { "ao_strength", "ao_radius", "ao_near", "ao_far", "ao_fov" }) {
+			const Option *o = option(k);
+			const std::string v = value(k);
+			if (o && v != o->def && std::any_of(o->choices.begin(), o->choices.end(),
+					[&](const Choice &c) { return v == c.value; })) {
+				std::string w = "NC_HLE_" + std::string(k) + "=" + v;
+				std::transform(w.begin(), w.begin() + w.find('='), w.begin(), ::toupper);
+				a.push_back(w);
+			}
+		}
 	}
 	/* 1.0.4: One GPU device and Guest RAM imported (Settings > Advanced > Diagnostics), read by the core at its
 	 * start (hakux_core.c sets NC_, HAKUX_HLE_ and HLE_ words as environment switches) */

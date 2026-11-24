@@ -606,6 +606,42 @@ int main(int argc, char **argv)
 	}
 	inter.rowSel = 4;
 
+	// 1.0.5: Settings > Picture's Textures and Lighting and Effects groups, ambient occlusion on (the words as
+	// ogbox_settings.cpp has them)
+	ui::SettingsView light = set;
+	light.rows.clear();
+	{
+		ui::SetRow r;
+		r.key = "lod_bias"; r.name = "Texture sharpness"; r.choices = { "Default", "Sharper", "Sharpest" }; r.choice = 2; r.changed = true;
+		light.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "tex_role"; r.name = "Sharpness for colour textures only"; r.on = true;
+		light.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gt"; r.name = "Textures"; light.rows.push_back(r);
+		r = {}; r.key = "tex_upscale"; r.name = "Texture upscaling"; r.choices = { "Off", "2x", "4x" }; r.choice = 1; r.changed = true;
+		light.rows.push_back(r);
+		r = {}; r.key = "alpha_aa"; r.name = "Foliage coverage"; r.choices = { "Off", "Alpha-tested", "Alpha-tested and blended" };
+		r.choice = 2; light.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gl"; r.name = "Lighting and Effects"; light.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "ff_pixel_light"; r.name = "Per-pixel lighting"; light.rows.push_back(r);
+		r = {}; r.key = "shadow_pcf"; r.name = "Shadow softness"; r.choices = { "Game's own (2x2)", "Soft (3x3)", "Softer (5x5)" };
+		r.choice = 2; light.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "smallrt_filter"; r.name = "Smooth small effects"; r.on = true;
+		light.rows.push_back(r);
+		r = {}; r.kind = ui::SetRow::Kind::Toggle; r.key = "ao"; r.name = "Ambient occlusion"; r.on = true; r.changed = true;
+		r.desc = "Darkens corners and creases from the game's depth, drawn under the HUD. Works by itself for games without "
+			"vertex programs; for the others set Near and Far below (the log says which a game is and why none is drawn).";
+		light.rows.push_back(r);
+		r = {}; r.key = "ao_strength"; r.name = "Ambient occlusion strength"; r.choices = { "Light", "Normal", "Strong" }; r.choice = 1;
+		light.rows.push_back(r);
+		r = {}; r.key = "ao_radius"; r.name = "Ambient occlusion radius"; r.choices = { "Small (2%)", "Normal (4%)", "Large (6%)" };
+		r.choice = 1; light.rows.push_back(r);
+		r = {}; r.key = "ao_near"; r.name = "Ambient occlusion near"; r.choices = { "Not set", "0.1", "0.5", "1" }; light.rows.push_back(r);
+		r = {}; r.key = "ao_far"; r.name = "Ambient occlusion far"; r.choices = { "Not set", "100", "500", "1000" }; light.rows.push_back(r);
+		r = {}; r.key = "ao_fov"; r.name = "Ambient occlusion field of view"; r.choices = { "45 degrees", "60 degrees" }; r.choice = 1;
+		light.rows.push_back(r);
+	}
+	light.rowSel = 10;
+
 	std::vector<Frame> frames = {
 		{ "home", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { games[2].tint, blurs[2], games[2].id });
@@ -661,6 +697,10 @@ int main(int argc, char **argv)
 		{ "settings", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
 			ui::drawSettings(dl, S, set);
+		} },
+		{ "settings-lighting", [&](ImDrawList *dl, ImVec2 S) {
+			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
+			ui::drawSettings(dl, S, light);
 		} },
 		{ "network", [&](ImDrawList *dl, ImVec2 S) {
 			ui::backdrop(dl, S, { 0, {}, "settings", { 0.2f, 0.3f }, 0.6f });
