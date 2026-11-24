@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,8 @@ struct CheatsReport
 	bool ok = false;        // the index was read and every file it names is in place (or kept)
 	std::string error;      // why not, a sentence
 	unsigned listed = 0, fetched = 0, present = 0, kept = 0, failed = 0;
+	unsigned games = 0;     // 1.0.4: the title IDs asked for (0: every game's), and how many of them
+	unsigned gamesListed = 0; // the index has cheats for
 };
 
 /// cheats/<8 hex digits>/<name>, the name as import-xbased-cheats.py allows it.
@@ -81,11 +84,21 @@ bool SafeCheatPath(const std::string& path);
 /// progress (may be empty) is told each file done, of how many.
 /// 1.0.4: connections (1 to 16) files fetched at once, get called from that many threads (it must allow
 /// it; progress is called under a lock, from any of them).
+/// 1.0.4: titles (8 hex digits, upper case, as the index's folders), when not empty: only the files of
+/// those games are fetched and counted (listed is theirs); empty, every game's.
 bool Cheats(const std::string& index, const std::string& raw, const std::string& trainers, const Getter& get,
-	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress, unsigned connections = 1);
+	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress, unsigned connections = 1,
+	const std::set<std::string>& titles = std::set<std::string>());
 
-/// Cheats() on a thread of its own with OGBoxNet::Get: false when one is running already.
-bool StartCheats(const std::string& index, const std::string& trainers);
+/// Cheats() on a thread of its own with OGBoxNet::Get: false when one is running already. 1.0.4: titles
+/// as Cheats() takes them (empty: every game's).
+bool StartCheats(const std::string& index, const std::string& trainers,
+	const std::set<std::string>& titles = std::set<std::string>());
+/// 1.0.4: one game's cheats (a game's page with none in its folder), quietly on a thread of its own, after
+/// any other download of them; GameCheatsFetched() counts the ones that brought a file (the trainers
+/// are read again then).
+void StartGameCheats(const std::string& index, const std::string& trainers, const std::string& titleId);
+unsigned GameCheatsFetched();
 /// While one runs: true, with how far it is.
 bool CheatsRunning(unsigned& done, unsigned& total);
 /// Its report, once, when it is done: true then.

@@ -1791,6 +1791,11 @@ public:
 				entries.push_back({ LibraryEntry::Up, "..", parentOf(folder), 0, std::string() });
 			}
 			entries.insert(entries.end(), listing->entries.begin(), listing->entries.end());
+			for (const LibraryEntry &e : listing->entries) {
+				if (e.kind == LibraryEntry::Image) {
+					listedGames.insert(e.name);   // 1.0.4: the cheats for your games (yourTitles)
+				}
+			}
 			if (prefs.global("list_sort") == "played") {
 				// 0.1.45: the discs played last first (folders stay first, by name)
 				std::stable_sort(entries.begin() + (upCard ? 1 : 0), entries.end(), [](const LibraryEntry &a, const LibraryEntry &b) {
@@ -5177,6 +5182,7 @@ public:
 		loadModList();
 		/* 0.1.54: the trainers for its title ID, those for this release (its default.xbe's date) first */
 		tv.titleId = static_cast<uint32_t>(std::strtoul(key.substr(0, 8).c_str(), nullptr, 16));
+		fetchGameCheats(tv.titleId);   // 1.0.4: (from the game list's settings of a game too)
 		tv.xbeTime = runXbeTime;
 		if (!image.empty()) {
 			OgboxGameInfo info{};
@@ -7128,23 +7134,126 @@ public:
 	/* 1.0.3: "Download cheats" (Settings > Updates): xbased's trainers into the data folder's trainers,
 	 * on a thread of its own; how far it is in a toast, what it did at the end; then the trainers are
 	 * read again (the Mods screens show them) */
-	bool cheatsAsked{ false }, cheatsRescan{ false };
-	void downloadCheats()
+	bool cheatsAsked{ false }, cheatsRescan{ false }, cheatsRecount{ false };
+	/* 1.0.4: the title IDs of the player's games, from what OGBox knows already (no disc read again, no
+	 * folder listed for it): the certificates read this run (coverTitles, the selection's details, the
+	 * game's page), Redump's record of each disc file name the game list listed this run or played
+	 * (listedGames, played.txt; a name Redump hasn't adds nothing), and the Xbox hard disk's save folders
+	 * (UDATA, TDATA: one folder each game that saved). Kept 3 seconds: the settings row counts them. */
+	std::set<std::string> listedGames;   // the disc files' names the list showed this run
+	std::set<std::string> yourCheatTitles;
+	double yourCheatTitlesAt{ -10.0 };
+	unsigned yourFromCert{ 0 }, yourFromName{ 0 }, yourFromHdd{ 0 };
+	const std::set<std::string> &yourTitles()
+	{
+		const double t = now_seconds();
+		if (t - yourCheatTitlesAt < 3.0) {
+			return yourCheatTitles;
+		}
+		yourCheatTitlesAt = t;
+		std::set<std::string> ids;
+		const auto add = [&ids](uint32_t id, unsigned &from) {
+			char text[16];
+			std::snprintf(text, sizeof(text), "%08X", static_cast<unsigned>(id));
+			if (id && ids.insert(text).second) {
+				from++;
+			}
+		};
+		yourFromCert = yourFromName = yourFromHdd = 0;
+		for (const auto &kv : coverTitles) {
+			add(kv.second.titleId, yourFromCert);
+		}
+		if (gp.info.ok) {
+			add(gp.info.title_id, yourFromCert);
+		}
+		if (details) {
+			std::lock_guard<std::mutex> lock(details->mutex);
+			if (details->done && details->info.ok) {
+				add(details->info.title_id, yourFromCert);
+			}
+		}
+		std::set<std::string> names = listedGames;
+		for (const LibraryEntry &e : entries) {
+			if (e.kind == LibraryEntry::Image) {
+				names.insert(e.name);
+			}
+		}
+		for (const auto &played : ogbox::recentlyPlayed(1000)) {
+			names.insert(baseName(played.second));
+		}
+		for (const std::string &name : names) {
+			if (const ogbox::DiscRecord *rec = ogbox::GameDb::get().byFileName(name)) {
+				add(rec->titleId, yourFromName);
+			}
+		}
+		const std::string hdd = (boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd) + "/Partition1/";
+		for (const char *area : { "UDATA", "TDATA", "udata", "tdata" }) {
+			if (DIR *d = opendir((hdd + area).c_str())) {
+				while (struct dirent *de = readdir(d)) {
+					const std::string n = de->d_name;
+					uint32_t id = 0;
+					if (n.size() == 8 && n.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos &&
+						(id = static_cast<uint32_t>(std::strtoul(n.c_str(), nullptr, 16))) < 0xFFFE0000u) {
+						add(id, yourFromHdd);   // (not the dashboard's own, FFFE0000 and up)
+					}
+				}
+				closedir(d);
+			}
+		}
+		if (ids != yourCheatTitles) {
+			pshakux_log("cheats: %zu of your games known: %u by a certificate read, %u by a file name in Redump's list, %u by "
+				"saves on the Xbox hard disk", ids.size(), yourFromCert, yourFromName, yourFromHdd);
+		}
+		yourCheatTitles = std::move(ids);
+		return yourCheatTitles;
+	}
+
+	/* mine: only the player's games' (yourTitles), else every game's */
+	void downloadCheats(bool mine)
 	{
 		unsigned done = 0, total = 0;
 		if (cheatsAsked || ogbox::fixes::CheatsRunning(done, total)) {
 			showToast("The cheats are being downloaded already.");
 			return;
 		}
+		yourCheatTitlesAt = -10.0;   // (counted again now)
+		const std::set<std::string> titles = mine ? yourTitles() : std::set<std::string>();
+		if (mine && titles.empty()) {
+			showToast("No games found yet: open the folders with your games first, or download all cheats.");
+			return;
+		}
 		OGBoxUpdate::Start();   // (curl's set-up, once)
 		const std::string trainers = ogbox::storagePath("trainers");
 		mkdir(trainers.c_str(), 0777);
-		if (!ogbox::fixes::StartCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers)) {
+		if (!ogbox::fixes::StartCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers, titles)) {
 			return;
 		}
 		cheatsAsked = true;
-		pshakux_log("cheats: the download was asked for, into %s", trainers.c_str());
-		showToast("Downloading the cheats from xbased's repository...");
+		pshakux_log("cheats: the download was asked for (%s), into %s",
+			mine ? (std::to_string(titles.size()) + " games").c_str() : "every game", trainers.c_str());
+		showToast(mine ? "Downloading the cheats for your games..." : "Downloading the cheats from xbased's repository...");
+	}
+
+	/* 1.0.4: a game's page (or its Mods screen) with no cheats folder in the data folder's trainers: that
+	 * game's from xbased, quietly, once a game a run; the trainers read again when one came (no network:
+	 * nothing said, the log has it) */
+	std::set<uint32_t> gameCheatsTried;
+	unsigned gameCheatsSeen{ 0 };
+	void fetchGameCheats(uint32_t titleId)
+	{
+		if (!titleId || !library || !gameCheatsTried.insert(titleId).second) {
+			return;
+		}
+		char id[16];
+		std::snprintf(id, sizeof(id), "%08X", static_cast<unsigned>(titleId));
+		const std::string trainers = ogbox::storagePath("trainers");
+		if (isFolder(trainers + "/" + id)) {
+			return;
+		}
+		OGBoxUpdate::Start();
+		mkdir(trainers.c_str(), 0777);
+		pshakux_log("cheats: %s has no cheats folder: its cheats looked for", id);
+		ogbox::fixes::StartGameCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers, id);
 	}
 
 	std::string cheatsLine() const
@@ -7156,11 +7265,30 @@ public:
 		return "xbased's trainers";
 	}
 
+	/* 1.0.4: the row "for your games": how many were found */
+	std::string yourCheatsLine()
+	{
+		unsigned done = 0, total = 0;
+		if (ogbox::fixes::CheatsRunning(done, total)) {
+			return cheatsLine();
+		}
+		const size_t n = yourTitles().size();
+		return n ? std::to_string(n) + (n == 1 ? " game found" : " games found") : std::string("no games found yet");
+	}
+
 	void cheatsTick()
 	{
+		if (ogbox::fixes::GameCheatsFetched() != gameCheatsSeen) {
+			gameCheatsSeen = ogbox::fixes::GameCheatsFetched();
+			cheatsRescan = true;   // (1.0.4: a game's page's own: its list and count shown again)
+			cheatsRecount = true;
+		}
 		if (cheatsRescan && ogbox_trainers_state(nullptr, nullptr) != 1) {
 			cheatsRescan = false;
 			scanTrainers();   // (not while a scan runs: it would be skipped)
+		} else if (cheatsRecount && !cheatsRescan && ogbox_trainers_state(nullptr, nullptr) == 2) {
+			cheatsRecount = false;
+			refreshDetailCounts();   // (the game's page's trainers count)
 		}
 		if (!cheatsAsked) {
 			return;
@@ -7749,6 +7877,9 @@ public:
 				gp.info = details->info;
 				failed = !details->info.ok;
 			}
+		}
+		if (gp.info.ok) {
+			fetchGameCheats(gp.info.title_id);   // 1.0.4: its cheats, when it has none yet
 		}
 		if (failed && gp.readTries < 3 && now_seconds() - detailsSince > 1.5) {
 			gp.readTries++;
@@ -9932,11 +10063,17 @@ public:
 			/* 1.0.3: the Xbox scene's trainers xbased keeps, downloaded only from here (ogbox_fixes_fetch.h); in
 			 * the game list's settings (its ticks show how far it is) */
 			if (library) {
-				actionRow("cheats", "Download cheats", cheatsLine(), "Downloads the Xbox scene's cheat files (.etm and .xbtf "
-					"trainers) from xbased's repository on GitHub into " + ogbox::storagePath("trainers") + "; each game's appear on "
-					"its Mods screen. They are third-party files, not part of OGBox, made by the Xbox scene's trainer makers: use "
-					"them only with games you own. Files already there are kept as they are.", [this]() { downloadCheats(); }, rows,
-					acts, ui::Icon::Puzzle);
+				/* 1.0.4: the player's games' only first (yourTitles); every game's below */
+				actionRow("cheats", "Download cheats for your games", yourCheatsLine(), "Downloads the cheat files (.etm and .xbtf "
+					"trainers) of the games OGBox has seen: those in the folders the game list opened, played, or with saves on "
+					"the Xbox hard disk. From xbased's repository on GitHub into " + ogbox::storagePath("trainers") + "; each game's "
+					"appear on its Mods screen. They are third-party files, not part of OGBox, made by the Xbox scene's trainer "
+					"makers: use them only with games you own. Files already there are kept as they are.",
+					[this]() { downloadCheats(true); }, rows, acts, ui::Icon::Puzzle);
+				unsigned at = 0, of = 0;
+				actionRow("cheatsall", "Download all cheats", ogbox::fixes::CheatsRunning(at, of) ? cheatsLine() : "every game's", "Downloads every game's cheat files from xbased's "
+					"repository, the same way. A game's page also downloads its own when it has none.",
+					[this]() { downloadCheats(false); }, rows, acts, ui::Icon::Puzzle);
 			}
 			/* 0.0.6: this version's release notes (the README beside eboot.bin) */
 			actionRow("news", "What's New?", "this version", "What was added, changed and fixed in this version.",

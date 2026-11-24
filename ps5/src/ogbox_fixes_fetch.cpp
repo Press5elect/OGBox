@@ -458,9 +458,11 @@ std::string UrlPath(const std::string& path)
 } // namespace
 
 bool Cheats(const std::string& index, const std::string& raw, const std::string& trainers, const Getter& get,
-	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress, unsigned connections)
+	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress, unsigned connections,
+	const std::set<std::string>& titles)
 {
 	report = CheatsReport();
+	report.games = static_cast<unsigned>(titles.size());
 	std::string text;
 	if (!ReadAll(index, text, kMostList))
 	{
@@ -481,7 +483,8 @@ bool Cheats(const std::string& index, const std::string& raw, const std::string&
 		return false;
 	}
 	std::vector<Entry> entries;
-	std::set<std::string> listed;
+	std::set<std::string> listed, games;   // (games: the asked-for title IDs the index has)
+	size_t all = 0;
 	for (size_t i = 1; i < lines.size(); i++)
 	{
 		const std::string& line = lines[i];
@@ -499,14 +502,33 @@ bool Cheats(const std::string& index, const std::string& raw, const std::string&
 			fixes_log("cheats: line %zu of the index refused: %s", i + 1, line.c_str());
 			continue;
 		}
+		/* 1.0.4: only the asked-for games' (their folder's title ID), when some are */
+		if (!titles.empty())
+		{
+			const std::string id = e.path.substr(7, 8);
+			if (!titles.count(id))
+			{
+				if (++all > kMostFiles)
+				{
+					report.error = "OGBox's list of cheats is too long.";
+					return false;
+				}
+				continue;
+			}
+			games.insert(id);
+		}
 		entries.push_back(e);
-		if (entries.size() > kMostFiles)
+		if (++all > kMostFiles)
 		{
 			report.error = "OGBox's list of cheats is too long.";
 			return false;
 		}
 	}
 	report.listed = static_cast<unsigned>(entries.size());
+	report.gamesListed = static_cast<unsigned>(games.size());
+	if (!titles.empty())
+		fixes_log("cheats: %u games asked for, %u of them with cheats in the index: %u files", report.games, report.gamesListed,
+			report.listed);
 
 	/* 1.0.4: fetched over several connections at once (connections, 1 to 16), as Crux2 fetches a
 	 * texture pack's pieces: each file is its own HTTPS request, and one after another most of
@@ -660,9 +682,12 @@ std::mutex g_cheatsMutex;
 bool g_cheatsRunning = false, g_cheatsDone = false;
 unsigned g_cheatsAt = 0, g_cheatsOf = 0;
 CheatsReport g_cheatsReport;
+/* 1.0.4: one download of them at a time (the user's and a game page's), so two never write one file */
+std::mutex g_cheatsWork;
+std::atomic<unsigned> g_gameCheatsFetched{ 0 };
 } // namespace
 
-bool StartCheats(const std::string& index, const std::string& trainers)
+bool StartCheats(const std::string& index, const std::string& trainers, const std::set<std::string>& titles)
 {
 	{
 		std::lock_guard<std::mutex> lock(g_cheatsMutex);
@@ -672,8 +697,9 @@ bool StartCheats(const std::string& index, const std::string& trainers)
 		g_cheatsDone = false;
 		g_cheatsAt = g_cheatsOf = 0;
 	}
-	std::thread([index, trainers]() {
+	std::thread([index, trainers, titles]() {
 		CheatsReport r;
+		std::unique_lock<std::mutex> work(g_cheatsWork);
 		Cheats(index, "https://raw.githubusercontent.com/crazyriddler/xbased/", trainers,
 			[](const std::string& url, std::vector<uint8_t>& out) { return OGBoxNet::Get(url, out, 60); }, r,
 			[](unsigned done, unsigned total) {
@@ -681,13 +707,34 @@ bool StartCheats(const std::string& index, const std::string& trainers)
 				g_cheatsAt = done;
 				g_cheatsOf = total;
 			},
-			8);   // 1.0.4: eight files at once
+			8, titles);   // 1.0.4: eight files at once
+		work.unlock();
 		std::lock_guard<std::mutex> lock(g_cheatsMutex);
 		g_cheatsReport = std::move(r);
 		g_cheatsRunning = false;
 		g_cheatsDone = true;
 	}).detach();
 	return true;
+}
+
+void StartGameCheats(const std::string& index, const std::string& trainers, const std::string& titleId)
+{
+	std::thread([index, trainers, titleId]() {
+		CheatsReport r;
+		std::lock_guard<std::mutex> work(g_cheatsWork);
+		Cheats(index, "https://raw.githubusercontent.com/crazyriddler/xbased/", trainers,
+			[](const std::string& url, std::vector<uint8_t>& out) { return OGBoxNet::Get(url, out, 30); }, r, nullptr, 4,
+			std::set<std::string>{ titleId });
+		fixes_log("cheats: %s's (its page): %u listed, %u fetched%s%s", titleId.c_str(), r.listed, r.fetched,
+			r.error.empty() ? "" : ": ", r.error.c_str());
+		if (r.fetched)
+			g_gameCheatsFetched++;
+	}).detach();
+}
+
+unsigned GameCheatsFetched()
+{
+	return g_gameCheatsFetched.load();
 }
 
 bool CheatsRunning(unsigned& done, unsigned& total)

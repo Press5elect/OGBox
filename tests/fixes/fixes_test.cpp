@@ -182,6 +182,34 @@ int main(int argc, char** argv)
 			CHECK(!Exists(tr8 + "/45410049/tampered.etm"));
 		}
 
+		// 1.0.4: only the player's games: the files under their title IDs fetched and counted, no other's
+		{
+			const std::string trF = dir + "/trainersF";
+			if (system(("rm -rf '" + trF + "'").c_str()) != 0)
+				return 2;
+			requests = 0;
+			unsigned dF = 0, tF = 0;
+			CheatsReport cf;
+			CHECK(!Cheats(index, R, trF, Get, cf, [&](unsigned dn, unsigned tot) { dF = dn; tF = tot; }, 8, { "45410049" }));
+			CHECK(cf.listed == 2 && cf.fetched == 1 && cf.failed == 1 && cf.present == 0 && cf.kept == 0);
+			CHECK(cf.games == 1 && cf.gamesListed == 1 && dF == 2 && tF == 2 && requests == 2);
+			CHECK(Read(trF + "/45410049/b.xbtf") == b && !Exists(trF + "/4D530039"));
+			// a title ID the index hasn't: nothing asked, nothing to do
+			requests = 0;
+			CHECK(Cheats(index, R, trF, Get, cf, nullptr, 8, { "DEADBEEF" }));
+			CHECK(cf.listed == 0 && cf.fetched == 0 && cf.games == 1 && cf.gamesListed == 0 && requests == 0);
+			// several, one of them not in the index: both games' files
+			requests = 0;
+			CHECK(!Cheats(index, R, trF, Get, cf, nullptr, 8, { "4D530039", "45410049", "DEADBEEF" }));
+			CHECK(cf.listed == 5 && cf.games == 3 && cf.gamesListed == 2 && cf.fetched == 2 && cf.present == 1 && cf.failed == 2 &&
+				requests == 4);
+			// an empty set: every game's, as before
+			const Getter none = [](const std::string&, std::vector<uint8_t>&) { requests++; return 404; };
+			requests = 0;
+			CHECK(!Cheats(index, R, dir + "/trainersE", none, cf, nullptr, 8, std::set<std::string>()));
+			CHECK(cf.listed == 5 && cf.games == 0 && cf.gamesListed == 0 && cf.failed == 5 && requests == 5);
+		}
+
 		// again, corrected: only the missing one is asked for
 		server[R + C + "/cheats/45410049/tampered.etm"] = c;
 		requests = 0;
