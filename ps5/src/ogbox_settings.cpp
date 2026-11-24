@@ -301,15 +301,15 @@ std::vector<Option> makeOptions()
 		"its cache drives (the console slows OGBox's own writes down after about 1.3 GB written, the helper's not). If "
 		"the helper can't start or stops, OGBox writes them itself. Nothing changes with the data folder on USB storage. "
 		"Takes effect at the next start of a game.", kOnOff, "1", false });
-	/* 1.0.4: Settings > Advanced > Diagnostics: one of the core's A/B switches for a test run, one at a
-	 * time (coreArgs: the environment switches hakuX-native reads) */
-	o.push_back({ "core_experiment", Section::Performance, "Core experiment",
-		"For testing only: changes one thing in how the emulator runs, to compare with Off. Off: as normal. "
-		"Takes effect at the next start of a game.",
-		{ { "off", "Off" }, { "no_fbfetch", "No framebuffer fetch" }, { "no_batch", "No strip batching" },
-			{ "short_spins", "Short spins" },
-			{ "ram_import", "Guest RAM imported" }, { "one_device", "One GPU device" } },
-		"off", true });
+	/* 1.0.4: Settings > Advanced > Diagnostics: two of the core's A/B switches for a test run (coreArgs: the
+	 * environment switches hakuX-native reads); they were one "Core experiment" choice until 1.0.5 */
+	o.push_back({ "one_gpu_device", Section::Performance, "One GPU device",
+		"For testing only: the emulator's graphics render on the same GPU device as OGBox's own and the picture is "
+		"copied on the GPU, not read back. Off: two devices, as normal. Takes effect at the next start of a game.",
+		kOnOff, "0", true });
+	o.push_back({ "guest_ram_import", Section::Performance, "Guest RAM imported",
+		"For testing only: the Xbox's RAM is imported into the GPU, so vertex data is read in place instead of "
+		"copied. Off: copied, as normal. Takes effect at the next start of a game.", kOnOff, "0", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 128 MB only when a patch needs it to run. 64 MB: the Xbox's default.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
@@ -617,6 +617,13 @@ void readFile(const std::string &path, std::map<std::string, std::string> &out)
 			out[key] = v;
 		} else if (key == "force32" && v == "1" && !out.count("dither")) {
 			out["dither"] = "force32";     // 0.0.6: Force 32-bit colour is one of the dithering's choices
+		} else if (key == "core_experiment") {
+			/* 1.0.5: the Core experiment choice became two switches; the two that stay carry over, the rest are dropped */
+			if (v == "one_device" && !out.count("one_gpu_device")) {
+				out["one_gpu_device"] = "1";
+			} else if (v == "ram_import" && !out.count("guest_ram_import")) {
+				out["guest_ram_import"] = "1";
+			}
 		} else if (key == "console_timing" && v == "0" && !out.count("fast_drive")) {
 			out["fast_drive"] = "1";       // 0.0.6: Drive timing off is Fast disc drive on
 		}
@@ -987,20 +994,13 @@ std::vector<std::string> Settings::coreArgs() const
 	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
 		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
 	}
-	/* 1.0.4: Core experiment (Settings > Advanced > Diagnostics): one switch, read by the core at its start
-	 * (hakux_core.c sets NC_, HAKUX_HLE_ and HLE_ words as environment switches) */
-	const std::string exp = value("core_experiment");
-	if (exp == "no_fbfetch") {
-		a.push_back("HAKUX_HLE_NO_FBFETCH=1");   // vk/vkdev.c: dynamic rendering's local read off
-	} else if (exp == "no_batch") {
-		a.push_back("HAKUX_HLE_BATCH=0");        // vk/batch.c: strip batching off
-	} else if (exp == "short_spins") {
-		a.push_back("HLE_KICK_SPIN_MS=2");       // pb/pbmode.c: the decoder's spin on the kick count (20 ms)
-		a.push_back("NC_IDLE_SPIN_MS=2");        // core/irq.c: an idle wait's awake part (20 ms)
-	} else if (exp == "ram_import") {
-		a.push_back("NC_HLE_GUEST_RAM_IMPORT=1");
-	} else if (exp == "one_device") {
+	/* 1.0.4: One GPU device and Guest RAM imported (Settings > Advanced > Diagnostics), read by the core at its
+	 * start (hakux_core.c sets NC_, HAKUX_HLE_ and HLE_ words as environment switches) */
+	if (value("one_gpu_device") == "1") {
 		a.push_back("NC_HLE_ONE_DEVICE=1");
+	}
+	if (value("guest_ram_import") == "1") {
+		a.push_back("NC_HLE_GUEST_RAM_IMPORT=1");
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");

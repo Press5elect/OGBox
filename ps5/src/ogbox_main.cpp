@@ -2473,10 +2473,9 @@ public:
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
-		/* 1.0.4: Settings > Advanced > Diagnostics > Core experiment, said first: a test run's log names it */
-		if (const ogbox::Option *ce = ogbox::option("core_experiment")) {
-			pshakux_log("ogbox: core experiment: %s", ogbox::Settings::label(*ce, prefs.value("core_experiment")).c_str());
-		}
+		/* 1.0.4: Settings > Advanced > Diagnostics, said first: a test run's log names them */
+		pshakux_log("ogbox: one GPU device: %s, guest RAM imported: %s", prefs.on("one_gpu_device") ? "on" : "off",
+			prefs.on("guest_ram_import") ? "on" : "off");
 		if (ssaaOn || quincunxOn) {
 			/* SSAA: the scale that draws a 480-line picture at 1.5 times the screen's height or more
 			 * (4x on a 1080p screen, 6x on a 4K one; hakuX keeps a wider picture within 3840 at
@@ -9606,7 +9605,7 @@ public:
 				// 0.0.4: "audio_dsp" (full DSP) is hidden: experimental, as in xemu (some games' EP
 				// programs never finish a frame); the code stays, Fast is what runs
 				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp" && k != "quick_layout" &&
-					k != "core_experiment") {   // (Diagnostics, below)
+					k != "one_gpu_device" && k != "guest_ram_import") {   // (Diagnostics, below)
 					other.push_back(k);
 				}
 			}
@@ -9614,7 +9613,7 @@ public:
 				g.push_back({ "Other", other });
 			}
 			/* 1.0.4: last, the storage write test's rows after it (settingsModel) */
-			g.push_back({ "Diagnostics", { "core_experiment" } });
+			g.push_back({ "Diagnostics", { "one_gpu_device", "guest_ram_import" } });
 			return g;
 		}
 		case SP_NETWORK:
