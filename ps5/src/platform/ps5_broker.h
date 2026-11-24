@@ -76,6 +76,11 @@ public:
 	/// The broker's own writes (protocol.hpp BENCH); steps as many as the result says.
 	int Bench(const std::string& path, const BenchArgs& args, BenchResult& result, std::vector<BenchStep>& steps);
 	int Quit();
+	/// 1.0.4: the broker copies length bytes (at most kMaxBody) of the file `from` at fromOffset into
+	/// `to` at toOffset itself (protocol.hpp COPY); copied: what it wrote (short only at from's end).
+	/// ENOSYS: a broker without COPY.
+	int Copy(uint32_t from, uint64_t fromOffset, uint32_t to, uint64_t toOffset, uint64_t length, uint64_t& copied,
+		int wait_ms);
 
 	int timeout_ms = 30000;   // a reply's wait, for the calls without their own
 

@@ -1,6 +1,6 @@
 // OGBox - the PC test of the write broker: its request handler (ps5/broker/server.cpp, the payload's
 // whole work) over a socketpair and a loopback socket, the title's client and the storage write test
-// (ps5/src/platform/ps5_broker.cpp) on a small plan.
+// (ps5/src/platform/ps5_broker.cpp) on a small plan; 1.0.4: COPY, the data folder's move's.
 // SPDX-FileCopyrightText: 2026 Press5elect
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
@@ -256,6 +256,126 @@ static void TestRequests()
 	p.thread.join();
 	CHECK(p.end == End::quit);
 	p.thread = std::thread([] {});
+}
+
+// 1.0.4: COPY (the data folder's move): the broker reads one of its files and writes another itself
+static std::vector<uint8_t> Pattern(size_t size, uint64_t salt)
+{
+	std::vector<uint8_t> d(size);
+	::broker::fill_pattern(d.data(), d.size(), 0, salt);
+	return d;
+}
+
+static std::vector<uint8_t> Slurp(const std::string& path)
+{
+	std::vector<uint8_t> d;
+	if (FILE* f = fopen(Real(path).c_str(), "rb"))
+	{
+		uint8_t b[65536];
+		size_t n;
+		while ((n = fread(b, 1, sizeof(b), f)) > 0)
+			d.insert(d.end(), b, b + n);
+		fclose(f);
+	}
+	return d;
+}
+
+static void Put(const std::string& path, const std::vector<uint8_t>& d)
+{
+	FILE* f = fopen(Real(path).c_str(), "wb");
+	CHECK(f != nullptr);
+	if (f)
+	{
+		if (!d.empty())
+			CHECK(fwrite(d.data(), 1, d.size(), f) == d.size());
+		fclose(f);
+	}
+}
+
+static void TestCopy()
+{
+	mkdir(Real("/data").c_str(), 0777);
+	mkdir(Real("/data/copy").c_str(), 0777);
+	Pair p((1 << 20) + 3);   // every pwrite cut short, and (O_DIRECT where taken) out of alignment after the first
+	Client& c = *p.client;
+	c.timeout_ms = 30000;
+	const uint32_t to = ::broker::open_write | ::broker::open_create | ::broker::open_truncate | ::broker::open_direct;
+	uint64_t x = 99;
+	const auto rnd = [&x]() {
+		x ^= x << 13;
+		x ^= x >> 7;
+		x ^= x << 17;
+		return x;
+	};
+	// files of random sizes (0, small, several pieces, more than one COPY's), copied a random piece at a time
+	const size_t sizes[] = { 0, 1, 4095, 4096, 65537, (3u << 20) + 11, (16u << 20), (16u << 20) + 1, (70u << 20) + 4097,
+		static_cast<size_t>(rnd() % (9u << 20)), static_cast<size_t>(rnd() % 100000) };
+	unsigned n = 0;
+	for (const size_t size : sizes)
+	{
+		const std::string src = "/data/copy/src" + std::to_string(n), dst = "/data/copy/dst" + std::to_string(n);
+		const std::vector<uint8_t> data = Pattern(size, 1000 + n++);
+		Put(src, data);
+		uint32_t in = 0, out = 0;
+		bool direct = false;
+		CHECK(c.Open(src, ::broker::open_read, in, direct) == 0);
+		CHECK(c.Open(dst, to, out, direct) == 0);
+		uint64_t at = 0;
+		bool ok = true;
+		while (ok && at < size)
+		{
+			const uint64_t piece = std::min<uint64_t>(size - at, 1 + rnd() % ::broker::kMaxBody);
+			uint64_t copied = 0;
+			ok = c.Copy(in, at, out, at, piece, copied, 30000) == 0 && copied == piece;
+			at += copied;
+		}
+		CHECK(ok);
+		// past the end: short, then nothing
+		uint64_t copied = 77;
+		CHECK(c.Copy(in, size, out, size, 4096, copied, 5000) == 0 && copied == 0);
+		CHECK(c.Sync(out, 30000) == 0);
+		CHECK(c.Close(in) == 0 && c.Close(out) == 0);
+		CHECK(SizeOf(dst) == static_cast<long long>(size));
+		CHECK(Slurp(dst) == data);
+	}
+	// one COPY of all of kMaxBody, short at the end; another place in the file than it was read from
+	{
+		const std::vector<uint8_t> data = Pattern(::broker::kMaxBody - 5, 7);
+		Put("/data/copy/m", data);
+		uint32_t in = 0, out = 0;
+		bool direct = false;
+		CHECK(c.Open("/data/copy/m", ::broker::open_read, in, direct) == 0);
+		CHECK(c.Open("/data/copy/m2", to, out, direct) == 0);
+		uint64_t copied = 0;
+		CHECK(c.Copy(in, 0, out, 0, ::broker::kMaxBody, copied, 30000) == 0 && copied == data.size());
+		CHECK(c.Copy(in, 100, out, 4096 * 3 + 1, 1000, copied, 5000) == 0 && copied == 1000);
+		CHECK(c.Copy(in, 0, out, 0, ::broker::kMaxBody + 1ull, copied, 5000) == EMSGSIZE && copied == 0);
+		CHECK(c.Close(out) == 0);
+		std::vector<uint8_t> want = data;
+		std::memcpy(want.data() + 4096 * 3 + 1, data.data() + 100, 1000);
+		CHECK(Slurp("/data/copy/m2") == want);
+		// errors: no such handles, a file opened only for writing read from, one only for reading written
+		CHECK(c.Copy(in, 0, 0, 0, 10, copied, 5000) == EBADF);
+		CHECK(c.Copy(99, 0, in, 0, 10, copied, 5000) == EBADF);
+		CHECK(c.Copy(in, 0, in, 0, 10, copied, 5000) == EBADF && copied == 0);   // (in: read-only)
+		CHECK(c.Open("/data/copy/w", to, out, direct) == 0);
+		CHECK(c.Copy(out, 0, out, 0, 10, copied, 5000) == EBADF && copied == 0);   // (out: write-only)
+		CHECK(c.Close(out) == 0 && c.Close(in) == 0);
+		CHECK(c.Copy(in, 0, out, 0, 10, copied, 5000) == EBADF);   // (closed)
+		Reply r;
+		CHECK(c.Call(Op::copy, 1, 0, 10, 0, "short", 5, r, nullptr, 5000) == EINVAL);
+		std::string text;
+		uint32_t version = 0;
+		CHECK(c.Hello(text, version, 5000) == 0);   // (the connection goes on)
+	}
+	for (unsigned i = 0; i < n; i++)
+	{
+		unlink(Real("/data/copy/src" + std::to_string(i)).c_str());
+		unlink(Real("/data/copy/dst" + std::to_string(i)).c_str());
+	}
+	for (const char* f : { "/data/copy/m", "/data/copy/m2", "/data/copy/w" })
+		unlink(Real(f).c_str());
+	CHECK(c.Quit() == 0);
 }
 
 // 1.0.4: what the cache drives' write-back uses: OPEN's file (OpenInfo), a gathered WRITE (SendV),
@@ -554,6 +674,7 @@ int main(int argc, char** argv)
 	mkdir(g_root.c_str(), 0777);
 	TestPaths();
 	TestRequests();
+	TestCopy();
 	TestCacheCalls();
 	TestEnds();
 	TestLaunch();

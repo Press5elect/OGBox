@@ -28,6 +28,7 @@ struct Server
     int fds[kMaxHandles];
     unsigned char *body = nullptr;
     std::size_t room = 0;
+    void *copying = nullptr;          // COPY's buffer (kCopyChunk, aligned for O_DIRECT), made at the first
     unsigned served = 0;
     bool silent = false;              // the PC test's death: the request carried out, not answered
 
@@ -42,6 +43,7 @@ struct Server
             if (fd >= 0)
                 close(fd);
         std::free(body);
+        std::free(copying);
     }
 
     void log(const char *format, ...) __attribute__((format(printf, 2, 3)))
@@ -209,6 +211,42 @@ struct Server
         case Op::quit:
             end = End::quit;
             return reply(q, 0);
+        case Op::copy: {
+            CopyArgs a;
+            if (q.size < sizeof(a))
+                return reply(q, EINVAL);
+            std::memcpy(&a, body, sizeof(a));
+            const int from = file(a.from), to = file(q.handle);
+            if (from < 0 || to < 0)
+                return reply(q, EBADF);
+            if (q.length > kMaxBody)
+                return reply(q, EMSGSIZE);
+            if (!copying && !(copying = aligned_buffer(kCopyChunk)))
+                return reply(q, ENOMEM);
+            // a piece read, then written; on to the next until length, from's end or an error
+            std::uint64_t done = 0;
+            int e = 0;
+            while (done < q.length)
+            {
+                const std::size_t n = static_cast<std::size_t>(q.length - done < kCopyChunk ? q.length - done : kCopyChunk);
+                std::size_t got = 0, wrote = 0;
+                e = pread_all(from, copying, n, a.from_offset + done, &got);
+                if (e != 0 || got == 0)
+                    break;
+                e = pwrite_all(to, copying, got, q.offset + done, opt.io_cap, &wrote);
+                if (e == EINVAL && drop_direct(to))   // (O_DIRECT's alignment: a file's last piece)
+                {
+                    std::size_t more = 0;
+                    e = pwrite_all(to, static_cast<unsigned char *>(copying) + wrote, got - wrote, q.offset + done + wrote, opt.io_cap,
+                                   &more);
+                    wrote += more;
+                }
+                done += wrote;
+                if (e != 0 || got < n)
+                    break;
+            }
+            return reply(q, e, done);
+        }
         }
         return reply(q, ENOSYS);
     }

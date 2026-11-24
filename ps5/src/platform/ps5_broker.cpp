@@ -381,6 +381,18 @@ int Client::Quit()
 	return Call(Op::quit, 0, 0, 0, 0, nullptr, 0, r, nullptr, timeout_ms);
 }
 
+int Client::Copy(uint32_t from, uint64_t fromOffset, uint32_t to, uint64_t toOffset, uint64_t length, uint64_t& copied,
+	int wait_ms)
+{
+	::broker::CopyArgs a;
+	a.from = from;
+	a.from_offset = fromOffset;
+	Reply r;
+	const int e = Call(Op::copy, to, toOffset, length, 0, &a, sizeof(a), r, nullptr, wait_ms);
+	copied = e < 0 ? 0 : r.value;
+	return e;
+}
+
 int Launch(const std::string& elf, std::string& why, unsigned port)
 {
 	const int file = open(elf.c_str(), O_RDONLY);

@@ -14,6 +14,7 @@
 #define OGBOX_STORAGE_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -66,13 +67,19 @@ public:
 		std::string from;      // the data folder it is moved from
 	};
 	static StorageMove &get();
+	/* 1.0.4: the write broker's connection (platform/ps5_broker.h Launch), or -1 with why */
+	using HelperConnect = std::function<int(std::string &why)>;
 	/* Start moving from -> to. false: one is under way already. Refused (done, with the reason):
-	 * into the data folder itself or one of its parts. */
-	bool start(const std::string &from, const std::string &to);
+	 * into the data folder itself or one of its parts. 1.0.4: with helper, a move onto the console's
+	 * storage (/data/) has the write broker copy the files (the title's own writes there are held
+	 * back after about 1.3 GiB); a file it can't copy, and every one after, OGBox copies itself.
+	 * helperRoot (the PC test's): taken off the front of the paths the broker is given. */
+	bool start(const std::string &from, const std::string &to, HelperConnect helper = nullptr, const std::string &helperRoot = "");
 	Progress progress();
 
 private:
-	bool run(const std::string &from, const std::string &to, std::string &why, std::string &note);
+	bool run(const std::string &from, const std::string &to, std::string &why, std::string &note, const HelperConnect &helper,
+		const std::string &helperRoot);
 	std::mutex mutex;
 	Progress state;
 };
