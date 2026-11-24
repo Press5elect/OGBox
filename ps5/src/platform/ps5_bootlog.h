@@ -43,6 +43,11 @@ void pshakux_diag_continue(int relaunched);
 /// One line to the boot log ("[   1.234] text") and to klog. From any thread; not from a
 /// signal handler (the crash report has its own writer).
 void pshakux_log(const char* format, ...) __attribute__((format(printf, 1, 2)));
+/// 1.0.4: the same line, written by a thread of its own (the kernel log's copy and the file's), for
+/// a thread that must not wait: the presenter's 10 s statistics cost it a refresh each time (13 ms
+/// in the record step, the owner's test build EY). Formatted (and its time taken) here; at most 64
+/// lines wait, more are dropped and counted.
+void pshakux_log_later(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 /// The boot log's descriptor (-1: none), for the crash report.
 int pshakux_log_fd(void);

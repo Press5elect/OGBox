@@ -2997,7 +2997,7 @@ public:
 		} else if (now - pt.logAt >= 10.0) {
 			const double n = static_cast<double>(std::max<uint64_t>(pt.passes, 1));
 			const double g = static_cast<double>(std::max<uint64_t>(pt.gaps, 1));
-			pshakux_log("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
+			pshakux_log_later("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
 				"GPU a pass %.2f ms (the worst %.2f, %llu over 8.3 ms, %llu over 16.7): the picture in %.2f (frame generation, "
 				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's) | the frame's copy "
 				"%llu times, %.2f ms on average (the longest %.1f, %llu over 2 ms: the pass waited on the HLE GPU's queue)",
@@ -5351,7 +5351,7 @@ public:
 					e.second.second / e.second.first);
 				by += b;
 			}
-			pshakux_log("presenter: %u refreshes skipped in %u passes (%.0f s)%s%s", passSkips10, passesIn10, nowS - passSkipLogAt,
+			pshakux_log_later("presenter: %u refreshes skipped in %u passes (%.0f s)%s%s", passSkips10, passesIn10, nowS - passSkipLogAt,
 				by.empty() ? "" : "; the longest step: ", by.c_str());
 			passSkipBy.clear();
 			passSkips10 = passesIn10 = 0;
@@ -5359,7 +5359,7 @@ public:
 		}
 		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 60) {
 			passSkipsLogged++;
-			pshakux_log("presenter: a refresh skipped, %.1f ms between two acquires (%.1f a refresh) | the pass before: %s; "
+			pshakux_log_later("presenter: a refresh skipped, %.1f ms between two acquires (%.1f a refresh) | the pass before: %s; "
 				"outside render %.2f (overlay: menus %.2f, ImGui render %.2f, upload %.2f) | this pass to its acquire: outside "
 				"render %.2f (overlay: menus %.2f, ImGui render %.2f, upload %.2f), %s", gap, refresh,
 				passStepsText(passLast).c_str(), passOutsideLast * 1e3, passLast.ovDraw, passLast.ovRender, passLast.ovUpload,
