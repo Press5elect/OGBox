@@ -294,6 +294,15 @@ std::vector<Option> makeOptions()
 		"failed game, 15 s without a new frame, or the quick menu's Save the Log (no writing to the drive otherwise). "
 		"Always written: every line goes to the file as it happens. Takes effect at the next start of OGBox.",
 		{ { "problems", "Only when something goes wrong" }, { "always", "Always written" } }, "problems", false });
+	/* 1.0.4: Settings > Advanced > Diagnostics: one of the core's A/B switches for a test run, one at a
+	 * time (coreArgs: the environment switches hakuX-native reads) */
+	o.push_back({ "core_experiment", Section::Performance, "Core experiment",
+		"For testing only: changes one thing in how the emulator runs, to compare with Off. Off: as normal. "
+		"Takes effect at the next start of a game.",
+		{ { "off", "Off" }, { "no_fbfetch", "No framebuffer fetch" }, { "no_batch", "No strip batching" },
+			{ "short_spins", "Short spins" }, { "gpl_eds3", "Pipeline library + EDS3 on" },
+			{ "ram_import", "Guest RAM imported" }, { "one_device", "One GPU device" } },
+		"off", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 128 MB only when a patch needs it to run. 64 MB: the Xbox's default.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
@@ -970,6 +979,23 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
 		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
+	}
+	/* 1.0.4: Core experiment (Settings > Advanced > Diagnostics): one switch, read by the core at its start
+	 * (hakux_core.c sets NC_, HAKUX_HLE_ and HLE_ words as environment switches) */
+	const std::string exp = value("core_experiment");
+	if (exp == "no_fbfetch") {
+		a.push_back("HAKUX_HLE_NO_FBFETCH=1");   // vk/vkdev.c: dynamic rendering's local read off
+	} else if (exp == "no_batch") {
+		a.push_back("HAKUX_HLE_BATCH=0");        // vk/batch.c: strip batching off
+	} else if (exp == "short_spins") {
+		a.push_back("HLE_KICK_SPIN_MS=2");       // pb/pbmode.c: the decoder's spin on the kick count (20 ms)
+		a.push_back("NC_IDLE_SPIN_MS=2");        // core/irq.c: an idle wait's awake part (20 ms)
+	} else if (exp == "gpl_eds3") {
+		a.push_back("HAKUX_HLE_GPL_EDS3=1");     // vk/vkdev.c: the two extensions enabled though unused
+	} else if (exp == "ram_import") {
+		a.push_back("NC_HLE_GUEST_RAM_IMPORT=1");
+	} else if (exp == "one_device") {
+		a.push_back("NC_HLE_ONE_DEVICE=1");
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");

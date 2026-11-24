@@ -2366,6 +2366,10 @@ public:
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
+		/* 1.0.4: Settings > Advanced > Diagnostics > Core experiment, said first: a test run's log names it */
+		if (const ogbox::Option *ce = ogbox::option("core_experiment")) {
+			pshakux_log("ogbox: core experiment: %s", ogbox::Settings::label(*ce, prefs.value("core_experiment")).c_str());
+		}
 		if (ssaaOn || quincunxOn) {
 			/* SSAA: the scale that draws a 480-line picture at 1.5 times the screen's height or more
 			 * (4x on a 1080p screen, 6x on a 4K one; hakuX keeps a wider picture within 3840 at
@@ -9003,13 +9007,16 @@ public:
 				const std::string k = o.key;
 				// 0.0.4: "audio_dsp" (full DSP) is hidden: experimental, as in xemu (some games' EP
 				// programs never finish a frame); the code stays, Fast is what runs
-				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp" && k != "quick_layout") {
+				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp" && k != "quick_layout" &&
+					k != "core_experiment") {   // (Diagnostics, below)
 					other.push_back(k);
 				}
 			}
 			if (!other.empty()) {
 				g.push_back({ "Other", other });
 			}
+			/* 1.0.4: last, the storage write test's rows after it (settingsModel) */
+			g.push_back({ "Diagnostics", { "core_experiment" } });
 			return g;
 		}
 		case SP_NETWORK:
@@ -9437,7 +9444,7 @@ public:
 			/* 1.0.4: the storage write test (platform/ps5_broker.h), in the game list's settings only (a game's
 			 * start relaunches OGBox, which ends it) */
 			if (library && !forGame) {
-				groupRow("Diagnostics", rows, acts);
+				// (under the Diagnostics group's header, the options' last: setGroups)
 				actionRow("writetest", "Storage write test", writeTestLine(), "Takes about 10 minutes; writes and then deletes about "
 					"8 GiB in the data folder. It measures how fast OGBox, and a helper of its own sent to the payload loader, can "
 					"write there; the numbers go into the boot log.", [this]() { askWriteTest(); }, rows, acts, ui::Icon::Gear);

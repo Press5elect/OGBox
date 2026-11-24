@@ -347,9 +347,10 @@ bool pshx_core_configure(const PshxCoreConfig *config)
             continue;
         }
         const char *eq = strchr(arg, '=');
-        if (eq && !strncmp(arg, "NC_", 3)) {
+        if (eq && (!strncmp(arg, "NC_", 3) || !strncmp(arg, "HAKUX_HLE_", 10) || !strncmp(arg, "HLE_", 4))) {
             /* 0.1.11: a switch like NC_SWEEP_RDTSC=0 written without "env " is
-             * one too (0.1.10 left it out: the A/B run tested nothing) */
+             * one too (0.1.10 left it out: the A/B run tested nothing); 1.0.4: the
+             * HLE GPU's HAKUX_HLE_ and HLE_ ones too (Settings' Core experiment) */
             char name[64];
             const size_t n = (size_t)(eq - arg) < sizeof(name) - 1 ? (size_t)(eq - arg) : sizeof(name) - 1;
             memcpy(name, arg, n);
