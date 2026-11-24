@@ -128,7 +128,7 @@ std::vector<Option> makeOptions()
 		{ { "soft", "Soft" }, { "sharp", "Sharp (Lanczos)" } }, "soft", true });
 	/* 0.0.9: the CRT look (crt.frag), the picture's last pass */
 	o.push_back({ "crt", Section::Graphics, "CRT look",
-		"The picture as a TV of the time showed it: the scanlines between the game's own lines (and, Strong, the "
+		"The picture as a TV of the time showed it: the scanlines between the game's lines (and, Strong, the "
 		"screen's red, green and blue stripes). Replaces the upscaling filter. Best on a 4K screen.",
 		{ { "off", "Off" }, { "light", "Light" }, { "strong", "Strong" } }, "off", true });
 	/* 0.0.9: HDR output (ogbox_main.cpp hdrUpdate, hdr.frag; the driver's ps5/patches/mesa-27/0019).
@@ -195,7 +195,7 @@ std::vector<Option> makeOptions()
 	/* 0.0.7: frame generation (Crux2's three methods): a picture made between two of the game's, shown on the
 	 * refresh a new one arrives; a game that draws 30 a second looks like 60 */
 	o.push_back({ "framegen", Section::Graphics, "Frame generation",
-		"Makes extra frames between the game's own, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
+		"Makes extra frames between the game's frames, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
 		"Adds about one refresh of delay. Crux2's own: the lightest. FSR 3 optical flow: AMD's motion finder. MihawkGen: "
 		"a small neural network, the heaviest; its Blend is a plain mix of the two frames. Best up to 4x internal "
 		"resolution. Nothing is made for a game that already draws a frame every refresh.",
@@ -210,7 +210,7 @@ std::vector<Option> makeOptions()
 	 * colour (NC_HLE_FORCE32) as one of its choices */
 	o.push_back({ "dither", Section::Graphics, "16-bit dithering",
 		"Games that draw in 16-bit colour hide its colour bands with a fine pattern of dots. Default: the Xbox's "
-		"pattern, by the game's own pixels (at a higher internal resolution it shows as a grain). Scaled dithering: "
+		"pattern, by the game's pixels (at a higher internal resolution it shows as a grain). Scaled dithering: "
 		"the same pattern by screen pixel, too fine to see. Force 32-bit: drawn in 32-bit colour, with no bands and "
 		"no dots; a few games look wrong with it. Off: no dots, but visible colour bands.",
 		{ { "off", "Off" }, { "xbox", "Default" }, { "fine", "Scaled dithering" }, { "force32", "Force 32-bit" } },
@@ -228,7 +228,7 @@ std::vector<Option> makeOptions()
 	 * (settingsModel) */
 	o.push_back({ "tex_role", Section::Graphics, "Sharpness for colour textures only",
 		"For Texture sharpness and Anisotropic filtering: only the textures you see take them; masks, normal maps, "
-		"shadows and the game's own effects keep the game's filtering. Off: every texture, as before (some games' "
+		"shadows and effects keep the game's filtering. Off: every texture, as before (some games' "
 		"characters look too bright).",
 		kOnOff, "1", true });
 	/* OGBox 1.0.2: texture packs (hakuX's tex/texpack.h: NC_HLE_TEXPACK_DIR and NC_HLE_TEXDUMP_DIR,
@@ -272,8 +272,8 @@ std::vector<Option> makeOptions()
 		"resolution, instead of showing as shimmering blocks. Off: as before.",
 		kOnOff, "1", true });
 	o.push_back({ "shadow_pcf", Section::Graphics, "Shadow softness",
-		"For games with shadow maps: softer shadow edges. Game's own: the Xbox's 2x2 filter.",
-		{ { "0", "Game's own (2x2)" }, { "3", "Soft (3x3)" }, { "5", "Softer (5x5)" } }, "0", true });
+		"For games with shadow maps: softer shadow edges. Game's default: the Xbox's 2x2 filter.",
+		{ { "0", "Game's default (2x2)" }, { "3", "Soft (3x3)" }, { "5", "Softer (5x5)" } }, "0", true });
 	o.push_back({ "ff_pixel_light", Section::Graphics, "Per-pixel lighting",
 		"The game's lights worked out for each pixel instead of each corner of a model: rounder highlights, no "
 		"lights that pop on large flat surfaces. Only for games lit without vertex programs; the log says if a game is.",
@@ -333,7 +333,7 @@ std::vector<Option> makeOptions()
 	 * the fast mix's routing of the 3D and effect bins (6 and up) is a table of DirectSound's, and
 	 * the reverb send is left out of it, so some games' balance was off */
 	o.push_back({ "audio_mixing", Section::Audio, "Sound mixing",
-		"Default: the game's own sound program mixes, as on the console: voices, music and effects "
+		"Default: the game's sound program mixes, as on the console: voices, music and effects "
 		"balanced as the game sets them, with its reverb. Fast: OGBox mixes the voices itself; lighter, "
 		"without the game's effects. If the game's program stops making sound, that run switches to Fast.",
 		{ { "game", "Default" }, { "fast", "Fast" } }, "game", true });

@@ -10431,7 +10431,7 @@ public:
 						resets.push_back(acts[k].reset);
 					}
 				}
-				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here are removed, and it uses "
+				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's settings here are removed, and it uses "
 					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, resets](int i) {
 						if (i == 1) {
 							for (const std::function<void()> &reset : resets) {
@@ -10482,7 +10482,7 @@ public:
 		ui::SettingsView v;
 		v.logo = uiLogo();
 		v.title = "Settings";
-		v.subtitle = forGame ? forGameTitle + " \xC2\xB7 this game's own" : std::string();
+		v.subtitle = forGame ? forGameTitle + " \xC2\xB7 settings for this game" : std::string();
 		v.right = forGame ? forGameKey : std::string();
 		for (size_t i = 0; i < pages.size(); i++) {
 			ui::SetNav n;
