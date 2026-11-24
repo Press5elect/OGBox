@@ -10,6 +10,11 @@
  * no wait) and, once it is done, that staging buffer is the picture the upload, frame generation
  * and a screenshot take. Until then the screen keeps the picture it has (no upload).
  *
+ * Staging buffers: kTakeStaging, one more than the frame slots. A new copy may not go into the shown
+ * picture's buffer or the one the other slot's frame (still on the GPU) reads, so with only as many as
+ * the slots a busy GPU left none free every other pass, and every other game frame was never shown
+ * (FF's log: 920-970 of 1200 a 10 s shown at 2x, 680 at 4x; "60 to 120" on the counter).
+ *
  * A staging buffer the HLE GPU writes is the copy's alone: not read, written or freed by the title.
  * One copy is in flight at a time, and none is started while it is (a newer frame's copy doesn't
  * queue behind the last one: at most one refresh more of latency). A new copy goes into a staging
@@ -26,6 +31,9 @@
 #include <cstdint>
 
 namespace ogbox {
+
+/* the staging buffers the two devices' copies go into: the frame slots (2) and one more, so one is always free */
+constexpr size_t kTakeStaging = 3;
 
 /* The answers of pshx_core_take_start / pshx_core_take_poll (core/ogbox_core.h's PSHX_CORE_TAKE_*). */
 enum TakeAnswer { kTakeNone, kTakeStarted, kTakePending, kTakeDone, kTakeFailed };
@@ -85,6 +93,13 @@ public:
 	template <class Poll, class Start, class Done>
 	int pass(uint64_t passNo, double now, int keep, int slotNow, Poll poll, Start start, Done done)
 	{
+		/* this slot's fence is waited: what its earlier frames read is free (the other slot's entries are then its
+		 * latest frame's alone, at most one buffer) */
+		for (auto &r : readBy) {
+			if (r == slotNow) {
+				r = -1;
+			}
+		}
 		int got = -1;
 		if (target >= 0) {
 			const int r = poll();

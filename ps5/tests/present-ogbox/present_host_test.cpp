@@ -518,14 +518,18 @@ static void test_hung()
 }
 
 /* ---- the title's side (ogbox_take.h), as fetchPicture and buildCommandBuffer use it ---------- */
+/* kStaging: the staging buffers (ogbox_main.cpp: ogbox::kTakeStaging, one more than the frame slots; 2, the
+ * frame slots alone, as in FF, left none free every other pass while the GPU was slow) */
+template <size_t kStaging>
 static void test_title(unsigned seed, bool hostPtr)
 {
-	std::printf("the title's passes (seed %u, %s)\n", seed, hostPtr ? "imported" : "through the CPU");
+	std::printf("the title's passes (seed %u, %s, %zu staging buffers)\n", seed, hostPtr ? "imported" : "through the CPU",
+		kStaging);
 	g_hvk.caps.host_ptr = hostPtr;
 	std::mt19937 rng(seed);
 	constexpr size_t kFrames = 2;
 	std::vector<std::unique_ptr<Pages>> staging;
-	for (size_t i = 0; i < kFrames; i++) {
+	for (size_t i = 0; i < kStaging; i++) {
 		staging.push_back(std::make_unique<Pages>(128 * 64 * 4));
 	}
 	struct TitleFrame {
@@ -533,7 +537,7 @@ static void test_title(unsigned seed, bool hostPtr)
 		int reads{ -1 };   // the staging buffer it reads
 		int left{ 0 };     // passes until its fence signals
 	} frames[kFrames];
-	ogbox::TakeAsync<kFrames> take;
+	ogbox::TakeAsync<kStaging> take;
 	uint64_t seen = 0, lastSwap = 0;
 	int pictureBuffer = -1;
 	uint32_t rowW = 0;
@@ -610,6 +614,9 @@ static void test_title(unsigned seed, bool hostPtr)
 	CHECK(pictures > passes / 4);
 	CHECK(take.samePass > 0 && take.nextPass > 0 && take.laterPass > 0 && take.keptOld > 0);
 	CHECK(take.ageWorstPasses <= 4);   // (the copies' latency, 0..3 ticks)
+	if (kStaging > kFrames) {
+		CHECK(take.noBuffer == 0);     // one always free: the shown picture's and the other slot's at most taken
+	}
 	gpu_finish();
 	uint32_t fw, fh;
 	pshx_present_take_poll(&seen, &fw, &fh);
@@ -625,8 +632,9 @@ int main()
 	test_calls(false);
 	test_hung();
 	for (unsigned seed = 1; seed <= 3; seed++) {
-		test_title(seed, true);
-		test_title(seed + 10, false);
+		test_title<2>(seed, true);
+		test_title<ogbox::kTakeStaging>(seed, true);
+		test_title<ogbox::kTakeStaging>(seed + 10, false);
 	}
 	pshx_present_shutdown();
 	if (g_fails) {

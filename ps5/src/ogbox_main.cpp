@@ -980,7 +980,9 @@ public:
 		void *mapped{ nullptr };
 		VkDeviceSize size{ 0 };
 	};
-	std::array<Staging, maxConcurrentFrames> staging{};
+	/* 1.0.5: one more than the frame slots (ogbox_take.h kTakeStaging); with one device, staging i is slot i's */
+	std::array<Staging, ogbox::kTakeStaging> staging{};
+	static_assert(ogbox::kTakeStaging > maxConcurrentFrames, "a staging buffer free whatever the other slot reads");
 	VkSampler sampler{ VK_NULL_HANDLE };
 	VkDescriptorPool descriptorPool{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
@@ -1002,7 +1004,7 @@ public:
 	int shotBuffer{ -1 };                              // a screenshot of this staging buffer once its copy is done
 	/* 1.0.5: two devices: the HLE GPU's copy into a staging buffer submitted, picked up by a later pass
 	 * once its fence reads done (ogbox_take.h); env NC_PRESENT_WAIT=1: each copy waited for, as before */
-	ogbox::TakeAsync<maxConcurrentFrames> take;
+	ogbox::TakeAsync<ogbox::kTakeStaging> take;
 	int presentWait{ -1 };                             // NC_PRESENT_WAIT read (-1: not yet)
 	uint32_t takeRowW{ 0 };                            // the width the copy in flight was started with (its rows' pitch)
 	uint64_t takePass{ 0 };
