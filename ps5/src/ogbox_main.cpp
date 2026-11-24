@@ -5233,11 +5233,51 @@ public:
 		framesDrawn++;
 	}
 
+	/* 1.0.4: what a game pass spent its time on (CPU, ms), to find why the presenter skips a
+	 * refresh now and then (the owner's runs: one in 8-9 s in 1.0.3, one in 50 s in v1.0.1). When the
+	 * gap between two acquires is over 1.5 refreshes, the pass before and this one are logged. */
+	struct PassSteps {
+		double at{ 0 }, input{ 0 }, settle{ 0 }, acquire{ 0 }, vsync{ 0 }, fetch{ 0 }, plan{ 0 }, record{ 0 },
+			submit{ 0 }, end{ 0 };
+	};
+	PassSteps passNow, passLast;
+	double passEndedAt{ 0 }, passOutside{ 0 }, passOutsideLast{ 0 }, passAcquiredLast{ 0 };
+	unsigned passSkipsLogged{ 0 };
+	double passRefresh{ 0 };
+	static std::string passStepsText(const PassSteps &p)
+	{
+		char b[256];
+		std::snprintf(b, sizeof(b), "input %.2f, settle %.2f, acquire %.2f, vsync %.2f, frame %.2f, plan %.2f, record %.2f, "
+			"submit+present %.2f, the rest %.2f", (p.input - p.at) * 1e3, (p.settle - p.input) * 1e3, (p.acquire - p.settle) * 1e3,
+			(p.vsync - p.acquire) * 1e3, (p.fetch - p.vsync) * 1e3, (p.plan - p.fetch) * 1e3, (p.record - p.plan) * 1e3,
+			(p.submit - p.record) * 1e3, (p.end - p.submit) * 1e3);
+		return b;
+	}
+	void passSkipCheck()
+	{
+		const double gap = passAcquiredLast > 0 ? (passNow.acquire - passAcquiredLast) * 1e3 : 0;
+		/* the refresh: the usual gap (an average of the gaps under 1.4 of it; the panel's 8.3 or 16.7 ms) */
+		if (gap > 0) {
+			passRefresh = passRefresh <= 0 ? gap : gap < 1.4 * passRefresh ? passRefresh * 0.95 + gap * 0.05 : passRefresh;
+		}
+		const double refresh = passRefresh;
+		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 300) {
+			passSkipsLogged++;
+			pshakux_log("presenter: a refresh skipped, %.1f ms between two acquires (%.1f a refresh) | the pass before: %s; "
+				"outside render %.2f | this pass to its acquire: outside render %.2f, %s", gap, refresh,
+				passStepsText(passLast).c_str(), passOutsideLast * 1e3, passOutside * 1e3, passStepsText(passNow).c_str());
+		}
+		passAcquiredLast = passNow.acquire;
+	}
+
 	void render() override
 	{
 		if (!prepared) {
 			return;
 		}
+		passNow = PassSteps{};
+		passNow.at = now_seconds();
+		passOutside = passEndedAt > 0 ? passNow.at - passEndedAt : 0;
 		feedControllers();
 		hdrUpdate();   // 0.0.9: HDR output turned on or off between frames
 		pollLeave();   // 0.0.9: an exit waiting for the disk
@@ -5266,13 +5306,19 @@ public:
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
 		// template's settings window.
 		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
+		passNow.input = now_seconds();
 		settleStaging(currentBuffer);   // one device: before prepareFrame resets the fence
+		passNow.settle = now_seconds();
 		VulkanExampleBase::prepareFrame();
 		passAcquiredAt = now_seconds();
+		passNow.acquire = passAcquiredAt;
 		pshx_core_display_vsync();    // 0.0.4: the display let the loop go (FIFO: once a refresh)
+		passNow.vsync = now_seconds();
 		fetchPicture();
+		passNow.fetch = now_seconds();
 		frameGenPlan();
 		probeStall(state);
+		passNow.plan = now_seconds();
 		/* (fgPush: frame generation takes the new frame instead of the upload; it is in this staging buffer all the same) */
 		if (shotWanted && (upload || fgPush) && havePicture) {
 			shotWanted = false;
@@ -5283,6 +5329,7 @@ public:
 			}
 		}
 		buildCommandBuffer();
+		passNow.record = now_seconds();
 		const uint32_t submitted = currentBuffer;
 		if (slotHeld) {
 			submitWaitTimeline = reinterpret_cast<VkSemaphore>(slotFrame.semaphore);
@@ -5290,6 +5337,7 @@ public:
 			submitWaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 		}
 		VulkanExampleBase::submitFrame();
+		passNow.submit = now_seconds();
 		if (slotHeld) {
 			/* submitted: the HLE GPU may write the slot again (its write comes after on the queue) */
 			slotHeld = false;
@@ -5302,6 +5350,11 @@ public:
 			shotBuffer = -1;
 		}
 		framesDrawn++;
+		passNow.end = now_seconds();
+		passEndedAt = passNow.end;
+		passSkipCheck();
+		passLast = passNow;
+		passOutsideLast = passOutside;
 	}
 
 	/* 0.1.28: a running game that has given no new frame for 0.4 s: where its emulated CPU's thread
