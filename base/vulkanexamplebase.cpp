@@ -795,10 +795,18 @@ void VulkanExampleBase::updateOverlay()
 #if defined(VK_EXAMPLE_PS5)
 	// The launcher's menu lays out its own windows
 	if (ps5.ownOverlay) {
+		/* OGBox 1.0.4: each part timed (the presenter's skipped-refresh lines: "outside render") */
+		const auto o0 = std::chrono::steady_clock::now();
 		ImGui::NewFrame();
 		OnUpdateUIOverlay(&ui);
+		const auto o1 = std::chrono::steady_clock::now();
 		ImGui::Render();
+		const auto o2 = std::chrono::steady_clock::now();
 		ui.update(currentBuffer);
+		const auto o3 = std::chrono::steady_clock::now();
+		ps5.overlayDrawMs = std::chrono::duration<double, std::milli>(o1 - o0).count();
+		ps5.overlayRenderMs = std::chrono::duration<double, std::milli>(o2 - o1).count();
+		ps5.overlayUploadMs = std::chrono::duration<double, std::milli>(o3 - o2).count();
 		return;
 	}
 #endif

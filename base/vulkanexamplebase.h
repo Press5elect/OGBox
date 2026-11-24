@@ -333,6 +333,7 @@ public:
 		double lastFrameTime = 0.0;
 		/** @brief The launcher's own menu: ImGui windows of its own instead of the sample's overlay window */
 		bool ownOverlay = false;
+		double overlayDrawMs = 0, overlayRenderMs = 0, overlayUploadMs = 0;   // OGBox 1.0.4: the last overlay update's parts
 		/** @brief OPTIONS ends the sample, back to the menu; in a title with one program, it shows and hides the overlay */
 		bool optionsEnds = true;
 		/** @brief A test run's variant of the sample ("uikit.aurora" runs uikit with "aurora"); empty otherwise */

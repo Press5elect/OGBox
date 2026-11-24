@@ -5270,6 +5270,9 @@ public:
 	struct PassSteps {
 		double at{ 0 }, input{ 0 }, settle{ 0 }, acquire{ 0 }, vsync{ 0 }, fetch{ 0 }, plan{ 0 }, record{ 0 },
 			submit{ 0 }, end{ 0 };
+		/* the overlay update just before this pass (outside render(): the menus' and HUD's ImGui
+		 * frame, ImGui's render, the vertex upload), ms */
+		double ovDraw{ 0 }, ovRender{ 0 }, ovUpload{ 0 };
 	};
 	PassSteps passNow, passLast;
 	double passEndedAt{ 0 }, passOutside{ 0 }, passOutsideLast{ 0 }, passAcquiredLast{ 0 };
@@ -5308,6 +5311,17 @@ public:
 			const char *names[] = { "input", "settle", "acquire", "vsync", "frame", "plan", "record", "submit+present", "the rest" };
 			std::string worst = "outside render";
 			double wv = std::max(passOutsideLast, passOutside) * 1e3;
+			{
+				/* outside render(): which part of the overlay update, when one is most of it */
+				const PassSteps &o = passOutside >= passOutsideLast ? passNow : passLast;
+				const double parts[] = { o.ovDraw, o.ovRender, o.ovUpload };
+				const char *pn[] = { "overlay: menus", "overlay: ImGui render", "overlay: upload" };
+				for (int i = 0; i < 3; i++) {
+					if (parts[i] > 0.5 * wv) {
+						worst = pn[i];
+					}
+				}
+			}
 			for (int k = 0; k < 2; k++) {
 				const PassSteps &p = *ps[k];
 				const double v[] = { p.input - p.at, p.settle - p.input, p.acquire - p.settle, p.vsync - p.acquire,
@@ -5346,8 +5360,10 @@ public:
 		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 60) {
 			passSkipsLogged++;
 			pshakux_log("presenter: a refresh skipped, %.1f ms between two acquires (%.1f a refresh) | the pass before: %s; "
-				"outside render %.2f | this pass to its acquire: outside render %.2f, %s", gap, refresh,
-				passStepsText(passLast).c_str(), passOutsideLast * 1e3, passOutside * 1e3, passStepsText(passNow).c_str());
+				"outside render %.2f (overlay: menus %.2f, ImGui render %.2f, upload %.2f) | this pass to its acquire: outside "
+				"render %.2f (overlay: menus %.2f, ImGui render %.2f, upload %.2f), %s", gap, refresh,
+				passStepsText(passLast).c_str(), passOutsideLast * 1e3, passLast.ovDraw, passLast.ovRender, passLast.ovUpload,
+				passOutside * 1e3, passNow.ovDraw, passNow.ovRender, passNow.ovUpload, passStepsText(passNow).c_str());
 		}
 	}
 
@@ -5358,6 +5374,9 @@ public:
 		}
 		passNow = PassSteps{};
 		passNow.at = now_seconds();
+		passNow.ovDraw = ps5.overlayDrawMs;
+		passNow.ovRender = ps5.overlayRenderMs;
+		passNow.ovUpload = ps5.overlayUploadMs;
 		passOutside = passEndedAt > 0 ? passNow.at - passEndedAt : 0;
 		feedControllers();
 		hdrUpdate();   // 0.0.9: HDR output turned on or off between frames
