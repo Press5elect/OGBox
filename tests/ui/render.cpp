@@ -619,6 +619,8 @@ int main(int argc, char **argv)
 		r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gt"; r.name = "Textures"; light.rows.push_back(r);
 		r = {}; r.key = "tex_upscale"; r.name = "Texture upscaling"; r.choices = { "Off", "2x", "4x" }; r.choice = 1; r.changed = true;
 		light.rows.push_back(r);
+		r = {}; r.key = "tex_upscale_bc"; r.name = "Upscaled texture format"; r.choices = { "Compressed", "Uncompressed" };
+		light.rows.push_back(r);
 		r = {}; r.key = "alpha_aa"; r.name = "Foliage coverage"; r.choices = { "Off", "Alpha-tested", "Alpha-tested and blended" };
 		r.choice = 2; light.rows.push_back(r);
 		r = {}; r.kind = ui::SetRow::Kind::Group; r.key = "gl"; r.name = "Lighting and Effects"; light.rows.push_back(r);

@@ -250,6 +250,12 @@ std::vector<Option> makeOptions()
 		"same for a second. Text, masks, normal maps and pixel-art textures stay as they are. Uses up to 1 GB of "
 		"the GPU's memory. An HD texture pack's textures are not upscaled again.",
 		{ { "0", "Off" }, { "2", "2x" }, { "4", "4x" } }, "0", true });
+	/* 1.0.5: upscaled DXT textures kept in DXT (hakuX-native's tex/texbc.h; NC_HLE_TEXUP_BC=0 for RGBA8) */
+	o.push_back({ "tex_upscale_bc", Section::Graphics, "Upscaled texture format",
+		"For compressed (DXT) textures, which most games use: Compressed keeps the upscaled texture in the same "
+		"compressed format as the original, so the GPU reads 4 to 8 times less memory for it. Uncompressed stores "
+		"every texel in full: slower at 4x, with no block steps in the new detail.",
+		{ { "1", "Compressed" }, { "0", "Uncompressed" } }, "1", true });
 	/* 1.0.5: alpha-tested textures' smaller levels keep level 0's coverage (hakuX-native's tex/alpha_cov.h,
 	 * NC_HLE_ALPHA_AA 1 or 2) */
 	o.push_back({ "alpha_aa", Section::Graphics, "Foliage coverage",
@@ -1066,6 +1072,9 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("tex_upscale") == "2" || value("tex_upscale") == "4") {
 		a.push_back("NC_HLE_TEXUP=" + value("tex_upscale"));
+		if (value("tex_upscale_bc") == "0") {
+			a.push_back("NC_HLE_TEXUP_BC=0");
+		}
 	}
 	if (value("alpha_aa") == "1" || value("alpha_aa") == "2") {
 		a.push_back("NC_HLE_ALPHA_AA=" + value("alpha_aa"));

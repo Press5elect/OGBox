@@ -9714,7 +9714,7 @@ public:
 				"deband", "crt", "crop_overscan", "show_fps" } },
 				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
 				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } },
-				{ "Textures", { "tex_replace", "tex_dump", "tex_upscale", "alpha_aa" } },
+				{ "Textures", { "tex_replace", "tex_dump", "tex_upscale", "tex_upscale_bc", "alpha_aa" } },
 				{ "Lighting and Effects", { "ff_pixel_light", "shadow_pcf", "smallrt_filter", "ao", "ao_strength", "ao_radius",
 					"ao_near", "ao_far", "ao_fov" } } };
 		case SP_XBOX:
