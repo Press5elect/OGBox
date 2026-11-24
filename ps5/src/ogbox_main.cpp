@@ -1221,6 +1221,14 @@ public:
 		unsigned shadersDone{ 0 }, shadersTotal{ 0 };
 		bool namesRead{ false };
 		std::vector<std::string> names;
+		/* the cover and its blurred ground: looked up again at most every 0.5 s while not found (each
+		 * lookup asks the data folder for files: on a USB drive, every frame of the loading screen) */
+		double coverLookAt{ -1.0 };
+		ui::Tex cover, blur;
+		ImU32 tint{ 0 };
+		unsigned drawn{ 0 };
+		double drawSum{ 0.0 };
+		bool drawLogged{ false };
 	} sv;
 	unsigned ledSeq{ 0x0F };                  // the console's LED as the trainer last set it
 	double ledUntil{ 0.0 };
@@ -5267,6 +5275,10 @@ public:
 	double passEndedAt{ 0 }, passOutside{ 0 }, passOutsideLast{ 0 }, passAcquiredLast{ 0 };
 	unsigned passSkipsLogged{ 0 };
 	double passRefresh{ 0 };
+	/* the skips of the last 10 s by the step that took longest (in the pass before or this one) */
+	std::map<std::string, std::pair<unsigned, double>> passSkipBy;
+	unsigned passSkips10{ 0 }, passesIn10{ 0 };
+	double passSkipLogAt{ 0 };
 	static std::string passStepsText(const PassSteps &p)
 	{
 		char b[256];
@@ -5284,13 +5296,59 @@ public:
 			passRefresh = passRefresh <= 0 ? gap : gap < 1.4 * passRefresh ? passRefresh * 0.95 + gap * 0.05 : passRefresh;
 		}
 		const double refresh = passRefresh;
-		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 300) {
+		passAcquiredLast = passNow.acquire;
+		/* in play only: from the game's first picture on (the loading screen before it is timed apart) */
+		if (!havePicture) {
+			return;
+		}
+		passesIn10++;
+		if (gap > 1.5 * refresh && refresh > 0) {
+			passSkips10++;
+			const PassSteps *ps[2] = { &passLast, &passNow };
+			const char *names[] = { "input", "settle", "acquire", "vsync", "frame", "plan", "record", "submit+present", "the rest" };
+			std::string worst = "outside render";
+			double wv = std::max(passOutsideLast, passOutside) * 1e3;
+			for (int k = 0; k < 2; k++) {
+				const PassSteps &p = *ps[k];
+				const double v[] = { p.input - p.at, p.settle - p.input, p.acquire - p.settle, p.vsync - p.acquire,
+					p.fetch - p.vsync, p.plan - p.fetch, p.record - p.plan, p.submit - p.record, p.end - p.submit };
+				for (int i = 0; i < 9; i++) {
+					if (k == 1 && i > 2) {
+						break;   // this pass only up to its acquire
+					}
+					if (v[i] * 1e3 > wv) {
+						wv = v[i] * 1e3;
+						worst = names[i];
+					}
+				}
+			}
+			auto &b = passSkipBy[worst];
+			b.first++;
+			b.second += wv;
+		}
+		const double nowS = passNow.end;
+		if (passSkipLogAt <= 0) {
+			passSkipLogAt = nowS;
+		} else if (nowS - passSkipLogAt >= 10.0) {
+			std::string by;
+			for (const auto &e : passSkipBy) {
+				char b[96];
+				std::snprintf(b, sizeof(b), "%s%s %u (%.1f ms on average)", by.empty() ? "" : ", ", e.first.c_str(), e.second.first,
+					e.second.second / e.second.first);
+				by += b;
+			}
+			pshakux_log("presenter: %u refreshes skipped in %u passes (%.0f s)%s%s", passSkips10, passesIn10, nowS - passSkipLogAt,
+				by.empty() ? "" : "; the longest step: ", by.c_str());
+			passSkipBy.clear();
+			passSkips10 = passesIn10 = 0;
+			passSkipLogAt = nowS;
+		}
+		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 60) {
 			passSkipsLogged++;
 			pshakux_log("presenter: a refresh skipped, %.1f ms between two acquires (%.1f a refresh) | the pass before: %s; "
 				"outside render %.2f | this pass to its acquire: outside render %.2f, %s", gap, refresh,
 				passStepsText(passLast).c_str(), passOutsideLast * 1e3, passOutside * 1e3, passStepsText(passNow).c_str());
 		}
-		passAcquiredLast = passNow.acquire;
 	}
 
 	void render() override
@@ -5730,8 +5788,17 @@ public:
 		/* 1.0.4: until the game's first picture, the loading screen (not over a game's frozen last
 		 * frame: its next XBE is starting) */
 		if (!havePicture && !showingFrozen) {
+			const double t0 = now_seconds();
 			drawLoadingScreen(state);
+			sv.drawn++;
+			sv.drawSum += now_seconds() - t0;
 			return;
+		}
+		if (sv.drawn && !sv.drawLogged) {
+			/* 1.0.4: what the loading screen cost the presenter's thread (the owner's EW run: about 30
+			 * ms outside render() a pass while it showed, a refresh in four) */
+			sv.drawLogged = true;
+			pshakux_log("ogbox: loading screen: drawn %u times, %.2f ms each on average", sv.drawn, sv.drawSum * 1e3 / sv.drawn);
 		}
 		if (shareWait.active) {
 			/* 0.0.6: waiting for the share, the seconds counted */
@@ -5847,8 +5914,21 @@ public:
 			}
 		}
 		ImU32 tint = 0;
-		v.cover = uiCover(sv.names);
-		bd.blur = uiBlur(sv.names, &tint);
+		/* one found is asked each frame, as the list does (its texture is the one kept); one not
+		 * found yet at most every 0.5 s */
+		const bool look = now - sv.coverLookAt >= 0.5;
+		if (look && (!sv.cover.id || !sv.blur.id)) {
+			sv.coverLookAt = now;
+		}
+		if (sv.cover.id || look) {
+			sv.cover = uiCover(sv.names);
+		}
+		if (sv.blur.id || look) {
+			sv.blur = uiBlur(sv.names, &sv.tint);
+		}
+		v.cover = sv.cover;
+		bd.blur = sv.blur;
+		tint = sv.tint;
 		v.tint = tint ? tint : ui::tintFor(v.title);
 		bd.key = "loading";
 		bd.tint = tint;
