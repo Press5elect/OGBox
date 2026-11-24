@@ -16,12 +16,14 @@
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/hle.h"
+#include "hw/xbox/hle/vk/back.h"
 #include "hw/xbox/hle/vk/back_int.h"
 #include "hw/xbox/hle/vk/display.h"
 #include "hw/xbox/hle/vk/swapchain.h"
 #include "hw/xbox/hle/vk/vkdev.h"
 
 #include "present_host.h"
+#include "core/ogbox_core.h"
 
 #include <pthread.h>
 #include <string.h>
@@ -408,6 +410,102 @@ void pshx_present_shutdown(void)
         g_ph.pending = false;
     }
     pthread_mutex_unlock(&g_ph.lock);
+}
+
+/* ---- one device (NC_HLE_ONE_DEVICE=1): the title's device is the HLE GPU's ----------------------
+ * The frame then never leaves the GPU: the title's own command buffer copies the display slot into
+ * its staging buffer (what the upload, frame generation and a screenshot read), on the one queue the
+ * two share, after the slot's timeline value; no fence waited on the title's render thread. */
+bool pshx_present_gpu_needs(void *instance, uint32_t api_version, void *physical_device, struct PshxGpuNeeds *needs,
+                            char *why, unsigned why_size)
+{
+    const HleVkShare host = {.inst = (VkInstance)instance, .api = api_version, .phys = (VkPhysicalDevice)physical_device};
+    HleVkNeeds n;
+    if (hle_vk_needs(&host, &n, why, why_size)) {
+        return false;
+    }
+    needs->queue_family = n.qfam;
+    needs->extension_count = n.n_exts;
+    needs->extensions = n.exts;
+    needs->features = n.features;
+    return true;
+}
+
+void pshx_present_gpu_share(const struct PshxGpuShare *share)
+{
+    if (!share) {
+        hle_vk_share(NULL);
+        return;
+    }
+    const HleVkShare host = {.inst = (VkInstance)share->instance, .api = share->api_version,
+                             .phys = (VkPhysicalDevice)share->physical_device, .dev = (VkDevice)share->device,
+                             .qfam = share->queue_family, .queue = (VkQueue)share->queue,
+                             .lock = share->queue_lock, .unlock = share->queue_unlock,
+                             .exts = share->extensions, .n_exts = share->extension_count,
+                             .features = (const VkPhysicalDeviceFeatures2 *)share->features};
+    hle_vk_share(&host);
+}
+
+bool pshx_present_gpu_shared(void)
+{
+    return hle_vk_ready() && hle_vk_shared();   /* (set before the back end is ready) */
+}
+
+static struct {
+    bool held;                  /* a slot taken: inside hle_disp_use_begin/end until done */
+    int slot;
+} g_slot;
+
+bool pshx_present_slot_take(uint64_t *seen, struct PshxSlotFrame *frame)
+{
+    if (!pshx_present_ready() || !hle_vk_shared()) {
+        return false;
+    }
+    uint32_t gen = 0, swap_id = 0;
+    if (!hle_disp_front(&gen, &swap_id) || ((uint64_t)gen << 32 | swap_id) == *seen) {
+        return false;
+    }
+    if (g_slot.held) {
+        pshx_present_slot_done(g_slot.slot);    /* (the last one never submitted: nothing reads it) */
+    }
+    /* the slots' images stay until done: a display resize (hle_disp_init) waits for the use */
+    hle_disp_use_begin();
+    HleDispFrame f;
+    if (!hle_disp_acquire(&f)) {
+        hle_disp_use_end();
+        return false;
+    }
+    /* A front frame whose write isn't submitted yet (a present before the render thread got to it,
+     * hle_disp_present_late): the title's submit waiting for its value would be ahead of the signal
+     * on the one queue. Taken at a later refresh. */
+    if (f.value > hle_tl_submitted()) {
+        hle_disp_release(f.slot);
+        hle_disp_use_end();
+        return false;
+    }
+    frame->slot = f.slot;
+    frame->width = f.w;
+    frame->height = f.h;
+    frame->image = (void *)f.img;
+    frame->semaphore = (void *)hle_tl_sem();
+    frame->value = f.value;
+    *seen = (uint64_t)f.gen << 32 | f.swap_id;
+    g_slot.held = true;
+    g_slot.slot = f.slot;
+    __atomic_add_fetch(&g_ph.taken, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
+void pshx_present_slot_done(int slot)
+{
+    if (!g_slot.held || slot != g_slot.slot) {
+        return;
+    }
+    g_slot.held = false;
+    /* the title's reads are submitted: the render thread's next write of this slot is submitted after
+     * them on the same queue, and its first barrier (ALL_COMMANDS to ALL_COMMANDS) waits for them */
+    hle_disp_release(slot);
+    hle_disp_use_end();
 }
 
 /* ---- swapchain.c's window presenter: no Android window on the console ---------------------- */

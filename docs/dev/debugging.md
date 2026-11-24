@@ -72,6 +72,7 @@ the test: some cost speed. Only the ones that have earned their keep are listed;
 | `NC_APU_HRTF=0` | The 3D voices' HRTF filters off (the HRTF setting sets it; in boot.txt it overrides it) |
 | `NC_APU_VOICE_LOG=1` | Each sound's sends, for mixing questions |
 | `OGBOX_LOG=file` | The log always written, whatever the setting |
+| `NC_HLE_ONE_DEVICE=1` | One Vulkan device: the HLE GPU renders on the title's device and the title copies its display image on the GPU (no read back, no fence waited on the render thread). Read when the title makes its device, so a boot.txt `env` line or the core switch from the settings works; a game started after waiting for its share gets two devices. The log's `GPU: one device (shared with the title)` or `GPU: own device (why)` (the title's and the core's lines), and `presenter: the first frame ... (one device: ...)`. Off: two devices, as before |
 
 Settings > Advanced > Diagnostics > **Core experiment** (global or a game's) sets one of the core's
 A/B switches at the next start, and the log says which (`ogbox: core experiment: <name>`): No

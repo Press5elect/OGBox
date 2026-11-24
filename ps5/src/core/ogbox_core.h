@@ -104,6 +104,52 @@ void pshx_core_display_vsync(void);
 void pshx_core_display_pickup(void);
 /* The size the next frame has (the HLE GPU's display; 0 x 0 before the first). */
 void pshx_core_frame_size(uint32_t *w, uint32_t *h);
+
+/* One Vulkan device (env NC_HLE_ONE_DEVICE=1): the HLE GPU renders on the title's device instead
+ * of one of its own, and the title reads its display image on the GPU (no copy through memory, no
+ * wait on the CPU). The handles are the title's Vulkan handles (VkInstance, VkPhysicalDevice,
+ * VkDevice, VkQueue, VkImage, VkSemaphore: pointers on the 64-bit console). */
+typedef struct PshxGpuNeeds {
+    uint32_t queue_family;              /* the HLE GPU's queue family (the title's queue must be on it) */
+    uint32_t extension_count;
+    const char *const *extensions;      /* device extensions to enable */
+    void *features;                     /* a VkPhysicalDeviceFeatures2 and its chain, all to enable (the title
+                                         * may add its own features to it; it stays the core's) */
+} PshxGpuNeeds;
+/* What the HLE GPU needs of the device the title is about to make; false: it can't share one (why). */
+bool pshx_core_gpu_needs(void *instance, uint32_t api_version, void *physical_device, PshxGpuNeeds *needs,
+                         char *why, unsigned why_size);
+typedef struct PshxGpuShare {
+    void *instance;
+    uint32_t api_version;               /* the instance's */
+    void *physical_device;
+    void *device;
+    uint32_t queue_family;
+    void *queue;
+    void (*queue_lock)(void);           /* the queue's lock: the title's submits, waits and presents take it too */
+    void (*queue_unlock)(void);
+    uint32_t extension_count;           /* what the device was made with */
+    const char *const *extensions;
+    const void *features;               /* (a VkPhysicalDeviceFeatures2 chain) */
+} PshxGpuShare;
+/* The title's device offered to the HLE GPU (copied), before pshx_core_start; the HLE GPU takes it
+ * when it has all it needs, else it makes its own as before (the boot log's "GPU:" line says which). */
+void pshx_core_gpu_share(const PshxGpuShare *share);
+/* The HLE GPU is up on the title's device: frames come through pshx_core_take_slot, not take_frame. */
+bool pshx_core_gpu_shared(void);
+typedef struct PshxSlotFrame {
+    int slot;
+    uint32_t width, height;
+    void *image;                        /* VkImage, R8G8B8A8_UNORM, in SHADER_READ_ONLY_OPTIMAL: left so */
+    void *semaphore;                    /* VkSemaphore (a timeline): the title's submit reading the image waits */
+    uint64_t value;                     /* for this value */
+} PshxSlotFrame;
+/* The front frame, when newer than *seen, as the HLE GPU's display image itself (a shared device
+ * only). It is kept (not written again, not destroyed by a display resize) until pshx_core_slot_done,
+ * which the title calls once its commands that read it are submitted, on the same queue: the HLE GPU's
+ * next write of the image comes after them in the queue and its first barrier waits for all before. */
+bool pshx_core_take_slot(uint64_t *seen, PshxSlotFrame *frame);
+void pshx_core_slot_done(int slot);
 /* The console's video setting is widescreen: a 4:3-sized frame is shown as 16:9 (anamorphic). */
 bool pshx_core_widescreen(void);
 

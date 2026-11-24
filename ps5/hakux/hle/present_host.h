@@ -54,6 +54,19 @@ void pshx_present_counts(uint64_t *presented, uint64_t *taken);
 /* Releases what the presenter made (before the HLE GPU's device goes). */
 void pshx_present_shutdown(void);
 
+/* One device (core/ogbox_core.h's pshx_core_gpu_* and pshx_core_take_slot, the types there): the
+ * title's device given to the HLE GPU (vk/vkdev.c hle_vk_needs, hle_vk_share), and its display
+ * image handed to the title instead of read back. */
+struct PshxGpuNeeds;
+struct PshxGpuShare;
+struct PshxSlotFrame;
+bool pshx_present_gpu_needs(void *instance, uint32_t api_version, void *physical_device, struct PshxGpuNeeds *needs,
+                            char *why, unsigned why_size);
+void pshx_present_gpu_share(const struct PshxGpuShare *share);
+bool pshx_present_gpu_shared(void);
+bool pshx_present_slot_take(uint64_t *seen, struct PshxSlotFrame *frame);
+void pshx_present_slot_done(int slot);
+
 #ifdef __cplusplus
 }
 #endif
