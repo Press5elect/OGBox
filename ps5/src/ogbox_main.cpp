@@ -2538,6 +2538,29 @@ public:
 		for (const std::string &option : boot.options) {
 			argv.push_back(option.c_str());
 		}
+		/* 1.0.4: Settings > Advanced > Fast writes on the console's storage (helper): the cache drives'
+		 * write-back through the write broker (platform/ps5_wbremote.h), handed to the core before it
+		 * starts; the boot log says whether it is in use, and why not */
+		if (!boot.hdd.empty()) {
+			std::string why;
+			if (prefs.global("fast_writes") != "1") {
+				why = "Settings > Advanced has it off";
+			} else {
+				const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
+				const ogbox::broker::HelperConnector connect = [elf](std::string &said) {
+					return ogbox::broker::Launch(elf, said);
+				};
+				if (ogbox::broker::StartCacheHelper(boot.hdd, connect, why)) {
+					pshakux_log("ogbox: fast writes on the console's storage (helper): in use for the cache drives (%s)",
+						why.c_str());
+					why.clear();
+				}
+			}
+			if (!why.empty()) {
+				pshakux_log("ogbox: fast writes on the console's storage (helper): not in use: %s; OGBox writes the cache "
+					"drives itself", why.c_str());
+			}
+		}
 		const std::string cache = ogbox::storagePath("cache");
 		PshxCoreConfig config{};
 		config.image = boot.image.c_str();
@@ -9333,7 +9356,7 @@ public:
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
 				{ "", { "frame_pacing", "speed_limit", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
-					"audio_mixing", "audio_resampler", "audio_hrtf", "console_ram", "high_res" } },
+					"fast_writes", "audio_mixing", "audio_resampler", "audio_hrtf", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {

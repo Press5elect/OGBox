@@ -37,7 +37,7 @@ OGBox's writes (the Xbox hard disk) should go through a payload of its own depen
 sustains past 2 GiB, so this build only measures: **Settings > Advanced > Storage write test**
 (`ps5/src/platform/ps5_broker.cpp`), with the broker `write-broker.elf` (`ps5/broker`, built by
 `ps5/tools/build-broker.sh`, sent to the payload loader on 127.0.0.1:9021 like the elevation helper).
-Nothing in OGBox writes through the broker yet. Passed its PC test (`tests/broker`: offsets out of
+1.0.4: the cache drives' write-back can write through it (Fast writes, below). Passed its PC test (`tests/broker`: offsets out of
 order, short `pwrite`s, errors, pipelined requests in order, the path check, the whole test on a
 small plan); the payload builds with the SDK's `prospero-clang++`. Not run on a console.
 
@@ -56,6 +56,40 @@ Risks to watch on the first run: the loader on 9021 must be free (the elevation 
 start, briefly); a broker left running ends itself after 10 minutes without a request, or when the
 title's connection closes; starting a game during the test ends it (the files are deleted at the
 next run's start); `O_DIRECT` is dropped by itself where the file system refuses it (`direct=0`).
+
+## Fast writes on the console's storage (helper) (1.0.4, untested on the console)
+
+The owner's console (test build EV, data folder `/data/ogbox`): OGBox's own 16 MiB writes 192 MiB/s
+for 1280 MiB, then 32, 27, 12 MiB/s; the broker right after, 4096 MiB at about 200 MiB/s (196.8
+past 2 GiB); OGBox again 26.8 MiB/s. Random 4 KiB `pwrite` by the broker 565 IOPS; OGBox to the
+broker over loopback 163.7 MiB/s in 16 MiB messages, 4 KiB one at a time 279/s (3.56 ms round
+trip), 64 in flight 372/s. On a USB data folder there is no budget (82-90 MiB/s).
+
+So the cache drives' write-back (hakux-native `native/kernel/wback.c`) can send the held bytes to
+the broker: **Settings > Advanced > Fast writes on the console's storage (helper)**, global, **on
+by default** (the owner's decision), at a game's next start, only with the Xbox hard disk under
+`/data/`. OGBox launches the broker once a run before the core starts
+(`ps5/src/platform/ps5_wbremote.cpp`) and hands the core a C table (`nc_wb_set_remote`). The
+core keeps its order (the items in the order it would write them, up to 4 requests in flight,
+adjacent items of one file in one request of up to 8 MiB; what it does itself waits for what is
+in flight), counts an item written only when the broker answered (held bytes, reads, the journal's
+"D", truncate/drain/format waits), opens a file at the broker only with nothing in flight and
+checks the inode, pings it every 60 s idle (it ends after 10 minutes without a request) and, if
+it fails, waits until it has carried out what it was sent and ended, then writes everything not
+answered itself in order. No fsync either way (as before): a close's fsync of the title's
+descriptor runs on the same file, and the bytes still held at a close were never covered by it.
+Game files (E:, C:), save states and the state restore's copy still write as before.
+
+Passed its PC tests: hakux-native `tests/native/linux/run-wback.sh` (a fake broker: slow, short
+writes, dying part-way, refusing a write; 150 random seeds byte for byte with OGBox's own path;
+"D" only after the last answer; a quit with bytes at the broker; ThreadSanitizer clean) and
+`tests/broker` (the real broker and client with the real wback.c: `HAKUX_NATIVE=<hakux-native
+work tree>`; the broker dying part-way). Not seen on a console: whether the broker's writes keep
+their speed for a game's cache copy, the loader on 9021 at a game's start (the elevation helper
+uses it too), the round trips under a game's load, the inode check on the console's `/data`.
+To watch: a game writing many small files or small random writes may be slower through the
+broker (each request costs it about 2.7 ms: 372/s in flight against its own 565 IOPS); what to
+compare is a game that copies to its cache drive on first start, with the setting off and on.
 
 ## Known problems, cause not found
 

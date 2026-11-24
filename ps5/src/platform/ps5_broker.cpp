@@ -198,6 +198,66 @@ bool Client::Send(Op op, uint32_t handle, uint64_t offset, uint64_t length, uint
 	return true;
 }
 
+bool Client::SendV(Op op, uint32_t handle, uint64_t offset, const struct iovec* iov, int n)
+{
+	if (m_fd < 0)
+	{
+		errno = ENOTCONN;
+		return Fail("no connection");
+	}
+	size_t size = 0;
+	for (int i = 0; i < n; i++)
+		size += iov[i].iov_len;
+	if (size > ::broker::kMaxBody)
+	{
+		errno = EMSGSIZE;
+		return Fail("a request too large");
+	}
+	::broker::Request q;
+	q.op = static_cast<uint16_t>(op);
+	q.seq = m_seq++;
+	q.handle = handle;
+	q.offset = offset;
+	q.size = static_cast<uint32_t>(size);
+	bool ok = ::broker::send_all(m_fd, &q, sizeof(q), timeout_ms);
+	for (int i = 0; ok && i < n; i++)
+		ok = iov[i].iov_len == 0 || ::broker::send_all(m_fd, iov[i].iov_base, iov[i].iov_len, timeout_ms);
+	if (!ok)
+		return Fail("a request could not be sent");
+	m_pending.emplace_back(q.seq, q.op);
+	return true;
+}
+
+bool Client::Finish(int wait_ms)
+{
+	if (m_fd < 0)
+		return true;
+	shutdown(m_fd, SHUT_WR);
+	const uint64_t until = now_ns() + static_cast<uint64_t>(wait_ms) * 1000000ull;
+	bool ended = false;
+	unsigned char sink[4096];
+	while (!ended)
+	{
+		const uint64_t now = now_ns();
+		if (now >= until)
+			break;
+		pollfd p{m_fd, POLLIN, 0};
+		const int ready = poll(&p, 1, static_cast<int>(std::min<uint64_t>((until - now) / 1000000ull + 1, 1000)));
+		if (ready < 0 && errno != EINTR)
+			break;
+		if (ready <= 0)
+			continue;
+		const ssize_t got = read(m_fd, sink, sizeof(sink));
+		if (got < 0 && (errno == EINTR || errno == EAGAIN))
+			continue;
+		ended = got <= 0;   // EOF (or the connection reset: it is gone either way)
+	}
+	close(m_fd);
+	m_fd = -1;
+	m_pending.clear();
+	return ended;
+}
+
 bool Client::Receive(Reply& reply, std::vector<uint8_t>* body, int wait_ms)
 {
 	if (m_pending.empty())

@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Additional term (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
- * OGBox 1.0.4, a diagnostic for now (Settings > Advanced > Storage write test; ps5/src/platform/
- * ps5_broker.cpp). The title sends this ELF to the payload loader on 127.0.0.1:9021 (elfldr), as it
+ * OGBox 1.0.4: the storage write test (Settings > Advanced; ps5/src/platform/ps5_broker.cpp) and
+ * the cache drives' write-back (Fast writes on the console's storage: ps5/src/platform/ps5_wbremote.cpp). The title sends this ELF to the payload loader on 127.0.0.1:9021 (elfldr), as it
  * sends the sandbox elevation helper; the loader reads the ELF up to the end of its section table,
  * starts it as a process of its own and hands it the rest of that connection as its standard input
  * and output. It then answers the requests of protocol.hpp there (server.cpp) until QUIT, until

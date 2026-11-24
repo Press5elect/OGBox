@@ -77,7 +77,10 @@ struct Pair
 		options.message_ms = 5000;
 		CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
 		const int server = fds[1];
-		thread = std::thread([this, server]() { end = ::broker::serve(server, server, options); });
+		thread = std::thread([this, server]() {
+			end = ::broker::serve(server, server, options);
+			shutdown(server, SHUT_RDWR);   // (the payload's end: its process gone, the connection with it)
+		});
 		client = std::make_unique<Client>(fds[0]);
 		client->timeout_ms = 10000;
 	}
@@ -253,6 +256,63 @@ static void TestRequests()
 	p.thread.join();
 	CHECK(p.end == End::quit);
 	p.thread = std::thread([] {});
+}
+
+// 1.0.4: what the cache drives' write-back uses: OPEN's file (OpenInfo), a gathered WRITE (SendV),
+// and the end (Finish: what was sent whole carried out first)
+static void TestCacheCalls()
+{
+	mkdir(Real("/data").c_str(), 0777);
+	mkdir(Real("/data/c").c_str(), 0777);
+	const int made = open(Real("/data/c/x.bin").c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(made >= 0);
+	struct stat st;
+	CHECK(fstat(made, &st) == 0);
+	close(made);
+	Pair p(777);
+	Client& c = *p.client;
+	Reply r;
+	std::vector<uint8_t> body;
+	CHECK(c.Call(Op::open, 0, 0, 0, ::broker::open_read | ::broker::open_write, "/data/c/x.bin", 13, r, &body, 5000) == 0);
+	CHECK(body.size() == sizeof(::broker::OpenInfo));
+	::broker::OpenInfo info;
+	std::memcpy(&info, body.data(), sizeof(info));
+	CHECK(info.ino == static_cast<uint64_t>(st.st_ino));
+	const uint32_t h = static_cast<uint32_t>(r.value);
+	std::vector<uint8_t> a(5000), b(70000), c3(1), want;
+	::broker::fill_pattern(a.data(), a.size(), 0, 1);
+	::broker::fill_pattern(b.data(), b.size(), 5000, 2);
+	c3[0] = 0x42;
+	const struct iovec iov[3] = { { a.data(), a.size() }, { b.data(), b.size() }, { c3.data(), 1 } };
+	CHECK(c.SendV(Op::write, h, 100, iov, 3));
+	CHECK(c.Receive(r, nullptr, 5000) && r.error == 0 && r.value == 75001);
+	want.insert(want.end(), a.begin(), a.end());
+	want.insert(want.end(), b.begin(), b.end());
+	want.push_back(0x42);
+	std::vector<uint8_t> back;
+	CHECK(c.Read(h, 100, want.size(), back) == 0 && back == want);
+	// sent, not answered, then the end: every one carried out
+	std::vector<uint8_t> block(4096);
+	for (uint32_t i = 0; i < 32; i++)
+	{
+		::broker::fill_pattern(block.data(), block.size(), i * 4096ull, 50);
+		const struct iovec one = { block.data(), block.size() };
+		CHECK(c.SendV(Op::write, h, 1000000 + i * 4096ull, &one, 1));
+	}
+	CHECK(c.Finish(10000));
+	CHECK(c.Fd() < 0 && c.InFlight() == 0);
+	const int fd = open(Real("/data/c/x.bin").c_str(), O_RDONLY);
+	bool same = fd >= 0;
+	for (uint32_t i = 0; same && i < 32; i++)
+	{
+		::broker::fill_pattern(block.data(), block.size(), i * 4096ull, 50);
+		std::vector<uint8_t> got(4096);
+		same = pread(fd, got.data(), got.size(), 1000000 + i * 4096) == 4096 && got == block;
+	}
+	CHECK(same);
+	if (fd >= 0)
+		close(fd);
+	CHECK(!c.SendV(Op::write, h, 0, iov, 1));   // (closed)
 }
 
 static void TestEnds()
@@ -494,6 +554,7 @@ int main(int argc, char** argv)
 	mkdir(g_root.c_str(), 0777);
 	TestPaths();
 	TestRequests();
+	TestCacheCalls();
 	TestEnds();
 	TestLaunch();
 	TestWriteTest();

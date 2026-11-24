@@ -17,6 +17,7 @@ struct ServerOptions
     int message_ms = 30 * 1000;   // a request's body, a reply's sending: at most this long between bytes
     const char *root = nullptr;   // the PC test's: every accepted path is opened under this folder
     std::size_t io_cap = 0;       // the PC test's: each pwrite writes at most this many bytes
+    unsigned die_after = 0;       // the PC test's: ends after carrying out this many requests, the last unanswered
     void (*log)(const char *line) = nullptr;
 };
 

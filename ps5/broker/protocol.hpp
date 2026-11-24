@@ -8,7 +8,8 @@
  * OGBox 1.0.4 (a diagnostic: Settings > Advanced > Storage write test). The console holds a title's
  * writes to its storage back after a burst of about 1.3 GiB (PS5_PayloadSDK platform/docs/PROBE.md,
  * "Sustained writes"); the budget is the process's. The broker is a payload, a process of its own,
- * that does the title's writes for it: this build only measures whether that helps.
+ * that does the title's writes for it. 1.0.4: the cache drives' write-back writes through it too
+ * (Settings > Advanced > Fast writes on the console's storage: ps5/src/platform/ps5_wbremote.cpp).
  *
  * The framing is the elevation helper's (ps5/elevation/protocol.hpp): fixed-width little-endian
  * frames, no pointers across the socket. Every request has a sequence number and gets one reply,
@@ -17,7 +18,7 @@
  * Reply, then `size` bytes of body.
  *
  *   HELLO     length = the client's version          -> value = the broker's; body = a line of text
- *   OPEN      flags = OpenFlags, body = the path      -> value = a handle
+ *   OPEN      flags = OpenFlags, body = the path      -> value = a handle; body = OpenInfo (1.0.4)
  *   WRITE     handle, offset, body = the bytes        -> value = bytes written (all, or error set)
  *   READ      handle, offset, length                  -> value = bytes read; body = them (short at EOF)
  *   TRUNCATE  handle, length                          -> (ftruncate)
@@ -41,7 +42,7 @@ inline constexpr std::uint32_t kMagic = 0x31524257; // "WBR1"
 inline constexpr std::uint16_t kVersion = 1;
 inline constexpr std::uint32_t kMaxBody = 64u << 20;      // the largest WRITE (and READ)
 inline constexpr std::uint32_t kMaxPath = 1024;
-inline constexpr unsigned kMaxHandles = 16;
+inline constexpr unsigned kMaxHandles = 64;               // 1.0.4: 16 before (the cache drives' files)
 inline constexpr unsigned kMaxSteps = 64;                 // BENCH's steps (of 256 MiB: 16 GiB)
 inline constexpr std::uint64_t kStep = 256ull << 20;
 
@@ -68,6 +69,15 @@ enum OpenFlags : std::uint32_t
     open_truncate = 8,
     open_direct = 16, // O_DIRECT, when the file system takes it (else opened without: Reply::flags says)
 };
+
+// 1.0.4: OPEN's answer's body: the file opened, so the title can tell it is the one it means (the
+// cache drives' write-back: a file renamed under it).
+struct OpenInfo
+{
+    std::uint64_t dev = 0;
+    std::uint64_t ino = 0;
+};
+static_assert(sizeof(OpenInfo) == 16);
 
 struct Request
 {
