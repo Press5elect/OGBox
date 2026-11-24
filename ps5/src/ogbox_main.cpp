@@ -5404,6 +5404,8 @@ public:
 	double passEndedAt{ 0 }, passOutside{ 0 }, passOutsideLast{ 0 }, passAcquiredLast{ 0 };
 	unsigned passSkipsLogged{ 0 };
 	double passRefresh{ 0 };
+	double passGapSum{ 0 };
+	unsigned passGapN{ 0 };
 	/* the skips of the last 10 s by the step that took longest (in the pass before or this one) */
 	std::map<std::string, std::pair<unsigned, double>> passSkipBy;
 	unsigned passSkips10{ 0 }, passesIn10{ 0 };
@@ -5420,11 +5422,14 @@ public:
 	void passSkipCheck()
 	{
 		const double gap = passAcquiredLast > 0 ? (passNow.acquire - passAcquiredLast) * 1e3 : 0;
-		/* the refresh: the usual gap (an average of the gaps under 1.4 of it; the panel's 8.3 or 16.7 ms) */
+		/* the refresh: the panel's, 8.33 or 16.67 ms, whichever the last 10 s' average gap is nearer (test
+		 * build FC: an average of the short gaps drifted below a refresh once acquires came in pairs, and
+		 * then nearly every pass counted as a skip) */
 		if (gap > 0) {
-			passRefresh = passRefresh <= 0 ? gap : gap < 1.4 * passRefresh ? passRefresh * 0.95 + gap * 0.05 : passRefresh;
+			passGapSum += gap;
+			passGapN++;
 		}
-		const double refresh = passRefresh;
+		const double refresh = passRefresh > 0 ? passRefresh : 1000.0 / 120.0;
 		passAcquiredLast = passNow.acquire;
 		/* in play only: from the game's first picture on (the loading screen before it is timed apart) */
 		if (!havePicture) {
@@ -5482,6 +5487,12 @@ public:
 			passSkipBy.clear();
 			passSkips10 = passesIn10 = 0;
 			passSkipLogAt = nowS;
+			if (passGapN) {
+				const double avg = passGapSum / passGapN;
+				passRefresh = avg < 12.5 ? 1000.0 / 120.0 : 1000.0 / 60.0;
+			}
+			passGapSum = 0;
+			passGapN = 0;
 		}
 		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 60) {
 			passSkipsLogged++;
