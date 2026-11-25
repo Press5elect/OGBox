@@ -5,7 +5,10 @@
 #include "ogbox_fixes_fetch.h"
 #include "platform/ps5_update.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <mutex>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -19,7 +22,7 @@ static int g_fail = 0;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); g_fail++; } } while (0)
 
 static std::map<std::string, std::string> server;   // url -> body
-static int requests = 0;
+static std::atomic<int> requests{ 0 };
 static int Get(const std::string& url, std::vector<uint8_t>& out)
 {
 	requests++;
@@ -159,6 +162,53 @@ int main(int argc, char** argv)
 		CHECK(!Exists(tr + "/45410049/tampered.etm") && !Exists(tr + "/45410049/tampered.etm.part"));
 		CHECK(Read(tr + "/4D530039/Mine [plus3].etm") == mine && Read(tr + "/4D530039/Same.ETM") == d);
 		CHECK(!Exists(dir + "/escape.etm") && !Exists(tr + "/4D530039/v0..etm") && !Exists(tr + "/mods"));
+
+		// 1.0.4: the same over 8 connections at once (a fresh folder): the same files, the same counts
+		{
+			const std::string tr8 = dir + "/trainers8";
+			if (system(("rm -rf '" + tr8 + "' && mkdir -p '" + tr8 + "/4D530039'").c_str()) != 0)
+				return 2;
+			{ std::ofstream(tr8 + "/4D530039/Mine [plus3].etm") << mine; }
+			{ std::ofstream(tr8 + "/4D530039/Same.ETM") << d; }
+			std::mutex gl;
+			const Getter locked = [&](const std::string& u, std::vector<uint8_t>& o) { std::lock_guard<std::mutex> g(gl); return Get(u, o); };
+			requests = 0;
+			unsigned d8 = 0, t8 = 0;
+			CheatsReport c8;
+			CHECK(!Cheats(index, R, tr8, locked, c8, [&](unsigned dn, unsigned tot) { d8 = std::max(d8, dn); t8 = tot; }, 8));
+			CHECK(c8.listed == 5 && c8.fetched == 2 && c8.present == 1 && c8.kept == 1 && c8.failed == 1);
+			CHECK(d8 == 5 && t8 == 5 && requests == 3);
+			CHECK(Read(tr8 + "/4D530039/Name [plus5] (v1).etm") == a && Read(tr8 + "/45410049/b.xbtf") == b);
+			CHECK(!Exists(tr8 + "/45410049/tampered.etm"));
+		}
+
+		// 1.0.4: only the player's games: the files under their title IDs fetched and counted, no other's
+		{
+			const std::string trF = dir + "/trainersF";
+			if (system(("rm -rf '" + trF + "'").c_str()) != 0)
+				return 2;
+			requests = 0;
+			unsigned dF = 0, tF = 0;
+			CheatsReport cf;
+			CHECK(!Cheats(index, R, trF, Get, cf, [&](unsigned dn, unsigned tot) { dF = dn; tF = tot; }, 8, { "45410049" }));
+			CHECK(cf.listed == 2 && cf.fetched == 1 && cf.failed == 1 && cf.present == 0 && cf.kept == 0);
+			CHECK(cf.games == 1 && cf.gamesListed == 1 && dF == 2 && tF == 2 && requests == 2);
+			CHECK(Read(trF + "/45410049/b.xbtf") == b && !Exists(trF + "/4D530039"));
+			// a title ID the index hasn't: nothing asked, nothing to do
+			requests = 0;
+			CHECK(Cheats(index, R, trF, Get, cf, nullptr, 8, { "DEADBEEF" }));
+			CHECK(cf.listed == 0 && cf.fetched == 0 && cf.games == 1 && cf.gamesListed == 0 && requests == 0);
+			// several, one of them not in the index: both games' files
+			requests = 0;
+			CHECK(!Cheats(index, R, trF, Get, cf, nullptr, 8, { "4D530039", "45410049", "DEADBEEF" }));
+			CHECK(cf.listed == 5 && cf.games == 3 && cf.gamesListed == 2 && cf.fetched == 2 && cf.present == 1 && cf.failed == 2 &&
+				requests == 4);
+			// an empty set: every game's, as before
+			const Getter none = [](const std::string&, std::vector<uint8_t>&) { requests++; return 404; };
+			requests = 0;
+			CHECK(!Cheats(index, R, dir + "/trainersE", none, cf, nullptr, 8, std::set<std::string>()));
+			CHECK(cf.listed == 5 && cf.games == 0 && cf.gamesListed == 0 && cf.failed == 5 && requests == 5);
+		}
 
 		// again, corrected: only the missing one is asked for
 		server[R + C + "/cheats/45410049/tampered.etm"] = c;

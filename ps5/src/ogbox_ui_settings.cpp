@@ -298,7 +298,7 @@ void drawPadPicture(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::vector<PadC
 		return nullptr;
 	};
 	float &pulse = value("padpic.pulse", 0.0f);
-	pulse += dt();
+	pulse += access().still ? 0.0f : dt();   // (1.0.4: Reduce motion: a steady light)
 	const float glowA = 0.55f + 0.25f * std::sin(pulse * 4.0f);
 	// the controls
 	for (const Spot &s : spots) {
@@ -887,7 +887,9 @@ void Keyboard::draw(ImDrawList *dl, ImVec2 S, bool usbKeyboard)
 	if (usbKeyboard) {
 		const char *s = "USB keyboard: type away";
 		const ImVec2 ts = measure(F::Small, px(15.0f), s);
-		ui::text(dl, F::Small, px(15.0f), ImVec2(p1.x - px(28.0f) - ts.x, hy + px(6.0f)), alpha(p.accentText, a), s);
+		/* (1.0.4: with the hints' words larger, at the top right when they reach it) */
+		const bool room = hx - px(22.0f) + px(8.0f) <= p1.x - px(28.0f) - ts.x;   // (the last hint's end, a gap)
+		ui::text(dl, F::Small, px(15.0f), ImVec2(p1.x - px(28.0f) - ts.x, room ? hy + px(6.0f) : p0.y + px(28.0f)), alpha(p.accentText, a), s);
 	}
 }
 

@@ -774,6 +774,81 @@ extern "C" void pshakux_log(const char* format, ...)
   }
 }
 
+// 1.0.4: pshakux_log_later's lines, written by their own thread (started at the first)
+namespace {
+pthread_mutex_t s_later_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t s_later_cond = PTHREAD_COND_INITIALIZER;
+char s_later[64][1100];
+unsigned s_later_head, s_later_count, s_later_dropped;
+bool s_later_up;
+
+void* LaterMain(void*)
+{
+  pshakux_thread_named("ogbox-log-later");
+  char klog[1100], file[1100];
+  for (;;)
+  {
+    pthread_mutex_lock(&s_later_lock);
+    while (!s_later_count)
+      pthread_cond_wait(&s_later_cond, &s_later_lock);
+    std::memcpy(file, s_later[s_later_head], sizeof(file));
+    s_later_head = (s_later_head + 1) % 64;
+    s_later_count--;
+    const unsigned dropped = s_later_dropped;
+    s_later_dropped = 0;
+    pthread_mutex_unlock(&s_later_lock);
+    // file: "[time] text\n"; the kernel log's copy: the prefix and the text
+    const char* text = std::strchr(file, ']');
+    text = text && text[1] == ' ' ? text + 2 : file;
+    const int kn = std::snprintf(klog, sizeof(klog), "%s%s", s_prefix, text);
+    if (kn > 0)
+      pshakux_klog_raw(klog, static_cast<unsigned>(std::min<size_t>(static_cast<size_t>(kn), sizeof(klog) - 1)));
+    LogWrite(file, std::strlen(file));
+    if (dropped)
+      pshakux_log("log: %u lines given to the log's own thread were dropped (64 were waiting)", dropped);
+  }
+  return nullptr;
+}
+}  // namespace
+
+extern "C" void pshakux_log_later(const char* format, ...)
+{
+  char text[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(text, sizeof(text), format, args);
+  va_end(args);
+  pthread_mutex_lock(&s_later_lock);
+  if (!s_later_up)
+  {
+    s_later_up = true;
+    pthread_t t;
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, 256 * 1024);
+    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &a, LaterMain, nullptr) != 0)
+      s_later_up = false;
+    pthread_attr_destroy(&a);
+  }
+  if (!s_later_up)
+  {
+    pthread_mutex_unlock(&s_later_lock);
+    pshakux_log("%s", text);   // (no thread: written here, as before)
+    return;
+  }
+  if (s_later_count == 64)
+    s_later_dropped++;
+  else
+  {
+    const unsigned at = (s_later_head + s_later_count) % 64;
+    std::snprintf(s_later[at], sizeof(s_later[at]), "[%9.3f] %s\n", Since(s_start), text);
+    s_later_count++;
+    pthread_cond_signal(&s_later_cond);
+  }
+  pthread_mutex_unlock(&s_later_lock);
+}
+
 // 0.0.3: the crash report's: what the ring holds into the file before the report's own lines
 // (written straight to the file), unless another thread holds the ring (a signal handler can't wait).
 extern "C" void pshakux_log_drain_crash(void)

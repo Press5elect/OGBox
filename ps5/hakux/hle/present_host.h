@@ -42,7 +42,21 @@ bool pshx_present_take(uint64_t *seen, void *dst, uint32_t pitch, uint32_t max_w
  * Rows packed (pitch = w * 4) for that; otherwise, and with dst_bytes 0, as pshx_present_take. */
 bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                             uint32_t max_h, uint32_t *w, uint32_t *h);
-/* dst is going (the title frees its upload buffer): the HLE GPU's device lets go of it first. */
+/* OGBox 1.0.4: the same without the wait (the two devices' handoff off the title's render thread's
+ * critical path). take_start submits the front frame's copy into dst, when newer than *seen, and
+ * returns: PSHX_TAKE_STARTED (in flight: dst is written by the HLE GPU until take_poll says DONE or
+ * FAILED; the title neither reads, writes nor frees it before), PSHX_TAKE_NONE (nothing new, or none
+ * fits: nothing started) or PSHX_TAKE_PENDING (one is in flight already: one at a time). take_poll
+ * reads its fence, no wait: PSHX_TAKE_DONE (the frame is in dst, its size in *w, *h, *seen its),
+ * PSHX_TAKE_PENDING (not yet: a line each 2 s, never given up on), PSHX_TAKE_FAILED (the GPU lost:
+ * dst holds no frame) or PSHX_TAKE_NONE (none in flight). The display slot it reads is held, and a
+ * display resize waits, until then. Both on the title's render thread. */
+enum { PSHX_TAKE_NONE, PSHX_TAKE_STARTED, PSHX_TAKE_PENDING, PSHX_TAKE_DONE, PSHX_TAKE_FAILED };
+int pshx_present_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                            uint32_t max_h);
+int pshx_present_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h);
+/* dst is going (the title frees its upload buffer): the HLE GPU's device lets go of it first (a copy
+ * in flight waited for). */
 void pshx_present_forget(void *dst);
 
 /* The front frame's size without taking it (0 x 0: none yet). */
@@ -53,6 +67,19 @@ void pshx_present_counts(uint64_t *presented, uint64_t *taken);
 
 /* Releases what the presenter made (before the HLE GPU's device goes). */
 void pshx_present_shutdown(void);
+
+/* One device (core/ogbox_core.h's pshx_core_gpu_* and pshx_core_take_slot, the types there): the
+ * title's device given to the HLE GPU (vk/vkdev.c hle_vk_needs, hle_vk_share), and its display
+ * image handed to the title instead of read back. */
+struct PshxGpuNeeds;
+struct PshxGpuShare;
+struct PshxSlotFrame;
+bool pshx_present_gpu_needs(void *instance, uint32_t api_version, void *physical_device, struct PshxGpuNeeds *needs,
+                            char *why, unsigned why_size);
+void pshx_present_gpu_share(const struct PshxGpuShare *share);
+bool pshx_present_gpu_shared(void);
+bool pshx_present_slot_take(uint64_t *seen, struct PshxSlotFrame *frame);
+void pshx_present_slot_done(int slot);
 
 #ifdef __cplusplus
 }

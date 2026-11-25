@@ -81,12 +81,15 @@
 #include "ogbox_pad.h"        // the DualSense as an Xbox controller (Settings > Controller)
 #include "ogbox_framegen.h"   // OGBox 0.0.7: frame generation
 #include "ogbox_intro.h"      // OGBox 0.0.9: the startup video
+#include "ogbox_take.h"       // OGBox 1.0.4: the frame handoff of two devices, not waited for
 #include "framegen/ps5_framegen_pacer.h"
 #include "platform/ps5_keyboard.h"
 // OGBox 0.0.1: the updater (Crux2's), at file scope too
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
 #include "ogbox_fixes_fetch.h"   // OGBox 1.0.2: game fixes from GitHub at start
+#include "platform/ps5_broker.h"   // OGBox 1.0.4: the write broker and the storage write test
+#include "platform/ps5_wbremote.h" // OGBox 1.0.4: the cache drives' writes through it
 #include "VulkanTexture.h"
 #include <cctype>
 #include <cfloat>

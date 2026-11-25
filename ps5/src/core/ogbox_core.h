@@ -95,6 +95,14 @@ bool pshx_core_take_frame(uint64_t *seen, void *dst, uint32_t pitch, uint32_t ma
 bool pshx_core_take_frame_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                                uint32_t max_h, uint32_t *w, uint32_t *h);
 void pshx_core_frame_forget(void *dst);
+/* OGBox 1.0.4: take_frame_into without the wait: take_start submits the copy into dst (STARTED; NONE:
+ * nothing new; PENDING: one in flight already), take_poll reads whether it is done (DONE: the frame
+ * in dst, *w x *h, *seen its; PENDING: not yet; FAILED: the GPU lost; NONE: none in flight). dst is
+ * the HLE GPU's until DONE or FAILED: not read, written or freed (frame_forget waits for it). */
+enum { PSHX_CORE_TAKE_NONE, PSHX_CORE_TAKE_STARTED, PSHX_CORE_TAKE_PENDING, PSHX_CORE_TAKE_DONE, PSHX_CORE_TAKE_FAILED };
+int pshx_core_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                         uint32_t max_h);
+int pshx_core_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h);
 /* OGBox 0.0.4: the display's timing, for the emulated vblank (hakuX's nv2a.c locks it to the panel,
  * as its Android front end's Choreographer does). display_vsync: the presenter's loop was let go by
  * the display (its swapchain image acquired, FIFO: once a refresh); display_pickup: it looks for a
@@ -104,11 +112,61 @@ void pshx_core_display_vsync(void);
 void pshx_core_display_pickup(void);
 /* The size the next frame has (the HLE GPU's display; 0 x 0 before the first). */
 void pshx_core_frame_size(uint32_t *w, uint32_t *h);
+
+/* One Vulkan device (env NC_HLE_ONE_DEVICE=1): the HLE GPU renders on the title's device instead
+ * of one of its own, and the title reads its display image on the GPU (no copy through memory, no
+ * wait on the CPU). The handles are the title's Vulkan handles (VkInstance, VkPhysicalDevice,
+ * VkDevice, VkQueue, VkImage, VkSemaphore: pointers on the 64-bit console). */
+typedef struct PshxGpuNeeds {
+    uint32_t queue_family;              /* the HLE GPU's queue family (the title's queue must be on it) */
+    uint32_t extension_count;
+    const char *const *extensions;      /* device extensions to enable */
+    void *features;                     /* a VkPhysicalDeviceFeatures2 and its chain, all to enable (the title
+                                         * may add its own features to it; it stays the core's) */
+} PshxGpuNeeds;
+/* What the HLE GPU needs of the device the title is about to make; false: it can't share one (why). */
+bool pshx_core_gpu_needs(void *instance, uint32_t api_version, void *physical_device, PshxGpuNeeds *needs,
+                         char *why, unsigned why_size);
+typedef struct PshxGpuShare {
+    void *instance;
+    uint32_t api_version;               /* the instance's */
+    void *physical_device;
+    void *device;
+    uint32_t queue_family;
+    void *queue;
+    void (*queue_lock)(void);           /* the queue's lock: the title's submits, waits and presents take it too */
+    void (*queue_unlock)(void);
+    uint32_t extension_count;           /* what the device was made with */
+    const char *const *extensions;
+    const void *features;               /* (a VkPhysicalDeviceFeatures2 chain) */
+} PshxGpuShare;
+/* The title's device offered to the HLE GPU (copied), before pshx_core_start; the HLE GPU takes it
+ * when it has all it needs, else it makes its own as before (the boot log's "GPU:" line says which). */
+void pshx_core_gpu_share(const PshxGpuShare *share);
+/* The HLE GPU is up on the title's device: frames come through pshx_core_take_slot, not take_frame. */
+bool pshx_core_gpu_shared(void);
+typedef struct PshxSlotFrame {
+    int slot;
+    uint32_t width, height;
+    void *image;                        /* VkImage, R8G8B8A8_UNORM, in SHADER_READ_ONLY_OPTIMAL: left so */
+    void *semaphore;                    /* VkSemaphore (a timeline): the title's submit reading the image waits */
+    uint64_t value;                     /* for this value */
+} PshxSlotFrame;
+/* The front frame, when newer than *seen, as the HLE GPU's display image itself (a shared device
+ * only). It is kept (not written again, not destroyed by a display resize) until pshx_core_slot_done,
+ * which the title calls once its commands that read it are submitted, on the same queue: the HLE GPU's
+ * next write of the image comes after them in the queue and its first barrier waits for all before. */
+bool pshx_core_take_slot(uint64_t *seen, PshxSlotFrame *frame);
+void pshx_core_slot_done(int slot);
 /* The console's video setting is widescreen: a 4:3-sized frame is shown as 16:9 (anamorphic). */
 bool pshx_core_widescreen(void);
 
 /* Paused: the guest's clock and sound stop, the frame stays (the quick menu, the home screen). */
 void pshx_core_pause(bool on);
+/* OGBox 1.0.4: the speed limit while the game runs (pct: a percentage of the Xbox's, 0 Unlimited;
+ * at the start it is NC_SPEED): the core's clock, vblank and sound go on at it from the guest's
+ * next kernel entry. False when the core has none (a core older than its speed limit). */
+bool pshx_core_set_speed(unsigned pct);
 /* OGBox 0.0.2: n of the GPU's draws into the boot log (hakuX's draw log: each draw's target and
  * textures, the targets' events among them), from delay_ms from now on, for a problem report: the
  * quick menu's (the delay: time to bring the problem on screen after it closes). */
@@ -140,6 +198,17 @@ typedef struct PshxWrites {
     char closing[64], cache_file[64];
 } PshxWrites;
 bool pshx_core_writes(PshxWrites *w);
+
+/* OGBox 1.0.4: how far the start has come, for the loading screen (from the core's own state, as
+ * read by its other threads): the HLE GPU taken up by the game (gpu: its push-buffer mode started,
+ * the Xbox booted that far), its Vulkan back end up (graphics), and the cached shaders being built
+ * before the game's first draw (shaders_done of shaders_total; total 0 when none are being built:
+ * before, after, or none recorded or the setting off). */
+typedef struct PshxCoreStart {
+    bool gpu, graphics;
+    unsigned shaders_done, shaders_total;
+} PshxCoreStart;
+void pshx_core_start_progress(PshxCoreStart *p);
 
 /* One line about the run, for the boot log's heartbeat and an overlay: the state, frames
  * presented and taken, the guest's position when the CPU backend knows it. */

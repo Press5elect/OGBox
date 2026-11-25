@@ -87,6 +87,22 @@ const char *pshx_core_message(void)
     return g_message;
 }
 
+/* OGBox 1.0.4: the start's progress (ogbox_core.h): the core's flags as they are now (plain reads of
+ * flags another thread sets once; for the screen only) and the prebuild's count
+ * (native/hle/glue.c: hw/xbox/hle/vk/pipeasync.c's, kept atomically while it runs) */
+bool hle_back_running(void);   /* hw/xbox/hle/vk/back.c */
+
+void pshx_core_start_progress(PshxCoreStart *p)
+{
+    memset(p, 0, sizeof(*p));
+    p->gpu = nc_hle_pb_active();
+    p->graphics = p->gpu && hle_back_running();
+    uint32_t done = 0, total = 0;
+    nc_hle_pipeline_progress(&done, &total);
+    p->shaders_done = done;
+    p->shaders_total = total;
+}
+
 const char *pshx_core_name(void)
 {
     return "hakuX (native core, HLE GPU)";
@@ -331,9 +347,10 @@ bool pshx_core_configure(const PshxCoreConfig *config)
             continue;
         }
         const char *eq = strchr(arg, '=');
-        if (eq && !strncmp(arg, "NC_", 3)) {
+        if (eq && (!strncmp(arg, "NC_", 3) || !strncmp(arg, "HAKUX_HLE_", 10) || !strncmp(arg, "HLE_", 4))) {
             /* 0.1.11: a switch like NC_SWEEP_RDTSC=0 written without "env " is
-             * one too (0.1.10 left it out: the A/B run tested nothing) */
+             * one too (0.1.10 left it out: the A/B run tested nothing); 1.0.4: the
+             * HLE GPU's HAKUX_HLE_ and HLE_ ones too (Settings' Core experiment) */
             char name[64];
             const size_t n = (size_t)(eq - arg) < sizeof(name) - 1 ? (size_t)(eq - arg) : sizeof(name) - 1;
             memcpy(name, arg, n);
@@ -794,9 +811,49 @@ void pshx_core_frame_forget(void *dst)
     pshx_present_forget(dst);
 }
 
+int pshx_core_take_start(const uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
+                         uint32_t max_h)
+{
+    _Static_assert(PSHX_TAKE_NONE == PSHX_CORE_TAKE_NONE && PSHX_TAKE_STARTED == PSHX_CORE_TAKE_STARTED &&
+                   PSHX_TAKE_PENDING == PSHX_CORE_TAKE_PENDING && PSHX_TAKE_DONE == PSHX_CORE_TAKE_DONE &&
+                   PSHX_TAKE_FAILED == PSHX_CORE_TAKE_FAILED, "the take's answers, the same both sides");
+    return pshx_present_take_start(seen, dst, dst_bytes, pitch, max_w, max_h);
+}
+
+int pshx_core_take_poll(uint64_t *seen, uint32_t *w, uint32_t *h)
+{
+    return pshx_present_take_poll(seen, w, h);
+}
+
 void pshx_core_frame_size(uint32_t *w, uint32_t *h)
 {
     pshx_present_size(w, h);
+}
+
+bool pshx_core_gpu_needs(void *instance, uint32_t api_version, void *physical_device, PshxGpuNeeds *needs,
+                         char *why, unsigned why_size)
+{
+    return pshx_present_gpu_needs(instance, api_version, physical_device, needs, why, why_size);
+}
+
+void pshx_core_gpu_share(const PshxGpuShare *share)
+{
+    pshx_present_gpu_share(share);
+}
+
+bool pshx_core_gpu_shared(void)
+{
+    return pshx_present_gpu_shared();
+}
+
+bool pshx_core_take_slot(uint64_t *seen, PshxSlotFrame *frame)
+{
+    return pshx_present_slot_take(seen, frame);
+}
+
+void pshx_core_slot_done(int slot)
+{
+    pshx_present_slot_done(slot);
 }
 
 bool pshx_core_widescreen(void)
@@ -807,6 +864,18 @@ bool pshx_core_widescreen(void)
 void pshx_core_pause(bool on)
 {
     nc_pause_set(on);
+}
+
+/* (weak: a core without the speed limit still links; native/kernel/ke.c) */
+void nc_speed_set(unsigned pct) __attribute__((weak));
+
+bool pshx_core_set_speed(unsigned pct)
+{
+    if (!nc_speed_set) {
+        return false;
+    }
+    nc_speed_set(pct);
+    return true;
 }
 
 void pshx_core_drawlog(int n, unsigned delay_ms)

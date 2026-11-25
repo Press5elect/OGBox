@@ -15,9 +15,11 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <map>
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 #if defined(OGBOX_FIXES_TEST)
@@ -456,9 +458,11 @@ std::string UrlPath(const std::string& path)
 } // namespace
 
 bool Cheats(const std::string& index, const std::string& raw, const std::string& trainers, const Getter& get,
-	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress)
+	CheatsReport& report, const std::function<void(unsigned done, unsigned total)>& progress, unsigned connections,
+	const std::set<std::string>& titles)
 {
 	report = CheatsReport();
+	report.games = static_cast<unsigned>(titles.size());
 	std::string text;
 	if (!ReadAll(index, text, kMostList))
 	{
@@ -479,7 +483,8 @@ bool Cheats(const std::string& index, const std::string& raw, const std::string&
 		return false;
 	}
 	std::vector<Entry> entries;
-	std::set<std::string> listed;
+	std::set<std::string> listed, games;   // (games: the asked-for title IDs the index has)
+	size_t all = 0;
 	for (size_t i = 1; i < lines.size(); i++)
 	{
 		const std::string& line = lines[i];
@@ -497,64 +502,133 @@ bool Cheats(const std::string& index, const std::string& raw, const std::string&
 			fixes_log("cheats: line %zu of the index refused: %s", i + 1, line.c_str());
 			continue;
 		}
+		/* 1.0.4: only the asked-for games' (their folder's title ID), when some are */
+		if (!titles.empty())
+		{
+			const std::string id = e.path.substr(7, 8);
+			if (!titles.count(id))
+			{
+				if (++all > kMostFiles)
+				{
+					report.error = "OGBox's list of cheats is too long.";
+					return false;
+				}
+				continue;
+			}
+			games.insert(id);
+		}
 		entries.push_back(e);
-		if (entries.size() > kMostFiles)
+		if (++all > kMostFiles)
 		{
 			report.error = "OGBox's list of cheats is too long.";
 			return false;
 		}
 	}
 	report.listed = static_cast<unsigned>(entries.size());
+	report.gamesListed = static_cast<unsigned>(games.size());
+	if (!titles.empty())
+		fixes_log("cheats: %u games asked for, %u of them with cheats in the index: %u files", report.games, report.gamesListed,
+			report.listed);
 
+	/* 1.0.4: fetched over several connections at once (connections, 1 to 16), as Crux2 fetches a
+	 * texture pack's pieces: each file is its own HTTPS request, and one after another most of
+	 * their time is the connection's setup (958 small files) */
+	const unsigned workers = std::max(1u, std::min(16u, connections));
+	std::mutex lock;   // the report, the counts, progress
+	std::atomic<size_t> next{ 0 };
 	unsigned done = 0, offline = 0;
-	std::vector<uint8_t> body;
-	for (const Entry& e : entries)
-	{
-		if (progress)
-			progress(done, report.listed);
-		done++;
-		const std::string place = trainers + "/" + e.path.substr(7);   // <title ID>/<file>
-		struct stat st;
-		if (stat(place.c_str(), &st) == 0)
+	bool stop = false;
+	auto work = [&]() {
+		std::vector<uint8_t> body;
+		for (;;)
 		{
-			/* there already: the same file, or the user's own of the same name (kept as it is) */
-			std::string have;
-			if (S_ISREG(st.st_mode) && ReadAll(place, have, kMostBytes) && have.size() == e.bytes &&
-				PS5Update::Sha256Hex(have.data(), have.size()) == e.sha)
-				report.present++;
+			const size_t i = next.fetch_add(1);
+			if (i >= entries.size())
+				return;
+			const Entry& e = entries[i];
+			{
+				std::lock_guard<std::mutex> g(lock);
+				if (stop)
+				{
+					report.failed++;
+					done++;
+					continue;
+				}
+			}
+			const std::string place = trainers + "/" + e.path.substr(7);   // <title ID>/<file>
+			struct stat st;
+			if (stat(place.c_str(), &st) == 0)
+			{
+				/* there already: the same file, or the user's own of the same name (kept as it is) */
+				std::string have;
+				const bool same = S_ISREG(st.st_mode) && ReadAll(place, have, kMostBytes) && have.size() == e.bytes &&
+					PS5Update::Sha256Hex(have.data(), have.size()) == e.sha;
+				std::lock_guard<std::mutex> g(lock);
+				if (same)
+					report.present++;
+				else
+				{
+					report.kept++;
+					fixes_log("cheats: %s: a different file of that name is there: kept", place.c_str());
+				}
+				done++;
+				if (progress)
+					progress(done, report.listed);
+				continue;
+			}
+			body.clear();
+			const int status = get(raw + commit + "/" + UrlPath(e.path), body);
+			const bool good = status == 200 && body.size() == e.bytes && PS5Update::Sha256Hex(body.data(), body.size()) == e.sha;
+			bool written = false;
+			int werr = 0;
+			if (good)
+			{
+				written = stat(place.c_str(), &st) != 0 && WriteOver(place, body.data(), body.size());
+				werr = errno;
+			}
+			std::lock_guard<std::mutex> g(lock);
+			done++;
+			if (status < 0)
+			{
+				if (++offline >= 3 && !stop)   // (three in a row: the rest is not tried)
+				{
+					stop = true;
+					report.error = report.fetched ? "The network was lost: " + std::to_string(report.fetched) + " files were downloaded."
+												  : std::string("The network could not be reached: nothing was downloaded.");
+					fixes_log("cheats: the network could not be reached; stopped");
+				}
+				report.failed++;
+			}
+			else if (!good)
+			{
+				offline = 0;
+				fixes_log("cheats: %s: not fetched (HTTP %d, %zu bytes, the index says %llu)", e.path.c_str(), status, body.size(),
+					static_cast<unsigned long long>(e.bytes));
+				report.failed++;
+			}
+			else if (!written)
+			{
+				offline = 0;
+				fixes_log("cheats: %s: cannot be written (%s)", place.c_str(), strerror(werr));
+				report.failed++;
+			}
 			else
 			{
-				report.kept++;
-				fixes_log("cheats: %s: a different file of that name is there: kept", place.c_str());
+				offline = 0;
+				report.fetched++;
 			}
-			continue;
+			if (progress)
+				progress(done, report.listed);
 		}
-		body.clear();
-		const int status = get(raw + commit + "/" + UrlPath(e.path), body);
-		if (status < 0 && ++offline >= 3)   // (three in a row: the rest is not tried)
-		{
-			report.failed += report.listed - done + 1;
-			report.error = report.fetched ? "The network was lost: " + std::to_string(report.fetched) + " files were downloaded."
-										  : std::string("The network could not be reached: nothing was downloaded.");
-			fixes_log("cheats: the network could not be reached; stopped");
-			break;
-		}
-		if (status != 200 || body.size() != e.bytes || PS5Update::Sha256Hex(body.data(), body.size()) != e.sha)
-		{
-			fixes_log("cheats: %s: not fetched (HTTP %d, %zu bytes, the index says %llu)", e.path.c_str(), status, body.size(),
-				static_cast<unsigned long long>(e.bytes));
-			report.failed++;
-			continue;
-		}
-		offline = 0;
-		if (stat(place.c_str(), &st) == 0 || !WriteOver(place, body.data(), body.size()))
-		{
-			fixes_log("cheats: %s: cannot be written (%s)", place.c_str(), strerror(errno));
-			report.failed++;
-			continue;
-		}
-		report.fetched++;
-	}
+	};
+	if (progress)
+		progress(0, report.listed);
+	std::vector<std::thread> pool;
+	for (unsigned w = 1; w < workers && w < entries.size(); w++)
+		pool.emplace_back(work);
+	work();
+	for (std::thread& t : pool)
+		t.join();
 	if (progress)
 		progress(report.listed, report.listed);
 	report.ok = report.failed == 0;
@@ -608,9 +682,12 @@ std::mutex g_cheatsMutex;
 bool g_cheatsRunning = false, g_cheatsDone = false;
 unsigned g_cheatsAt = 0, g_cheatsOf = 0;
 CheatsReport g_cheatsReport;
+/* 1.0.4: one download of them at a time (the user's and a game page's), so two never write one file */
+std::mutex g_cheatsWork;
+std::atomic<unsigned> g_gameCheatsFetched{ 0 };
 } // namespace
 
-bool StartCheats(const std::string& index, const std::string& trainers)
+bool StartCheats(const std::string& index, const std::string& trainers, const std::set<std::string>& titles)
 {
 	{
 		std::lock_guard<std::mutex> lock(g_cheatsMutex);
@@ -620,21 +697,44 @@ bool StartCheats(const std::string& index, const std::string& trainers)
 		g_cheatsDone = false;
 		g_cheatsAt = g_cheatsOf = 0;
 	}
-	std::thread([index, trainers]() {
+	std::thread([index, trainers, titles]() {
 		CheatsReport r;
+		std::unique_lock<std::mutex> work(g_cheatsWork);
 		Cheats(index, "https://raw.githubusercontent.com/crazyriddler/xbased/", trainers,
 			[](const std::string& url, std::vector<uint8_t>& out) { return OGBoxNet::Get(url, out, 60); }, r,
 			[](unsigned done, unsigned total) {
 				std::lock_guard<std::mutex> lock(g_cheatsMutex);
 				g_cheatsAt = done;
 				g_cheatsOf = total;
-			});
+			},
+			8, titles);   // 1.0.4: eight files at once
+		work.unlock();
 		std::lock_guard<std::mutex> lock(g_cheatsMutex);
 		g_cheatsReport = std::move(r);
 		g_cheatsRunning = false;
 		g_cheatsDone = true;
 	}).detach();
 	return true;
+}
+
+void StartGameCheats(const std::string& index, const std::string& trainers, const std::string& titleId)
+{
+	std::thread([index, trainers, titleId]() {
+		CheatsReport r;
+		std::lock_guard<std::mutex> work(g_cheatsWork);
+		Cheats(index, "https://raw.githubusercontent.com/crazyriddler/xbased/", trainers,
+			[](const std::string& url, std::vector<uint8_t>& out) { return OGBoxNet::Get(url, out, 30); }, r, nullptr, 4,
+			std::set<std::string>{ titleId });
+		fixes_log("cheats: %s's (its page): %u listed, %u fetched%s%s", titleId.c_str(), r.listed, r.fetched,
+			r.error.empty() ? "" : ": ", r.error.c_str());
+		if (r.fetched)
+			g_gameCheatsFetched++;
+	}).detach();
+}
+
+unsigned GameCheatsFetched()
+{
+	return g_gameCheatsFetched.load();
 }
 
 bool CheatsRunning(unsigned& done, unsigned& total)

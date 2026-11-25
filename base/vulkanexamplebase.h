@@ -166,6 +166,12 @@ protected:
 	std::array<VkSemaphore, maxConcurrentFrames> presentCompleteSemaphores{};
 	std::vector<VkSemaphore> renderCompleteSemaphores{};
 	std::array<VkFence, maxConcurrentFrames> waitFences;
+	/** @brief OGBox: a timeline semaphore the next submitFrame's submit also waits for (at value, in stage); cleared by it */
+	VkSemaphore submitWaitTimeline{ VK_NULL_HANDLE };
+	uint64_t submitWaitValue{ 0 };
+	VkPipelineStageFlags submitWaitStage{ 0 };
+	/** @brief OGBox: the device and instance are in use elsewhere still (the emulator's GPU shares them): not destroyed */
+	bool deviceKept{ false };
 
 	bool requiresStencil{ false };
 public:
@@ -327,6 +333,7 @@ public:
 		double lastFrameTime = 0.0;
 		/** @brief The launcher's own menu: ImGui windows of its own instead of the sample's overlay window */
 		bool ownOverlay = false;
+		double overlayDrawMs = 0, overlayRenderMs = 0, overlayUploadMs = 0;   // OGBox 1.0.4: the last overlay update's parts
 		/** @brief OPTIONS ends the sample, back to the menu; in a title with one program, it shows and hides the overlay */
 		bool optionsEnds = true;
 		/** @brief A test run's variant of the sample ("uikit.aurora" runs uikit with "aurora"); empty otherwise */

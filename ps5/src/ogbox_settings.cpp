@@ -11,6 +11,7 @@
 #include "ogbox_settings.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -127,7 +128,7 @@ std::vector<Option> makeOptions()
 		{ { "soft", "Soft" }, { "sharp", "Sharp (Lanczos)" } }, "soft", true });
 	/* 0.0.9: the CRT look (crt.frag), the picture's last pass */
 	o.push_back({ "crt", Section::Graphics, "CRT look",
-		"The picture as a TV of the time showed it: the scanlines between the game's own lines (and, Strong, the "
+		"The picture as a TV of the time showed it: the scanlines between the game's lines (and, Strong, the "
 		"screen's red, green and blue stripes). Replaces the upscaling filter. Best on a 4K screen.",
 		{ { "off", "Off" }, { "light", "Light" }, { "strong", "Strong" } }, "off", true });
 	/* 0.0.9: HDR output (ogbox_main.cpp hdrUpdate, hdr.frag; the driver's ps5/patches/mesa-27/0019).
@@ -175,6 +176,12 @@ std::vector<Option> makeOptions()
 	o.push_back({ "upscale", Section::Graphics, "Upscaling filter",
 		"Bilinear: the default. FSR1 scales the picture up to 4K; it does nothing at an internal resolution above 4x.",
 		{ { "bilinear", "Bilinear" }, { "sharp", "Bilinear (Sharp)" }, { "fsr", "FSR1" } }, "bilinear", true });
+	/* FSR1's second pass, RCAS (AMD's sharpening after EASU: ogbox_main.cpp, rcas.frag), shown with FSR1
+	 * only (settingsModel); its stops as AMD's FsrRcasCon takes them: 2, 1 and 0.5 */
+	o.push_back({ "fsr_sharpness", Section::Graphics, "FSR1 sharpening",
+		"For FSR1: AMD's sharpening after the upscale (RCAS), as FSR1 is meant to be used. Medium: the default. "
+		"Off: FSR1's upscale alone, softer.",
+		{ { "off", "Off" }, { "low", "Low" }, { "medium", "Medium" }, { "high", "High" } }, "medium", true });
 	/* 0.0.1: the depth vertex programs store, exactly their screen-space z (hakuX-native's
 	 * shader/ff.h HLE_ZEXACT_IN_GLSL); off: the GPU's own, with its early depth test */
 	/* 0.0.7: the display's mode, asked of the driver at the title's start (Crux2's switches) */
@@ -188,7 +195,7 @@ std::vector<Option> makeOptions()
 	/* 0.0.7: frame generation (Crux2's three methods): a picture made between two of the game's, shown on the
 	 * refresh a new one arrives; a game that draws 30 a second looks like 60 */
 	o.push_back({ "framegen", Section::Graphics, "Frame generation",
-		"Makes extra frames between the game's own, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
+		"Makes extra frames between the game's frames, so a game at 30 fps looks like 60 (and at 120 Hz, 60 like 120). "
 		"Adds about one refresh of delay. Crux2's own: the lightest. FSR 3 optical flow: AMD's motion finder. MihawkGen: "
 		"a small neural network, the heaviest; its Blend is a plain mix of the two frames. Best up to 4x internal "
 		"resolution. Nothing is made for a game that already draws a frame every refresh.",
@@ -203,7 +210,7 @@ std::vector<Option> makeOptions()
 	 * colour (NC_HLE_FORCE32) as one of its choices */
 	o.push_back({ "dither", Section::Graphics, "16-bit dithering",
 		"Games that draw in 16-bit colour hide its colour bands with a fine pattern of dots. Default: the Xbox's "
-		"pattern, by the game's own pixels (at a higher internal resolution it shows as a grain). Scaled dithering: "
+		"pattern, by the game's pixels (at a higher internal resolution it shows as a grain). Scaled dithering: "
 		"the same pattern by screen pixel, too fine to see. Force 32-bit: drawn in 32-bit colour, with no bands and "
 		"no dots; a few games look wrong with it. Off: no dots, but visible colour bands.",
 		{ { "off", "Off" }, { "xbox", "Default" }, { "fine", "Scaled dithering" }, { "force32", "Force 32-bit" } },
@@ -216,6 +223,14 @@ std::vector<Option> makeOptions()
 		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
 		"patterns may shimmer.",
 		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
+	/* 1.0.4: Texture sharpness and Anisotropic filtering on colour textures only (hakuX-native's
+	 * shader/texrole.h, NC_HLE_TEXROLE, the core's default on); shown with either above its default
+	 * (settingsModel) */
+	o.push_back({ "tex_role", Section::Graphics, "Sharpness for colour textures only",
+		"For Texture sharpness and Anisotropic filtering: only the textures you see take them; masks, normal maps, "
+		"shadows and effects keep the game's filtering. Off: every texture, as before (some games' "
+		"characters look too bright).",
+		kOnOff, "1", true });
 	/* OGBox 1.0.2: texture packs (hakuX's tex/texpack.h: NC_HLE_TEXPACK_DIR and NC_HLE_TEXDUMP_DIR,
 	 * <data folder>/textures/<title ID>, ogbox_main.cpp) */
 	o.push_back({ "tex_replace", Section::Graphics, "HD texture packs",
@@ -228,12 +243,68 @@ std::vector<Option> makeOptions()
 		"ones as DDS, the rest as PNG. Edit or upscale them and copy them to textures/<title ID> to make a "
 		"pack. Writing them can slow the game the first time it shows them.",
 		kOnOff, "0", true });
+	/* 1.0.4: texture upscaling at upload (hakuX-native's tex/texup.h, NC_HLE_TEXUP 2 or 4; its memory
+	 * budget, NC_HLE_TEXUP_MIB, left at the core's 1 GiB) */
+	o.push_back({ "tex_upscale", Section::Graphics, "Texture upscaling",
+		"Draws the game's textures again at 2x or 4x their size with an edge-keeping filter, once each stays the "
+		"same for a second. Text, masks, normal maps and pixel-art textures stay as they are. Uses up to 1 GB of "
+		"the GPU's memory. An HD texture pack's textures are not upscaled again.",
+		{ { "0", "Off" }, { "2", "2x" }, { "4", "4x" } }, "0", true });
+	/* 1.0.4: upscaled DXT textures kept in DXT (hakuX-native's tex/texbc.h; NC_HLE_TEXUP_BC=0 for RGBA8) */
+	o.push_back({ "tex_upscale_bc", Section::Graphics, "Upscaled texture format",
+		"For compressed (DXT) textures, which most games use: Compressed keeps the upscaled texture in the same "
+		"compressed format as the original, so the GPU reads 4 to 8 times less memory for it. Uncompressed stores "
+		"every texel in full: slower at 4x, with no block steps in the new detail.",
+		{ { "1", "Compressed" }, { "0", "Uncompressed" } }, "1", true });
+	/* 1.0.4: alpha-tested textures' smaller levels keep level 0's coverage (hakuX-native's tex/alpha_cov.h,
+	 * NC_HLE_ALPHA_AA 1 or 2) */
+	o.push_back({ "alpha_aa", Section::Graphics, "Foliage coverage",
+		"Leaves, grass and fences that thin out and flicker in the distance stay as full as up close. Alpha-tested: "
+		"the cut-out textures. And blended: blended ones too, for a game whose foliage is also see-through.",
+		{ { "0", "Off" }, { "1", "Alpha-tested" }, { "2", "Alpha-tested and blended" } }, "0", true });
 	o.push_back({ "sharpen", Section::Graphics, "Sharpening", "CAS: sharpens the picture's edges and details.",
 		{ { "0", "Off" }, { "30", "Low" }, { "60", "Medium" }, { "90", "High" } }, "0", true });
 	/* 0.1.59: the overscan a TV hides, cropped (hakuX-lr's 3/80 a side: the picture keeps its shape) */
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
 		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
 		"borders.", kOnOff, "0", true });
+	/* 1.0.4: the core's lighting and shadow options (hakuX-native): 1x glow and blur targets read through a
+	 * B-spline (NC_HLE_SMALLRT_FILTER, the core's default on), shadow buffers' compare over 3 x 3 or 5 x 5
+	 * (NC_HLE_SHADOW_PCF), fixed-function lights per pixel (NC_HLE_FF_PIXEL_LIGHT), ambient occlusion from
+	 * the frame's depth buffer (NC_HLE_AO and its _STRENGTH, _RADIUS, _NEAR, _FAR, _FOV); all read at the
+	 * game's start */
+	o.push_back({ "smallrt_filter", Section::Graphics, "Smooth small effects",
+		"Glows and blurs the game draws at the Xbox's resolution are smoothed when stretched to the internal "
+		"resolution, instead of showing as shimmering blocks. Off: as before.",
+		kOnOff, "1", true });
+	o.push_back({ "shadow_pcf", Section::Graphics, "Shadow softness",
+		"For games with shadow maps: softer shadow edges. Game's default: the Xbox's 2x2 filter. Soft, wide: as wide as Softer for the cost of Soft (four turned taps; a fine grain at 1x).",
+		{ { "0", "Game's default (2x2)" }, { "3", "Soft (3x3)" }, { "4", "Soft, wide (4 taps)" }, { "5", "Softer (5x5)" } }, "0", true });
+	o.push_back({ "ff_pixel_light", Section::Graphics, "Per-pixel lighting",
+		"The game's lights worked out for each pixel instead of each corner of a model: rounder highlights, no "
+		"lights that pop on large flat surfaces. Only for games lit without vertex programs; the log says if a game is.",
+		kOnOff, "0", true });
+	o.push_back({ "ao", Section::Graphics, "Ambient occlusion",
+		"Darkens corners and creases from the game's depth, drawn under the HUD. Works by itself for games without "
+		"vertex programs; for the others set Near and Far below (the log says which a game is and why none is drawn).",
+		kOnOff, "0", true });
+	o.push_back({ "ao_strength", Section::Graphics, "Ambient occlusion strength", "",
+		{ { "50", "Light" }, { "100", "Normal" }, { "150", "Strong" } }, "100", true });
+	o.push_back({ "ao_radius", Section::Graphics, "Ambient occlusion radius",
+		"How far around each point it looks, as a share of the picture's height.",
+		{ { "2", "Small (2%)" }, { "4", "Normal (4%)" }, { "6", "Large (6%)" } }, "4", true });
+	o.push_back({ "ao_near", Section::Graphics, "Ambient occlusion near",
+		"For games drawn with vertex programs: the game camera's near plane, in its own units. Not set: none for them.",
+		{ { "0", "Not set" }, { "0.1", "0.1" }, { "0.5", "0.5" }, { "1", "1" }, { "2", "2" }, { "5", "5" }, { "10", "10" } },
+		"0", true });
+	o.push_back({ "ao_far", Section::Graphics, "Ambient occlusion far",
+		"For games drawn with vertex programs: the game camera's far plane, in its own units. Not set: none for them.",
+		{ { "0", "Not set" }, { "100", "100" }, { "500", "500" }, { "1000", "1000" }, { "2000", "2000" }, { "5000", "5000" },
+			{ "10000", "10000" }, { "50000", "50000" } },
+		"0", true });
+	o.push_back({ "ao_fov", Section::Graphics, "Ambient occlusion field of view",
+		"For games drawn with vertex programs: the camera's vertical field of view.",
+		{ { "45", "45 degrees" }, { "60", "60 degrees" }, { "75", "75 degrees" }, { "90", "90 degrees" } }, "60", true });
 	// ---- Performance: how games run
 	/* 0.0.1: the HLE GPU's two threads (the push-buffer decoder, the renderer) on cores of their own */
 	o.push_back({ "gpu_cores", Section::Performance, "GPU on separate cores",
@@ -243,6 +314,16 @@ std::vector<Option> makeOptions()
 	o.push_back({ "frame_pacing", Section::Performance, "Frame pacing",
 		"Helps the input lag of a game whose drawing can't keep up.", kOnOff, "0", true });
 	o.push_back({ "uncapped", Section::Performance, "Uncapped frame rate", "For debugging only.", kOnOff, "0", true });
+	/* OGBox 1.0.4: the speed limit (after ProsperoEden's): the Xbox's whole clock at a percentage (hakuX-native's
+	 * NC_SPEED: its timers, RDTSC, vblank and sound); changed in a running game it applies at once
+	 * (pshx_core_set_speed) */
+	o.push_back({ "speed_limit", Section::Performance, "Speed limit",
+		"How fast the game runs, as a percentage of the Xbox: above 100% the whole game runs faster (intros, menus, "
+		"grinding), its timers, animations and music too, and the sound plays faster and higher. Where the PS5 "
+		"can't keep up, the game runs as fast as it can. Unlimited: as fast as the PS5 allows (the speed follows "
+		"the game). Not a frame-rate unlock. Changing it in a running game applies at once.",
+		{ { "100", "100% (Xbox speed)" }, { "150", "150%" }, { "200", "200%" }, { "300", "300%" }, { "0", "Unlimited" } },
+		"100", true });
 	// 0.0.2: off by default (the console draws everything); on, a draw whose shader isn't built yet is skipped
 	o.push_back({ "async_shaders", Section::Performance, "Compile shaders in the background",
 		"The first time a game runs, expect hitches while this is off. On, the hitches are gone, but some textures or "
@@ -258,7 +339,7 @@ std::vector<Option> makeOptions()
 	 * the fast mix's routing of the 3D and effect bins (6 and up) is a table of DirectSound's, and
 	 * the reverb send is left out of it, so some games' balance was off */
 	o.push_back({ "audio_mixing", Section::Audio, "Sound mixing",
-		"Default: the game's own sound program mixes, as on the console: voices, music and effects "
+		"Default: the game's sound program mixes, as on the console: voices, music and effects "
 		"balanced as the game sets them, with its reverb. Fast: OGBox mixes the voices itself; lighter, "
 		"without the game's effects. If the game's program stops making sound, that run switches to Fast.",
 		{ { "game", "Default" }, { "fast", "Fast" } }, "game", true });
@@ -284,6 +365,22 @@ std::vector<Option> makeOptions()
 		"failed game, 15 s without a new frame, or the quick menu's Save the Log (no writing to the drive otherwise). "
 		"Always written: every line goes to the file as it happens. Takes effect at the next start of OGBox.",
 		{ { "problems", "Only when something goes wrong" }, { "always", "Always written" } }, "problems", false });
+	/* 1.0.4: the cache drives' write-back through the write broker (platform/ps5_wbremote.h): the console
+	 * holds a title's own writes back after about 1.3 GiB, the broker's (a payload) not */
+	o.push_back({ "fast_writes", Section::Performance, "Fast writes on the console's storage (helper)",
+		"On: with the data folder on the console's storage, a helper started with the game writes what the game puts on "
+		"its cache drives (the console slows OGBox's own writes down after about 1.3 GB written, the helper's not). If "
+		"the helper can't start or stops, OGBox writes them itself. Nothing changes with the data folder on USB storage. "
+		"Takes effect at the next start of a game.", kOnOff, "1", false });
+	/* 1.0.4: Settings > Advanced > Diagnostics: two of the core's A/B switches for a test run (coreArgs: the
+	 * environment switches hakuX-native reads); they were one "Core experiment" choice until 1.0.4 */
+	o.push_back({ "one_gpu_device", Section::Performance, "One GPU device",
+		"For testing only: the emulator's graphics render on the same GPU device as OGBox's own and the picture is "
+		"copied on the GPU, not read back. Off: two devices, as normal. Takes effect at the next start of a game.",
+		kOnOff, "0", true });
+	o.push_back({ "guest_ram_import", Section::Performance, "Guest RAM imported",
+		"For testing only: the Xbox's RAM is imported into the GPU, so vertex data is read in place instead of "
+		"copied. Off: copied, as normal. Takes effect at the next start of a game.", kOnOff, "0", true });
 	o.push_back({ "console_ram", Section::Console, "Memory",
 		"The Xbox's RAM. Auto: 128 MB only when a patch needs it to run. 64 MB: the Xbox's default.",
 		{ { "auto", "Auto" }, { "64", "64 MB" }, { "128", "128 MB" } }, "auto", true });
@@ -489,6 +586,27 @@ std::vector<Option> makeOptions()
 		bar.now = true;
 		o.push_back(bar);
 	}
+	{
+		/* 1.0.4: accessibility (idea after ProsperoEden): for the menus only, every game alike */
+		Option text{ "text_size", Section::Interface, "Larger text",
+			"The menus' smaller words drawn larger: Large about a sixth, Larger nearly a third. The titles stay as they are. "
+			"Sharpest from OGBox's next start.",
+			{ { "normal", "Normal" }, { "large", "Large" }, { "larger", "Larger" } }, "normal", false };
+		text.now = true;
+		o.push_back(text);
+		Option contrast{ "high_contrast", Section::Interface, "High contrast",
+			"Brighter secondary words, solid panels with a clearer edge, and a white outline around what the controller is on. "
+			"The chosen game's cover shows fainter behind the menus.",
+			kOnOff, "0", false };
+		contrast.now = true;
+		o.push_back(contrast);
+		Option still{ "reduce_motion", Section::Interface, "Reduce motion",
+			"No sliding, fading or drifting in the menus: screens and choices change at once, the covers don't glide or grow, "
+			"the background stays still and the Code theme's falling code stops. The spinners still turn.",
+			kOnOff, "0", false };
+		still.now = true;
+		o.push_back(still);
+	}
 	// ---- Controller: which DualSense button is each of the Xbox's, the sticks, the deadzones
 	{
 		for (int i = 0; i < static_cast<int>(XboxControl::Count); i++) {
@@ -570,6 +688,13 @@ void readFile(const std::string &path, std::map<std::string, std::string> &out)
 			out[key] = v;
 		} else if (key == "force32" && v == "1" && !out.count("dither")) {
 			out["dither"] = "force32";     // 0.0.6: Force 32-bit colour is one of the dithering's choices
+		} else if (key == "core_experiment") {
+			/* 1.0.4: the Core experiment choice became two switches; the two that stay carry over, the rest are dropped */
+			if (v == "one_device" && !out.count("one_gpu_device")) {
+				out["one_gpu_device"] = "1";
+			} else if (v == "ram_import" && !out.count("guest_ram_import")) {
+				out["guest_ram_import"] = "1";
+			}
 		} else if (key == "console_timing" && v == "0" && !out.count("fast_drive")) {
 			out["fast_drive"] = "1";       // 0.0.6: Drive timing off is Fast disc drive on
 		}
@@ -634,7 +759,7 @@ const char *sectionHelp(Section s)
 	case Section::Video: return "The Xbox's own video settings, as its dashboard sets them. Games that support a mode use it.";
 	case Section::Network: return "Xbox Live through Insignia, or system link with consoles on your network or over XLink Kai.";
 	case Section::Library: return "Which places the game list shows, and how it looks. Changes apply at once.";
-	case Section::Interface: return "OGBox's menus: the theme, updates, the FPS counter and the quick menu button.";
+	case Section::Interface: return "OGBox's menus: the theme, updates, the FPS counter, the quick menu button and accessibility.";
 	case Section::Controller: return "Which DualSense button is each of the Xbox's, the sticks and their deadzones. A game can have its own.";
 	default: return "";
 	}
@@ -812,6 +937,13 @@ std::string Settings::step(const Option &o, const std::string &v, int by)
 	return o.choices[static_cast<size_t>(at)].value;
 }
 
+/* 1.0.4: the speed limit: a percentage, 0 Unlimited; a value not among the choices: 100% */
+unsigned Settings::speedLimit() const
+{
+	const std::string v = value("speed_limit");
+	return v == "150" ? 150u : v == "200" ? 200u : v == "300" ? 300u : v == "0" ? 0u : 100u;
+}
+
 std::vector<std::string> Settings::coreArgs() const
 {
 	std::vector<std::string> a;
@@ -871,6 +1003,9 @@ std::vector<std::string> Settings::coreArgs() const
 		a.push_back("tz=" + std::to_string(local.tm_gmtoff / 60));
 	}
 	a.push_back(std::string("pace=") + (on("frame_pacing") ? "1" : "0"));
+	if (speedLimit() != 100) {   // 1.0.4: the speed limit (hakuX-native's native/kernel/speed.h)
+		a.push_back("NC_SPEED=" + std::to_string(speedLimit()));
+	}
 	a.push_back(std::string("asyncpipe=") + (on("async_shaders") ? "1" : "0"));
 	a.push_back(std::string("prebuild=") + (on("prebuild_shaders") ? "1" : "0"));
 	a.push_back(std::string("devtime=") + (on("fast_drive") ? "0" : "1"));
@@ -929,6 +1064,50 @@ std::vector<std::string> Settings::coreArgs() const
 	}
 	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
 		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
+	}
+	/* 1.0.4: the core's texture, lighting and shadow options (hakuX-native; each word read once, at the
+	 * game's start); the ones on in the core by default are said only when off */
+	if (value("tex_role") == "0") {
+		a.push_back("NC_HLE_TEXROLE=0");
+	}
+	if (value("tex_upscale") == "2" || value("tex_upscale") == "4") {
+		a.push_back("NC_HLE_TEXUP=" + value("tex_upscale"));
+		if (value("tex_upscale_bc") == "0") {
+			a.push_back("NC_HLE_TEXUP_BC=0");
+		}
+	}
+	if (value("alpha_aa") == "1" || value("alpha_aa") == "2") {
+		a.push_back("NC_HLE_ALPHA_AA=" + value("alpha_aa"));
+	}
+	if (value("smallrt_filter") == "0") {
+		a.push_back("NC_HLE_SMALLRT_FILTER=0");
+	}
+	if (value("shadow_pcf") == "3" || value("shadow_pcf") == "4" || value("shadow_pcf") == "5") {
+		a.push_back("NC_HLE_SHADOW_PCF=" + value("shadow_pcf"));
+	}
+	if (value("ff_pixel_light") == "1") {
+		a.push_back("NC_HLE_FF_PIXEL_LIGHT=1");
+	}
+	if (value("ao") == "1") {
+		a.push_back("NC_HLE_AO=1");
+		for (const char *k : { "ao_strength", "ao_radius", "ao_near", "ao_far", "ao_fov" }) {
+			const Option *o = option(k);
+			const std::string v = value(k);
+			if (o && v != o->def && std::any_of(o->choices.begin(), o->choices.end(),
+					[&](const Choice &c) { return v == c.value; })) {
+				std::string w = "NC_HLE_" + std::string(k) + "=" + v;
+				std::transform(w.begin(), w.begin() + w.find('='), w.begin(), ::toupper);
+				a.push_back(w);
+			}
+		}
+	}
+	/* 1.0.4: One GPU device and Guest RAM imported (Settings > Advanced > Diagnostics), read by the core at its
+	 * start (hakux_core.c sets NC_, HAKUX_HLE_ and HLE_ words as environment switches) */
+	if (value("one_gpu_device") == "1") {
+		a.push_back("NC_HLE_ONE_DEVICE=1");
+	}
+	if (value("guest_ram_import") == "1") {
+		a.push_back("NC_HLE_GUEST_RAM_IMPORT=1");
 	}
 	// the network (NativeCoreActivity.kt's)
 	const std::string net = value("network");

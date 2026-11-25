@@ -795,10 +795,18 @@ void VulkanExampleBase::updateOverlay()
 #if defined(VK_EXAMPLE_PS5)
 	// The launcher's menu lays out its own windows
 	if (ps5.ownOverlay) {
+		/* OGBox 1.0.4: each part timed (the presenter's skipped-refresh lines: "outside render") */
+		const auto o0 = std::chrono::steady_clock::now();
 		ImGui::NewFrame();
 		OnUpdateUIOverlay(&ui);
+		const auto o1 = std::chrono::steady_clock::now();
 		ImGui::Render();
+		const auto o2 = std::chrono::steady_clock::now();
 		ui.update(currentBuffer);
+		const auto o3 = std::chrono::steady_clock::now();
+		ps5.overlayDrawMs = std::chrono::duration<double, std::milli>(o1 - o0).count();
+		ps5.overlayRenderMs = std::chrono::duration<double, std::milli>(o2 - o1).count();
+		ps5.overlayUploadMs = std::chrono::duration<double, std::milli>(o3 - o2).count();
 		return;
 	}
 #endif
@@ -882,7 +890,23 @@ void VulkanExampleBase::submitFrame(bool skipQueueSubmit)
 			.signalSemaphoreCount = 1,
 			.pSignalSemaphores = &renderCompleteSemaphores[currentImageIndex]
 		};
+		// OGBox: and a timeline value (the emulator's frame, on the same device and queue)
+		const VkSemaphore waits[2]{ presentCompleteSemaphores[currentBuffer], submitWaitTimeline };
+		const VkPipelineStageFlags waitStages[2]{ waitPipelineStage, submitWaitStage };
+		const uint64_t waitValues[2]{ 0, submitWaitValue };
+		const VkTimelineSemaphoreSubmitInfo timelineInfo{
+			.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.waitSemaphoreValueCount = 2,
+			.pWaitSemaphoreValues = waitValues
+		};
+		if (submitWaitTimeline != VK_NULL_HANDLE) {
+			submitInfo.pNext = &timelineInfo;
+			submitInfo.waitSemaphoreCount = 2;
+			submitInfo.pWaitSemaphores = waits;
+			submitInfo.pWaitDstStageMask = waitStages;
+		}
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[currentBuffer]));
+		submitWaitTimeline = VK_NULL_HANDLE;
 	}
 
 	VkSemaphore presentWait = renderCompleteSemaphores[currentImageIndex];
@@ -1120,11 +1144,15 @@ VulkanExampleBase::~VulkanExampleBase()
 		vkDestroySemaphore(device, ps5CaptureComplete, nullptr);
 	}
 #endif
-	delete vulkanDevice;
+	if (!deviceKept) {   // OGBox: else the emulator's GPU still has them (the process ends)
+		delete vulkanDevice;
+	}
 	if (settings.validation) {
 		vks::debug::freeDebugCallback(instance);
 	}
-	vkDestroyInstance(instance, nullptr);
+	if (!deviceKept) {
+		vkDestroyInstance(instance, nullptr);
+	}
 #if defined(_DIRECT2DISPLAY)
 
 #elif defined(VK_USE_PLATFORM_DIRECTFB_EXT)

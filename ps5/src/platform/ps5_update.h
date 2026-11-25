@@ -29,6 +29,15 @@
 //               renamed onto it, so no place is ever without a file.
 //
 // Recover() at the next start puts the old files back after an install that a power cut stopped.
+//
+// OGBox 1.0.4 (the idea after ProsperoEden, which keeps the version an update replaced): after an
+// install the old files it replaced are kept in <title folder>/.previous/ (one version: the next
+// update replaces them), with a manifest of their sizes and SHA-256 digests, when the drive has
+// room for them. RollBack() puts them back through the same journaled install, and takes away
+// what the update added; it refuses a kept copy that is incomplete or damaged.
+// Skip() remembers that the offered version is not wanted (Setup::skip_file): a check then says
+// `skipped` for it, and a newer release is offered again.
+//
 // The user's files (settings, the Xbox hard disk, states, games, covers, boot.txt...) are never
 // in the set that is replaced, and a file the release does not have is left where it is.
 
@@ -79,6 +88,13 @@ struct Status
 	uint64_t done = 0, total = 0;
 	double speed = 0;     // bytes a second while downloading
 	bool reinstall = false; // UpToDate: Reinstall() can put the newest release in place again
+	bool skipped = false;   // Available: this version was skipped (Skip()); a newer one is not
+	bool rollback = false;  // Verifying, Installed, Failed: it is RollBack()'s, not an update's
+	// The version kept from before the last update (RollBack() puts it back); empty: none, or one
+	// that is incomplete.
+	std::string previous;       // "1.0.2"
+	std::string previous_label; // as it was shown: "v1.0.2", "v1.0.2 - developer build"
+	uint64_t previous_bytes = 0;
 };
 
 /// One HTTP(S) GET into memory. Returns the HTTP status code, or less than 0 when there was no
@@ -106,6 +122,8 @@ struct Setup
 	HttpDownload http_download;
 	Log log;              // may be empty
 	FreeSpace free_space; // may be empty: statvfs() is asked
+	std::string running_label; // the running version as shown, for the kept copy; empty: "v" + version
+	std::string skip_file;     // where Skip() remembers the version skipped; empty: not remembered
 };
 
 /// Once at start-up, before anything else reads the title's files: an install that a power cut
@@ -130,6 +148,14 @@ void Cancel();
 bool Install();
 /// A copy of the status, taken under a lock.
 Status GetStatus();
+/// Available: this version is not wanted. Remembered (Setup::skip_file); a newer one is offered.
+void Skip();
+/// Puts the version kept from before the last update back (Status::previous), on a thread of its
+/// own: its files are checked against their digests (Verifying), then put in place as an install
+/// puts them, with the same journal. Installed: done, close the title. Failed: `error` says why,
+/// and the title's files are as they were. Does nothing while a check, a download or an install is
+/// going on or waits.
+void RollBack();
 
 // ----------------------------------------------------------------------------------- helpers
 
@@ -170,6 +196,8 @@ extern int lie_at;          // Install(): this rename reports success and does n
 extern int no_links;        // 1: the drive is taken to have no links (exFAT's way): files are moved aside
 extern uint64_t max_unpacked; // 0: the real limit
 extern size_t max_entries;    // 0: the real limit
+extern int rollback_stop;     // RollBack(): stop as a power cut would before the install (1: the
+                              // marker written, 2: the kept files moved to the stage)
 } // namespace Test
 #endif
 

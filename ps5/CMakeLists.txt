@@ -94,6 +94,7 @@ add_custom_target(pshakux_identity
 # Crux2's libc additions and virtual file layer
 add_library(pshakux_platform OBJECT
 	src/platform/ps5_bootlog.cpp
+	src/platform/ps5_broker.cpp
 	src/platform/ps5_crash.cpp
 	src/platform/ps5_build_stamp.cpp
 	src/platform/ps5_clock.c
@@ -108,6 +109,7 @@ add_library(pshakux_platform OBJECT
 	src/platform/ps5_timing.cpp
 	src/platform/ps5_update.cpp
 	src/platform/ps5_update_net.cpp
+	src/platform/ps5_wbremote.cpp
 	src/platform/ps5_libc.c
 	src/platform/vfs/ps5_vfs.cpp
 	src/platform/vfs/ps5_vfs_ftp.cpp
@@ -117,6 +119,8 @@ add_dependencies(pshakux_platform pshakux_identity)
 set_target_properties(pshakux_platform PROPERTIES C_STANDARD 11 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 target_include_directories(pshakux_platform PRIVATE src/platform src ${CMAKE_BINARY_DIR}/generated ${PSHAKUX_PORTS}/include)
 target_compile_options(pshakux_platform PRIVATE ${common_options} -fno-stack-protector)
+# 1.0.4: the cache drives' write-back through the broker: the core's C table (native/kernel/wback.h)
+set_source_files_properties(src/platform/ps5_wbremote.cpp PROPERTIES INCLUDE_DIRECTORIES ${HAKUX_DIR})
 
 # ---- the Core seam (src/core): the front end's one door into hakuX
 add_library(pshakux_core OBJECT src/core/hakux_core.c src/core/ogbox_mods.c src/core/ogbox_patches.c src/core/ogbox_xpr.c

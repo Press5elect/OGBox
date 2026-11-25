@@ -4,7 +4,7 @@ OGBox is developed by Press5elect.
 
 Repository: https://github.com/Press5elect/OGBox
 
-This record is current to OGBox 1.0.3.
+This record is current to OGBox 1.0.4.
 
 ## The OGBox-specific PS5 work
 
@@ -12,7 +12,7 @@ The following components contain OGBox's own PS5 implementation work, written by
 
 - **Native CPU backend**: `native/cpu/cpu_native.c` and `native/cpu/codepatch.c` in the hakuX tree
   (`Press5elect/hakux-native`: branch `ps5-native`, `tiers3` for 1.0.0's work, `tiers5` for
-  1.0.1's, `tiers6` for 1.0.2's and `tiers7` for 1.0.3's), with the
+  1.0.1's, `tiers6` for 1.0.2's, `tiers7` for 1.0.3's and `tiers8` for 1.0.4's), with the
   PS5 half of the CPU in `ps5/patches/hakux/ps5.patch`.
 - **PS5 kernel-call integration**: the gate between the Xbox's kernel calls and the emulator's kernel
   (`hw/xbox/hle/core/`, `native/kernel/`), and the platform layer in `ps5/src/platform/`.
@@ -102,6 +102,31 @@ The following components contain OGBox's own PS5 implementation work, written by
     wrong (`native/dev/nv2a.c`);
   - diagnostics: the vertex-program log and the per-frame draw census (`HAKUX_HLE_VSHLOG`,
     `HAKUX_HLE_CENSUS`).
+- **Picture options in hakuX's GPU** (1.0.4), in hakuX-native and the patch: the user's texture
+  sharpness on colour stages only (`hw/xbox/hle/shader/texrole.h`), 1x targets magnified through a
+  cubic B-spline, shadow buffers' compare filtered 3 x 3, 5 x 5 or over four rotated taps, alpha-tested
+  textures' levels keeping level 0's coverage (`hw/xbox/hle/tex/alpha_cov.h`), the fixed-function
+  lights per pixel (`ffhw`), ambient occlusion from the frame's depth buffer, and texture upscaling at
+  upload (`hw/xbox/hle/tex/texup.h`, `texup_glsl.h`: an edge-directed filter) with DXT textures'
+  images kept in DXT by a block encoder (`hw/xbox/hle/tex/texbc.h`, its C and GLSL the same
+  arithmetic), all written for OGBox, with the host tests `tests/hle/test_texrole.c`,
+  `test_alpha_cov.c`, `test_texup.c`, `test_texbc.c` and `tests/texbc` (lavapipe); the game's GPU
+  time in the log (`vk/back.c`).
+- **The core's speed limit and write helper** (1.0.4): the guest's time base at a percentage
+  (`native/kernel/speed.h`), and the cache drives' write-back through a helper
+  (`native/kernel/wback.c` `nc_wb_set_remote`); the switches for one Vulkan device and for guest
+  RAM imported (`vk/vkdev.c`, off by default); SSE2 swizzling, a spin-wait hint and a framebuffer-fetch
+  key fix.
+- **The write helper** (1.0.4): a payload that writes to the console's storage for OGBox, past the
+  title's write budget (`ps5/broker/`), used for the cache drives and for moving the
+  data folder onto the console's storage (`ps5/src/platform/ps5_wbremote.cpp`, the storage code).
+- **The presenter** (1.0.4): the two devices' frame copy picked up by a later pass with three
+  staging buffers (`ps5/src/ogbox_take.h`, `ps5/hakux/hle/present_host.c`, with the PC test
+  `ps5/tests/present-ogbox`), FSR1's RCAS pass, and the skipped-refresh records.
+- **The front end** (1.0.4): your own patches from the data folder (`ps5/src/core/ogbox_patches.c`),
+  the speed limit's setting, cheats for the player's games fetched eight at once, a loading screen,
+  Accessibility, keeping the version an update replaced, and the crash notice at the next start;
+  the last four after ideas from ProsperoEden (no code of it).
 - **Fixes in hakuX's GPU, CPU emulation and kernel** (1.0.3), in hakuX-native and the patch:
   - the SSE compares `COMISS`, `UCOMISS`, `COMISD` and `UCOMISD` on memory in the emulation of an
     access (`native/cpu/x86emu.c`), an instruction it still can't take on a page a neighbour keeps
@@ -222,6 +247,10 @@ Among it:
   `ps5/gamedata/cheats-xbased.txt` (ps5/tools/import-xbased-cheats.py) holds only their paths,
   sizes and SHA-256s at a pinned commit, and the console downloads the files from xbased's
   repository only when the user asks (Settings > Updates > Download cheats);
+- OgXHD's widescreen database (OgXHD, in icup321's XboxGraphicalPatches), as xbased (crazyriddler)
+  carries it in `mods/widescreen.dat` (xbased commit 2031611; the entries `patches.db` kept from `wdb.dat` are the same): the
+  `Widescreen (any release)` entries of `ps5/gamedata/patches.db` (1.0.4), with one title ID the
+  database gives as `4553006` read as `45530006` (ES-006);
 - Crux2's platform code and frame generation (Press5elect, under Crux2's own attribution term);
 - MihawkGen (Mihawk, GPL-3.0-or-later);
 - the AMD FidelityFX SDK and FSR 1 (AMD, MIT), NVIDIA Image Scaling (NVIDIA, MIT), and SMAA (its

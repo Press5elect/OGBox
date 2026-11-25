@@ -24,17 +24,27 @@
 // signals the console ends a title with (SIGTERM, SIGXCPU) are reported too, and std::terminate.
 // SIGKILL cannot be caught: the boot log's last "alive:" line is then the report. No watchdog
 // sampling (Crux2's SIGUSR1 is the probe's signal here). Kelvin by Press5elect.
+//
+// OGBox 1.0.4 (the idea after ProsperoEden, whose next start says where the last crash's report
+// is): a crash (a fault, abort, std::terminate, a resource limit; not SIGTERM or SIGHUP, which the
+// console may end a title with when the user closes it) leaves ogbox-crashed.txt in the title
+// folder, one line saying what it was. The next start (pshakux_crash_previous) copies the report
+// out of the boot log that now holds it (ogbox-boot.previous.log, the session before) into
+// ogbox-crash.log, which stays until the next crash, and the home screen says so once. Nothing
+// starts OGBox again by itself.
 
 #if !defined(__PROSPERO__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1
 #endif
 
 #include "ps5_bootlog.h"
+#include "ps5_relaunch.h"
 #if defined(__PROSPERO__)
 #include "ps5_modules.h" // PS5SystemModules
 #endif
 
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -46,6 +56,8 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
+#include <string>
+#include <sys/stat.h>
 #include <typeinfo>
 #include <ucontext.h>
 #include <unistd.h>
@@ -78,6 +90,27 @@ volatile sig_atomic_t s_in_crash = 0;
 std::atomic<pshakux_crash_note_fn> s_note{nullptr};
 std::atomic<uint16_t> s_guest_cs{0};
 std::atomic<bool> s_terminating{false};
+// 1.0.4: <title folder>/ogbox-crashed.txt, made when the report is installed (a handler can't).
+char s_crashed_path[256] = "";
+
+// 1.0.4: the crash marker, from a signal handler (open, write, fsync and close only).
+void WriteCrashed(const char* what, const char* more)
+{
+  if (!s_crashed_path[0])
+    return;
+  char text[400];
+  size_t n = 0;
+  for (const char* part : {what, more})
+    for (const char* c = part; c && *c && n < sizeof(text) - 2; c++)
+      text[n++] = (*c == '\n' || *c == '\r') ? ' ' : *c;
+  text[n++] = '\n';
+  const int fd = open(s_crashed_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  if (fd < 0)
+    return;
+  (void)!write(fd, text, n);
+  (void)fsync(fd);
+  close(fd);
+}
 int s_pipe[2] = {-1, -1}; // memory is read through it: write() refuses a bad address with EFAULT
 
 constexpr int FATAL_SIGNALS[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS};
@@ -631,6 +664,9 @@ void CrashSignalHandler(int signal, siginfo_t* info, void* ctx)
     return;
   }
 
+  // 1.0.4: what the next start says, first (a few bytes); not for what a close may send
+  if (signal != SIGTERM && signal != SIGHUP)
+    WriteCrashed(SignalName(signal), "");
   Report(signal, info, ctx);
   Out o;
   o.s("==== end of the report ====").end();
@@ -682,6 +718,7 @@ void InstallFor(int signal)
       {
       }
     }
+    WriteCrashed("std::terminate: ", what);   // 1.0.4
     pshakux_log("==== OGBox stopped: std::terminate: %s%s%s ====", what, type[0] ? " (type " : "", type[0] ? type : "");
     if (type[0])
       pshakux_log("  (type names are mangled: c++filt reads them)");
@@ -784,6 +821,7 @@ extern "C" void pshakux_crash_install(void)
       (void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
   }
   pshakux_install_crash_stack();
+  std::snprintf(s_crashed_path, sizeof(s_crashed_path), "%s/ogbox-crashed.txt", pshakux_title_dir());
   for (const int signal : FATAL_SIGNALS)
     InstallFor(signal);
   for (const int signal : ENDING_SIGNALS)
@@ -793,6 +831,145 @@ extern "C" void pshakux_crash_install(void)
              "SIGXFSZ, SIGHUP and std::terminate (the core's handlers pass on what they do not own); SIGKILL cannot "
              "be caught: a title the system kills ends with its last \"alive:\" line%s",
              s_pipe[0] >= 0 ? "" : "; no pipe: memory is not read in the report");
+}
+
+// ---- OGBox 1.0.4: the crash of the last time -------------------------------------------------
+
+namespace {
+
+bool ReadSmall(const std::string& path, std::string& out, size_t most)
+{
+  out.clear();
+  const int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0)
+    return false;
+  char buffer[4096];
+  for (;;)
+  {
+    const ssize_t got = read(fd, buffer, sizeof(buffer));
+    if (got < 0 && errno == EINTR)
+      continue;
+    if (got <= 0)
+      break;
+    out.append(buffer, static_cast<size_t>(got));
+    if (out.size() >= most)
+    {
+      out.resize(most);
+      break;
+    }
+  }
+  close(fd);
+  return true;
+}
+
+// A small file whole, or not there: beside it first, then renamed onto nothing (exFAT keeps the old
+// file under a rename onto it).
+bool WriteWhole(const std::string& path, const std::string& text)
+{
+  const std::string temporary = path + ".tmp";
+  (void)unlink(temporary.c_str());
+  const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  if (fd < 0)
+    return false;
+  size_t done = 0;
+  while (done < text.size())
+  {
+    const ssize_t put = write(fd, text.data() + done, text.size() - done);
+    if (put < 0 && errno == EINTR)
+      continue;
+    if (put <= 0)
+      break;
+    done += static_cast<size_t>(put);
+  }
+  const bool ok = done == text.size() && fsync(fd) == 0;
+  close(fd);
+  (void)unlink(path.c_str());
+  if (!ok || rename(temporary.c_str(), path.c_str()) != 0)
+  {
+    (void)unlink(temporary.c_str());
+    return false;
+  }
+  (void)chmod(path.c_str(), 0666);
+  return true;
+}
+
+// The last report in a boot log ("==== OGBox stopped" to "==== end of the report ===="), with up to
+// 256 KiB of the lines before it, into `out`. False when the log has none.
+bool CopyReport(const std::string& log, const std::string& out, const std::string& what)
+{
+  constexpr off_t TAIL = off_t(8) << 20;
+  constexpr size_t BEFORE = size_t(256) << 10;
+  const int fd = open(log.c_str(), O_RDONLY);
+  if (fd < 0)
+    return false;
+  const off_t size = lseek(fd, 0, SEEK_END);
+  const off_t from = size > TAIL ? size - TAIL : 0;
+  std::string text;
+  if (size > 0 && lseek(fd, from, SEEK_SET) == from)
+  {
+    text.resize(static_cast<size_t>(size - from));
+    size_t got = 0;
+    while (got < text.size())
+    {
+      const ssize_t n = read(fd, &text[got], text.size() - got);
+      if (n < 0 && errno == EINTR)
+        continue;
+      if (n <= 0)
+        break;
+      got += static_cast<size_t>(n);
+    }
+    text.resize(got);
+  }
+  close(fd);
+  const size_t at = text.rfind("==== OGBox stopped");
+  if (at == std::string::npos)
+    return false;
+  size_t start = at > BEFORE ? at - BEFORE : 0;
+  if (start > 0)
+  {
+    const size_t line = text.find('\n', start);
+    start = line == std::string::npos || line >= at ? at : line + 1;
+  }
+  size_t end = text.find("==== end of the report ====", at);
+  end = end == std::string::npos ? text.size() : std::min(text.size(), text.find('\n', end) + 1);
+  return WriteWhole(out, "OGBox's crash report (" + what + "), copied from " + log + " at the next start; it stays "
+                         "until the next crash.\n\n" + text.substr(start, end - start));
+}
+
+} // namespace
+
+extern "C" int pshakux_crash_previous(char* what, unsigned what_size, char* report, unsigned report_size, int consume)
+{
+  const std::string dir = pshakux_title_dir();
+  const std::string marker = dir + "/ogbox-crashed.txt";
+  std::string text;
+  if (!ReadSmall(marker, text, 2048))
+    return 0;
+  std::string line = text.substr(0, text.find('\n'));
+  std::string path;
+  const size_t at = text.find("\nreport ");
+  if (at != std::string::npos)
+    path = text.substr(at + 8, text.find('\n', at + 1) == std::string::npos ? std::string::npos : text.find('\n', at + 1) - at - 8);
+  if (line.empty())
+    line = "no cause recorded";
+  if (path.empty())
+  {
+    // The session that crashed is the one before this start's (a relaunch goes on in its log).
+    const std::string log = dir + (pshakux_relaunched() ? "/ogbox-boot.log" : "/ogbox-boot.previous.log");
+    const std::string copy = dir + "/ogbox-crash.log";
+    path = CopyReport(log, copy, line) ? copy : log;
+    if (!consume)
+      (void)WriteWhole(marker, line + "\nreport " + path + "\n");
+  }
+  if (consume)
+    (void)unlink(marker.c_str());
+  pshakux_log("crash report: OGBox stopped last time (%s); the report: %s%s", line.c_str(), path.c_str(),
+              consume ? "" : " (said on the game list's next start)");
+  if (what && what_size)
+    std::snprintf(what, what_size, "%s", line.c_str());
+  if (report && report_size)
+    std::snprintf(report, report_size, "%s", path.c_str());
+  return 1;
 }
 
 // ---- OGBox 0.1.28: the stall probe ------------------------------------------------------------

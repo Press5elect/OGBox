@@ -9,21 +9,23 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 1.0.3:**
-- Download cheats (Settings > Updates): the Xbox scene's trainers, fetched from xbased's
-  collection on GitHub when you ask for them.
-- HRTF can be turned off (Settings > Advanced, per game), and covers come from MobCat's database
-  for your exact release.
-- Water reflections, hair and lights drawn from a game's own render targets, a glow halo at high
-  resolutions, a freeze in races, white cars after several stages and missing shadows are fixed,
-  and many kernel, disc and graphics fixes are ported from xbased and HakuXP.
-- Save states keep their cache copies, so a state no longer fails to load once the game has
-  rewritten its cache. A state saved with 1.0.2 may have lost them: it still loads when the
-  game's cache holds what it held when the state was saved.
-- The hard disk manager works in the background with its progress, and many front-end fixes.
+**What's new in 1.0.4:**
+- New picture options, per game and off by default: texture upscaling (2x or 4x, kept compressed
+  so 4x stays fast), foliage coverage, softer shadows, per-pixel lighting, ambient occlusion and
+  FSR1's sharpening; smoother small glow effects and texture sharpness for colour textures only are
+  on.
+- Smoother 120 Hz: the screen no longer waits on each of the game's frames, and no game frame is
+  dropped when the GPU is busy.
+- A speed limit (100% to 300%, or Unlimited), per game or for all; your own `.jmp`, `.ips` and
+  `.bps` patches from the data folder's `patches` folder, matched to their games.
+- Faster writes to the console's storage through a helper (cache drives, and moving the data
+  folder there); cheats downloaded for your games only, eight files at once.
+- Updates keep the version they replaced (go back to it), show what's new and can skip a version;
+  a loading screen while a game starts; Settings > Interface > Accessibility; after a crash, the
+  next start says where its report is.
 
-**Latest release: [v1.0.3](https://github.com/Press5elect/OGBox/releases/tag/v1.0.3).** Download
-`OGBox-v1.0.3.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v1.0.4](https://github.com/Press5elect/OGBox/releases/tag/v1.0.4).** Download
+`OGBox-v1.0.4.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -39,7 +41,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 1.0.3 is the twelfth public release, after a long run of
+This is **experimental** software. 1.0.4 is the thirteenth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
@@ -50,6 +52,8 @@ sound comes out of the PS5's normal audio output.
 
 When something goes wrong, the file `ogbox-boot.log` in the title folder says what happened (the
 run before it is kept as `ogbox-boot.previous.log`). Please attach both when you open an issue.
+After a crash, the next start says so once on the game list and copies the crash report to
+`ogbox-crash.log` in the title folder, where it stays until the next crash.
 
 **Before you report a game's problem**, please:
 1. Use a dump of your own disc that matches Redump (the names in OGBox's game database are
@@ -125,6 +129,13 @@ OGBox's own files are replaced. Your settings, the Xbox hard disk, save states, 
 games are left alone. OGBox then closes, ready to be started again, and if a power cut interrupts
 an update, it's undone at the next start.
 
+The offer's **What's new** shows the notes of every release since yours (the right stick scrolls),
+and **Skip this version** stops that version being offered at each start; a newer one is offered
+again, and **Updates** in Settings still installs it. After an update, the files of the version it
+replaced are kept in the title folder's `.previous` (until the next update; not when the drive has
+less than 256 MB left, and removed first when an update needs their room). **Settings > Updates >
+Go back to <version>** puts that version back the same careful way and closes OGBox.
+
 ## Settings
 
 Everything hakuX can change, and OGBox's own options, sorted into sections. The box under the list
@@ -136,10 +147,14 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
 
 - **Graphics:** resolution scale (up to 6x), anti-aliasing (FXAA, SMAA or SSAA), aspect ratio, the
   upscaling filter, anisotropic filtering, sharpening, forced 32-bit colour, 16-bit dithering,
-  exact depth, cropping the overscan, HD texture packs and texture dumps.
+  exact depth, cropping the overscan, HD texture packs and texture dumps; and, off by default and
+  experimental: texture upscaling (2x or 4x), foliage coverage, softer shadows, per-pixel lighting
+  and ambient occlusion (smoother small glow effects and texture sharpness for colour textures only
+  are on).
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
-  compiling shaders in the background, and building cached shaders at start.
-- **Audio:** sound mixing (Default: the game's own sound program mixes, as on the console; Fast:
+  compiling shaders in the background, building cached shaders at start, and a speed limit (100% to
+  300%, or Unlimited).
+- **Audio:** sound mixing (Default: the game's sound program mixes, as on the console; Fast:
   OGBox mixes the voices itself), the resampler (Normal, Sinc or Linear) and HRTF (the Xbox's
   positional filters on 3D voices; off gives a plain pan).
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it
@@ -180,6 +195,22 @@ to run properly: they're always on and shown greyed out, so you can see what's a
 patches that are new or changed in this repository (Settings > Interface > Download game fixes at
 start, on by default), checks each against its listed checksum, and says which games got fixes.
 
+**Your own patches.** Copy `.jmp` (Jay's Magic Patcher), `.ips` and `.bps` patches into the data
+folder's `patches` folder (`/data/ogbox/patches` unless you chose another data folder; one level of
+folders inside it is fine, to keep it tidy). OGBox works out which game each is for: a BPS by the
+checksum of the `default.xbe` it was made from, a JMP by the checksum or title ID on its `version=`
+line, and an IPS (or a JMP that says neither) by the title ID or the game's name in its file or
+folder name (`4D530064 hud.ips`, `4D530064/hud.ips`, `Starfall Tactics 60fps.ips`). They show on
+the game's Game Patches screen under **Your patches**, off until you turn them on. A file nothing
+ties to a game is listed under **Add a patch from the patches folder** on every game's screen:
+pick it to attach it to that game (and again to detach it). The same checks apply as for the
+other patches: one made for another release, or a `.jmp` with a line OGBox can't read (the line
+number is shown), is greyed out. An IPS file can't say which release it is for, so attach one only
+to the game it was made for. Files over 4 MiB, names with `/`, `\`, `:` and the like or `..`, and
+more than 64 for one game are left out; the boot log lists every file it found for the game and
+whether it was applied. OGBox's updates, game-fix downloads and rollbacks never write in that
+folder (moving the data folder in Settings > Storage moves it with the rest).
+
 **HD texture packs.** OGBox can replace a game's textures with your own. Turn on **Dump textures**
 (Settings > Picture > Textures, for one game) and play: each texture the game uses is saved once
 into the data folder's `textures/<title ID>/dump`, compressed ones as DDS and the rest as PNG,
@@ -193,9 +224,12 @@ has the details.
 **Trainers.** OGBox runs the Xbox's `.etm` and `.xbtf` trainers, the way Evolution-X and
 XBMC4Xbox did. It doesn't come with any: copy yours into the data folder's `trainers` folder,
 `/data/ogbox/trainers`, or a USB drive's `OGBox/trainers`, or use **Settings > Updates > Download
-cheats**, which downloads the Xbox scene's trainers that xbased keeps on GitHub into the data
-folder's `trainers` folder (third-party files, not part of OGBox: only for games you own; files
-already there are kept). Each game lists the trainers made for
+cheats for your games**, which downloads the Xbox scene's trainers that xbased keeps on GitHub into
+the data folder's `trainers` folder (third-party files, not part of OGBox: only for games you own;
+files already there are kept). "Your games" are the ones OGBox has seen: in the folders the game
+list opened, played, or with saves on the Xbox hard disk; **Download all cheats** gets every game's
+(about 960 files). A game's page also downloads its own cheats in the background when it has none
+yet. Each game lists the trainers made for
 it; ones made for another release are greyed out. Pick one, set its options, and they apply as the
 game starts. Options marked IGK can also be switched in the game with the controller, just like on
 the Xbox.

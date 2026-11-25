@@ -39,10 +39,64 @@ removed (a withdrawn fix); files it didn't fetch are never removed.
   non-comment lines to `patches.db` and check its tail equals the own-patches file's records).
 - An imported patch that one of OGBox's replaces is listed in `SUPERSEDED` in
   `import-gamedata.py`, so it doesn't show beside it.
-- Each `F` find must occur exactly once in the original file.
+- Each `F` find must occur exactly once in the original file. The loader doesn't check it for an
+  `F` record (it writes the first place the bytes are); an `N` record (find, count in hex: the
+  bytes are in the file exactly that many times as it is at that record) does, and fails the patch
+  otherwise.
+- OgXHD's widescreen database (`wdb.dat`; xbased's `mods/widescreen.dat` is the same file) is made
+  of patterns for any release. 0.1.52's merge folded most of its entries into a PatchHub patch that
+  writes the same bytes, which for 30 games is made for one release only (offsets, or longer
+  patterns of that build). `import-gamedata.py` (1.0.4, `wdb_any_release`) adds those 30 again as
+  **Widescreen (any release)** by OgXHD: version `*`, no CRC, no region, an `N` record for each
+  find (a find listed k times must be there k times) and its `F` records. A game whose database
+  entry is already in `patches.db` as is for any release gets none. Without the other sources,
+  `import-gamedata.py --out ps5/gamedata --any-release-only --wdb-any <file> [--wdb-via xbased]`
+  makes only these again and keeps the rest of `patches.db` line for line. A console on a build
+  before 1.0.4 doesn't know `N`: it shows these greyed ("a record it cannot read") and never
+  applies them.
 - A record the loader can't read (an unknown kind, a missing field, a number that isn't whole hex,
   a file name with a `..` part or a leading `/`, over 8191 characters) fails its whole patch, which
   shows greyed ("a record it cannot read"). Every shipped record passed this check when it came in.
+
+## The player's own patches (1.0.4)
+
+Players drop `.jmp`, `.ips` and `.bps` files into `<data folder>/patches/` (`storagePath("patches")`,
+default `/data/ogbox/patches`), and one level of folders in it. The front end tells the loader
+the folder and the game's name (`ogbox_patches_set_user_dir`, `ogbox_patches_set_game_name` in
+`ogbox_main.cpp`'s `setUserPatches`: on the Game Patches screen, the details' thread and at the
+start); `ps5/src/core/ogbox_patches.c` (`user_load`) reads the folder each time it loads a game's
+patches and adds the ones for that game after the database's, as entries of their own.
+
+- **Which game.** A BPS: its source CRC-32 and size are the disc's `default.xbe`'s (known once the
+  release check or the start has read it: `ogbox_patches_check`, `ogbox_patches_prepare`). A JMP:
+  the `{CRC32}` of its `version=` line is the disc's, or the title ID that line starts with is the
+  game's. A file that says neither (an IPS, such a JMP): an 8-hex-digit run in its path that is the
+  title ID; the game's name (as its page shows it) as whole words in its path, not followed by a
+  sequel's number (`2`, `ii`...), 4 letters at least; or attached by hand (the screen's **Add a
+  patch from the patches folder**, `/data/ogbox/user-patches.txt`: `<title ID> <path>` lines,
+  `ogbox_patches_attach`). A file with a CRC-32 or title ID of its own is joined only by it and is
+  never offered to attach. The details' counts don't know the disc's CRC-32, so they leave out the
+  BPS and CRC-only JMP files until the Game Patches screen has read the disc.
+- **Records.** A JMP is read as `import-gamedata.py`'s `parse_jmp` reads one (header lines, `#`
+  comments naming the target, `[-]` blocks left out, `APPEND:`, `offset: bytes`, find/replace
+  pairs) into `C`/`T`/`F`/`O`/`A` records; unlike the importer, a line it can't read refuses the
+  file with its line number. An IPS or a BPS is an `I`/`B` record on `default.xbe` with the file's
+  own folder as the files folder. A BPS checks its source CRC-32 when applied; an IPS has no check
+  (the screen says "release not checked").
+- **Ids and limits.** `user:<path in the folder>`; one equal (case aside) to another's is left out,
+  so a file can't stand in for a shipped patch. Files over 4 MiB, names that aren't plain
+  (printable ASCII but `/ \ : * ? " < > |`, no `..`, no leading dot or space, 100 characters), more
+  than 64 for a game or 512 in the folder are left out, and the boot log says so. A renamed or
+  moved file is another file: off, and no longer attached.
+- **Never written by OGBox.** The game-fixes download writes only the title folder's `mods/` and
+  `gamedata/` (`ogbox_fixes_fetch.cpp`), and the updater only the title folder's managed paths
+  (`ps5_update.cpp`'s `MANAGED_FOLDERS`/`MANAGED_FILES`, which have no `patches/`), with its
+  rollback undoing only those. The data folder's `patches` is one of `storageParts()`, so a move of
+  the data folder carries it along.
+- **The boot log** at the start: `patches: your patches folder ...:`, then each file left out
+  (and why), each file for this game and how it was joined, the count, and the usual
+  `applied`/`left out: <why>` line for each one on.
+- Tests: `tests/patches/patches_test.c` (`test_user`).
 
 ## Writing a patch from the game's code
 

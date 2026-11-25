@@ -26,8 +26,8 @@ extern "C" {
 #endif
 
 typedef struct OgboxPatch {
-    char id[16];
-    char category[16];     /* Widescreen, 720p, 480p, 60 FPS, Misc */
+    char id[128];          /* 1.0.4: the player's own patches' "user:<file>" (16 before) */
+    char category[16];     /* Widescreen, 720p, 480p, 60 FPS, Misc; the player's: "Your patches" */
     char name[160];
     char author[64];
     char note[320];
@@ -55,6 +55,31 @@ bool ogbox_patches_need_128(const char *key);
  * left out at the start anyway. */
 void ogbox_patches_set_disc_crc(const char *key, uint32_t crc);
 
+/* ---- 1.0.4: the player's own patches ----
+ * .jmp, .ips and .bps files the player copies into the data folder's patches/ (and one level of
+ * folders in it), each joined to its game by what it says of itself: a BPS by its source's CRC-32
+ * (and size), a JMP by the CRC-32 or the title ID of its version= line; one that says nothing (an
+ * IPS, a JMP without either) by the title ID in its name or its folder's, the game's name in its
+ * name, or by hand (attached on the game's Game Patches screen, remembered in attach_file). They
+ * follow the database's in the catalog, as "user:<path in the folder>", off till turned on (mods.txt),
+ * with the same release checks. Nothing OGBox does writes in that folder. */
+
+/* The folder and the file the attachments are kept in (the front end's: <data folder>/patches and
+ * /data/ogbox/user-patches.txt); "" or NULL: no player's patches. */
+void ogbox_patches_set_user_dir(const char *dir, const char *attach_file);
+/* The game's name as the game list shows it (the name rule); for the last 16 title IDs given. */
+void ogbox_patches_set_game_name(const char *key, const char *name);
+
+/* A file of the folder that can be attached to a game by hand: one that says nothing of its game and
+ * no rule joins to this one. attached: it is (it can be detached). */
+typedef struct OgboxUserPatchFile {
+    char rel[128];          /* its path in the folder */
+    bool attached;
+} OgboxUserPatchFile;
+int ogbox_patches_user_files(const char *key, OgboxUserPatchFile *out, int max);
+/* One attached to key's title ID (any version), or detached; false if attach_file can't be written. */
+bool ogbox_patches_attach(const char *key, const char *rel, bool on);
+
 struct NcDisc;
 /* At the game's start: the patches on for key applied to the disc's files, each patched file
  * written into work_dir and a "file" line for it into the manifest. How many files. */
@@ -79,7 +104,8 @@ struct NcDisc;
 int ogbox_patches_check(const struct NcDisc *disc, const char *key, const OgboxBuf *xbe);
 
 /* The database's patch records of one patch for one target, applied in order ("F find repl",
- * "O offset hex", "A hex", "C crc", "I file", "B file": files_dir holds the IPS and BPS files);
+ * "O offset hex", "A hex", "C crc", "I file", "B file": files_dir holds the IPS and BPS files;
+ * 1.0.4: "N find count", the find in the file exactly count (hex) times as it is there);
  * false (buf unchanged) with the reason. 1.0.3: also for a record it cannot read (of another kind,
  * short of its fields, over 8191 characters, a number that isn't one, a file outside files_dir). */
 bool ogbox_apply_records(OgboxBuf *buf, char *const *records, size_t n, const char *files_dir, char *why,

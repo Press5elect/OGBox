@@ -106,6 +106,7 @@
 #include "platform/ps5_update.h"
 #include "platform/ps5_update_net.h"
 #include "ogbox_fixes_fetch.h"
+#include "platform/ps5_broker.h"
 #include "platform/vfs/ps5_vfs.h"
 #include "core/ogbox_core.h"
 #include "core/ogbox_mods.h"
@@ -113,6 +114,7 @@
 #include "core/ogbox_trainers.h"
 #include "ogbox_settings.h"
 #include "ogbox_framegen.h"
+#include "ogbox_take.h"
 #include "framegen/ps5_framegen_pacer.h"
 #include "ogbox_library.h"
 #include "ogbox_storage.h"
@@ -380,6 +382,14 @@ std::string baseName(const std::string &path)
 {
 	const size_t slash = path.find_last_of('/');
 	return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+/* OGBox 1.0.4: the player's own patches (core/ogbox_patches.h): the data folder's patches/, where they
+ * are attached by hand, and the game's name as its page shows it (the name rule). Under g_discInfoMutex. */
+void setUserPatches(const std::string &key, const std::string &name)
+{
+	ogbox_patches_set_user_dir(ogbox::storagePath("patches").c_str(), "/data/ogbox/user-patches.txt");
+	ogbox_patches_set_game_name(key.c_str(), name.c_str());
 }
 
 bool isFolder(const std::string &path)
@@ -854,6 +864,88 @@ void writeLastGame(const std::string &path)
  * one disc descriptor; the mods' catalog is the core's one table). */
 std::mutex &g_discInfoMutex = ogbox::discMutex();   // 0.0.3: the covers' title images take it too
 
+/* One device (NC_HLE_ONE_DEVICE=1): the title's queue is the HLE GPU's too (the console's graphics
+ * family has one queue), and Vulkan wants every use of a queue, and vkDeviceWaitIdle, from one
+ * thread at a time. volk's entry points for them are replaced by ones under this lock, which the
+ * HLE GPU takes around its own (pshx_core_gpu_share): every submit of the title's (the frame, the
+ * template's uploads, frame generation's) goes through them. */
+std::mutex g_queueMutex;
+PFN_vkQueueSubmit g_queueSubmit;
+PFN_vkQueueSubmit2 g_queueSubmit2;
+PFN_vkQueueSubmit2KHR g_queueSubmit2KHR;
+PFN_vkQueueWaitIdle g_queueWaitIdle;
+PFN_vkDeviceWaitIdle g_deviceWaitIdle;
+PFN_vkQueuePresentKHR g_queuePresent;
+
+void queueLock()
+{
+	g_queueMutex.lock();
+}
+
+void queueUnlock()
+{
+	g_queueMutex.unlock();
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFence fence)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueSubmit(q, n, si, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2 *si, VkFence fence)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueSubmit2(q, n, si, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueSubmit2KHR(VkQueue q, uint32_t n, const VkSubmitInfo2 *si, VkFence fence)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueSubmit2KHR(q, n, si, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueueWaitIdle(VkQueue q)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queueWaitIdle(q);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedDeviceWaitIdle(VkDevice d)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_deviceWaitIdle(d);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL lockedQueuePresent(VkQueue q, const VkPresentInfoKHR *pi)
+{
+	std::lock_guard<std::mutex> hold(g_queueMutex);
+	return g_queuePresent(q, pi);
+}
+
+/* volk's device-level entry points for the queue, each under g_queueMutex (once) */
+void lockQueueEntryPoints()
+{
+	if (g_queueSubmit) {
+		return;
+	}
+	g_queueSubmit = vkQueueSubmit;
+	vkQueueSubmit = lockedQueueSubmit;
+	if ((g_queueSubmit2 = vkQueueSubmit2)) {
+		vkQueueSubmit2 = lockedQueueSubmit2;
+	}
+	if ((g_queueSubmit2KHR = vkQueueSubmit2KHR)) {
+		vkQueueSubmit2KHR = lockedQueueSubmit2KHR;
+	}
+	g_queueWaitIdle = vkQueueWaitIdle;
+	vkQueueWaitIdle = lockedQueueWaitIdle;
+	g_deviceWaitIdle = vkDeviceWaitIdle;
+	vkDeviceWaitIdle = lockedDeviceWaitIdle;
+	if ((g_queuePresent = vkQueuePresentKHR)) {
+		vkQueuePresentKHR = lockedQueuePresent;
+	}
+}
+
 } // namespace
 
 /* The overlay's colours and typeface: src/ogbox_theme.cpp (at file scope, where the base class
@@ -888,7 +980,9 @@ public:
 		void *mapped{ nullptr };
 		VkDeviceSize size{ 0 };
 	};
-	std::array<Staging, maxConcurrentFrames> staging{};
+	/* 1.0.4: one more than the frame slots (ogbox_take.h kTakeStaging); with one device, staging i is slot i's */
+	std::array<Staging, ogbox::kTakeStaging> staging{};
+	static_assert(ogbox::kTakeStaging > maxConcurrentFrames, "a staging buffer free whatever the other slot reads");
 	VkSampler sampler{ VK_NULL_HANDLE };
 	VkDescriptorPool descriptorPool{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
@@ -897,6 +991,24 @@ public:
 	VkPipeline pipeline{ VK_NULL_HANDLE };
 
 	uint64_t frameSeen{ 0 };
+	/* One device (NC_HLE_ONE_DEVICE=1, pshx_core_gpu_share): the title's device made with what the HLE
+	 * GPU needs and offered to it; the frame then is its display image (slot), copied on the GPU into
+	 * this frame's staging buffer in the frame's own command buffer */
+	bool oneDeviceOffer{ false };
+	VkPhysicalDeviceFeatures titleFeatures{};          // the title's own (the template reads them)
+	std::vector<const char *> oneDeviceExtensions;     // what the device was made with
+	VkPhysicalDeviceFeatures2 oneDeviceFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+	PshxSlotFrame slotFrame{};
+	bool slotHeld{ false };                            // slotFrame taken, its copy in this frame's commands
+	std::array<bool, maxConcurrentFrames> stagingOnGpu{};   // a staging buffer's copy submitted, its fence not waited
+	int shotBuffer{ -1 };                              // a screenshot of this staging buffer once its copy is done
+	/* 1.0.4: two devices: the HLE GPU's copy into a staging buffer submitted, picked up by a later pass
+	 * once its fence reads done (ogbox_take.h); env NC_PRESENT_WAIT=1: each copy waited for, as before */
+	ogbox::TakeAsync<ogbox::kTakeStaging> take;
+	int presentWait{ -1 };                             // NC_PRESENT_WAIT read (-1: not yet)
+	uint32_t takeRowW{ 0 };                            // the width the copy in flight was started with (its rows' pitch)
+	uint64_t takePass{ 0 };
+	int uploadFrom{ -1 };                              // the staging buffer this pass uploads (-1: this frame's)
 	bool upload{ false };       // this frame copies a new picture in
 	bool havePicture{ false };  // a picture has been shown: it stays until a newer one
 	// OGBox 0.0.7: frame generation (ogbox_framegen.h): the game's frames go into its ring, and the
@@ -956,6 +1068,8 @@ public:
 	 * hand says "the newest" too) and whether an install was chosen */
 	PS5Update::State updateSeen{ PS5Update::State::Idle };
 	bool updateByHand{ false }, updateWanted{ false };
+	bool rollbackWanted{ false };             // 1.0.4: Settings > Updates > Go back was chosen
+	std::string crashNotice;                  // 1.0.4: the last run crashed: said once on the game list
 	double screenSince{ 0.0 };
 	struct pad menuPad{};                     // player 0's, `pressed` against the last frame's
 	ogbox::Settings prefs;                    // the app's; in a run, with the game's own on top
@@ -1096,6 +1210,8 @@ public:
 	std::vector<OgboxModEntry> modList;
 	uint32_t modsCrc{ 0 };                    // 0.0.2: the disc's default.xbe's CRC-32 (0: unread)
 	std::string modsKey, modsTitle;
+	std::vector<OgboxUserPatchFile> userFiles;   // 1.0.4: the player's patches that can be attached by hand
+	bool userPatchesOpen = false;                // their list shown
 	// 0.1.54: the game's trainers on the Mods screen (core/ogbox_trainers.h)
 	struct TrainerView {
 		std::vector<OgboxTrainer> list;
@@ -1106,6 +1222,24 @@ public:
 	} tv;
 	bool trainerScanStarted{ false };
 	uint32_t runXbeTime{ 0 };                 // the running game's default.xbe date
+	OgboxGameInfo runInfo{};                  // 1.0.4: its certificate (the loading screen's name and cover)
+	/* 1.0.4: the loading screen (drawLoading): the step of the start under way and since when, the
+	 * cached shaders' count as last seen, the cover's names (read once) */
+	struct StartView {
+		int step{ -1 };
+		double since{ 0.0 };
+		unsigned shadersDone{ 0 }, shadersTotal{ 0 };
+		bool namesRead{ false };
+		std::vector<std::string> names;
+		/* the cover and its blurred ground: looked up again at most every 0.5 s while not found (each
+		 * lookup asks the data folder for files: on a USB drive, every frame of the loading screen) */
+		double coverLookAt{ -1.0 };
+		ui::Tex cover, blur;
+		ImU32 tint{ 0 };
+		unsigned drawn{ 0 };
+		double drawSum{ 0.0 };
+		bool drawLogged{ false };
+	} sv;
 	unsigned ledSeq{ 0x0F };                  // the console's LED as the trainer last set it
 	double ledUntil{ 0.0 };
 	std::string ledText;
@@ -1227,6 +1361,11 @@ public:
 	// a run's picture and overlay (the settings' Graphics and Interface)
 	VkPipeline pipelineFxaa{ VK_NULL_HANDLE }, pipelineSgsr{ VK_NULL_HANDLE };   // (0.0.6: FSR1's EASU in SGSR's place)
 	VkPipeline pipelineSharp{ VK_NULL_HANDLE };                                  // 0.0.6: Bilinear (Sharp)
+	/* FSR1's RCAS (rcas.frag) after EASU: EASU drawn into rcasIn (the swapchain's format, the screen's
+	 * size) where the picture goes, then RCAS from it 1:1 into the screen (or HDR's picture layer);
+	 * rcasSharp FsrRcasCon's con.x (exp2(-stops)), 0 off */
+	VkPipeline pipelineRcas{ VK_NULL_HANDLE };
+	float rcasSharp{ 0.0f };
 	VkPipeline pipelineLogo{ VK_NULL_HANDLE };                                   // 0.0.7: the start's logo, faded and shining
 	std::string aspectMode{ "auto" };
 	bool fxaaOn{ false }, sgsrOn{ false }, showFps{ true }, rainOn{ true };
@@ -1280,7 +1419,7 @@ public:
 	float hdrWhite{ 203.0f }, hdrPeak{ 1000.0f };
 	/* 0.0.9: the presenter's time a pass on the GPU, by stage (timestamps at its stages' ends, read once the
 	 * pass's slot is done), and on the CPU between passes; a line every 10 s (collectPassTimes) */
-	static constexpr uint32_t kStamps = 6;   // the start, the picture in, its passes, scaled, the menus, the end
+	static constexpr uint32_t kStamps = 7;   // the start, the picture in, its passes, FSR1's EASU before RCAS, scaled, the menus, the end
 	VkQueryPool passQueries{ VK_NULL_HANDLE };
 	bool passStamped[8]{};
 	double stampNs{ 1.0 };
@@ -1316,6 +1455,9 @@ public:
 	bool adjustOn{ false }, postTwoNow{ false };
 	float adjustParams[4]{ 1.0f, 1.0f, 1.0f, 0.0f };
 	AaImage ssaaDown{};         // 0.0.9: SSAA + SMAA: the picture at the screen's size
+	AaImage rcasIn{};           // FSR1's EASU at the screen's size, RCAS's input (ensureRcas)
+	uint32_t rcasW{ 0 }, rcasH{ 0 };
+	VkDescriptorSet rcasSet{ VK_NULL_HANDLE };   // the present pipelines' layout, rcasIn
 	uint32_t downW{ 0 }, downH{ 0 };
 	uint32_t postW{ 0 }, postH{ 0 };
 	uint32_t smaaW{ 0 }, smaaH{ 0 };
@@ -1667,6 +1809,11 @@ public:
 				entries.push_back({ LibraryEntry::Up, "..", parentOf(folder), 0, std::string() });
 			}
 			entries.insert(entries.end(), listing->entries.begin(), listing->entries.end());
+			for (const LibraryEntry &e : listing->entries) {
+				if (e.kind == LibraryEntry::Image) {
+					listedGames.insert(e.name);   // 1.0.4: the cheats for your games (yourTitles)
+				}
+			}
 			if (prefs.global("list_sort") == "played") {
 				// 0.1.45: the discs played last first (folders stay first, by name)
 				std::stable_sort(entries.begin() + (upCard ? 1 : 0), entries.end(), [](const LibraryEntry &a, const LibraryEntry &b) {
@@ -2076,6 +2223,7 @@ public:
 		if (!havePicture || showingLogo || pictureBuffer < 0 || !picture.width || !picture.height) {
 			return;
 		}
+		settleStaging(static_cast<size_t>(pictureBuffer));   // one device: its GPU copy done
 		const Staging &s = staging[static_cast<size_t>(pictureBuffer)];
 		const size_t bytes = size_t(picture.width) * picture.height * 4;
 		if (!s.mapped || s.size < bytes) {
@@ -2163,6 +2311,17 @@ public:
 			boot.image = boot.bootTxtImage;
 			boot.source = boot.source + " (autoboot)";
 		}
+		/* 1.0.4: a crash the last time: said once on the game list (crashTick); its report copied to where
+		 * it stays. Nothing starts OGBox again by itself. */
+		{
+			char what[256] = "", report[256] = "";
+			if (pshakux_crash_previous(what, sizeof(what), report, sizeof(report), boot.image.empty() ? 1 : 0)) {
+				const bool copied = std::strstr(report, "ogbox-crash.log") != nullptr;
+				crashNotice = std::string("OGBox stopped unexpectedly last time (") + what + "); its report is in " + report +
+					(copied ? ". To report the problem, copy that file, and ogbox-boot.previous.log before OGBox starts again."
+							: ". To report the problem, copy that file before OGBox starts again.");
+			}
+		}
 		if (boot.image.empty()) {
 			library = true;
 			prefs.load();
@@ -2178,6 +2337,7 @@ public:
 			}
 			rainOn = prefs.on("rain");
 			themeCode = prefs.global("theme") == "code";   // 0.1.52
+			applyAccess();
 			/* 0.0.8: the saves in sync with their place, at each start into the game list: when OGBox
 			 * starts, and back from a game (a game's start and end start the title again) */
 			startSync(true);
@@ -2311,7 +2471,10 @@ public:
 					key = info.key;
 				}
 				runXbeTime = info.xbe_time;
+				runInfo = info;
 			}
+			std::lock_guard<std::mutex> disc(g_discInfoMutex);
+			setUserPatches(key, info.title[0] ? std::string(info.title) : ogbox::shortName(baseName(boot.image)));
 		}
 		if (boot.image != "none") {
 			resignSavesFor(boot.image);
@@ -2321,12 +2484,16 @@ public:
 		/* 0.0.1: the GPU's threads on cores of their own (on by default), before the core starts them */
 		pshakux_priority_gpu_pin(prefs.on("gpu_cores") ? 1 : 0);
 		themeCode = prefs.global("theme") == "code";   // 0.1.52: the in-game panels too
+		applyAccess();
 		readPictureSettings();
 		fgWanted = ogbox::fgMethodFromSetting(prefs.value("framegen"));
 		fgQuality = static_cast<uint32_t>(std::max(0, std::min(2, prefs.number("framegen_quality"))));
 		loadPadMap();
 		static std::vector<std::string> fromSettings;
 		fromSettings = prefs.coreArgs();
+		/* 1.0.4: Settings > Advanced > Diagnostics, said first: a test run's log names them */
+		pshakux_log("ogbox: one GPU device: %s, guest RAM imported: %s", prefs.on("one_gpu_device") ? "on" : "off",
+			prefs.on("guest_ram_import") ? "on" : "off");
 		if (ssaaOn || quincunxOn) {
 			/* SSAA: the scale that draws a 480-line picture at 1.5 times the screen's height or more
 			 * (4x on a 1080p screen, 6x on a 4K one; hakuX keeps a wider picture within 3840 at
@@ -2362,7 +2529,8 @@ public:
 		pshakux_log("ogbox: settings%s%s:%s; the picture: aspect %s%s, anti-aliasing %s, upscaling %s, FPS counter %s",
 			key.empty() ? "" : " for ", key.c_str(), said.c_str(), aspectMode.c_str(), cropOn ? " (overscan cropped)" : "",
 			fxaaOn ? "FXAA" : smaaOn ? "SMAA" : ssaaSmaa ? "SSAA + SMAA" : ssaaOn ? "SSAA" : quincunxOn ? "Quincunx" : "off",
-			sgsrOn ? "FSR1" : sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
+			sgsrOn ? (rcasSharp > 0.0f ? ("FSR1, sharpening " + prefs.value("fsr_sharpness")).c_str() : "FSR1, no sharpening") :
+			sharpOn ? "sharp bilinear" : "bilinear", showFps ? "on" : "off");
 		pshakux_log("ogbox: debanding %s; SSAA down-sampling %s; CRT look %s; brightness %s, contrast %s, colour %s",
 			debandOn ? prefs.value("deband").c_str() : "off", ssaaSharp ? "sharp" : "soft",
 			crtMode == 2 ? "strong" : crtMode == 1 ? "light" : "off", prefs.value("pic_brightness").c_str(),
@@ -2401,6 +2569,29 @@ public:
 		for (const std::string &option : boot.options) {
 			argv.push_back(option.c_str());
 		}
+		/* 1.0.4: Settings > Advanced > Fast writes on the console's storage (helper): the cache drives'
+		 * write-back through the write broker (platform/ps5_wbremote.h), handed to the core before it
+		 * starts; the boot log says whether it is in use, and why not */
+		if (!boot.hdd.empty()) {
+			std::string why;
+			if (prefs.global("fast_writes") != "1") {
+				why = "Settings > Advanced has it off";
+			} else {
+				const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
+				const ogbox::broker::HelperConnector connect = [elf](std::string &said) {
+					return ogbox::broker::Launch(elf, said);
+				};
+				if (ogbox::broker::StartCacheHelper(boot.hdd, connect, why)) {
+					pshakux_log("ogbox: fast writes on the console's storage (helper): in use for the cache drives (%s)",
+						why.c_str());
+					why.clear();
+				}
+			}
+			if (!why.empty()) {
+				pshakux_log("ogbox: fast writes on the console's storage (helper): not in use: %s; OGBox writes the cache "
+					"drives itself", why.c_str());
+			}
+		}
 		const std::string cache = ogbox::storagePath("cache");
 		PshxCoreConfig config{};
 		config.image = boot.image.c_str();
@@ -2420,6 +2611,7 @@ public:
 		}
 		checkInstanceTable("quit");
 		vkDeviceWaitIdle(device);
+		deviceKept = pshx_core_gpu_shared();   // one device: the HLE GPU's still (the base class leaves it)
 		frameGen.destroy();
 		destroyPicture();
 		for (auto &s : staging) {
@@ -2429,6 +2621,7 @@ public:
 		vkDestroyPipeline(device, pipeline, nullptr);
 		vkDestroyPipeline(device, pipelineFxaa, nullptr);
 		vkDestroyPipeline(device, pipelineSgsr, nullptr);
+		vkDestroyPipeline(device, pipelineRcas, nullptr);
 		vkDestroyPipeline(device, pipelineSharp, nullptr);
 		vkDestroyPipeline(device, pipelineLogo, nullptr);
 		destroySmaa();
@@ -2533,7 +2726,8 @@ public:
 			return;
 		}
 		destroyStaging(s);
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		// (one device: the HLE GPU's display image is copied into it on the GPU, TRANSFER_DST)
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, size, &s.buffer, &s.memory));
 		VK_CHECK_RESULT(vkMapMemory(device, s.memory, 0, VK_WHOLE_SIZE, 0, &s.mapped));
 		s.size = size;
@@ -2658,7 +2852,7 @@ public:
 			VkPipeline *out;
 		} variants[] = { { "ogbox/fxaa.frag.spv", &pipelineFxaa }, { "ogbox/fsr1.frag.spv", &pipelineSgsr }, { "ogbox/sharp.frag.spv", &pipelineSharp }, { "ogbox/logo.frag.spv", &pipelineLogo },
 			{ "ogbox/ssaa.frag.spv", &pipelineSsaa }, { "ogbox/quincunx.frag.spv", &pipelineQuincunx },
-			{ "ogbox/crt.frag.spv", &pipelineCrt } };
+			{ "ogbox/crt.frag.spv", &pipelineCrt }, { "ogbox/rcas.frag.spv", &pipelineRcas } };
 		for (const auto &v : variants) {
 			stages[1] = loadShader(getShadersPath() + v.file, VK_SHADER_STAGE_FRAGMENT_BIT);
 			pipelineCI.pStages = stages.data();
@@ -2756,6 +2950,29 @@ public:
 		pshakux_log("presenter: HDR targets %ux%u", width, height);
 	}
 
+	/* FSR1's RCAS: rcasIn at the screen's size (the swapchain's format, as hdrPicture: every pipeline
+	 * drawing to the screen draws to it) and rcasSet on it; made when first needed and again when
+	 * the screen's size changes (the GPU waited, as ensurePost does). false: it can't be used. */
+	bool ensureRcas()
+	{
+		if (pipelineRcas == VK_NULL_HANDLE || rcasSet == VK_NULL_HANDLE || pointSampler == VK_NULL_HANDLE) {
+			return false;
+		}
+		if (rcasW == width && rcasH == height && rcasIn.image != VK_NULL_HANDLE) {
+			return true;
+		}
+		vkDeviceWaitIdle(device);
+		destroyAaImage(rcasIn);
+		createAaImage(rcasIn, swapChain.colorFormat, width, height, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		VkDescriptorImageInfo info{ pointSampler, rcasIn.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		VkWriteDescriptorSet write = vks::initializers::writeDescriptorSet(rcasSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, &info);
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+		rcasW = width;
+		rcasH = height;
+		pshakux_log("presenter: FSR1's sharpening (RCAS) image %ux%u", width, height);
+		return true;
+	}
+
 	/* ---- 0.0.9: the presenter's time a pass (passTimes) ---- */
 	void preparePassTimes()
 	{
@@ -2827,16 +3044,29 @@ public:
 		} else if (now - pt.logAt >= 10.0) {
 			const double n = static_cast<double>(std::max<uint64_t>(pt.passes, 1));
 			const double g = static_cast<double>(std::max<uint64_t>(pt.gaps, 1));
-			pshakux_log("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
+			pshakux_log_later("presenter: %llu passes in %.0f s (%.1f a second); between two %.2f ms, the longest %.1f, %llu over 12.5 ms | "
 				"GPU a pass %.2f ms (the worst %.2f, %llu over 8.3 ms, %llu over 16.7): the picture in %.2f (frame generation, "
-				"upload), its passes %.2f, scaled to the screen %.2f, the menus %.2f, the end %.2f (HDR's) | the frame's copy "
+				"upload), its passes %.2f, FSR1's upscale before its sharpening %.2f, scaled to the screen %.2f (FSR1's sharpening, when on), "
+				"the menus %.2f, the end %.2f (HDR's) | the frame's copy "
 				"%llu times, %.2f ms on average (the longest %.1f, %llu over 2 ms: the pass waited on the HLE GPU's queue)",
 				static_cast<unsigned long long>(pt.gaps), now - pt.logAt, static_cast<double>(pt.gaps) / (now - pt.logAt),
 				pt.gapSum / g, pt.gapWorst, static_cast<unsigned long long>(pt.gapsLong), pt.sum[0] / n, pt.worst[0],
 				static_cast<unsigned long long>(pt.over8), static_cast<unsigned long long>(pt.over16), pt.sum[1] / n, pt.sum[2] / n,
-				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, static_cast<unsigned long long>(pt.takes),
+				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, pt.sum[6] / n, static_cast<unsigned long long>(pt.takes),
 				pt.takeSum / static_cast<double>(std::max<uint64_t>(pt.takes, 1)), pt.takeWorst,
 				static_cast<unsigned long long>(pt.takesLong));
+			/* 1.0.4: two devices, the copy not waited for (ogbox_take.h) */
+			if (presentWait == 0 && !pshx_core_gpu_shared()) {
+				pshakux_log_later("presenter: the frame's copy in 10 s, not waited for: %llu started, picked up in the same pass %llu, "
+					"the next %llu, later %llu; %llu passes kept the previous picture (the copy not done), %llu found no "
+					"staging buffer free, %llu copies lost; the oldest picked up after %.1f ms (%llu passes)",
+					static_cast<unsigned long long>(take.started), static_cast<unsigned long long>(take.samePass),
+					static_cast<unsigned long long>(take.nextPass), static_cast<unsigned long long>(take.laterPass),
+					static_cast<unsigned long long>(take.keptOld), static_cast<unsigned long long>(take.noBuffer),
+					static_cast<unsigned long long>(take.failed), take.ageWorstMs,
+					static_cast<unsigned long long>(take.ageWorstPasses));
+				take.clear();
+			}
 			const double lastAt = pt.lastAt;
 			pt = PassTimes{};
 			pt.lastAt = lastAt;
@@ -3396,9 +3626,9 @@ public:
 	void preparePost(VkGraphicsPipelineCreateInfo pipelineCI)
 	{
 		/* 0.0.9: three sets of the passes' layout (from the picture, SMAA's result, postA) and two of the
-		 * present's (postA, postB) */
-		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12);
-		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 5);
+		 * present's (postA, postB); and the present's for FSR1's RCAS (rcasIn) */
+		VkDescriptorPoolSize poolSize = vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 13);
+		VkDescriptorPoolCreateInfo poolCI = vks::initializers::descriptorPoolCreateInfo(1, &poolSize, 6);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &poolCI, nullptr, &postPool));
 		const VkDescriptorSetLayout three[3] = { smaaSetLayout, smaaSetLayout, smaaSetLayout };
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, three, 3);
@@ -3413,6 +3643,8 @@ public:
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, shown));
 		presentFromA = shown[0];
 		presentFromB = shown[1];
+		allocInfo = vks::initializers::descriptorSetAllocateInfo(postPool, &descriptorSetLayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &rcasSet));
 		const struct {
 			const char *frag;
 			VkPipeline *out;
@@ -3581,6 +3813,7 @@ public:
 		vkDestroyPipeline(device, pipelineCrt, nullptr);
 		vkDestroyPipeline(device, ssaaToImage, nullptr);
 		destroyAaImage(ssaaDown);
+		destroyAaImage(rcasIn);
 		destroyAaImage(postA);
 		destroyAaImage(postB);
 		vkDestroyDescriptorPool(device, postPool, nullptr);
@@ -3590,8 +3823,150 @@ public:
 		vkDestroySampler(device, pointSampler, nullptr);
 	}
 
+	/* One device: env NC_HLE_ONE_DEVICE=1 (boot.txt's env line, or the core's NC_ switch from the settings
+	 * or the arguments: pshx_core_configure sets it, in the constructor, before the device is made).
+	 * The device gets the HLE GPU's extensions and features besides the title's; offered to it in
+	 * prepare. A game that waits for its share is configured after this: its own device then. */
+	void getEnabledExtensions() override
+	{
+		const char *asked = std::getenv("NC_HLE_ONE_DEVICE");
+		if (library || !asked || asked[0] != '1') {
+			return;
+		}
+		PshxGpuNeeds needs{};
+		char why[200] = "";
+		if (!pshx_core_gpu_needs(instance, apiVersion, physicalDevice, &needs, why, sizeof(why))) {
+			pshakux_log("GPU: own device (the HLE GPU can't share the title's: %s)", why);
+			return;
+		}
+		const uint32_t family = vulkanDevice->getQueueFamilyIndex(VK_QUEUE_GRAPHICS_BIT);
+		if (needs.queue_family != family) {
+			pshakux_log("GPU: own device (the title's queue family %u, the HLE GPU's %u)", family, needs.queue_family);
+			return;
+		}
+		for (uint32_t i = 0; i < needs.extension_count; i++) {
+			const char *e = needs.extensions[i];
+			const bool have = std::strcmp(e, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0 ||   // (the template adds it)
+				std::any_of(enabledDeviceExtensions.begin(), enabledDeviceExtensions.end(),
+					[e](const char *x) { return std::strcmp(x, e) == 0; });
+			if (!have) {
+				enabledDeviceExtensions.push_back(e);
+			}
+		}
+		/* the features: the HLE GPU's chain (Vulkan13Features among them on the console, where the
+		 * title's own dynamic rendering struct may not be too), with the title's dynamic rendering on */
+		auto *f2 = static_cast<VkPhysicalDeviceFeatures2 *>(needs.features);
+		titleFeatures = enabledFeatures;
+		VkBool32 *on = &enabledFeatures.robustBufferAccess;
+		const VkBool32 *want = &f2->features.robustBufferAccess;
+		for (size_t i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++) {
+			on[i] = on[i] || want[i];
+		}
+		bool dynamicRendering = false;
+		VkBaseOutStructure *tail = nullptr;
+		for (auto *n = static_cast<VkBaseOutStructure *>(f2->pNext); n; n = n->pNext) {
+			if (n->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES) {
+				reinterpret_cast<VkPhysicalDeviceVulkan13Features *>(n)->dynamicRendering = VK_TRUE;
+				dynamicRendering = true;
+			} else if (n->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES) {
+				reinterpret_cast<VkPhysicalDeviceDynamicRenderingFeatures *>(n)->dynamicRendering = VK_TRUE;
+				dynamicRendering = true;
+			}
+			tail = n;
+		}
+		if (!dynamicRendering) {
+			baseDynamicRenderingFeatures.pNext = nullptr;
+			if (tail) {
+				tail->pNext = reinterpret_cast<VkBaseOutStructure *>(&baseDynamicRenderingFeatures);
+			} else {
+				f2->pNext = &baseDynamicRenderingFeatures;
+			}
+		}
+		deviceCreatepNextChain = f2->pNext;
+		/* what vkCreateDevice gets (the template's createLogicalDevice), for the HLE GPU's check */
+		oneDeviceExtensions = enabledDeviceExtensions;
+		oneDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+		oneDeviceFeatures.features = enabledFeatures;
+		oneDeviceFeatures.pNext = deviceCreatepNextChain;
+		oneDeviceOffer = true;
+		pshakux_log("GPU: the title's device made for one device: %u extensions and the features of the HLE GPU's",
+			needs.extension_count);
+	}
+
+	/* One device: the device made, the queue's uses under one lock, and the device offered to the HLE GPU
+	 * (before the core starts; it says in the boot log whether it took it) */
+	void shareDevice()
+	{
+		if (!oneDeviceOffer || device == VK_NULL_HANDLE) {
+			return;
+		}
+		vulkanDevice->enabledFeatures = titleFeatures;   // the template's own use of them as before
+		lockQueueEntryPoints();
+		PshxGpuShare share{};
+		share.instance = instance;
+		share.api_version = apiVersion;
+		share.physical_device = physicalDevice;
+		share.device = device;
+		share.queue_family = vulkanDevice->queueFamilyIndices.graphics;
+		share.queue = queue;
+		share.queue_lock = queueLock;
+		share.queue_unlock = queueUnlock;
+		share.extension_count = static_cast<uint32_t>(oneDeviceExtensions.size());
+		share.extensions = oneDeviceExtensions.data();
+		share.features = &oneDeviceFeatures;
+		pshx_core_gpu_share(&share);
+	}
+
+	/* One device: this frame's slot into its staging buffer, first in the frame's commands (the submit
+	 * waits for the slot's timeline value at the transfer stage); the buffer then read as one the CPU
+	 * filled: the upload, frame generation, and (after the frame's fence) a screenshot or save state */
+	void recordSlotCopy(VkCommandBuffer cmd)
+	{
+		const VkImage image = reinterpret_cast<VkImage>(slotFrame.image);
+		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		VkImageMemoryBarrier toSrc{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		toSrc.srcAccessMask = 0;
+		toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toSrc.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toSrc.srcQueueFamilyIndex = toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toSrc.image = image;
+		toSrc.subresourceRange = range;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+			nullptr, 1, &toSrc);
+		VkBufferImageCopy copy{};
+		copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.imageExtent = { slotFrame.width, slotFrame.height, 1 };
+		vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging[currentBuffer].buffer, 1, &copy);
+		/* the slot back as the HLE GPU keeps it; the copy's writes to whatever reads the buffer next,
+		 * the host's reads (after the fence) among them */
+		VkImageMemoryBarrier back = toSrc;
+		back.srcAccessMask = 0;
+		back.dstAccessMask = 0;
+		back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkMemoryBarrier written{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+		written.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		written.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_HOST_READ_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &written, 0, nullptr, 1, &back);
+	}
+
+	/* One device: staging buffer i as the CPU reads it: its GPU copy, if one is submitted, done */
+	void settleStaging(size_t i)
+	{
+		if (i < stagingOnGpu.size() && stagingOnGpu[i]) {
+			const VkResult r = vkWaitForFences(device, 1, &waitFences[i], VK_TRUE, 2000000000ull);
+			if (r != VK_SUCCESS) {
+				pshakux_log("presenter: the frame's copy into staging buffer %zu not seen done (%d)", i, static_cast<int>(r));
+			}
+			stagingOnGpu[i] = false;
+		}
+	}
+
 	void prepare() override
 	{
+		shareDevice();   // (before the template's first submits and the core's start)
 		VulkanExampleBase::prepare();
 		preparePresenter();
 		preparePassTimes();
@@ -3703,7 +4078,7 @@ public:
 	{
 		upload = false;
 		fgFresh = fgPush = fgShow = false;
-		if (fetchLogo()) {
+		if (take.target < 0 && fetchLogo()) {   // (1.0.4: never into a staging buffer a copy writes)
 			upload = true;
 			return;
 		}
@@ -3712,15 +4087,57 @@ public:
 		if (!w || !h) {
 			return;
 		}
-		Staging &s = staging[currentBuffer];
-		ensureStaging(s, VkDeviceSize(w) * h * 4);
 		uint32_t fw = 0, fh = 0;
 		pshx_core_display_pickup();   // 0.0.4: the guest's vblank keeps clear of it
 		// 0.0.4: the HLE GPU copies the frame straight into the staging buffer where it can
 		const double takeFrom = now_seconds();
-		if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
-			return;
+		/* one device: the HLE GPU's display image itself, copied into the staging buffer on the GPU in
+		 * this frame's commands (recordSlotCopy) */
+		const bool slot = pshx_core_gpu_shared();
+		if (presentWait < 0) {
+			const char *e = std::getenv("NC_PRESENT_WAIT");
+			presentWait = e && std::strcmp(e, "1") == 0 ? 1 : 0;
+			if (!slot) {
+				pshakux_log("presenter: two devices: %s", presentWait ? "each frame's copy waited for (NC_PRESENT_WAIT=1)" :
+					"the frame's copy picked up by a later pass, not waited for (NC_PRESENT_WAIT=1: waited for)");
+			}
 		}
+		size_t into = currentBuffer;   // the staging buffer the new picture is in
+		uint32_t rowW = w;             // its rows' pitch in pixels
+		if (slot) {
+			Staging &s = staging[currentBuffer];
+			if (!pshx_core_take_slot(&frameSeen, &slotFrame)) {
+				return;
+			}
+			slotHeld = true;
+			fw = w = rowW = slotFrame.width;
+			fh = slotFrame.height;
+			ensureStaging(s, VkDeviceSize(fw) * fh * 4);
+		} else if (presentWait) {
+			Staging &s = staging[currentBuffer];
+			ensureStaging(s, VkDeviceSize(w) * h * 4);
+			if (!pshx_core_take_frame_into(&frameSeen, s.mapped, static_cast<size_t>(s.size), w * 4, w, h, &fw, &fh)) {
+				return;
+			}
+		} else {
+			/* 1.0.4: the copy started here is picked up by a later pass (its fence read, no wait); meanwhile the
+			 * picture stays as it is. A staging buffer the copy writes is made large enough only before it starts. */
+			const int got = take.pass(++takePass, takeFrom, pictureBuffer, static_cast<int>(currentBuffer),
+				[&]() { return pshx_core_take_poll(&frameSeen, &fw, &fh); },
+				[&](size_t i) {
+					Staging &t = staging[i];
+					ensureStaging(t, VkDeviceSize(w) * h * 4);
+					takeRowW = w;
+					return pshx_core_take_start(&frameSeen, t.mapped, static_cast<size_t>(t.size), w * 4, w, h);
+				},
+				[&](int k) { return vkGetFenceStatus(device, waitFences[static_cast<size_t>(k)]) == VK_SUCCESS; });
+			if (got < 0) {
+				return;
+			}
+			into = static_cast<size_t>(got);
+			rowW = takeRowW;
+		}
+		Staging &s = staging[into];
 		{
 			/* 1.0.2: its wait (the copy queued behind the HLE renderer's work for the next frame) */
 			const double ms = (now_seconds() - takeFrom) * 1000.0;
@@ -3729,12 +4146,12 @@ public:
 			passTimes.takes++;
 			passTimes.takesLong += ms > 2.0 ? 1 : 0;
 		}
-		if (fw < w) {
-			/* the frame shrank after its size was read: its rows came w * 4 bytes apart; packed now, as
+		if (fw < rowW) {
+			/* the frame shrank after its size was read: its rows came rowW * 4 bytes apart; packed now, as
 			 * the upload, frame generation and a screenshot read them (it was one sheared frame) */
 			uint8_t *px = static_cast<uint8_t *>(s.mapped);
 			for (uint32_t y = 1; y < fh; y++) {
-				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * w * 4, size_t(fw) * 4);
+				std::memmove(px + size_t(y) * fw * 4, px + size_t(y) * rowW * 4, size_t(fw) * 4);
 			}
 		}
 		ensurePicture(fw, fh);
@@ -3742,12 +4159,13 @@ public:
 		fgPush = frameGenFor(fw, fh);
 		upload = !fgPush;
 		havePicture = true;
-		pictureBuffer = static_cast<int>(currentBuffer);   // 0.1.53: a save state's picture comes from it
+		pictureBuffer = static_cast<int>(into);   // 0.1.53: a save state's picture comes from it
+		uploadFrom = static_cast<int>(into);
 		showingLogo = false;
 		showingFrozen = false;
 		if (!picturesTaken++) {
-			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames", fw, fh,
-				static_cast<unsigned long long>(framesDrawn));
+			pshakux_log("presenter: the first frame, %ux%u, after %llu display frames%s", fw, fh,
+				static_cast<unsigned long long>(framesDrawn), slot ? " (one device: the HLE GPU's display image, copied on the GPU)" : "");
 			checkInstanceTable("the first frame (the HLE GPU's instance made)");
 		}
 	}
@@ -3916,9 +4334,18 @@ public:
 			stampPass(cmdBuffer, 0);
 		}
 		const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		if (slotHeld) {
+			recordSlotCopy(cmdBuffer);   // one device: the frame into the staging buffer, on the GPU
+		}
 		pictureChanged = upload || fgShow;
+		/* 1.0.4: the staging buffer the picture came in (two devices: the one its copy went into) */
+		const size_t from = uploadFrom >= 0 ? static_cast<size_t>(uploadFrom) : currentBuffer;
+		uploadFrom = -1;
+		if (upload || fgPush) {
+			take.reading(from, static_cast<int>(currentBuffer));   // read on the GPU until this slot's fence
+		}
 		if (fgPush) {
-			frameGen.push(cmdBuffer, staging[currentBuffer].buffer);
+			frameGen.push(cmdBuffer, staging[from].buffer);
 		}
 		if (fgShow) {
 			frameGen.show(cmdBuffer, currentBuffer, fgTime, picture.image, picture.layout);
@@ -3932,7 +4359,7 @@ public:
 			VkBufferImageCopy copy{};
 			copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 			copy.imageExtent = { picture.width, picture.height, 1 };
-			vkCmdCopyBufferToImage(cmdBuffer, staging[currentBuffer].buffer, picture.image,
+			vkCmdCopyBufferToImage(cmdBuffer, staging[from].buffer, picture.image,
 				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 			vks::tools::insertImageMemoryBarrier(cmdBuffer, picture.image,
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -3961,17 +4388,17 @@ public:
 			recordSsaaSmaa(cmdBuffer, postSet != VK_NULL_HANDLE ? postSet : descriptorSet,
 				static_cast<uint32_t>(std::lround(gameW)), static_cast<uint32_t>(std::lround(gameH)));
 		stampPass(cmdBuffer, 2);   // its passes: SMAA, Debanding, Brightness and Colour, SSAA + SMAA
-		/* 0.0.9: HDR output: the picture and the menus into layers of their own (resolveHdr) */
-		const bool hdrNow = hdrOn;
-		if (hdrNow) {
-			beginHdrLayer(cmdBuffer, hdrPicture);
-		} else {
-			beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
-		}
 		const bool splash = library && screen == Screen::Boot && showingLogo;
 		const bool introNow = showingIntro && library && screen == Screen::Boot;
-		if ((havePicture || (showingLogo && (!library || splash)) || introNow) &&
-			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+		/* where the picture goes and how it is drawn, known before the screen's pass begins (FSR1's EASU
+		 * is drawn into rcasIn before it when RCAS follows) */
+		const bool drawPicture = (havePicture || (showingLogo && (!library || splash)) || introNow) &&
+			picture.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkViewport viewport{};
+		VkRect2D scissor{};
+		VkPipeline chosen = pipeline;
+		VkDescriptorSet set = descriptorSet;
+		if (drawPicture) {
 			const float aspect = introNow ? static_cast<float>(picture.width) / static_cast<float>(picture.height) : displayAspect();
 			/* 0.1.26: the boot screen's logo in a box above its middle */
 			const float boxW = static_cast<float>(width), boxH = splash ? static_cast<float>(height) * 0.46f : static_cast<float>(height);
@@ -3983,18 +4410,14 @@ public:
 			}
 			const float x = std::floor((static_cast<float>(width) - w) * 0.5f);
 			const float y = splash ? std::floor(static_cast<float>(height) * kSplashTop) : std::floor((static_cast<float>(height) - h) * 0.5f);
-			VkViewport viewport{ x, y, w, h, 0.0f, 1.0f };
+			viewport = VkViewport{ x, y, w, h, 0.0f, 1.0f };
 			if (cropOn && ((havePicture && !showingLogo) || showingFrozen)) {
 				/* the overscan cropped: the picture drawn 1 / (1 - 2 * 3/80) larger about its
 				 * middle, the scissor keeping its place (its shape kept: both sides alike) */
 				const float k = 1.0f / (1.0f - 2.0f * 3.0f / 80.0f);
 				viewport = VkViewport{ x - (k - 1.0f) * w * 0.5f, y - (k - 1.0f) * h * 0.5f, w * k, h * k, 0.0f, 1.0f };
 			}
-			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
-			VkRect2D scissor{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
-			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
-			VkPipeline chosen = pipeline;
-			VkDescriptorSet set = descriptorSet;
+			scissor = VkRect2D{ { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { static_cast<uint32_t>(w), static_cast<uint32_t>(h) } };
 			if (havePicture && !showingLogo) {
 				const bool smaller = static_cast<float>(picture.width) < viewport.width - 0.5f || static_cast<float>(picture.height) < viewport.height - 0.5f;
 				const bool larger = static_cast<float>(picture.width) > viewport.width + 0.5f || static_cast<float>(picture.height) > viewport.height + 0.5f;
@@ -4028,6 +4451,33 @@ public:
 			if (splash && pipelineLogo != VK_NULL_HANDLE) {
 				chosen = pipelineLogo;
 			}
+		}
+		/* FSR1 is AMD's EASU then RCAS: with its sharpening on, EASU into rcasIn where the picture goes
+		 * (the rest of it cleared to black, which stops RCAS at the picture's border), then RCAS from it
+		 * into the screen, in the same place (its texels the screen's pixels, read 1:1) */
+		const bool rcasNow = drawPicture && chosen == pipelineSgsr && pipelineSgsr != VK_NULL_HANDLE && rcasSharp > 0.0f && ensureRcas();
+		if (rcasNow) {
+			beginHdrLayer(cmdBuffer, rcasIn);   // (a layer as HDR's are: the screen's format, cleared, the depth buffer)
+			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
+			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineSgsr);
+			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
+			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
+			endHdrLayer(cmdBuffer, rcasIn);
+			chosen = pipelineRcas;
+			set = rcasSet;
+		}
+		stampPass(cmdBuffer, 3);   // FSR1's EASU before its RCAS (nothing when that is off)
+		/* 0.0.9: HDR output: the picture and the menus into layers of their own (resolveHdr) */
+		const bool hdrNow = hdrOn;
+		if (hdrNow) {
+			beginHdrLayer(cmdBuffer, hdrPicture);
+		} else {
+			beginDynamicRendering(cmdBuffer); // clears to black: the letterbox, or the whole screen
+		}
+		if (drawPicture) {
+			vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 			vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
 			vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &set, 0, nullptr);
 			if (chosen == pipelineLogo) {
@@ -4038,6 +4488,9 @@ public:
 				/* .x 1: SSAA's Sharp down-sampling (0.0.9) */
 				const float metrics[4] = { chosen == pipelineSsaa && ssaaSharp ? 1.0f : 0.0f, 0.0f, viewport.width, viewport.height };
 				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
+			} else if (chosen == pipelineRcas) {
+				const float metrics[4] = { rcasSharp, 0.0f, viewport.width, viewport.height };   // .x FsrRcasCon's con.x
+				vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(metrics), metrics);
 			} else if (chosen == pipelineCrt) {
 				/* the game's own lines (the picture's at its resolution scale), the strength, the viewport */
 				const float lines = std::max(120.0f, static_cast<float>(picture.height) / static_cast<float>(std::max(coreScale, 1)));
@@ -4046,7 +4499,7 @@ public:
 			}
 			vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
 		}
-		stampPass(cmdBuffer, 3);   // scaled to the screen (the filter, or the CRT look)
+		stampPass(cmdBuffer, 4);   // scaled to the screen (the filter, or the CRT look; FSR1's RCAS)
 		if (hdrNow) {
 			endHdrLayer(cmdBuffer, hdrPicture);
 			beginHdrLayer(cmdBuffer, hdrUi);
@@ -4054,14 +4507,14 @@ public:
 			drawUI(cmdBuffer);
 			ui.coverage = false;
 			endHdrLayer(cmdBuffer, hdrUi);
-			stampPass(cmdBuffer, 4);   // the menus
+			stampPass(cmdBuffer, 5);   // the menus
 			resolveHdr(cmdBuffer, !library && havePicture && !showingLogo);
 		} else {
 			drawUI(cmdBuffer);
-			stampPass(cmdBuffer, 4);
+			stampPass(cmdBuffer, 5);
 			endDynamicRendering(cmdBuffer);
 		}
-		stampPass(cmdBuffer, 5);   // the end (HDR's pixels and their copy, when it is on)
+		stampPass(cmdBuffer, 6);   // the end (HDR's pixels and their copy, when it is on)
 		if (passQueries != VK_NULL_HANDLE) {
 			passStamped[currentBuffer] = true;
 		}
@@ -4494,12 +4947,60 @@ public:
 			add(r, { nullptr, "OGBox has hakuX's mods (the title folder's mods/); a game's are in mods/" + modsKey +
 				"/: a folder a mod, cheats.txt the cheats. Patches come from gamedata/patches.db." });
 		}
-		const auto kindOf = [](const OgboxModEntry &e) { return e.cheat ? 2 : e.patch ? 1 : e.gamefix ? -1 : 0; };
+		/* 1.0.4: the player's own patches (core/ogbox_patches.h: "user:<file>", after the database's) */
+		const auto isUser = [](const OgboxModEntry &e) { return e.patch && !std::strncmp(e.id, "user:", 5); };
+		const auto kindOf = [&](const OgboxModEntry &e) { return e.cheat ? 2 : isUser(e) ? 3 : e.patch ? 1 : e.gamefix ? -1 : 0; };
+		/* their group's foot (its heading too, if none of theirs is listed): the files to attach by hand */
+		bool yoursHead = false, yoursFoot = false;
+		const auto yours = [&]() {
+			yoursFoot = true;
+			if (!yoursHead) {
+				section("Your patches");
+			}
+			const std::string folder = ogbox::storagePath("patches");
+			R r;
+			r.key = "uadd";
+			r.title = "Add a patch from the patches folder";
+			r.icon = ui::Icon::Plus;
+			r.sub = userFiles.empty() ? "None to add \xC2\xB7 " + folder
+				: std::to_string(userFiles.size()) + (userFiles.size() == 1 ? " file" : " files") + " no rule gives a game";
+			r.dim = userFiles.empty();
+			r.right = userFiles.empty() ? std::string() : userPatchesOpen ? std::string("hide") : std::string("show");
+			const std::string help = "Copy .jmp, .ips and .bps patches into " + folder + " (or a folder in it): each game "
+				"lists its own here, off till turned on. A BPS is this game's when it was made from this disc's default.xbe "
+				"(its CRC-32); a JMP when its version= line has this disc's CRC-32 or this title ID; an IPS, or a JMP that says "
+				"neither, when its name has this title ID or the game's name. The others are listed here to attach to the "
+				"game by hand (CROSS), or detach. OGBox's updates and game fixes never change that folder.";
+			add(r, { userFiles.empty() ? std::function<void()>() : [this]() { userPatchesOpen = !userPatchesOpen; }, help });
+			for (size_t k = 0; userPatchesOpen && k < userFiles.size(); k++) {
+				R f;
+				f.key = "uf:" + std::string(userFiles[k].rel);
+				f.title = userFiles[k].rel;
+				f.toggle = userFiles[k].attached ? 1 : 0;
+				f.indent = 1;
+				add(f, { [this, k]() {
+					const OgboxUserPatchFile u = userFiles[k];
+					std::lock_guard<std::mutex> disc(g_discInfoMutex);
+					if (ogbox_patches_attach(modsKey.c_str(), u.rel, !u.attached) && u.attached) {
+						ogbox_mods_choose_kind(modsKey.c_str(), "patch", ("user:" + std::string(u.rel)).c_str(), false);
+					}
+					loadModList();
+					detailsPath.clear();
+				}, std::string(userFiles[k].attached ? "Attached to this game by hand: CROSS detaches it (and turns it off)."
+					: "Not attached to any game: CROSS attaches it to this one, listed above, off till turned on. Its release "
+					"isn't checked: attach it only to the game it was made for.") });
+			}
+		};
 		for (size_t i = 0; i < modList.size(); i++) {
 			OgboxModEntry &m = modList[i];
+			if (!yoursFoot && kindOf(m) == 2) {
+				yours();
+			}
 			/* 0.0.6: the patches in one group, Patches (no headings by kind: "Misc" was most of them) */
 			if (i == 0 || kindOf(modList[i - 1]) != kindOf(m)) {
-				section(m.cheat ? "Cheats" : m.patch ? "Patches" : m.gamefix ? "Game fixes \xC2\xB7 always on" : "Mods");
+				yoursHead |= kindOf(m) == 3;
+				section(m.cheat ? "Cheats" : kindOf(m) == 3 ? "Your patches" : m.patch ? "Patches"
+					: m.gamefix ? "Game fixes \xC2\xB7 always on" : "Mods");
 			}
 			/* 0.0.2: the release check (core/ogbox_mods.h): one made for another release of the game is
 			 * greyed out, without its switch, and can't be turned on (one on from before can be turned
@@ -4508,12 +5009,13 @@ public:
 			R r;
 			r.key = "m" + std::to_string(kindOf(m)) + ":" + m.id;
 			r.title = m.name;
-			r.sub = (m.patch || (!m.cheat && m.author[0])) ? std::string("by ") + m.author : std::string();
+			r.sub = isUser(m) ? "patches/" + std::string(m.id + 5)
+				: (m.patch || (!m.cheat && m.author[0])) ? std::string("by ") + m.author : std::string();
 			r.right = other ? std::string(m.on ? "Incompatible: left out" : "Incompatible")
 				: m.gamefix ? std::string("always on")
 				: m.cheat ? (m.once ? "once" : std::string())
 				: (!m.patch && m.refresh ? std::to_string(m.refresh) + " Hz" : std::string());
-			if (unchecked && !m.patch && !m.gamefix) {
+			if (unchecked && (!m.patch || isUser(m)) && !m.gamefix) {
 				r.right = r.right.empty() ? std::string("release not checked") : r.right + " \xC2\xB7 release not checked";
 			}
 			r.toggle = other && !m.on ? -1 : m.on ? 1 : 0;
@@ -4522,7 +5024,10 @@ public:
 				r.dot = ui::P().fail;
 			}
 			std::string help;
-			if (other) {
+			if (other && isUser(m)) {
+				help = std::string("Can't be applied: ") + m.fit_why + ". " + m.description + " " +
+					(m.on ? "It's left out when the game starts. CROSS turns it off." : "It can't be turned on.");
+			} else if (other) {
 				/* 0.0.6: which version of the game it is for */
 				const std::string region = m.region[0] ? std::string(m.region) : std::string();
 				help = (region.empty() ? std::string("Incompatible: made for another version of the game")
@@ -4565,6 +5070,9 @@ public:
 				};
 			}
 			add(r, { press, help });
+		}
+		if (!yoursFoot) {
+			yours();
 		}
 		// ---- 0.1.54: the trainers
 		unsigned gen = 0, found = 0;
@@ -4738,6 +5246,16 @@ public:
 		}
 	}
 
+	/* The game's catalog, and the player's patch files that can be attached to it by hand (1.0.4).
+	 * Under g_discInfoMutex. */
+	void loadModList()
+	{
+		modList.assign(480, OgboxModEntry{});
+		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(modsKey.c_str(), modList.data(), 480))));
+		userFiles.assign(128, OgboxUserPatchFile{});
+		userFiles.resize(static_cast<size_t>(std::max(0, ogbox_patches_user_files(modsKey.c_str(), userFiles.data(), 128))));
+	}
+
 	/* The game's mods, patches, cheats and trainers: CROSS turns one on or off. */
 	void drawMods()
 	{
@@ -4772,6 +5290,8 @@ public:
 		modsKey = key;
 		modsTitle = title;
 		std::lock_guard<std::mutex> disc(g_discInfoMutex);
+		setUserPatches(key, title);
+		userPatchesOpen = false;
 		/* 0.1.52: the disc's default.xbe's CRC-32, for the patches made for another release of the game.
 		 * 0.0.2: the release check of its mods, patches and cheats against the disc (core/ogbox_mods.h:
 		 * one made for another release is greyed out and can't be turned on); in a game, the start's
@@ -4781,10 +5301,10 @@ public:
 			pshakux_log("ogbox: %s: default.xbe's CRC-32 %08X", key.c_str(), static_cast<unsigned>(crc));
 		}
 		modsCrc = ogbox_mods_disc_crc(key.c_str());
-		modList.assign(480, OgboxModEntry{});
-		modList.resize(static_cast<size_t>(std::max(0, ogbox_mods_catalog(key.c_str(), modList.data(), 480))));
+		loadModList();
 		/* 0.1.54: the trainers for its title ID, those for this release (its default.xbe's date) first */
 		tv.titleId = static_cast<uint32_t>(std::strtoul(key.substr(0, 8).c_str(), nullptr, 16));
+		fetchGameCheats(tv.titleId);   // 1.0.4: (from the game list's settings of a game too)
 		tv.xbeTime = runXbeTime;
 		if (!image.empty()) {
 			OgboxGameInfo info{};
@@ -4872,11 +5392,131 @@ public:
 		framesDrawn++;
 	}
 
+	/* 1.0.4: what a game pass spent its time on (CPU, ms), to find why the presenter skips a
+	 * refresh now and then (the owner's runs: one in 8-9 s in 1.0.3, one in 50 s in v1.0.1). When the
+	 * gap between two acquires is over 1.5 refreshes, the pass before and this one are logged. */
+	struct PassSteps {
+		double at{ 0 }, input{ 0 }, settle{ 0 }, acquire{ 0 }, vsync{ 0 }, fetch{ 0 }, plan{ 0 }, record{ 0 },
+			submit{ 0 }, end{ 0 };
+		/* the overlay update just before this pass (outside render(): the menus' and HUD's ImGui
+		 * frame, ImGui's render, the vertex upload), ms */
+		double ovDraw{ 0 }, ovRender{ 0 }, ovUpload{ 0 };
+	};
+	PassSteps passNow, passLast;
+	double passEndedAt{ 0 }, passOutside{ 0 }, passOutsideLast{ 0 }, passAcquiredLast{ 0 };
+	unsigned passSkipsLogged{ 0 };
+	double passRefresh{ 0 };
+	double passGapSum{ 0 };
+	unsigned passGapN{ 0 };
+	/* the skips of the last 10 s by the step that took longest (in the pass before or this one) */
+	std::map<std::string, std::pair<unsigned, double>> passSkipBy;
+	unsigned passSkips10{ 0 }, passesIn10{ 0 };
+	double passSkipLogAt{ 0 };
+	static std::string passStepsText(const PassSteps &p)
+	{
+		char b[256];
+		std::snprintf(b, sizeof(b), "input %.2f, settle %.2f, acquire %.2f, vsync %.2f, frame %.2f, plan %.2f, record %.2f, "
+			"submit+present %.2f, the rest %.2f", (p.input - p.at) * 1e3, (p.settle - p.input) * 1e3, (p.acquire - p.settle) * 1e3,
+			(p.vsync - p.acquire) * 1e3, (p.fetch - p.vsync) * 1e3, (p.plan - p.fetch) * 1e3, (p.record - p.plan) * 1e3,
+			(p.submit - p.record) * 1e3, (p.end - p.submit) * 1e3);
+		return b;
+	}
+	void passSkipCheck()
+	{
+		const double gap = passAcquiredLast > 0 ? (passNow.acquire - passAcquiredLast) * 1e3 : 0;
+		/* the refresh: the panel's, 8.33 or 16.67 ms, whichever the last 10 s' average gap is nearer (test
+		 * build FC: an average of the short gaps drifted below a refresh once acquires came in pairs, and
+		 * then nearly every pass counted as a skip) */
+		if (gap > 0) {
+			passGapSum += gap;
+			passGapN++;
+		}
+		const double refresh = passRefresh > 0 ? passRefresh : 1000.0 / 120.0;
+		passAcquiredLast = passNow.acquire;
+		/* in play only: from the game's first picture on (the loading screen before it is timed apart) */
+		if (!havePicture) {
+			return;
+		}
+		passesIn10++;
+		if (gap > 1.5 * refresh && refresh > 0) {
+			passSkips10++;
+			const PassSteps *ps[2] = { &passLast, &passNow };
+			const char *names[] = { "input", "settle", "acquire", "vsync", "frame", "plan", "record", "submit+present", "the rest" };
+			std::string worst = "outside render";
+			double wv = std::max(passOutsideLast, passOutside) * 1e3;
+			{
+				/* outside render(): which part of the overlay update, when one is most of it */
+				const PassSteps &o = passOutside >= passOutsideLast ? passNow : passLast;
+				const double parts[] = { o.ovDraw, o.ovRender, o.ovUpload };
+				const char *pn[] = { "overlay: menus", "overlay: ImGui render", "overlay: upload" };
+				for (int i = 0; i < 3; i++) {
+					if (parts[i] > 0.5 * wv) {
+						worst = pn[i];
+					}
+				}
+			}
+			for (int k = 0; k < 2; k++) {
+				const PassSteps &p = *ps[k];
+				const double v[] = { p.input - p.at, p.settle - p.input, p.acquire - p.settle, p.vsync - p.acquire,
+					p.fetch - p.vsync, p.plan - p.fetch, p.record - p.plan, p.submit - p.record, p.end - p.submit };
+				for (int i = 0; i < 9; i++) {
+					if (k == 1 && i > 2) {
+						break;   // this pass only up to its acquire
+					}
+					if (v[i] * 1e3 > wv) {
+						wv = v[i] * 1e3;
+						worst = names[i];
+					}
+				}
+			}
+			auto &b = passSkipBy[worst];
+			b.first++;
+			b.second += wv;
+		}
+		const double nowS = passNow.end;
+		if (passSkipLogAt <= 0) {
+			passSkipLogAt = nowS;
+		} else if (nowS - passSkipLogAt >= 10.0) {
+			std::string by;
+			for (const auto &e : passSkipBy) {
+				char b[96];
+				std::snprintf(b, sizeof(b), "%s%s %u (%.1f ms on average)", by.empty() ? "" : ", ", e.first.c_str(), e.second.first,
+					e.second.second / e.second.first);
+				by += b;
+			}
+			pshakux_log_later("presenter: %u refreshes skipped in %u passes (%.0f s)%s%s", passSkips10, passesIn10, nowS - passSkipLogAt,
+				by.empty() ? "" : "; the longest step: ", by.c_str());
+			passSkipBy.clear();
+			passSkips10 = passesIn10 = 0;
+			passSkipLogAt = nowS;
+			if (passGapN) {
+				const double avg = passGapSum / passGapN;
+				passRefresh = avg < 12.5 ? 1000.0 / 120.0 : 1000.0 / 60.0;
+			}
+			passGapSum = 0;
+			passGapN = 0;
+		}
+		if (gap > 1.5 * refresh && refresh > 0 && passSkipsLogged < 60) {
+			passSkipsLogged++;
+			pshakux_log_later("presenter: a refresh skipped, %.1f ms between two acquires (%.1f a refresh) | the pass before: %s; "
+				"outside render %.2f (overlay: menus %.2f, ImGui render %.2f, upload %.2f) | this pass to its acquire: outside "
+				"render %.2f (overlay: menus %.2f, ImGui render %.2f, upload %.2f), %s", gap, refresh,
+				passStepsText(passLast).c_str(), passOutsideLast * 1e3, passLast.ovDraw, passLast.ovRender, passLast.ovUpload,
+				passOutside * 1e3, passNow.ovDraw, passNow.ovRender, passNow.ovUpload, passStepsText(passNow).c_str());
+		}
+	}
+
 	void render() override
 	{
 		if (!prepared) {
 			return;
 		}
+		passNow = PassSteps{};
+		passNow.at = now_seconds();
+		passNow.ovDraw = ps5.overlayDrawMs;
+		passNow.ovRender = ps5.overlayRenderMs;
+		passNow.ovUpload = ps5.overlayUploadMs;
+		passOutside = passEndedAt > 0 ? passNow.at - passEndedAt : 0;
 		feedControllers();
 		hdrUpdate();   // 0.0.9: HDR output turned on or off between frames
 		pollLeave();   // 0.0.9: an exit waiting for the disk
@@ -4905,20 +5545,55 @@ public:
 		// The overlay only says what went wrong; OPTIONS is the game's START here, not the
 		// template's settings window.
 		ui.visible = true;   // 0.1.26: the FPS counter and the quit ring over the game too
+		passNow.input = now_seconds();
+		settleStaging(currentBuffer);   // one device: before prepareFrame resets the fence
+		passNow.settle = now_seconds();
 		VulkanExampleBase::prepareFrame();
 		passAcquiredAt = now_seconds();
+		passNow.acquire = passAcquiredAt;
 		pshx_core_display_vsync();    // 0.0.4: the display let the loop go (FIFO: once a refresh)
+		passNow.vsync = now_seconds();
 		fetchPicture();
+		passNow.fetch = now_seconds();
 		frameGenPlan();
 		probeStall(state);
+		passNow.plan = now_seconds();
 		/* (fgPush: frame generation takes the new frame instead of the upload; it is in this staging buffer all the same) */
 		if (shotWanted && (upload || fgPush) && havePicture) {
 			shotWanted = false;
-			takeShot();
+			if (slotHeld) {
+				shotBuffer = static_cast<int>(currentBuffer);   // one device: once the GPU's copy is done
+			} else {
+				takeShot(uploadFrom >= 0 ? static_cast<size_t>(uploadFrom) : currentBuffer);
+			}
 		}
 		buildCommandBuffer();
+		passNow.record = now_seconds();
+		const uint32_t submitted = currentBuffer;
+		if (slotHeld) {
+			submitWaitTimeline = reinterpret_cast<VkSemaphore>(slotFrame.semaphore);
+			submitWaitValue = slotFrame.value;
+			submitWaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		}
 		VulkanExampleBase::submitFrame();
+		passNow.submit = now_seconds();
+		if (slotHeld) {
+			/* submitted: the HLE GPU may write the slot again (its write comes after on the queue) */
+			slotHeld = false;
+			stagingOnGpu[submitted] = true;
+			pshx_core_slot_done(slotFrame.slot);
+		}
+		if (shotBuffer >= 0) {
+			settleStaging(static_cast<size_t>(shotBuffer));
+			takeShot(static_cast<size_t>(shotBuffer));
+			shotBuffer = -1;
+		}
 		framesDrawn++;
+		passNow.end = now_seconds();
+		passEndedAt = passNow.end;
+		passSkipCheck();
+		passLast = passNow;
+		passOutsideLast = passOutside;
 	}
 
 	/* 0.1.28: a running game that has given no new frame for 0.4 s: where its emulated CPU's thread
@@ -4961,14 +5636,14 @@ public:
 	}
 
 	/* The frame just taken from the core (this frame's staging buffer) to /data/ogbox/shots. */
-	void takeShot()
+	void takeShot(size_t buffer)
 	{
 		const std::string folder = ogbox::storagePath("shots");
 		mkdir(folder.c_str(), 0777);
 		char name[96];
 		std::snprintf(name, sizeof(name), "/shot-%04u-%.0fs.bmp", ++shotsTaken, now_seconds());
 		const std::string path = folder + name;
-		const bool ok = writeBmp(path, static_cast<const uint8_t *>(staging[currentBuffer].mapped), picture.width,
+		const bool ok = writeBmp(path, static_cast<const uint8_t *>(staging[buffer].mapped), picture.width,
 			picture.height, picture.width * 4);
 		pshakux_log("ogbox: screenshot %ux%u %s: %s", picture.width, picture.height, path.c_str(), ok ? "saved" : std::strerror(errno));
 	}
@@ -5010,7 +5685,9 @@ public:
 			rainLast = now_seconds();
 		}
 		const double now = now_seconds();
-		const float dt = static_cast<float>(std::min(0.1, std::max(0.0, now - rainLast)));
+		/* 1.0.4: Reduce motion: the code stays where it is */
+		const bool still = ui::access().still;
+		const float dt = still ? 0.0f : static_cast<float>(std::min(0.1, std::max(0.0, now - rainLast)));
 		rainLast = now;
 		ImFont *font = ImGui::GetFont();
 		const ImU32 body = ui::P().accent, head = ui::mix(ui::P().accent, IM_COL32(255, 255, 255, 255), 0.65f);
@@ -5019,7 +5696,7 @@ public:
 			if (d.y - static_cast<float>(d.length) * glyph > H) {
 				reset(d, false);
 			}
-			if (rng() % 24 == 0) {
+			if (!still && rng() % 24 == 0) {
 				d.glyphs[rng() % d.glyphs.size()] = pick();
 			}
 			for (int k = 0; k < d.length; k++) {
@@ -5137,6 +5814,9 @@ public:
 			std::lock_guard<std::mutex> disc(g_discInfoMutex);
 			OgboxGameInfo info{};
 			ogbox_game_info(path.c_str(), &info);
+			if (info.ok) {
+				setUserPatches(info.key, info.title[0] ? std::string(info.title) : ogbox::shortName(baseName(path)));
+			}
 			countDetails(info, *job);
 			std::lock_guard<std::mutex> lock(job->mutex);
 			job->info = info;
@@ -5263,6 +5943,21 @@ public:
 			v.ledColour = r && g ? IM_COL32(255, 158, 26, 255) : r ? IM_COL32(255, 46, 31, 255) : g ? IM_COL32(77, 255, 64, 255) : 0;
 			v.ledText = ledText;
 		}
+		/* 1.0.4: until the game's first picture, the loading screen (not over a game's frozen last
+		 * frame: its next XBE is starting) */
+		if (!havePicture && !showingFrozen) {
+			const double t0 = now_seconds();
+			drawLoadingScreen(state);
+			sv.drawn++;
+			sv.drawSum += now_seconds() - t0;
+			return;
+		}
+		if (sv.drawn && !sv.drawLogged) {
+			/* 1.0.4: what the loading screen cost the presenter's thread (the owner's EW run: about 30
+			 * ms outside render() a pass while it showed, a refresh in four) */
+			sv.drawLogged = true;
+			pshakux_log("ogbox: loading screen: drawn %u times, %.2f ms each on average", sv.drawn, sv.drawSum * 1e3 / sv.drawn);
+		}
 		if (shareWait.active) {
 			/* 0.0.6: waiting for the share, the seconds counted */
 			v.showStatus = true;
@@ -5317,6 +6012,161 @@ public:
 		}
 		ImDrawList *dl = beginUiScreen("##hud", Ground::None);
 		ui::drawHud(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
+		endUiScreen();
+	}
+
+	/* 1.0.4: the loading screen (idea after ProsperoEden's): the game's cover and name, and the steps of
+	 * its start as the core reports them (pshx_core_state, pshx_core_start_progress): the disc (and a
+	 * share waited for), the Xbox booting (memory, kernel, the game's XBE), the HLE GPU's Vulkan back
+	 * end, the cached shaders it builds first (counted), a save state loaded, then the game running
+	 * until its first picture. A step only goes forward; one under way for long says so. */
+	enum { ST_DISC, ST_XBOX, ST_GRAPHICS, ST_SHADERS, ST_STATE, ST_GAME, ST_COUNT };
+	void drawLoadingScreen(int state)
+	{
+		const double now = now_seconds();
+		PshxCoreStart cs{};
+		pshx_core_start_progress(&cs);
+		if (cs.shaders_total) {
+			sv.shadersDone = cs.shaders_done;
+			sv.shadersTotal = cs.shaders_total;
+		}
+		const bool loadState = std::any_of(boot.options.begin(), boot.options.end(),
+			[](const std::string &o) { return o.rfind("loadstate=", 0) == 0; });
+		int step = ST_DISC;
+		if (shareWait.active || state == PSHX_CORE_IDLE) {
+			step = ST_DISC;
+		} else if (state == PSHX_CORE_BOOTING) {
+			step = !cs.gpu ? ST_XBOX : cs.shaders_total ? ST_SHADERS : !cs.graphics ? ST_GRAPHICS : loadState ? ST_STATE : ST_GAME;
+		} else if (state == PSHX_CORE_RUNNING) {
+			step = ST_GAME;
+		} else {
+			step = std::max(sv.step, 0);   // (failed or stopped: where it was)
+		}
+		if (step > sv.step) {
+			if (sv.step >= 0) {
+				pshakux_log("ogbox: loading screen: step %d after %.1f s", step, now - sv.since);
+			}
+			sv.step = step;
+			sv.since = now;
+		}
+		step = sv.step;
+		const bool failed = state == PSHX_CORE_FAILED || !problem.empty();
+		const bool stopped = state == PSHX_CORE_STOPPED;
+		const float secs = static_cast<float>(now - sv.since);
+
+		ui::LoadingView v;
+		const bool dash = boot.image == "none";
+		const std::string file = baseName(boot.image);
+		if (dash) {
+			v.title = "Xbox dashboard";
+		} else if (strcasecmp(file.c_str(), "default.xbe") == 0) {
+			v.title = baseName(parentOf(boot.image));   // (an extracted game: its folder's name)
+		} else {
+			v.title = ogbox::shortName(file);
+		}
+		v.sub = dash ? std::string("from the Xbox hard disk") : (runKey.empty() ? file : runKey + "  Â·  " + file);
+		if (!sv.namesRead) {
+			sv.namesRead = true;
+			if (!dash) {
+				sv.names = coverNames(file, runInfo.ok ? &runInfo : nullptr, boot.image);
+			}
+		}
+		ImU32 tint = 0;
+		/* one found is asked each frame, as the list does (its texture is the one kept); one not
+		 * found yet at most every 0.5 s */
+		const bool look = now - sv.coverLookAt >= 0.5;
+		if (look && (!sv.cover.id || !sv.blur.id)) {
+			sv.coverLookAt = now;
+		}
+		if (sv.cover.id || look) {
+			sv.cover = uiCover(sv.names);
+		}
+		if (sv.blur.id || look) {
+			sv.blur = uiBlur(sv.names, &sv.tint);
+		}
+		v.cover = sv.cover;
+		bd.blur = sv.blur;
+		tint = sv.tint;
+		v.tint = tint ? tint : ui::tintFor(v.title);
+		bd.key = "loading";
+		bd.tint = tint;
+		bd.focus = ImVec2(0.5f, 0.32f);
+		bd.strength = 0.8f;
+
+		const bool prebuild = prefs.on("prebuild_shaders");
+		struct Row {
+			int id;
+			const char *name;
+		};
+		std::vector<Row> rows = { { ST_DISC, "Reading the disc" }, { ST_XBOX, "Starting the Xbox" }, { ST_GRAPHICS, "Starting graphics" } };
+		if (prebuild) {
+			rows.push_back({ ST_SHADERS, "Building cached shaders" });
+		}
+		if (loadState) {
+			rows.push_back({ ST_STATE, "Loading the save state" });
+		}
+		rows.push_back({ ST_GAME, "Starting the game" });
+		if (dash) {
+			rows[0].name = "Reading the Xbox hard disk";
+		}
+		int shown = 0;
+		float part = 0.0f;
+		for (const Row &r : rows) {
+			ui::LoadStep st;
+			st.name = r.name;
+			using S = ui::LoadStep::State;
+			st.state = r.id < step ? S::Done : r.id == step ? (failed ? S::Failed : stopped ? S::Done : S::Active) : S::Waiting;
+			if (r.id == step) {
+				st.seconds = secs;
+			}
+			if (r.id == ST_DISC && st.state == S::Active && shareWait.active) {
+				st.detail = "waiting for the network share";
+			}
+			if (r.id == ST_SHADERS && sv.shadersTotal) {
+				if (st.state == S::Active) {
+					st.detail = std::to_string(sv.shadersDone) + " of " + std::to_string(sv.shadersTotal);
+					st.progress = static_cast<float>(sv.shadersDone) / static_cast<float>(sv.shadersTotal);
+					part = st.progress;
+				} else if (st.state == S::Done) {
+					st.detail = std::to_string(sv.shadersTotal) + " built";
+				}
+			}
+			if (r.id < step) {
+				shown++;
+			}
+			v.steps.push_back(st);
+		}
+		v.progress = (static_cast<float>(shown) + part) / static_cast<float>(rows.size());
+		if (failed) {
+			v.note = !problem.empty() ? problem : pshx_core_message();
+			if (v.note.empty()) {
+				v.note = "The game stopped while starting. ogbox-boot.log in OGBox's folder says why.";
+			}
+			v.noteBad = true;
+		} else if (stopped) {
+			v.note = pshx_core_message();
+		} else if (step == ST_DISC && shareWait.active) {
+			v.note = "Waiting for the network share (" + parentOf(boot.image) + ") for " + std::to_string(static_cast<int>(now - shareWait.since)) +
+				" s. The game starts as soon as the share answers.";
+		} else if (step == ST_SHADERS && secs >= ui::kLoadLong) {
+			v.note = "Building the shaders this game used before, so it doesn't stutter on them later. Settings > Advanced > "
+				"Build cached shaders at start turns this off.";
+		} else if (step == ST_GAME && secs >= 20.0f) {
+			v.note = "The game is running but hasn't shown a picture yet. Some games take a while; if it stays like this, "
+				"ogbox-boot.log in OGBox's folder says what it is doing.";
+		} else if (secs >= 20.0f) {
+			v.note = "This is taking longer than usual. If it stays here, the game may not run in OGBox yet: ogbox-boot.log in "
+				"OGBox's folder says where it stopped.";
+		}
+		if (shareWait.active) {
+			v.footer = { { "O", "Back to the game list" } };
+		} else {
+			const std::string m = prefs.global("quick_menu");
+			v.footer = { { m == "combo" ? "L1+L2+R1+R2+OPTIONS" : m == "touch_hold" ? "TP" : m == "l3r3" ? "L3+R3" : "OPT",
+				"Quick menu: save, load, quit" } };
+		}
+		ImDrawList *dl = beginUiScreen("##loading");
+		ui::drawLoading(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v);
 		endUiScreen();
 	}
 
@@ -5587,7 +6437,10 @@ public:
 					storageMessage = "The saves are being synced: move the data when that is done.";
 					return;
 				}
-				if (ogbox::StorageMove::get().start(now, storageTarget)) {
+				/* 1.0.4: onto the console's storage, the write broker copies the files (ogbox_storage.h) */
+				const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
+				const ogbox::StorageMove::HelperConnect helper = [elf](std::string &why) { return ogbox::broker::Launch(elf, why); };
+				if (ogbox::StorageMove::get().start(now, storageTarget, helper)) {
 					storageMessage.clear();
 					storageStep = StorageStep::Moving;
 				}
@@ -5733,12 +6586,14 @@ public:
 			case Screen::Storage: drawStorage(); break;
 			case Screen::Hdd: drawHdd(); break;
 			}
+			crashTick();      // 1.0.4
 			updateTick();
 			saveSyncTick();   // 0.0.8
 			placeTick();      // 1.0.3
 			hddJobTick();     // 1.0.3
 			fixesTick();      // 1.0.2
 			cheatsTick();     // 1.0.3
+			writeTestTick();  // 1.0.4
 		}
 		drawOverlays();
 	}
@@ -5984,6 +6839,9 @@ public:
 		/* the frozen picture, 320 wide, for a state saved now */
 		qm.thumb.clear();
 		qm.thumbW = qm.thumbH = 0;
+		if (pictureBuffer >= 0) {
+			settleStaging(static_cast<size_t>(pictureBuffer));   // one device: its GPU copy done
+		}
 		if (pictureBuffer >= 0 && picture.width && picture.height && staging[static_cast<size_t>(pictureBuffer)].mapped) {
 			const uint8_t *src = static_cast<const uint8_t *>(staging[static_cast<size_t>(pictureBuffer)].mapped);
 			const uint32_t tw = 320, th = std::max(1u, static_cast<uint32_t>(320.0f / displayAspect() + 0.5f));
@@ -6145,9 +7003,9 @@ public:
 		case PS5Update::State::Downloading:
 			return st.total ? "downloading " + std::to_string(static_cast<int>(100.0 * static_cast<double>(st.done) /
 				static_cast<double>(st.total))) + "%" : std::string("downloading");
-		case PS5Update::State::Verifying: return "checking the download";
+		case PS5Update::State::Verifying: return st.rollback ? "checking the kept version" : "checking the download";
 		case PS5Update::State::Ready: return "ready to install";
-		case PS5Update::State::Installed: return "installed";
+		case PS5Update::State::Installed: return st.rollback ? "gone back" : "installed";
 		case PS5Update::State::Failed: return "did not work";
 		default: return std::string("OGBox ") + pshakux_build_label();
 		}
@@ -6169,12 +7027,106 @@ public:
 		return text;
 	}
 
+	/* 1.0.4: the offer: Install, What's new (every newer release's notes, whole, scrolling), Skip this
+	 * version (remembered: not offered at a start again, a newer one is), Not now. What's new comes back
+	 * to it. */
+	void offerUpdate()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		if (st.state != PS5Update::State::Available) {
+			return;
+		}
+		std::vector<std::string> items{ "Install" };
+		if (!st.notes.empty()) {
+			items.push_back("What's new");
+		}
+		items.push_back("Skip this version");
+		items.push_back("Not now");
+		std::string text = updateNotes(st.notes);
+		if (text.size() < st.notes.size()) {
+			text += "\n(What's new shows all of it.)";
+		}
+		openPopup("OGBox " + st.tag + " is out", text +
+			"\n\nDownload and install it? Your settings, the Xbox hard disk, states and games stay.",
+			items, [this, items](int choice) {
+				const std::string what = choice >= 0 && choice < static_cast<int>(items.size()) ? items[choice] : "Not now";
+				if (what == "Install") {
+					startUpdate();
+				} else if (what == "What's new") {
+					showUpdateNotes();
+				} else if (what == "Skip this version") {
+					const PS5Update::Status now = PS5Update::GetStatus();
+					PS5Update::Skip();
+					showToast("OGBox " + now.tag + " is skipped: a newer version will be offered. Settings > Updates "
+						"can still install it.");
+				}
+			});
+	}
+
+	void startUpdate()
+	{
+		updateWanted = true;
+		pshakux_log("update: the install was chosen");
+		PS5Update::Download();
+	}
+
+	/* 1.0.4: What's new: the notes of every release newer than this one, newest first (ps5_update.h's
+	 * notes), scrolled with the right stick; Install from here, or back to the offer */
+	void showUpdateNotes()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		const std::string title = st.newer.size() > 1 ? "What's new in the " + std::to_string(st.newer.size()) +
+			" newer releases" : "What's new in OGBox " + st.tag;
+		pshakux_log("update: the notes of %zu newer releases are shown", st.newer.size());
+		openPopup(title, "The right stick scrolls.\n\n" + st.notes, { "Install", "Back" }, [this](int choice) {
+			if (choice == 0) {
+				startUpdate();
+			} else {
+				offerUpdate();
+			}
+		});
+	}
+
+	/* 1.0.4: Settings > Updates > Go back to <version>: the version kept from before the last update
+	 * (ps5_update.h, the idea after ProsperoEden), asked first; it is checked, put back, and OGBox closes */
+	void askRollBack()
+	{
+		const PS5Update::Status st = PS5Update::GetStatus();
+		if (st.previous.empty()) {
+			showToast("No earlier version of OGBox is kept.");
+			return;
+		}
+		char size[32];
+		std::snprintf(size, sizeof(size), "%.0f MB", static_cast<double>(st.previous_bytes) / 1e6);
+		openPopup("Go back to OGBox " + st.previous_label + "?", "OGBox puts back the version it was before the last "
+			"update, " + st.previous_label + " (kept in its folder, " + size + "), and then closes: start it again from the "
+			"home screen. Your settings, the Xbox hard disk, states and games stay. The newer version is offered again; "
+			"choose Skip this version to stay on this one.", { "Go back", "Cancel" }, [this](int choice) {
+				if (choice == 0) {
+					rollbackWanted = true;
+					updateSeen = PS5Update::State::Idle;   // (its answer is answered, whatever came before)
+					pshakux_log("update: going back was chosen");
+					PS5Update::RollBack();
+				}
+			});
+	}
+
+	static std::string previousSize(uint64_t bytes)
+	{
+		char size[32];
+		std::snprintf(size, sizeof(size), "%.0f MB kept", static_cast<double>(bytes) / 1e6);
+		return size;
+	}
+
 	void updateTick()
 	{
 		const PS5Update::Status st = PS5Update::GetStatus();
 		if (st.state == PS5Update::State::Downloading || st.state == PS5Update::State::Verifying) {
 			if (updateWanted) {
 				toast = "Updating to OGBox " + st.tag + ": " + updateLine();   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			} else if (rollbackWanted) {
+				toast = "Going back to OGBox " + st.name + ": " + updateLine();
 				toastUntil = now_seconds() + 1.0;
 			}
 		}
@@ -6188,16 +7140,14 @@ public:
 		updateSeen = st.state;
 		switch (st.state) {
 		case PS5Update::State::Available:
+			/* 1.0.4: a version skipped is offered only when asked for by hand */
+			if (st.skipped && !updateByHand) {
+				pshakux_log("update: %s is out, skipped (not offered)", st.tag.c_str());
+				break;
+			}
 			pshakux_log("update: %s is offered", st.tag.c_str());
-			openPopup("OGBox " + st.tag + " is out", updateNotes(st.notes) +
-				"\n\nDownload and install it? Your settings, the Xbox hard disk, states and games stay.",
-				{ "Install", "Not now" }, [this](int choice) {
-					if (choice == 0) {
-						updateWanted = true;
-						pshakux_log("update: the install was chosen");
-						PS5Update::Download();
-					}
-				});
+			updateByHand = false;
+			offerUpdate();
 			break;
 		case PS5Update::State::UpToDate:
 			if (updateByHand) {
@@ -6207,12 +7157,28 @@ public:
 			break;
 		case PS5Update::State::NoRelease:
 		case PS5Update::State::Failed:
-			if (updateWanted) {
+			if (rollbackWanted) {
+				openPopup("Going back did not work", st.error + "\nOGBox is as it was.", { "OK" }, nullptr);
+			} else if (updateWanted) {
 				openPopup("The update did not work", st.error + "\nOGBox is as it was.", { "OK" }, nullptr);
 			} else if (updateByHand) {
 				showToast(st.error.empty() ? std::string("No release of OGBox was found.") : st.error);
 			}
-			updateWanted = updateByHand = false;
+			updateWanted = updateByHand = rollbackWanted = false;
+			break;
+		case PS5Update::State::Installed:
+			/* 1.0.4: gone back (RollBack, on its thread): OGBox closes as after an update */
+			if (rollbackWanted) {
+				pshakux_log("update: gone back to %s; OGBox closes", st.name.c_str());
+				openPopup("OGBox went back to " + st.name, "The version before the last update is in place. OGBox will now "
+					"close: start it again from the home screen.", { "Close OGBox" }, [this](int) {
+						leaveAfterWrites("OGBox closes", [this]() {
+							prefs.flush();
+							quit = true;
+						});
+					});
+				rollbackWanted = false;
+			}
 			break;
 		case PS5Update::State::Ready:
 			if (updateWanted) {
@@ -6235,6 +7201,18 @@ public:
 		default:
 			break;
 		}
+	}
+
+	/* 1.0.4: OGBox stopped unexpectedly last time (ps5_crash.cpp): said once, on the game list, with nothing
+	 * else open */
+	void crashTick()
+	{
+		if (crashNotice.empty() || screen != Screen::Library || pop.open || gp.open || !startPath.empty()) {
+			return;
+		}
+		pshakux_log("ogbox: the crash of the last time is said");
+		openPopup("OGBox stopped unexpectedly", crashNotice, { "OK" }, nullptr);
+		crashNotice.clear();
 	}
 
 	/* 1.0.2: the game fixes fetched at start: which games got fixes, once, when no other popup is up */
@@ -6292,23 +7270,126 @@ public:
 	/* 1.0.3: "Download cheats" (Settings > Updates): xbased's trainers into the data folder's trainers,
 	 * on a thread of its own; how far it is in a toast, what it did at the end; then the trainers are
 	 * read again (the Mods screens show them) */
-	bool cheatsAsked{ false }, cheatsRescan{ false };
-	void downloadCheats()
+	bool cheatsAsked{ false }, cheatsRescan{ false }, cheatsRecount{ false };
+	/* 1.0.4: the title IDs of the player's games, from what OGBox knows already (no disc read again, no
+	 * folder listed for it): the certificates read this run (coverTitles, the selection's details, the
+	 * game's page), Redump's record of each disc file name the game list listed this run or played
+	 * (listedGames, played.txt; a name Redump hasn't adds nothing), and the Xbox hard disk's save folders
+	 * (UDATA, TDATA: one folder each game that saved). Kept 3 seconds: the settings row counts them. */
+	std::set<std::string> listedGames;   // the disc files' names the list showed this run
+	std::set<std::string> yourCheatTitles;
+	double yourCheatTitlesAt{ -10.0 };
+	unsigned yourFromCert{ 0 }, yourFromName{ 0 }, yourFromHdd{ 0 };
+	const std::set<std::string> &yourTitles()
+	{
+		const double t = now_seconds();
+		if (t - yourCheatTitlesAt < 3.0) {
+			return yourCheatTitles;
+		}
+		yourCheatTitlesAt = t;
+		std::set<std::string> ids;
+		const auto add = [&ids](uint32_t id, unsigned &from) {
+			char text[16];
+			std::snprintf(text, sizeof(text), "%08X", static_cast<unsigned>(id));
+			if (id && ids.insert(text).second) {
+				from++;
+			}
+		};
+		yourFromCert = yourFromName = yourFromHdd = 0;
+		for (const auto &kv : coverTitles) {
+			add(kv.second.titleId, yourFromCert);
+		}
+		if (gp.info.ok) {
+			add(gp.info.title_id, yourFromCert);
+		}
+		if (details) {
+			std::lock_guard<std::mutex> lock(details->mutex);
+			if (details->done && details->info.ok) {
+				add(details->info.title_id, yourFromCert);
+			}
+		}
+		std::set<std::string> names = listedGames;
+		for (const LibraryEntry &e : entries) {
+			if (e.kind == LibraryEntry::Image) {
+				names.insert(e.name);
+			}
+		}
+		for (const auto &played : ogbox::recentlyPlayed(1000)) {
+			names.insert(baseName(played.second));
+		}
+		for (const std::string &name : names) {
+			if (const ogbox::DiscRecord *rec = ogbox::GameDb::get().byFileName(name)) {
+				add(rec->titleId, yourFromName);
+			}
+		}
+		const std::string hdd = (boot.hdd.empty() ? ogbox::storagePath("hdd") : boot.hdd) + "/Partition1/";
+		for (const char *area : { "UDATA", "TDATA", "udata", "tdata" }) {
+			if (DIR *d = opendir((hdd + area).c_str())) {
+				while (struct dirent *de = readdir(d)) {
+					const std::string n = de->d_name;
+					uint32_t id = 0;
+					if (n.size() == 8 && n.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos &&
+						(id = static_cast<uint32_t>(std::strtoul(n.c_str(), nullptr, 16))) < 0xFFFE0000u) {
+						add(id, yourFromHdd);   // (not the dashboard's own, FFFE0000 and up)
+					}
+				}
+				closedir(d);
+			}
+		}
+		if (ids != yourCheatTitles) {
+			pshakux_log("cheats: %zu of your games known: %u by a certificate read, %u by a file name in Redump's list, %u by "
+				"saves on the Xbox hard disk", ids.size(), yourFromCert, yourFromName, yourFromHdd);
+		}
+		yourCheatTitles = std::move(ids);
+		return yourCheatTitles;
+	}
+
+	/* mine: only the player's games' (yourTitles), else every game's */
+	void downloadCheats(bool mine)
 	{
 		unsigned done = 0, total = 0;
 		if (cheatsAsked || ogbox::fixes::CheatsRunning(done, total)) {
 			showToast("The cheats are being downloaded already.");
 			return;
 		}
+		yourCheatTitlesAt = -10.0;   // (counted again now)
+		const std::set<std::string> titles = mine ? yourTitles() : std::set<std::string>();
+		if (mine && titles.empty()) {
+			showToast("No games found yet: open the folders with your games first, or download all cheats.");
+			return;
+		}
 		OGBoxUpdate::Start();   // (curl's set-up, once)
 		const std::string trainers = ogbox::storagePath("trainers");
 		mkdir(trainers.c_str(), 0777);
-		if (!ogbox::fixes::StartCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers)) {
+		if (!ogbox::fixes::StartCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers, titles)) {
 			return;
 		}
 		cheatsAsked = true;
-		pshakux_log("cheats: the download was asked for, into %s", trainers.c_str());
-		showToast("Downloading the cheats from xbased's repository...");
+		pshakux_log("cheats: the download was asked for (%s), into %s",
+			mine ? (std::to_string(titles.size()) + " games").c_str() : "every game", trainers.c_str());
+		showToast(mine ? "Downloading the cheats for your games..." : "Downloading the cheats from xbased's repository...");
+	}
+
+	/* 1.0.4: a game's page (or its Mods screen) with no cheats folder in the data folder's trainers: that
+	 * game's from xbased, quietly, once a game a run; the trainers read again when one came (no network:
+	 * nothing said, the log has it) */
+	std::set<uint32_t> gameCheatsTried;
+	unsigned gameCheatsSeen{ 0 };
+	void fetchGameCheats(uint32_t titleId)
+	{
+		if (!titleId || !library || !gameCheatsTried.insert(titleId).second) {
+			return;
+		}
+		char id[16];
+		std::snprintf(id, sizeof(id), "%08X", static_cast<unsigned>(titleId));
+		const std::string trainers = ogbox::storagePath("trainers");
+		if (isFolder(trainers + "/" + id)) {
+			return;
+		}
+		OGBoxUpdate::Start();
+		mkdir(trainers.c_str(), 0777);
+		pshakux_log("cheats: %s has no cheats folder: its cheats looked for", id);
+		ogbox::fixes::StartGameCheats(std::string(pshakux_title_dir()) + "/gamedata/cheats-xbased.txt", trainers, id);
 	}
 
 	std::string cheatsLine() const
@@ -6320,11 +7401,30 @@ public:
 		return "xbased's trainers";
 	}
 
+	/* 1.0.4: the row "for your games": how many were found */
+	std::string yourCheatsLine()
+	{
+		unsigned done = 0, total = 0;
+		if (ogbox::fixes::CheatsRunning(done, total)) {
+			return cheatsLine();
+		}
+		const size_t n = yourTitles().size();
+		return n ? std::to_string(n) + (n == 1 ? " game found" : " games found") : std::string("no games found yet");
+	}
+
 	void cheatsTick()
 	{
+		if (ogbox::fixes::GameCheatsFetched() != gameCheatsSeen) {
+			gameCheatsSeen = ogbox::fixes::GameCheatsFetched();
+			cheatsRescan = true;   // (1.0.4: a game's page's own: its list and count shown again)
+			cheatsRecount = true;
+		}
 		if (cheatsRescan && ogbox_trainers_state(nullptr, nullptr) != 1) {
 			cheatsRescan = false;
 			scanTrainers();   // (not while a scan runs: it would be skipped)
+		} else if (cheatsRecount && !cheatsRescan && ogbox_trainers_state(nullptr, nullptr) == 2) {
+			cheatsRecount = false;
+			refreshDetailCounts();   // (the game's page's trainers count)
 		}
 		if (!cheatsAsked) {
 			return;
@@ -6358,6 +7458,89 @@ public:
 		if (r.fetched) {
 			cheatsRescan = true;
 		}
+	}
+
+	/* 1.0.4: Settings > Advanced > Storage write test (platform/ps5_broker.h, a diagnostic): asked for
+	 * once more, then on a thread of its own; how far it is in a popup (a toast once that is closed),
+	 * what it found at the end. Every number goes into the boot log ("writetest:" lines). */
+	bool writeTestAsked{ false }, writeTestShown{ false };
+	static constexpr const char *kWriteTest = "Storage write test";
+	void askWriteTest()
+	{
+		if (ogbox::broker::WriteTest::Get().State().running) {
+			showToast("The storage write test is running already.");
+			return;
+		}
+		/* 1.0.4: the console's own storage (/data), where the title's writes are held back, or the data
+		 * folder when that is elsewhere (a USB drive: the owner's first run measured that one) */
+		const std::string root = ogbox::storageRoot();
+		const bool elsewhere = root.rfind("/data/", 0) != 0;
+		std::vector<std::string> buttons = { "Console storage" };
+		if (elsewhere) {
+			buttons.push_back("Data folder");
+		}
+		buttons.push_back("Cancel");
+		openPopup(kWriteTest, std::string("It takes about 10 minutes, and writes and then deletes about 8 GiB in a writetest folder (it "
+			"needs 10 GiB free there): Console storage is /data/ogbox/writetest") +
+			(elsewhere ? ", Data folder is " + root + "/writetest" : std::string()) +
+			". For part of it OGBox sends a helper of its own to the payload loader (port 9021). Stay in the menus while it runs: "
+			"starting a game ends it. Every number goes into the boot log (ogbox-boot.log in OGBox's folder).", buttons,
+			[this, elsewhere, root](int i) {
+				if (i == 0) {
+					startWriteTest("/data/ogbox/writetest");
+				} else if (elsewhere && i == 1) {
+					startWriteTest(root + "/writetest");
+				}
+			});
+	}
+	void startWriteTest(const std::string &dir)
+	{
+		const std::string elf = std::string(pshakux_title_dir()) + "/write-broker.elf";
+		const ogbox::broker::Connector connect = [elf](std::string &why) { return ogbox::broker::Launch(elf, why); };
+		const ogbox::broker::Log log = [](const std::string &line) { pshakux_log("%s", line.c_str()); };
+		if (!ogbox::broker::WriteTest::Get().Start(dir, connect, ogbox::broker::Plan{}, log)) {
+			showToast("The storage write test is running already.");
+			return;
+		}
+		pshakux_log("writetest: asked for (Settings > Advanced): in %s, the broker %s", dir.c_str(), elf.c_str());
+		writeTestAsked = writeTestShown = true;
+		openPopup(kWriteTest, writeTestText(ogbox::broker::WriteTest::Get().State()), { "Hide (it goes on)" },
+			[this](int) { writeTestShown = false; });
+	}
+	static std::string writeTestText(const ogbox::broker::WriteTest::Progress &s)
+	{
+		char took[64];
+		std::snprintf(took, sizeof(took), "%.0f s of about 10 minutes", s.seconds);
+		return s.phase + (s.detail.empty() ? std::string() : "\n" + s.detail) + "\n\n" + took;
+	}
+	std::string writeTestLine() const
+	{
+		const ogbox::broker::WriteTest::Progress s = ogbox::broker::WriteTest::Get().State();
+		return s.running ? "running: " + s.phase : std::string("about 10 minutes");
+	}
+	void writeTestTick()
+	{
+		if (!writeTestAsked) {
+			return;
+		}
+		const ogbox::broker::WriteTest::Progress s = ogbox::broker::WriteTest::Get().State();
+		const bool ours = writeTestShown && pop.open && pop.title == kWriteTest;
+		if (s.running) {
+			if (ours) {
+				pop.text = writeTestText(s);
+			} else {
+				toast = "Storage write test: " + s.phase;   // kept up while it lasts
+				toastUntil = now_seconds() + 1.0;
+			}
+			return;
+		}
+		if (!s.done || (pop.open && !ours)) {
+			return;   // (another popup first)
+		}
+		writeTestAsked = writeTestShown = false;
+		pop.open = false;
+		openPopup(s.ok ? "Storage write test: done" : "Storage write test: stopped", s.summary +
+			"\nThe numbers are in the boot log (ogbox-boot.log, the \"writetest:\" lines).", { "OK" }, nullptr);
 	}
 
 	void showToast(const std::string &text)
@@ -6739,7 +7922,7 @@ public:
 			v.footer.push_back({ "T", "Edit menu" });
 			v.footer.push_back({ "O", "Resume" });
 		}
-		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - qm.openedAt) / 0.18));
+		const float appear = ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - qm.openedAt) / 0.18)));
 		ImDrawList *dl = beginUiScreen("##quick", Ground::None);
 		ui::drawQuickMenu(dl, ImVec2(static_cast<float>(width), static_cast<float>(height)), v, appear);
 		endUiScreen();
@@ -6830,6 +8013,9 @@ public:
 				gp.info = details->info;
 				failed = !details->info.ok;
 			}
+		}
+		if (gp.info.ok) {
+			fetchGameCheats(gp.info.title_id);   // 1.0.4: its cheats, when it has none yet
 		}
 		if (failed && gp.readTries < 3 && now_seconds() - detailsSince > 1.5) {
 			gp.readTries++;
@@ -8012,6 +9198,7 @@ public:
 				fadeSince = -1.0;
 			}
 		}
+		fade = ui::appearing(fade);   // 1.0.4: Reduce motion: no fade from black
 		if (fade < 1.0f) {
 			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(static_cast<float>(width), static_cast<float>(height)),
 				IM_COL32(0, 0, 0, static_cast<int>(255 * (1.0f - fade))));
@@ -8525,17 +9712,20 @@ public:
 	{
 		switch (page) {
 		case SP_PICTURE:
-			return { { "", { "render_scale", "aspect", "upscale", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "sharpen", "dither",
+			return { { "", { "render_scale", "aspect", "upscale", "fsr_sharpness", "fxaa", "ssaa_filter", "framegen", "aniso", "lod_bias", "tex_role", "sharpen", "dither",
 				"deband", "crt", "crop_overscan", "show_fps" } },
 				{ "Brightness and Colour", { "pic_brightness", "pic_contrast", "pic_colour" } },
-				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } }, { "Textures", { "tex_replace", "tex_dump" } } };
+				{ "HDR", { "hdr", "hdr_white", "hdr_highlights" } },
+				{ "Textures", { "tex_replace", "tex_dump", "tex_upscale", "tex_upscale_bc", "alpha_aa" } },
+				{ "Lighting and Effects", { "ff_pixel_light", "shadow_pcf", "smallrt_filter", "ao", "ao_strength", "ao_radius",
+					"ao_near", "ao_far", "ao_fov" } } };
 		case SP_XBOX:
 			return { { "", { "language", "av_pack", "screen_format", "hdd_size" } }, { "Video modes", { "480p", "720p", "1080i", "pal60" } },
 				{ "Clock", { "clock_days", "clock_hours" } } };
 		case SP_ADVANCED: {
 			std::vector<std::pair<std::string, std::vector<std::string>>> g = {
-				{ "", { "frame_pacing", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
-					"audio_mixing", "audio_resampler", "audio_hrtf", "console_ram", "high_res" } },
+				{ "", { "frame_pacing", "speed_limit", "uncapped", "fast_drive", "gpu_cores", "async_shaders", "prebuild_shaders", "exact_depth", "log_mode",
+					"fast_writes", "audio_mixing", "audio_resampler", "audio_hrtf", "console_ram", "high_res" } },
 			};
 			std::vector<std::string> other;
 			for (const ogbox::Option &o : ogbox::options()) {
@@ -8551,13 +9741,16 @@ public:
 				const std::string k = o.key;
 				// 0.0.4: "audio_dsp" (full DSP) is hidden: experimental, as in xemu (some games' EP
 				// programs never finish a frame); the code stays, Fast is what runs
-				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp" && k != "quick_layout") {
+				if (!placed && k != "list_layout" && k != "list_details" && k != "audio_dsp" && k != "quick_layout" &&
+					k != "one_gpu_device" && k != "guest_ram_import") {   // (Diagnostics, below)
 					other.push_back(k);
 				}
 			}
 			if (!other.empty()) {
 				g.push_back({ "Other", other });
 			}
+			/* 1.0.4: last, the storage write test's rows after it (settingsModel) */
+			g.push_back({ "Diagnostics", { "one_gpu_device", "guest_ram_import" } });
 			return g;
 		}
 		case SP_NETWORK:
@@ -8567,7 +9760,8 @@ public:
 				{ "How it looks", { "home_layout", "list_covers", "list_names", "list_sort", "list_sizes" } } };
 		case SP_INTERFACE:
 			/* 0.0.9: the DualSense in the menus (PSWin's) */
-			return { { "", { "theme", "rain", "quick_menu", "startup_video" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } } };
+			return { { "", { "theme", "rain", "quick_menu", "startup_video" } }, { "DualSense", { "menu_vibration", "circle_confirms", "light_bar" } },
+				{ "Accessibility", { "text_size", "high_contrast", "reduce_motion" } } };   // 1.0.4
 		case SP_CONTROLLER:
 			/* 0.0.6: the buttons on the controller's picture, in its order (left column, then right) */
 			return { { "", { "pad_lt", "pad_lthumb", "pad_up", "pad_down", "pad_left", "pad_right", "pad_back", "pad_rt", "pad_y",
@@ -8617,6 +9811,9 @@ public:
 		postValid = false;
 		sgsrOn = prefs.value("upscale") == "fsr" || prefs.value("upscale") == "sgsr";   // 0.0.6: FSR1 (EASU)
 		sharpOn = prefs.value("upscale") == "sharp";
+		/* FSR1's RCAS: AMD's stops (FsrRcasCon: 0 the sharpest, each stop half as sharp) */
+		const std::string rcas = prefs.value("fsr_sharpness");
+		rcasSharp = rcas == "off" ? 0.0f : std::exp2(-(rcas == "low" ? 2.0f : rcas == "high" ? 0.5f : 1.0f));
 		showFps = prefs.value("show_fps") != "0";
 		fpsCorner = prefs.value("show_fps");
 	}
@@ -8626,8 +9823,8 @@ public:
 	 * which restarts the game from a state saved where it is. */
 	static bool liveKey(const std::string &k)
 	{
-		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "show_fps", "framegen", "framegen_quality",
-			"deband", "ssaa_filter", "crt", "pic_brightness", "pic_contrast", "pic_colour" };
+		static const char *const keys[] = { "aspect", "crop_overscan", "fxaa", "upscale", "fsr_sharpness", "show_fps", "framegen",
+			"framegen_quality", "deband", "ssaa_filter", "crt", "pic_brightness", "pic_contrast", "pic_colour" };
 		for (const char *x : keys) {
 			if (k == x) {
 				return true;
@@ -8642,6 +9839,10 @@ public:
 			return;
 		}
 		const std::string k = o.key;
+		if (k == "speed_limit" && pshx_core_set_speed(prefs.speedLimit())) {   // 1.0.4: the core takes it at once
+			pshakux_log("settings: speed limit %u%% (0: unlimited), at once", prefs.speedLimit());
+			return;
+		}
 		if (liveKey(k)) {
 			const bool ssaaWas = ssaaOn, quincunxWas = quincunxOn;
 			readPictureSettings();
@@ -8699,6 +9900,8 @@ public:
 		}
 		if (key == "rain") {
 			rainOn = next == "1";
+		} else if (key == "text_size" || key == "high_contrast" || key == "reduce_motion") {
+			applyAccess();
 		} else if (key == "theme") {
 			themeCode = next == "code";
 		} else if (key == "show_fps") {
@@ -8898,7 +10101,7 @@ public:
 			{ "nxdk", "The Xbox kernel's export table (CC0)." },
 			{ "Mesa (RADV)", "The Vulkan driver (MIT and other permissive licences); its PS5 parts by Mihawk." },
 			{ "PS5 Vulkan and the payload SDK", "Mihawk's PS5_Vulkan and platform layer; John Tornblom and ps5-payload-dev's SDK." },
-			{ "FidelityFX FSR 1.0", "AMD's EASU upscaler (MIT)." },
+			{ "FidelityFX FSR 1.0", "AMD's EASU upscaler and RCAS sharpening (MIT)." },
 			{ "SMAA", "Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (MIT)." },
 			{ "Dear ImGui", "Omar Cornut and contributors (MIT): the menus' drawing." },
 			{ "Network shares", "libsmb2 and libnfs by Ronnie Sahlberg (LGPL-2.1-or-later)." },
@@ -8917,6 +10120,22 @@ public:
 			for (const std::string &key : grp.second) {
 				const ogbox::Option *o = ogbox::option(key);
 				if (!o || (forGame && !o->perGame) || (key == "rain" && prefs.global("theme") != "code")) {
+					continue;
+				}
+				/* the page's value of a key, as optionRow reads it */
+				const auto pageValue = [this](const char *k) {
+					const std::string own = forGame ? prefs.override_(k) : std::string();
+					return own.empty() ? prefs.global(k) : own;
+				};
+				if (key == "fsr_sharpness" && pageValue("upscale") != "fsr") {   // FSR1's sharpening: with FSR1 only
+					continue;
+				}
+				/* 1.0.4: colour textures only, with Texture sharpness or Anisotropic filtering above their default;
+				 * ambient occlusion's values with it on */
+				if (key == "tex_role" && pageValue("lod_bias") == "0" && pageValue("aniso") == "0") {
+					continue;
+				}
+				if (key.compare(0, 3, "ao_") == 0 && pageValue("ao") != "1") {
 					continue;
 				}
 				if (!any && !grp.first.empty()) {
@@ -8974,18 +10193,45 @@ public:
 				"console's backups, bring saves in, delete them; empty the cache drives.", [this]() { openHdd(0); }, rows, acts,
 				ui::Icon::Console);
 			break;
+		case SP_ADVANCED:
+			/* 1.0.4: the storage write test (platform/ps5_broker.h), in the game list's settings only (a game's
+			 * start relaunches OGBox, which ends it) */
+			if (library && !forGame) {
+				// (under the Diagnostics group's header, the options' last: setGroups)
+				actionRow("writetest", "Storage write test", writeTestLine(), "Takes about 10 minutes; writes and then deletes about "
+					"8 GiB on the console's storage or in the data folder. It measures how fast OGBox, and a helper of its own sent to the payload loader, can "
+					"write there; the numbers go into the boot log.", [this]() { askWriteTest(); }, rows, acts, ui::Icon::Gear);
+			}
+			break;
 		case SP_UPDATES:
 			actionRow("check", "Look for an update now", updateLine(), "Asks GitHub whether a newer OGBox is out and offers it with "
 				"what is new. Nothing is downloaded without asking; your settings, the hard disk, states and games stay.",
 				[this]() { checkForUpdate(); }, rows, acts, ui::Icon::Check);
+			/* 1.0.4: the version before the last update, kept: put back (on the game list's settings only, as
+			 * an update's install is answered there) */
+			if (library) {
+				const PS5Update::Status ps = PS5Update::GetStatus();
+				if (!ps.previous.empty()) {
+					actionRow("back", "Go back to " + ps.previous_label, previousSize(ps.previous_bytes), "Puts back the "
+						"version OGBox was before the last update, kept in its folder (.previous) until the next update, and "
+						"closes OGBox. Your settings, the Xbox hard disk, states and games stay.", [this]() { askRollBack(); },
+						rows, acts, ui::Icon::Back);
+				}
+			}
 			/* 1.0.3: the Xbox scene's trainers xbased keeps, downloaded only from here (ogbox_fixes_fetch.h); in
 			 * the game list's settings (its ticks show how far it is) */
 			if (library) {
-				actionRow("cheats", "Download cheats", cheatsLine(), "Downloads the Xbox scene's cheat files (.etm and .xbtf "
-					"trainers) from xbased's repository on GitHub into " + ogbox::storagePath("trainers") + "; each game's appear on "
-					"its Mods screen. They are third-party files, not part of OGBox, made by the Xbox scene's trainer makers: use "
-					"them only with games you own. Files already there are kept as they are.", [this]() { downloadCheats(); }, rows,
-					acts, ui::Icon::Puzzle);
+				/* 1.0.4: the player's games' only first (yourTitles); every game's below */
+				actionRow("cheats", "Download cheats for your games", yourCheatsLine(), "Downloads the cheat files (.etm and .xbtf "
+					"trainers) of the games OGBox has seen: those in the folders the game list opened, played, or with saves on "
+					"the Xbox hard disk. From xbased's repository on GitHub into " + ogbox::storagePath("trainers") + "; each game's "
+					"appear on its Mods screen. They are third-party files, not part of OGBox, made by the Xbox scene's trainer "
+					"makers: use them only with games you own. Files already there are kept as they are.",
+					[this]() { downloadCheats(true); }, rows, acts, ui::Icon::Puzzle);
+				unsigned at = 0, of = 0;
+				actionRow("cheatsall", "Download all cheats", ogbox::fixes::CheatsRunning(at, of) ? cheatsLine() : "every game's", "Downloads every game's cheat files from xbased's "
+					"repository, the same way. A game's page also downloads its own when it has none.",
+					[this]() { downloadCheats(false); }, rows, acts, ui::Icon::Puzzle);
 			}
 			/* 0.0.6: this version's release notes (the README beside eboot.bin) */
 			actionRow("news", "What's New?", "this version", "What was added, changed and fixed in this version.",
@@ -9187,7 +10433,7 @@ public:
 						resets.push_back(acts[k].reset);
 					}
 				}
-				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's own settings here are removed, and it uses "
+				openPopup("Reset " + std::string(setPageName(page)) + "?", forGame ? "This game's settings here are removed, and it uses "
 					"Default again." : "Every setting here goes back to how OGBox comes.", { "No", "Yes, reset them" }, [this, resets](int i) {
 						if (i == 1) {
 							for (const std::function<void()> &reset : resets) {
@@ -9238,7 +10484,7 @@ public:
 		ui::SettingsView v;
 		v.logo = uiLogo();
 		v.title = "Settings";
-		v.subtitle = forGame ? forGameTitle + " \xC2\xB7 this game's own" : std::string();
+		v.subtitle = forGame ? forGameTitle + " \xC2\xB7 settings for this game" : std::string();
 		v.right = forGame ? forGameKey : std::string();
 		for (size_t i = 0; i < pages.size(); i++) {
 			ui::SetNav n;
@@ -9806,7 +11052,7 @@ public:
 		f.statusBad = form.bad;
 		f.busy = form.test != nullptr;
 		f.note = "Saved to " + std::string(kNetworkFile) + "; the password stays on the console. X types, TRIANGLE clears, CIRCLE cancels.";
-		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - form.since) / 0.25));
+		const float appear = ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - form.since) / 0.25)));
 		ui::drawForm(dl, S, f, appear);
 	}
 
@@ -10063,7 +11309,7 @@ public:
 		if (!gp.states && !slots.empty()) {
 			v.footer.insert(v.footer.begin() + 2, { "D", "Load State" });
 		}
-		const float appear = static_cast<float>(std::min(1.0, (now_seconds() - gp.since) / 0.25));
+		const float appear = ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - gp.since) / 0.25)));
 		ImDrawList *dl = beginUiScreen("##gamepage");
 		ui::drawGamePage(dl, S, v, appear);
 		endUiScreen();
@@ -10090,7 +11336,7 @@ public:
 			v.text = pop.text;
 			v.items = pop.items;
 			v.sel = pop.sel;
-			ui::drawPopup(dl, S, v, static_cast<float>(std::min(1.0, (now_seconds() - popSince) / 0.2)));
+			ui::drawPopup(dl, S, v, ui::appearing(static_cast<float>(std::min(1.0, (now_seconds() - popSince) / 0.2))));
 		}
 		if (kb.isOpen()) {
 			kb.draw(dl, S, PS5Keyboard::IsConnected());
@@ -10114,6 +11360,19 @@ public:
 		themeApplied = code ? 1 : 0;
 		ui::setTheme(code ? ui::Theme::Code : ui::Theme::Dark);
 		pshakux_log("ogbox: theme %s", code ? "Code" : "Dark");
+	}
+
+	/* 1.0.4: Settings > Interface > Accessibility (idea after ProsperoEden): Larger text, High contrast,
+	 * Reduce motion, for every screen (ogbox_ui.h's Access); before the menus' fonts are baked, so they
+	 * are baked at the text's size */
+	void applyAccess()
+	{
+		ui::Access a;
+		const std::string t = prefs.global("text_size");
+		a.text = t == "larger" ? 1.3f : t == "large" ? 1.15f : 1.0f;
+		a.contrast = prefs.global("high_contrast") == "1";
+		a.still = prefs.global("reduce_motion") == "1";
+		ui::setAccess(a);
 	}
 
 	/* OGBox's logo (Press5elect's, assets/ogbox-logo.png) as an image ImGui draws, once. */

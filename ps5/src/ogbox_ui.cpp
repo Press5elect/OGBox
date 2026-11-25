@@ -23,6 +23,7 @@ namespace {
 
 float g_k = 1.0f;
 Theme g_theme = Theme::Dark;
+Access g_access{};
 Palette g_pal{};
 ImFont *g_fonts[static_cast<int>(F::Count)]{};
 float g_baked[static_cast<int>(F::Count)]{};
@@ -70,6 +71,21 @@ void makePalette()
 		p.textDim = rgba(190, 230, 200);
 		p.textFaint = rgba(110, 170, 125);
 		p.ok = p.accent;
+	}
+	if (g_access.contrast) {
+		/* 1.0.4: High contrast: the secondary words nearly as bright as the first, the grounds darker,
+		 * the lines and the light fills stronger */
+		p.bg = rgba(0, 0, 0);
+		p.surface = g_theme == Theme::Code ? rgba(0, 10, 4) : rgba(12, 14, 18);
+		p.surface2 = g_theme == Theme::Code ? rgba(4, 24, 10) : rgba(28, 32, 40);
+		p.surfaceHi = rgba(255, 255, 255, 56);
+		p.border = rgba(255, 255, 255, 110);
+		p.text = rgba(255, 255, 255);
+		p.textDim = g_theme == Theme::Code ? rgba(225, 255, 232) : rgba(236, 240, 244);
+		p.textFaint = g_theme == Theme::Code ? rgba(175, 240, 190) : rgba(200, 208, 218);
+		p.accentText = g_theme == Theme::Code ? rgba(170, 255, 190) : rgba(196, 248, 178);
+		p.warnText = rgba(255, 222, 170);
+		p.fail = rgba(255, 140, 128);
 	}
 }
 
@@ -193,7 +209,7 @@ float fitSize(F f, const std::string &s, float w, float max, float min, int line
 {
 	float fs = max;
 	for (; fs > min; fs -= px(2.0f)) {
-		if (paragraph(nullptr, f, fs, ImVec2(0, 0), 0, s, w, 99, lineGap) <= fs * (static_cast<float>(lines) * lineGap + 0.2f)) {
+		if (paragraph(nullptr, f, fs, ImVec2(0, 0), 0, s, w, 99, lineGap) <= textSize(fs) * (static_cast<float>(lines) * lineGap + 0.2f)) {
 			break;
 		}
 	}
@@ -231,6 +247,23 @@ Theme theme()
 const Palette &P()
 {
 	return g_pal;
+}
+
+void setAccess(const Access &a)
+{
+	g_access = a;
+	g_access.text = std::max(1.0f, std::min(1.5f, a.text));
+	makePalette();
+}
+
+const Access &access()
+{
+	return g_access;
+}
+
+float appearing(float a)
+{
+	return g_access.still ? 1.0f : a;
 }
 
 ImU32 alpha(ImU32 c, float a)
@@ -282,7 +315,8 @@ bool loadFonts(ImFontAtlas *atlas, const std::string &dir)
 		cfg.OversampleH = face.over;
 		cfg.OversampleV = 1;
 		cfg.PixelSnapH = false;
-		const float size = std::round(face.size * g_k);
+		/* 1.0.4: at the larger text's size when it is on at the start (sharp; changed later, drawn scaled) */
+		const float size = std::round(textSize(face.size * g_k));
 		const std::string path = dir + "/" + face.file;
 		ImFont *f = atlas->AddFontFromFileTTF(path.c_str(), size, &cfg, ranges);
 		g_fonts[static_cast<int>(face.f)] = f;
@@ -303,33 +337,71 @@ ImFont *font(F f)
 	return p ? p : ImGui::GetFont();
 }
 
-ImVec2 measure(F f, float size, const char *s, const char *end, float wrap)
+float textSize(float size)
+{
+	/* 1.0.4: the larger text's boost, whole up to 18 lines' worth (the small and the body text), none
+	 * from 36 (the titles), between in proportion */
+	if (g_access.text <= 1.0f) {
+		return size;
+	}
+	const float at1080 = size / g_k;
+	const float w = std::max(0.0f, std::min(1.0f, (36.0f - at1080) / 18.0f));
+	return size * (1.0f + (g_access.text - 1.0f) * w);
+}
+
+namespace {
+
+/* (the sizes as drawn: textSize already on them) */
+ImVec2 measureAt(F f, float size, const char *s, const char *end = nullptr, float wrap = 0.0f)
 {
 	return font(f)->CalcTextSizeA(size, FLT_MAX, wrap, s, end);
 }
 
-void text(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const char *s, const char *end, float wrap)
+void textAt(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const char *s, const char *end = nullptr, float wrap = 0.0f)
 {
 	dl->AddText(font(f), size, ImVec2(std::round(p.x), std::round(p.y)), col, s, end, wrap);
 }
 
+float textFitAt(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float maxW);
+
+} // namespace
+
+ImVec2 measure(F f, float size, const char *s, const char *end, float wrap)
+{
+	return measureAt(f, textSize(size), s, end, wrap);
+}
+
+void text(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const char *s, const char *end, float wrap)
+{
+	textAt(dl, f, textSize(size), p, col, s, end, wrap);
+}
+
 float textFit(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float maxW)
 {
+	return textFitAt(dl, f, textSize(size), p, col, s, maxW);
+}
+
+namespace {
+
+float textFitAt(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float maxW)
+{
+	const auto measure = measureAt;
+	const auto text = textAt;
 	const char *b = s.c_str(), *e = b + s.size();
-	const float full = measure(f, size, b, e).x;
+	const float full = measure(f, size, b, e, 0.0f).x;
 	if (full <= maxW) {
 		if (dl) {
-			text(dl, f, size, p, col, b, e);
+			text(dl, f, size, p, col, b, e, 0.0f);
 		}
 		return full;
 	}
 	const char *dots = "\xE2\x80\xA6";
-	const float dw = measure(f, size, dots).x;
+	const float dw = measure(f, size, dots, nullptr, 0.0f).x;
 	const char *cut = b;
 	float w = 0.0f;
 	while (cut < e) {
 		const char *n = nextChar(cut, e);
-		const float cw = measure(f, size, cut, n).x;
+		const float cw = measure(f, size, cut, n, 0.0f).x;
 		if (w + cw + dw > maxW) {
 			break;
 		}
@@ -341,13 +413,18 @@ float textFit(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::s
 	}
 	const std::string shown = std::string(b, cut) + dots;
 	if (dl) {
-		text(dl, f, size, p, col, shown.c_str());
+		text(dl, f, size, p, col, shown.c_str(), nullptr, 0.0f);
 	}
-	return measure(f, size, shown.c_str()).x;
+	return measure(f, size, shown.c_str(), nullptr, 0.0f).x;
 }
+
+} // namespace
 
 float label(ImDrawList *dl, float size, ImVec2 p, ImU32 col, const std::string &s, bool measureOnly)
 {
+	size = textSize(size);
+	const auto measure = [](F f, float sz, const char *t) { return measureAt(f, sz, t); };
+	const auto text = [](ImDrawList *d, F f, float sz, ImVec2 q, ImU32 c, const char *t) { textAt(d, f, sz, q, c, t); };
 	const float track = size * 0.14f;
 	float x = p.x;
 	const char *b = s.c_str(), *e = b + s.size();
@@ -371,6 +448,7 @@ float label(ImDrawList *dl, float size, ImVec2 p, ImU32 col, const std::string &
 float paragraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std::string &s, float w, int maxLines,
 	float lineGap)
 {
+	size = textSize(size);
 	ImFont *fnt = font(f);
 	const float scale = size / fnt->FontSize;
 	const float lh = size * lineGap;
@@ -395,9 +473,9 @@ float paragraph(ImDrawList *dl, F f, float size, ImVec2 p, ImU32 col, const std:
 			if (last && rest < e) {
 				std::string tail(b, e);   // (one line: a line break in it would draw the rest below the last line)
 				std::replace(tail.begin(), tail.end(), '\n', ' ');
-				textFit(dl, f, size, ImVec2(p.x, y), col, tail, w);
+				textFitAt(dl, f, size, ImVec2(p.x, y), col, tail, w);
 			} else {
-				text(dl, f, size, ImVec2(p.x, y), col, b, stop);
+				textAt(dl, f, size, ImVec2(p.x, y), col, b, stop);
 			}
 		}
 		line++;
@@ -466,6 +544,9 @@ float dt()
 
 float approach(float current, float target, float rate)
 {
+	if (g_access.still) {
+		return target;   // 1.0.4: Reduce motion: at its end at once
+	}
 	const float t = 1.0f - std::exp(-rate * g_dt);
 	const float v = current + (target - current) * t;
 	return std::fabs(target - v) < 0.0005f ? target : v;
@@ -902,6 +983,14 @@ void field(ImDrawList *dl, ImVec2 p0, ImVec2 p1, const std::string &value, const
 
 void panel(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float r, ImU32 fill, ImU32 border)
 {
+	if (g_access.contrast) {
+		/* 1.0.4: High contrast: solid panels, outlined */
+		const float a = static_cast<float>((fill >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
+		if (a > 0.05f) {
+			fill = (fill & ~IM_COL32_A_MASK) | (static_cast<ImU32>(std::lround(255.0f * std::max(a, 0.94f))) << IM_COL32_A_SHIFT);
+		}
+		border = border ? P().border : 0;
+	}
 	dl->AddRectFilled(p0, p1, fill, r);
 	if (border) {
 		dl->AddRect(p0, p1, border, r, ImDrawCornerFlags_All, std::max(1.0f, px(1.0f)));
@@ -936,7 +1025,13 @@ void focusBox(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float r, float amount, bool 
 	if (amount <= 0.01f) {
 		return;
 	}
-	dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, static_cast<int>(26 * amount)), r);
+	dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, static_cast<int>((g_access.contrast ? 40 : 26) * amount)), r);
+	if (g_access.contrast) {
+		/* 1.0.4: High contrast: a thicker outline, and a white one outside it */
+		dl->AddRect(p0, p1, alpha(warn ? P().warn : P().accent, amount), r, ImDrawCornerFlags_All, std::max(2.5f, px(3.0f)));
+		ring(dl, p0, p1, r, px(3.5f), alpha(IM_COL32(255, 255, 255, 255), 0.85f * amount), std::max(1.5f, px(2.0f)));
+		return;
+	}
 	dl->AddRect(p0, p1, alpha(warn ? P().warn : P().accent, 0.9f * amount), r, ImDrawCornerFlags_All, std::max(1.5f, px(2.0f)));
 }
 
@@ -1290,7 +1385,9 @@ void backdrop(ImDrawList *dl, ImVec2 size, const Backdrop &b)
 	fade = approach(fade, 1.0f, 5.0f);
 	dl->AddRectFilled(ImVec2(0, 0), size, P().bg);
 	const float t = static_cast<float>(now());
-	const float drift = std::sin(t * 0.21f) * 0.035f, drift2 = std::cos(t * 0.17f) * 0.03f;
+	/* 1.0.4: Reduce motion: the light and the cover stay where they are */
+	const float drift = g_access.still ? 0.0f : std::sin(t * 0.21f) * 0.035f;
+	const float drift2 = g_access.still ? 0.0f : std::cos(t * 0.17f) * 0.03f;
 	// the cover, blurred, over a bigger box than the screen (its edges never show)
 	const auto cover = [&](const Tex &tex, float a) {
 		if (!tex || a <= 0.001f) {
@@ -1302,7 +1399,7 @@ void backdrop(ImDrawList *dl, ImVec2 size, const Backdrop &b)
 		const float hx = 0.5f / tex.w, hy = 0.5f / tex.h;
 		dl->AddImage(tex.id, p0, p1, ImVec2(hx, hy), ImVec2(1.0f - hx, 1.0f - hy), IM_COL32(255, 255, 255, static_cast<int>(255 * a)));
 	};
-	const float strength = 0.42f * b.strength;
+	const float strength = 0.42f * b.strength * (g_access.contrast ? 0.45f : 1.0f);   // (1.0.4: the words over it first)
 	cover(prev, (1.0f - fade) * strength);
 	cover(cur, fade * strength);
 	// the light: the game's colour, drifting slowly
