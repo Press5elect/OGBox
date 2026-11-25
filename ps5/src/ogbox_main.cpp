@@ -980,7 +980,7 @@ public:
 		void *mapped{ nullptr };
 		VkDeviceSize size{ 0 };
 	};
-	/* 1.0.5: one more than the frame slots (ogbox_take.h kTakeStaging); with one device, staging i is slot i's */
+	/* 1.0.4: one more than the frame slots (ogbox_take.h kTakeStaging); with one device, staging i is slot i's */
 	std::array<Staging, ogbox::kTakeStaging> staging{};
 	static_assert(ogbox::kTakeStaging > maxConcurrentFrames, "a staging buffer free whatever the other slot reads");
 	VkSampler sampler{ VK_NULL_HANDLE };
@@ -1002,7 +1002,7 @@ public:
 	bool slotHeld{ false };                            // slotFrame taken, its copy in this frame's commands
 	std::array<bool, maxConcurrentFrames> stagingOnGpu{};   // a staging buffer's copy submitted, its fence not waited
 	int shotBuffer{ -1 };                              // a screenshot of this staging buffer once its copy is done
-	/* 1.0.5: two devices: the HLE GPU's copy into a staging buffer submitted, picked up by a later pass
+	/* 1.0.4: two devices: the HLE GPU's copy into a staging buffer submitted, picked up by a later pass
 	 * once its fence reads done (ogbox_take.h); env NC_PRESENT_WAIT=1: each copy waited for, as before */
 	ogbox::TakeAsync<ogbox::kTakeStaging> take;
 	int presentWait{ -1 };                             // NC_PRESENT_WAIT read (-1: not yet)
@@ -3055,7 +3055,7 @@ public:
 				pt.sum[3] / n, pt.sum[4] / n, pt.sum[5] / n, pt.sum[6] / n, static_cast<unsigned long long>(pt.takes),
 				pt.takeSum / static_cast<double>(std::max<uint64_t>(pt.takes, 1)), pt.takeWorst,
 				static_cast<unsigned long long>(pt.takesLong));
-			/* 1.0.5: two devices, the copy not waited for (ogbox_take.h) */
+			/* 1.0.4: two devices, the copy not waited for (ogbox_take.h) */
 			if (presentWait == 0 && !pshx_core_gpu_shared()) {
 				pshakux_log_later("presenter: the frame's copy in 10 s, not waited for: %llu started, picked up in the same pass %llu, "
 					"the next %llu, later %llu; %llu passes kept the previous picture (the copy not done), %llu found no "
@@ -4078,7 +4078,7 @@ public:
 	{
 		upload = false;
 		fgFresh = fgPush = fgShow = false;
-		if (take.target < 0 && fetchLogo()) {   // (1.0.5: never into a staging buffer a copy writes)
+		if (take.target < 0 && fetchLogo()) {   // (1.0.4: never into a staging buffer a copy writes)
 			upload = true;
 			return;
 		}
@@ -4120,7 +4120,7 @@ public:
 				return;
 			}
 		} else {
-			/* 1.0.5: the copy started here is picked up by a later pass (its fence read, no wait); meanwhile the
+			/* 1.0.4: the copy started here is picked up by a later pass (its fence read, no wait); meanwhile the
 			 * picture stays as it is. A staging buffer the copy writes is made large enough only before it starts. */
 			const int got = take.pass(++takePass, takeFrom, pictureBuffer, static_cast<int>(currentBuffer),
 				[&]() { return pshx_core_take_poll(&frameSeen, &fw, &fh); },
@@ -4338,7 +4338,7 @@ public:
 			recordSlotCopy(cmdBuffer);   // one device: the frame into the staging buffer, on the GPU
 		}
 		pictureChanged = upload || fgShow;
-		/* 1.0.5: the staging buffer the picture came in (two devices: the one its copy went into) */
+		/* 1.0.4: the staging buffer the picture came in (two devices: the one its copy went into) */
 		const size_t from = uploadFrom >= 0 ? static_cast<size_t>(uploadFrom) : currentBuffer;
 		uploadFrom = -1;
 		if (upload || fgPush) {
@@ -10130,7 +10130,7 @@ public:
 				if (key == "fsr_sharpness" && pageValue("upscale") != "fsr") {   // FSR1's sharpening: with FSR1 only
 					continue;
 				}
-				/* 1.0.5: colour textures only, with Texture sharpness or Anisotropic filtering above their default;
+				/* 1.0.4: colour textures only, with Texture sharpness or Anisotropic filtering above their default;
 				 * ambient occlusion's values with it on */
 				if (key == "tex_role" && pageValue("lod_bias") == "0" && pageValue("aniso") == "0") {
 					continue;

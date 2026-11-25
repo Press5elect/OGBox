@@ -9,21 +9,23 @@
 a homebrew title (`PPSA99251`) for jailbroken PlayStation 5 consoles. It's made by Press5elect,
 and it was called PSHakuX up to version 0.1.5.
 
-**What's new in 1.0.3:**
-- Download cheats (Settings > Updates): the Xbox scene's trainers, fetched from xbased's
-  collection on GitHub when you ask for them.
-- HRTF can be turned off (Settings > Advanced, per game), and covers come from MobCat's database
-  for your exact release.
-- Water reflections, hair and lights drawn from a game's own render targets, a glow halo at high
-  resolutions, a freeze in races, white cars after several stages and missing shadows are fixed,
-  and many kernel, disc and graphics fixes are ported from xbased and HakuXP.
-- Save states keep their cache copies, so a state no longer fails to load once the game has
-  rewritten its cache. A state saved with 1.0.2 may have lost them: it still loads when the
-  game's cache holds what it held when the state was saved.
-- The hard disk manager works in the background with its progress, and many front-end fixes.
+**What's new in 1.0.4:**
+- New picture options, per game and off by default: texture upscaling (2x or 4x, kept compressed
+  so 4x stays fast), foliage coverage, softer shadows, per-pixel lighting, ambient occlusion and
+  FSR1's sharpening; smoother small glow effects and texture sharpness for colour textures only are
+  on.
+- Smoother 120 Hz: the screen no longer waits on each of the game's frames, and no game frame is
+  dropped when the GPU is busy.
+- A speed limit (100% to 300%, or Unlimited), per game or for all; your own `.jmp`, `.ips` and
+  `.bps` patches from the data folder's `patches` folder, matched to their games.
+- Faster writes to the console's storage through a helper (cache drives, and moving the data
+  folder there); cheats downloaded for your games only, eight files at once.
+- Updates keep the version they replaced (go back to it), show what's new and can skip a version;
+  a loading screen while a game starts; Settings > Interface > Accessibility; after a crash, the
+  next start says where its report is.
 
-**Latest release: [v1.0.3](https://github.com/Press5elect/OGBox/releases/tag/v1.0.3).** Download
-`OGBox-v1.0.3.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
+**Latest release: [v1.0.4](https://github.com/Press5elect/OGBox/releases/tag/v1.0.4).** Download
+`OGBox-v1.0.4.zip` and copy it to your console. If you already have 0.0.2 or newer, you don't need
 to: OGBox offers the update itself the next time it starts.
 
 > **It's free, and it lives here only.** OGBox costs nothing and is only published on this
@@ -39,7 +41,7 @@ to: OGBox offers the update itself the next time it starts.
 
 ## What to expect
 
-This is **experimental** software. 1.0.3 is the twelfth public release, after a long run of
+This is **experimental** software. 1.0.4 is the thirteenth public release, after a long run of
 bring-up builds (0.1.1 to 0.1.59). Some games boot and play well. Others won't start, stop
 partway, slow down, or lose their graphics or sound. Crashes and in-game glitches can happen.
 
@@ -150,8 +152,9 @@ resolution, anti-aliasing, sharpening and so on) is off until you turn it on.
   and ambient occlusion (smoother small glow effects and texture sharpness for colour textures only
   are on).
 - **Performance:** running the GPU on its own cores, frame pacing, an uncapped frame rate,
-  compiling shaders in the background, and building cached shaders at start.
-- **Audio:** sound mixing (Default: the game's own sound program mixes, as on the console; Fast:
+  compiling shaders in the background, building cached shaders at start, and a speed limit (100% to
+  300%, or Unlimited).
+- **Audio:** sound mixing (Default: the game's sound program mixes, as on the console; Fast:
   OGBox mixes the voices itself), the resampler (Normal, Sinc or Linear) and HRTF (the Xbox's
   positional filters on 3D voices; off gives a plain pan).
 - **Console:** language, memory (64 MB, or the 128 MB upgrade some patches need; Auto picks it

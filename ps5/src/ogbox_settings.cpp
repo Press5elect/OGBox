@@ -223,7 +223,7 @@ std::vector<Option> makeOptions()
 		"Textures stay sharper into the distance, the more so at a higher internal resolution. Some games' fine "
 		"patterns may shimmer.",
 		{ { "0", "Default" }, { "-0.5", "Sharper" }, { "-1", "Sharpest" } }, "0", true });
-	/* 1.0.5: Texture sharpness and Anisotropic filtering on colour textures only (hakuX-native's
+	/* 1.0.4: Texture sharpness and Anisotropic filtering on colour textures only (hakuX-native's
 	 * shader/texrole.h, NC_HLE_TEXROLE, the core's default on); shown with either above its default
 	 * (settingsModel) */
 	o.push_back({ "tex_role", Section::Graphics, "Sharpness for colour textures only",
@@ -243,20 +243,20 @@ std::vector<Option> makeOptions()
 		"ones as DDS, the rest as PNG. Edit or upscale them and copy them to textures/<title ID> to make a "
 		"pack. Writing them can slow the game the first time it shows them.",
 		kOnOff, "0", true });
-	/* 1.0.5: texture upscaling at upload (hakuX-native's tex/texup.h, NC_HLE_TEXUP 2 or 4; its memory
+	/* 1.0.4: texture upscaling at upload (hakuX-native's tex/texup.h, NC_HLE_TEXUP 2 or 4; its memory
 	 * budget, NC_HLE_TEXUP_MIB, left at the core's 1 GiB) */
 	o.push_back({ "tex_upscale", Section::Graphics, "Texture upscaling",
 		"Draws the game's textures again at 2x or 4x their size with an edge-keeping filter, once each stays the "
 		"same for a second. Text, masks, normal maps and pixel-art textures stay as they are. Uses up to 1 GB of "
 		"the GPU's memory. An HD texture pack's textures are not upscaled again.",
 		{ { "0", "Off" }, { "2", "2x" }, { "4", "4x" } }, "0", true });
-	/* 1.0.5: upscaled DXT textures kept in DXT (hakuX-native's tex/texbc.h; NC_HLE_TEXUP_BC=0 for RGBA8) */
+	/* 1.0.4: upscaled DXT textures kept in DXT (hakuX-native's tex/texbc.h; NC_HLE_TEXUP_BC=0 for RGBA8) */
 	o.push_back({ "tex_upscale_bc", Section::Graphics, "Upscaled texture format",
 		"For compressed (DXT) textures, which most games use: Compressed keeps the upscaled texture in the same "
 		"compressed format as the original, so the GPU reads 4 to 8 times less memory for it. Uncompressed stores "
 		"every texel in full: slower at 4x, with no block steps in the new detail.",
 		{ { "1", "Compressed" }, { "0", "Uncompressed" } }, "1", true });
-	/* 1.0.5: alpha-tested textures' smaller levels keep level 0's coverage (hakuX-native's tex/alpha_cov.h,
+	/* 1.0.4: alpha-tested textures' smaller levels keep level 0's coverage (hakuX-native's tex/alpha_cov.h,
 	 * NC_HLE_ALPHA_AA 1 or 2) */
 	o.push_back({ "alpha_aa", Section::Graphics, "Foliage coverage",
 		"Leaves, grass and fences that thin out and flicker in the distance stay as full as up close. Alpha-tested: "
@@ -268,7 +268,7 @@ std::vector<Option> makeOptions()
 	o.push_back({ "crop_overscan", Section::Graphics, "Crop overscan",
 		"Hides the picture's edges (3.75% a side) as a TV of the time did, where some games leave garbage or black "
 		"borders.", kOnOff, "0", true });
-	/* 1.0.5: the core's lighting and shadow options (hakuX-native): 1x glow and blur targets read through a
+	/* 1.0.4: the core's lighting and shadow options (hakuX-native): 1x glow and blur targets read through a
 	 * B-spline (NC_HLE_SMALLRT_FILTER, the core's default on), shadow buffers' compare over 3 x 3 or 5 x 5
 	 * (NC_HLE_SHADOW_PCF), fixed-function lights per pixel (NC_HLE_FF_PIXEL_LIGHT), ambient occlusion from
 	 * the frame's depth buffer (NC_HLE_AO and its _STRENGTH, _RADIUS, _NEAR, _FAR, _FOV); all read at the
@@ -373,7 +373,7 @@ std::vector<Option> makeOptions()
 		"the helper can't start or stops, OGBox writes them itself. Nothing changes with the data folder on USB storage. "
 		"Takes effect at the next start of a game.", kOnOff, "1", false });
 	/* 1.0.4: Settings > Advanced > Diagnostics: two of the core's A/B switches for a test run (coreArgs: the
-	 * environment switches hakuX-native reads); they were one "Core experiment" choice until 1.0.5 */
+	 * environment switches hakuX-native reads); they were one "Core experiment" choice until 1.0.4 */
 	o.push_back({ "one_gpu_device", Section::Performance, "One GPU device",
 		"For testing only: the emulator's graphics render on the same GPU device as OGBox's own and the picture is "
 		"copied on the GPU, not read back. Off: two devices, as normal. Takes effect at the next start of a game.",
@@ -689,7 +689,7 @@ void readFile(const std::string &path, std::map<std::string, std::string> &out)
 		} else if (key == "force32" && v == "1" && !out.count("dither")) {
 			out["dither"] = "force32";     // 0.0.6: Force 32-bit colour is one of the dithering's choices
 		} else if (key == "core_experiment") {
-			/* 1.0.5: the Core experiment choice became two switches; the two that stay carry over, the rest are dropped */
+			/* 1.0.4: the Core experiment choice became two switches; the two that stay carry over, the rest are dropped */
 			if (v == "one_device" && !out.count("one_gpu_device")) {
 				out["one_gpu_device"] = "1";
 			} else if (v == "ram_import" && !out.count("guest_ram_import")) {
@@ -1065,7 +1065,7 @@ std::vector<std::string> Settings::coreArgs() const
 	if (value("lod_bias") == "-0.5" || value("lod_bias") == "-1") {   // 0.0.9: Texture sharpness
 		a.push_back("NC_HLE_LODBIAS=" + value("lod_bias"));
 	}
-	/* 1.0.5: the core's texture, lighting and shadow options (hakuX-native; each word read once, at the
+	/* 1.0.4: the core's texture, lighting and shadow options (hakuX-native; each word read once, at the
 	 * game's start); the ones on in the core by default are said only when off */
 	if (value("tex_role") == "0") {
 		a.push_back("NC_HLE_TEXROLE=0");

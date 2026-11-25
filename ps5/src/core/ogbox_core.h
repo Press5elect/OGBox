@@ -95,7 +95,7 @@ bool pshx_core_take_frame(uint64_t *seen, void *dst, uint32_t pitch, uint32_t ma
 bool pshx_core_take_frame_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                                uint32_t max_h, uint32_t *w, uint32_t *h);
 void pshx_core_frame_forget(void *dst);
-/* OGBox 1.0.5: take_frame_into without the wait: take_start submits the copy into dst (STARTED; NONE:
+/* OGBox 1.0.4: take_frame_into without the wait: take_start submits the copy into dst (STARTED; NONE:
  * nothing new; PENDING: one in flight already), take_poll reads whether it is done (DONE: the frame
  * in dst, *w x *h, *seen its; PENDING: not yet; FAILED: the GPU lost; NONE: none in flight). dst is
  * the HLE GPU's until DONE or FAILED: not read, written or freed (frame_forget waits for it). */

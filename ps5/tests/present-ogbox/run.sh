@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OGBox 1.0.5 - the two devices' frame handoff on the PC: ps5/hakux/hle/present_host.c compiled against
+# OGBox 1.0.4 - the two devices' frame handoff on the PC: ps5/hakux/hle/present_host.c compiled against
 # stand-ins for the HLE back end (stubs/) and run with a fake Vulkan device and display, driven by the
 # title's side (src/ogbox_take.h) as ogbox_main.cpp's fetchPicture does (present_host_test.cpp says
 # what is checked). Needs gcc, g++ and the Vulkan headers (libvulkan-dev); no driver.

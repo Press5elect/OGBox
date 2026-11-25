@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
- * OGBox 1.0.5: the two devices' frame handoff on the PC. ps5/hakux/hle/present_host.c itself (its
+ * OGBox 1.0.4: the two devices' frame handoff on the PC. ps5/hakux/hle/present_host.c itself (its
  * take_start / take_poll, the blocking take_into, forget) runs against a fake Vulkan device whose
  * queue completes the copies only when the test says, and a fake display (slots, held flags, the
  * display's use); ps5/src/ogbox_take.h (the title's side) drives it as ogbox_main.cpp's fetchPicture

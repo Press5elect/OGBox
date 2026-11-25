@@ -6,6 +6,7 @@ fixed, what was tested on a PS5, the installation steps, and the build's version
 
 | Release | Date | Main points |
 | --- | --- | --- |
+| [`v1.0.4`](v1.0.4.md) | 2026-11-25 | Texture upscaling, softer shadows, ambient occlusion and other picture options; smoother 120 Hz; a speed limit; your own patches; faster writes to the console's storage |
 | [`v1.0.3`](v1.0.3.md) | 2026-11-23 | Download cheats; HRTF setting; covers by release; mipmapped render-target textures, a race freeze and save states fixed; fixes ported from xbased and HakuXP |
 | [`v1.0.2`](v1.0.2.md) | 2026-11-14 | HD texture packs and texture dumps; the game's own sound mix; saves from a console re-signed; more 60 FPS patches; render targets sharing memory fixed |
 | [`v1.0.1`](v1.0.1.md) | 2026-11-13 | Hard disk size; stencil shadow and depth fixes; all 337 kernel functions; hakuX-lr merged again |

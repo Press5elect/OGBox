@@ -93,10 +93,10 @@
   },
   {
    "id": "fidelityfx-fsr1",
-   "name": "AMD FidelityFX Super Resolution 1.0's EASU (ffx_fsr1.h FsrEasuF), ported to GLSL in OGBox's presenter (shaders/glsl/ogbox/fsr1.frag)",
+   "name": "AMD FidelityFX Super Resolution 1.0's EASU (ffx_fsr1.h FsrEasuF) and RCAS (FsrRcasF), ported to GLSL in OGBox's presenter (shaders/glsl/ogbox/fsr1.frag, rcas.frag)",
    "licence": "MIT",
    "copyright": "Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.",
-   "modifications": "OGBox 0.0.6: a GLSL port for one pass from the picture to the screen, Copyright (C) 2026 Press5elect",
+   "modifications": "OGBox 0.0.6: a GLSL port for one pass from the picture to the screen; OGBox 1.0.4: RCAS as a second pass after EASU, its sharpness the user's. Copyright (C) 2026 Press5elect",
    "texts": {
     "FidelityFX-FSR-LICENSE.txt": "ps5/licenses/FidelityFX-FSR-LICENSE.txt"
    },

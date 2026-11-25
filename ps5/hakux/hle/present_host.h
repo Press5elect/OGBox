@@ -42,7 +42,7 @@ bool pshx_present_take(uint64_t *seen, void *dst, uint32_t pitch, uint32_t max_w
  * Rows packed (pitch = w * 4) for that; otherwise, and with dst_bytes 0, as pshx_present_take. */
 bool pshx_present_take_into(uint64_t *seen, void *dst, size_t dst_bytes, uint32_t pitch, uint32_t max_w,
                             uint32_t max_h, uint32_t *w, uint32_t *h);
-/* OGBox 1.0.5: the same without the wait (the two devices' handoff off the title's render thread's
+/* OGBox 1.0.4: the same without the wait (the two devices' handoff off the title's render thread's
  * critical path). take_start submits the front frame's copy into dst, when newer than *seen, and
  * returns: PSHX_TAKE_STARTED (in flight: dst is written by the HLE GPU until take_poll says DONE or
  * FAILED; the title neither reads, writes nor frees it before), PSHX_TAKE_NONE (nothing new, or none

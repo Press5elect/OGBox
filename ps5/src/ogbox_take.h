@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Additional terms (GPL-3.0 section 7(b)): keep the attribution "OGBox by Press5elect"; see NOTICE.
  *
- * OGBox 1.0.5: the two devices' frame handoff without the wait, the title's side. The HLE GPU's
+ * OGBox 1.0.4: the two devices' frame handoff without the wait, the title's side. The HLE GPU's
  * copy of its display slot into one of the title's staging buffers is submitted
  * (pshx_core_take_start) and the pass goes on; a later pass reads its fence (pshx_core_take_poll,
  * no wait) and, once it is done, that staging buffer is the picture the upload, frame generation

@@ -42,7 +42,7 @@ static struct {
     VkCommandBuffer cb;
     VkFence fence;
     bool pending;               /* the fence's submit not seen done (a wait that failed): nothing reused */
-    /* OGBox 1.0.5: the copy submitted and not yet seen done (one at a time): its slot held and the
+    /* OGBox 1.0.4: the copy submitted and not yet seen done (one at a time): its slot held and the
      * display's use taken (hle_disp_use_begin) until then, on the title's render thread */
     struct {
         bool on, direct;        /* direct: written into dst itself (an import), else into buf */
@@ -266,7 +266,7 @@ static int copy_poll(bool wait, uint64_t *seen, uint32_t *w, uint32_t *h);
 void pshx_present_forget(void *dst)
 {
     pthread_mutex_lock(&g_ph.lock);
-    /* 1.0.5: a copy in flight (pshx_present_take_start) may write into dst: waited for first (the
+    /* 1.0.4: a copy in flight (pshx_present_take_start) may write into dst: waited for first (the
      * title's frame from it is lost: the title is letting go of dst, and takes the frame again) */
     if (g_ph.copy.on && g_hvk.dev) {
         uint64_t seen = 0;

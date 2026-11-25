@@ -606,7 +606,7 @@ int main(int argc, char **argv)
 	}
 	inter.rowSel = 4;
 
-	// 1.0.5: Settings > Picture's Textures and Lighting and Effects groups, ambient occlusion on (the words as
+	// 1.0.4: Settings > Picture's Textures and Lighting and Effects groups, ambient occlusion on (the words as
 	// ogbox_settings.cpp has them)
 	ui::SettingsView light = set;
 	light.rows.clear();

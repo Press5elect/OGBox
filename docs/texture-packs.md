@@ -23,7 +23,7 @@ folder moves with it. The title ID is the eight characters the game's page shows
 
 1. Turn **Dump textures** on for the game and play through what you want to change. Each texture is
    written once, on a thread of its own; textures already in `dump` are not written again.
-   - Compressed textures (DXT1, DXT3, DXT5) are saved as `.dds` with the game's own data and every
+   - Compressed textures (DXT1, DXT3, DXT5) are saved as `.dds` with the game's data and every
      mip level.
    - Everything else is saved as `.png`, as the game shows it (palettes and 16-bit formats expanded).
    - The names are `tex_<code>_<width>x<height>_<format>`. The 16-digit code identifies the texture:
@@ -48,7 +48,7 @@ replace a compressed texture and the other way round.
 
 Dumped and replaceable: the game's ordinary 2D textures, 4 x 4 and larger, in colour formats.
 
-Not covered (the game's own texture is drawn): textures the game renders into, cube maps and
+Not covered (the game's texture is drawn as it is): textures the game renders into, cube maps and
 volume textures, linear-layout textures (mostly movie frames and screen effects), bump-map and
 depth formats.
 

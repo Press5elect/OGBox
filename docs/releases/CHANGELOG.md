@@ -4,6 +4,37 @@ A short entry for each release, newest first. The full notes of a release (what 
 installation, the build's versions and checksum) are its page in this folder: see
 [`README.md`](README.md).
 
+## 1.0.4
+
+Added
+- Picture options (Settings > Picture, per game; off by default and experimental): Texture
+  upscaling (2x or 4x; compressed textures stay compressed, with Upscaled texture format), Foliage
+  coverage, Shadow softness (Soft, Soft wide, Softer), Per-pixel lighting and Ambient occlusion
+  (with its strength, radius and the camera's near, far and field of view for vertex-program games);
+  FSR1's sharpening after its upscale. On by default: smoother small glow effects, and texture
+  sharpness on colour textures only.
+- A speed limit (Settings > Performance, per game or for all): 100% to 300%, or Unlimited.
+- Your own patches: `.jmp`, `.ips` and `.bps` files in the data folder's `patches` folder, matched to
+  their games by checksum, title ID or name, under each game's Game Patches.
+- Fast writes on the console's storage (Settings > Advanced, on): the cache drives write through a
+  helper past the title's write budget, and moving the data folder onto the console's storage copies
+  through it.
+- Updates keep the version they replaced and can go back to it; What's new and Skip this version.
+- A loading screen while a game starts; Settings > Interface > Accessibility (larger text, high
+  contrast, less motion); after a crash, the next start says where its report is.
+- OgXHD's widescreen patches for any release of 30 more games.
+- Settings > Advanced > Diagnostics: One GPU device and Guest RAM imported (off).
+
+Changed
+- Cheats are downloaded for your games only, eight files at once, and a game's page fetches its own.
+- The screen no longer waits on each of the game's frames (with two GPU devices, the default), and
+  no game frame is dropped when the GPU is busy: 1,199 of 1,200 frames shown every 10 s at 120 Hz in
+  the test, against 920 to 970 before.
+
+Fixed
+- A crash at a game's start with framebuffer fetch off.
+- Settings' words: "Game's default" for the shadow filter.
+
 ## 1.0.3
 
 Added
